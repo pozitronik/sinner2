@@ -78,8 +78,10 @@ class QProcessorControls(QWidget):
         self._worker_count.setRange(1, 16)
         self._worker_count.setValue(1)
         self._worker_count.setToolTip(
-            "Number of parallel pipeline workers (each runs the full chain).\n"
-            "Applies on next session start — reload source or target to take effect."
+            "Number of parallel pipeline workers — each gets its own independent\n"
+            "chain (separate ONNX sessions, separate GPU memory). More workers\n"
+            "give real parallelism but multiply model load time and GPU memory.\n"
+            "Applies on next session start; reload source or target to take effect."
         )
         self._worker_count.valueChanged.connect(self.configChanged)
         execution_form.addRow("Worker count", self._worker_count)

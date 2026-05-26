@@ -11,6 +11,7 @@ from sinner2.pipeline.buffer.buffer import FrameBuffer
 from sinner2.pipeline.buffer.metrics import BufferMetrics
 from sinner2.pipeline.buffer.timeline import Timeline
 from sinner2.pipeline.messages import (
+    ChainFactory,
     Message,
     PauseMsg,
     PlayMsg,
@@ -59,7 +60,7 @@ class RealtimeExecutor:
         target_reader: TargetReader,
         buffer: FrameBuffer,
         timeline: Timeline,
-        chain: list[Processor],
+        chain_factory: ChainFactory,
         strategy: FrameSkipStrategy,
         worker_count: int = 1,
     ) -> None:
@@ -72,7 +73,11 @@ class RealtimeExecutor:
         self._worker_count = worker_count
 
         self._state_lock = threading.RLock()
-        self._chain: tuple[Processor, ...] = tuple(chain)
+        self._chain_factory: ChainFactory = chain_factory
+        # One chain per worker, populated by start(). Each entry is an
+        # independent Processor list (own ONNX sessions) so workers really
+        # parallelize on GPU rather than serializing on a shared model.
+        self._chains: list[tuple[Processor, ...]] = []
         self._state: _State = _State.STOPPED
         self._last_submitted: FrameIndex = -1
         self._last_completed: FrameIndex = -1
@@ -103,15 +108,22 @@ class RealtimeExecutor:
                 return
             self._stop_event.clear()
             self._state = _State.IDLE
-            for p in self._chain:
-                p.setup()
+            # Build worker_count independent chains and set up each one.
+            for _ in range(self._worker_count):
+                chain = tuple(self._chain_factory())
+                for p in chain:
+                    p.setup()
+                self._chains.append(chain)
             self._dispatcher_thread = threading.Thread(
                 target=self._dispatcher_loop, name="sinner2-dispatcher", daemon=True
             )
             self._dispatcher_thread.start()
             for i in range(self._worker_count):
                 t = threading.Thread(
-                    target=self._worker_loop, name=f"sinner2-worker-{i}", daemon=True
+                    target=self._worker_loop,
+                    args=(i,),
+                    name=f"sinner2-worker-{i}",
+                    daemon=True,
                 )
                 t.start()
                 self._worker_threads.append(t)
@@ -136,8 +148,10 @@ class RealtimeExecutor:
             self._playback_thread.join(timeout=2.0)
 
         with self._state_lock:
-            for p in self._chain:
-                p.release()
+            for chain in self._chains:
+                for p in chain:
+                    p.release()
+            self._chains = []
             self._target_reader.release()
             self._state = _State.STOPPED
             self._dispatcher_thread = None
@@ -158,8 +172,8 @@ class RealtimeExecutor:
     def set_params(self, processor_name: str, params: Mapping[str, Any]) -> None:
         self._command_queue.put(SetParamsMsg(processor_name=processor_name, params=params))
 
-    def set_chain(self, chain: list[Processor]) -> None:
-        self._command_queue.put(SetChainMsg(chain=tuple(chain)))
+    def set_chain(self, chain_factory: ChainFactory) -> None:
+        self._command_queue.put(SetChainMsg(chain_factory=chain_factory))
 
     def set_skip_strategy(self, strategy: FrameSkipStrategy) -> None:
         self._command_queue.put(SetSkipStrategyMsg(strategy=strategy))
@@ -192,8 +206,8 @@ class RealtimeExecutor:
                 self._stop_event.set()
             case SeekMsg(target_frame=target):
                 self._handle_seek(target)
-            case SetChainMsg(chain=chain):
-                self._handle_set_chain(chain)
+            case SetChainMsg(chain_factory=factory):
+                self._handle_set_chain(factory)
             case SetSkipStrategyMsg(strategy=strategy):
                 self._handle_set_strategy(strategy)
             case SetParamsMsg():
@@ -222,16 +236,23 @@ class RealtimeExecutor:
             if self._last_completed < target - 1:
                 self._last_completed = target - 1
 
-    def _handle_set_chain(self, chain: tuple[Processor, ...]) -> None:
+    def _handle_set_chain(self, factory: ChainFactory) -> None:
+        # Per-worker chains: rebuild every chain via the new factory. Slower
+        # than the old shared-chain hot-swap (N model loads + N source-face
+        # detections), but it's the cost of true per-worker parallelism.
         self._drain_work_queue()
         with self._state_lock:
-            old_chain = self._chain
-            self._chain = chain
-            for p in chain:
-                if p not in old_chain:
+            old_chains = self._chains
+            self._chain_factory = factory
+            new_chains: list[tuple[Processor, ...]] = []
+            for _ in range(self._worker_count):
+                chain = tuple(factory())
+                for p in chain:
                     p.setup()
-            for p in old_chain:
-                if p not in chain:
+                new_chains.append(chain)
+            self._chains = new_chains
+            for chain in old_chains:
+                for p in chain:
                     p.release()
 
     def _handle_set_strategy(self, strategy: FrameSkipStrategy) -> None:
@@ -270,11 +291,7 @@ class RealtimeExecutor:
             self.status.set(f"target.read({frame_index}) returned None")
             return
 
-        item = WorkItem(
-            frame_index=frame_index,
-            source_frame=source_frame,
-            chain_snapshot=self._chain,
-        )
+        item = WorkItem(frame_index=frame_index, source_frame=source_frame)
         try:
             self._work_queue.put(item, timeout=0.1)
             self._last_submitted = frame_index
@@ -283,14 +300,17 @@ class RealtimeExecutor:
 
     # ---- Workers ----
 
-    def _worker_loop(self) -> None:
+    def _worker_loop(self, worker_id: int) -> None:
         while True:
             item = self._work_queue.get()
             if item is _WORKER_SENTINEL:
                 break
             try:
+                # Re-read every iteration so set_chain's swap is picked up
+                # without restarting the worker thread.
+                chain = self._chains[worker_id]
                 start = time.monotonic()
-                result = self._apply_chain(item.source_frame, item.chain_snapshot)
+                result = self._apply_chain(item.source_frame, chain)
                 elapsed = time.monotonic() - start
                 self._buffer.put(item.frame_index, result)
                 with self._state_lock:

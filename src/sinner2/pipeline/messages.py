@@ -37,7 +37,20 @@ class SetParamsMsg:
 
 @dataclass(frozen=True)
 class SetChainMsg:
-    chain: tuple["Processor", ...]
+    """Rebuild every worker's chain via the given factory.
+
+    The factory is called once per worker, giving each worker an independent
+    chain instance — separate Processor objects, separate ONNX sessions.
+    This is what enables real parallelism across workers (each holds its own
+    GPU session); the trade-off is N× the load time and N× GPU memory.
+    """
+
+    chain_factory: "ChainFactory"
+
+
+from collections.abc import Callable  # noqa: E402
+
+ChainFactory = Callable[[], list["Processor"]]
 
 
 @dataclass(frozen=True)
