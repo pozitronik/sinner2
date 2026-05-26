@@ -284,6 +284,28 @@ class TestRealtimeExecutorPlayback:
         finally:
             ex.stop()
 
+    def test_seek_while_paused_processes_target_frame(self, buffer_setup):
+        buffer, timeline, _ = buffer_setup
+        p = _CountingProcessor()
+        target_timeline = Timeline(fps=100.0)
+        ex = RealtimeExecutor(
+            target_reader=_MultiFrameReader(1000),
+            buffer=buffer,
+            timeline=target_timeline,
+            chain_factory=_factory(p),
+            strategy=BestEffortStrategy(),
+        )
+        try:
+            ex.start()
+            # No play() — we are in IDLE/PAUSED. A bare seek must still
+            # cause the worker to process the target frame so the user
+            # gets visual feedback from the scrub.
+            assert p.process_calls == 0
+            ex.seek(42)
+            assert _wait_until(lambda: p.process_calls >= 1, timeout=2.0)
+        finally:
+            ex.stop()
+
 
 class TestRealtimeExecutorFrameDelivery:
     def test_on_frame_ready_fires_after_processing(self, buffer_setup):

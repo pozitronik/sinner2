@@ -235,6 +235,25 @@ class RealtimeExecutor:
             self._last_submitted = target - 1
             if self._last_completed < target - 1:
                 self._last_completed = target - 1
+            # Submit the seeked frame immediately even when not PLAYING — the
+            # user expects visual feedback for a seek regardless of play
+            # state. When PLAYING, the regular dispatcher tick will continue
+            # from target+1 on its next iteration.
+            self._submit_specific_frame_locked(target)
+
+    def _submit_specific_frame_locked(self, frame_index: FrameIndex) -> None:
+        """Enqueue a specific frame regardless of state. Caller holds state_lock."""
+        if frame_index < 0 or frame_index >= self._target_reader.frame_count:
+            return
+        source_frame = self._target_reader.read(frame_index)
+        if source_frame is None:
+            return
+        item = WorkItem(frame_index=frame_index, source_frame=source_frame)
+        try:
+            self._work_queue.put(item, timeout=0.1)
+            self._last_submitted = frame_index
+        except Full:
+            pass
 
     def _handle_set_chain(self, factory: ChainFactory) -> None:
         # Per-worker chains: rebuild every chain via the new factory. Slower
