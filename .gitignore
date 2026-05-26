@@ -18,3 +18,4 @@ htmlcov/
 .vscode/
 uv.lock
 models/
+gfpgan/
