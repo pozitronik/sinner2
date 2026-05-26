@@ -19,3 +19,4 @@ htmlcov/
 uv.lock
 models/
 gfpgan/
+settings.json

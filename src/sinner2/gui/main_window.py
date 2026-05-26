@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QByteArray, Qt
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sinner2.config import settings as user_settings
 from sinner2.gui.player_controller import PlayerController
 from sinner2.gui.widgets.frame_display import QFrameDisplayWidget
 from sinner2.gui.widgets.processor_controls import QProcessorControls
@@ -27,7 +28,9 @@ class SinnerMainWindow(QMainWindow):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("sinner2")
-        self.resize(960, 720)
+        self._settings = user_settings.load()
+        if not self._restore_geometry_from_settings():
+            self.resize(960, 720)
 
         self._display = QFrameDisplayWidget()
         self._transport = QTransportControls()
@@ -92,5 +95,23 @@ class SinnerMainWindow(QMainWindow):
         super().keyPressEvent(event)
 
     def closeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        self._persist_geometry_to_settings()
         self._controller.shutdown()
         super().closeEvent(event)
+
+    def _restore_geometry_from_settings(self) -> bool:
+        hex_str = self._settings.window_geometry_hex
+        if not hex_str:
+            return False
+        try:
+            return self.restoreGeometry(QByteArray.fromHex(hex_str.encode()))
+        except Exception:
+            return False
+
+    def _persist_geometry_to_settings(self) -> None:
+        try:
+            geom_hex = bytes(self.saveGeometry().toHex()).decode()
+            updated = self._settings.model_copy(update={"window_geometry_hex": geom_hex})
+            user_settings.save(updated)
+        except Exception:
+            pass
