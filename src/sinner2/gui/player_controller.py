@@ -1,3 +1,5 @@
+import hashlib
+import os
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -13,7 +15,7 @@ from sinner2.io.target_reader import ImageTargetReader, TargetReader
 from sinner2.io.video_target_reader import VideoTargetReader
 from sinner2.pipeline.buffer.buffer import FrameBuffer
 from sinner2.pipeline.buffer.cache import MemoryFrameCache
-from sinner2.pipeline.buffer.store import SessionFrameStore
+from sinner2.pipeline.buffer.store import FrameStore, PersistentFrameStore
 from sinner2.pipeline.buffer.timeline import Timeline
 from sinner2.pipeline.processor import Processor
 from sinner2.pipeline.processors.face_enhancer import FaceEnhancer, FaceEnhancerParams
@@ -22,9 +24,40 @@ from sinner2.pipeline.realtime.executor import RealtimeExecutor
 from sinner2.pipeline.skip_strategy import BestEffortStrategy, FrameSkipStrategy
 
 SessionFactory = Callable[
-    [TargetReader, list[Processor], FrameSkipStrategy, int],
-    tuple[RealtimeExecutor, ThreadPoolExecutor, SessionFrameStore],
+    [TargetReader, list[Processor], FrameSkipStrategy, int, FrameStore],
+    tuple[RealtimeExecutor, ThreadPoolExecutor],
 ]
+
+
+def _cache_root() -> Path:
+    """Persistent processed-frame cache root.
+
+    `SINNER2_CACHE_DIR` env var overrides; defaults to `<install>/temp/`.
+    """
+    env = os.environ.get("SINNER2_CACHE_DIR")
+    if env:
+        return Path(env)
+    return Path(__file__).resolve().parents[3] / "temp"
+
+
+def _cache_key(source: Source, target: Target, chain: list[Processor]) -> str:
+    """Stable hash of (source path, target path, chain configuration).
+
+    Two sessions with identical inputs land in the same cache subdirectory,
+    so processed frames carry over between runs. Different chain params or
+    inputs go to a different subdirectory — keeps stale frames from a
+    different configuration out of view.
+    """
+    parts: list[str] = [
+        str(source.path.resolve()),
+        str(target.path.resolve()),
+    ]
+    for p in chain:
+        parts.append(p.name)
+        params = getattr(p, "_params", None)
+        if params is not None and hasattr(params, "model_dump_json"):
+            parts.append(params.model_dump_json())
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
 
 
 def _make_reader(target: Target) -> TargetReader:
@@ -40,14 +73,15 @@ def _default_session_factory(
     chain: list[Processor],
     strategy: FrameSkipStrategy,
     worker_count: int,
-) -> tuple[RealtimeExecutor, ThreadPoolExecutor, SessionFrameStore]:
-    """Build a realtime executor + the SessionFrameStore that owns its scratch.
+    store: FrameStore,
+) -> tuple[RealtimeExecutor, ThreadPoolExecutor]:
+    """Build a realtime executor around a reader + chain + strategy + store.
 
-    Caller takes ownership of all three returned objects and is responsible
-    for stop() → shutdown(wait=True) → close() in that order.
+    Caller owns the store lifecycle. Caller takes ownership of (executor,
+    write_executor) and is responsible for stop() → shutdown(wait=True)
+    in that order.
     """
     timeline = Timeline(fps=reader.fps)
-    store = SessionFrameStore(prefix="sinner2-gui-")
     cache = MemoryFrameCache(max_bytes=128 * 1024 * 1024)
     write_executor = ThreadPoolExecutor(max_workers=2)
     buffer = FrameBuffer(store, cache, timeline, write_executor)
@@ -59,7 +93,7 @@ def _default_session_factory(
         strategy=strategy,
         worker_count=worker_count,
     )
-    return executor, write_executor, store
+    return executor, write_executor
 
 
 class PlayerController(QObject):
@@ -91,7 +125,8 @@ class PlayerController(QObject):
 
         self._executor: RealtimeExecutor | None = None
         self._write_executor: ThreadPoolExecutor | None = None
-        self._session_store: SessionFrameStore | None = None
+        self._session_store: FrameStore | None = None
+        self._session_cache_dir: Path | None = None
         self._bridges: list[ObservableValueBridge] = []
 
         self._current_source: Source | None = None
@@ -114,8 +149,10 @@ class PlayerController(QObject):
             target = Target(path=target_path)
             reader = _make_reader(target)
             chain = self._build_chain(source)
-            executor, write_executor, session_store = self._session_factory(
-                reader, chain, self._strategy, self._worker_count
+            cache_dir = _cache_root() / _cache_key(source, target, chain)
+            session_store = PersistentFrameStore(cache_dir)
+            executor, write_executor = self._session_factory(
+                reader, chain, self._strategy, self._worker_count, session_store
             )
         except Exception as exc:
             self.errorOccurred.emit(f"session setup failed: {exc}")
@@ -127,8 +164,9 @@ class PlayerController(QObject):
         self._executor = executor
         self._write_executor = write_executor
         self._session_store = session_store
+        self._session_cache_dir = cache_dir
         self._transport.set_frame_count(reader.frame_count)
-        self.sessionScratchDirChanged.emit(session_store.scratch_dir)
+        self.sessionScratchDirChanged.emit(cache_dir)
 
         try:
             executor.start()
@@ -218,6 +256,7 @@ class PlayerController(QObject):
         if self._session_store is not None:
             self._session_store.close()
             self._session_store = None
+            self._session_cache_dir = None
             self.sessionScratchDirChanged.emit(None)
         self._current_source = None
 

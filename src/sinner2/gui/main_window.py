@@ -49,8 +49,11 @@ class SinnerMainWindow(QMainWindow):
         self.setCentralWidget(central)
 
         self.statusBar().showMessage("ready")
-        self._scratch_label = QLabel("scratch: —")
-        self._scratch_label.setToolTip("Intermediate frame storage directory for this session")
+        self._scratch_label = QLabel("cache: —")
+        self._scratch_label.setToolTip(
+            "Persistent processed-frame cache directory for this session "
+            "(survives between runs; keyed by source+target+chain config)"
+        )
         self.statusBar().addPermanentWidget(self._scratch_label)
         self._fps_label = QLabel("--- fps")
         self.statusBar().addPermanentWidget(self._fps_label)
@@ -78,7 +81,7 @@ class SinnerMainWindow(QMainWindow):
         self._fps_label.setText(f"{fps:.1f} fps")
 
     def _update_scratch_label(self, scratch_dir: object) -> None:
-        self._scratch_label.setText(f"scratch: {scratch_dir}" if scratch_dir else "scratch: —")
+        self._scratch_label.setText(f"cache: {scratch_dir}" if scratch_dir else "cache: —")
 
     def _on_processor_config_changed(self) -> None:
         self._controller.apply_session_config(
