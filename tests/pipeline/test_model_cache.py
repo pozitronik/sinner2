@@ -16,10 +16,20 @@ class TestGetModelsDir:
         monkeypatch.setenv("SINNER2_MODELS_DIR", str(tmp_path))
         assert get_models_dir() == tmp_path
 
-    def test_default_is_cwd_models(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    def test_env_override_wins_even_when_cwd_changes(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        monkeypatch.setenv("SINNER2_MODELS_DIR", str(tmp_path))
+        monkeypatch.chdir(tmp_path.parent)
+        assert get_models_dir() == tmp_path
+
+    def test_default_is_project_relative(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         monkeypatch.delenv("SINNER2_MODELS_DIR", raising=False)
-        monkeypatch.chdir(tmp_path)
-        assert get_models_dir() == tmp_path / "models"
+        monkeypatch.chdir(tmp_path)  # cwd should not influence the result
+        from sinner2.pipeline import model_cache
+
+        expected = Path(model_cache.__file__).resolve().parents[3] / "models"
+        assert get_models_dir() == expected
 
 
 class TestGetModelPath:

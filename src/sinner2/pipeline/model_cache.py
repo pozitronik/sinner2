@@ -16,17 +16,29 @@ _session_cache: dict[Path, "ort.InferenceSession"] = {}
 _session_lock = threading.RLock()
 
 
+def _project_models_dir() -> Path:
+    """models/ resolved relative to this package's install location.
+
+    For an editable install (`pip install -e .`) this resolves to the repo's
+    top-level models/. For a non-editable wheel install the resolution lands
+    inside site-packages and won't be useful — set SINNER2_MODELS_DIR in that
+    case.
+    """
+    return Path(__file__).resolve().parents[3] / "models"
+
+
 def get_models_dir() -> Path:
     """Resolve the models directory.
 
-    SINNER2_MODELS_DIR env var takes precedence; otherwise defaults to
-    `<cwd>/models`. The env var is the deployment-time override; CWD-relative
-    is the dev-time default.
+    SINNER2_MODELS_DIR env var takes precedence (deployment-time override);
+    otherwise defaults to `<repo>/models/` resolved from this package's
+    install location. CWD-relative was tried in earlier drafts and is wrong
+    for any launcher that doesn't `cd` into the project first.
     """
     env = os.environ.get("SINNER2_MODELS_DIR")
     if env:
         return Path(env)
-    return Path.cwd() / "models"
+    return _project_models_dir()
 
 
 def get_model_path(name: str, on_progress: ProgressCallback | None = None) -> Path:
