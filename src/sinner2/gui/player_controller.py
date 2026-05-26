@@ -7,11 +7,12 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Signal
 
 from sinner2.config.source import Source
-from sinner2.config.target import Target
+from sinner2.config.target import Target, TargetKind
 from sinner2.gui.bridges.observable_bridge import ObservableValueBridge
 from sinner2.gui.widgets.frame_display import QFrameDisplayWidget
 from sinner2.gui.widgets.transport_controls import QTransportControls
 from sinner2.io.target_reader import ImageTargetReader, TargetReader
+from sinner2.io.video_target_reader import VideoTargetReader
 from sinner2.pipeline.buffer.buffer import FrameBuffer
 from sinner2.pipeline.buffer.cache import MemoryFrameCache
 from sinner2.pipeline.buffer.store import DiskFrameStore
@@ -24,6 +25,14 @@ from sinner2.pipeline.skip_strategy import BestEffortStrategy
 SessionFactory = Callable[[Source, Target, Path], tuple[RealtimeExecutor, ThreadPoolExecutor]]
 
 
+def _make_reader(target: Target) -> TargetReader:
+    if target.kind == TargetKind.IMAGE:
+        return ImageTargetReader(target)
+    if target.kind == TargetKind.VIDEO:
+        return VideoTargetReader(target)
+    raise ValueError(f"unsupported target kind: {target.kind}")
+
+
 def _default_session_factory(
     source: Source, target: Target, scratch_dir: Path
 ) -> tuple[RealtimeExecutor, ThreadPoolExecutor]:
@@ -33,7 +42,7 @@ def _default_session_factory(
     for stop()+shutdown() in that order. The scratch_dir is the disk store
     location — caller owns its lifecycle too.
     """
-    reader: TargetReader = ImageTargetReader(target)
+    reader: TargetReader = _make_reader(target)
     chain: list[Processor] = [FaceSwapper(source=source)]
     timeline = Timeline(fps=reader.fps)
     frames_dir = scratch_dir / "frames"
