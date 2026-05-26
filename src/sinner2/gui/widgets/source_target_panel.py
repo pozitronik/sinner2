@@ -49,7 +49,11 @@ class QPathPicker(QWidget):
             self.pathChanged.emit(path)
 
     def _open_dialog(self) -> None:
-        path_str, _ = QFileDialog.getOpenFileName(self, "Select file")
+        # Start the dialog in the directory of the currently selected path so
+        # the OS native dialog (and its own Recent/MRU list) lands in the
+        # right neighborhood. Falls back to default when no path is set yet.
+        start_dir = str(self._path.parent) if self._path is not None else ""
+        path_str, _ = QFileDialog.getOpenFileName(self, "Select file", start_dir)
         if path_str:
             self.set_path(Path(path_str))
 
