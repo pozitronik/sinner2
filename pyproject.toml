@@ -13,18 +13,26 @@ dependencies = [
 cuda = [
     "onnxruntime-gpu>=1.20",
     "torch>=2.7",
+    "insightface>=0.7.3",
+    "gfpgan>=1.3.8",
 ]
 cuda118 = [
     "onnxruntime-gpu>=1.18,<1.19",
     "torch",
+    "insightface>=0.7.3",
+    "gfpgan>=1.3.8",
 ]
 cpu = [
     "onnxruntime>=1.20",
     "torch>=2.7",
+    "insightface>=0.7.3",
+    "gfpgan>=1.3.8",
 ]
 mac-arm = [
     "onnxruntime>=1.20",
     "torch>=2.7",
+    "insightface>=0.7.3",
+    "gfpgan>=1.3.8",
 ]
 gui = [
     "PySide6>=6.8",
