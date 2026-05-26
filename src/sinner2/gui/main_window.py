@@ -58,9 +58,12 @@ class SinnerMainWindow(QMainWindow):
 
         self._pickers.sourceChanged.connect(self._reload_player)
         self._pickers.targetChanged.connect(self._reload_player)
+        self._pickers.sourceChanged.connect(self._persist_source_path)
+        self._pickers.targetChanged.connect(self._persist_target_path)
         self._processors.configChanged.connect(self._on_processor_config_changed)
         # Seed the controller with the widget defaults so the first session uses them.
         self._on_processor_config_changed()
+        self._restore_paths_from_settings()
 
     def _reload_player(self, _path: Path) -> None:
         self._controller.set_source_and_target(
@@ -107,6 +110,30 @@ class SinnerMainWindow(QMainWindow):
         self._controller.shutdown()
         super().closeEvent(event)
 
+    def _restore_paths_from_settings(self) -> None:
+        if self._settings.source_path:
+            p = Path(self._settings.source_path)
+            if p.is_file():
+                self._pickers.set_source(p)
+        if self._settings.target_path:
+            p = Path(self._settings.target_path)
+            if p.is_file():
+                self._pickers.set_target(p)
+
+    def _persist_source_path(self, path: Path) -> None:
+        self._update_settings(source_path=str(path))
+
+    def _persist_target_path(self, path: Path) -> None:
+        self._update_settings(target_path=str(path))
+
+    def _update_settings(self, **fields: object) -> None:
+        try:
+            updated = self._settings.model_copy(update=fields)
+            user_settings.save(updated)
+            self._settings = updated
+        except Exception:
+            pass
+
     def _restore_geometry_from_settings(self) -> bool:
         hex_str = self._settings.window_geometry_hex
         if not hex_str:
@@ -119,7 +146,6 @@ class SinnerMainWindow(QMainWindow):
     def _persist_geometry_to_settings(self) -> None:
         try:
             geom_hex = bytes(self.saveGeometry().toHex()).decode()
-            updated = self._settings.model_copy(update={"window_geometry_hex": geom_hex})
-            user_settings.save(updated)
+            self._update_settings(window_geometry_hex=geom_hex)
         except Exception:
             pass

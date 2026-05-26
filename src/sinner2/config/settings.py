@@ -25,6 +25,8 @@ class Settings(SinnerBaseModel):
     """
 
     window_geometry_hex: str | None = None
+    source_path: str | None = None
+    target_path: str | None = None
 
 
 def settings_path() -> Path:
