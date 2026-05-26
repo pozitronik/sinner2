@@ -1,5 +1,6 @@
 import threading
 import time
+from collections import deque
 from collections.abc import Callable, Mapping
 from enum import Enum
 from queue import Empty, Full, Queue
@@ -37,7 +38,7 @@ class _State(Enum):
 _WORKER_SENTINEL: WorkItem | None = None
 _DISPATCHER_TICK_S = 0.005
 _PLAYBACK_TICK_S = 1.0 / 30
-_FPS_WINDOW = 10
+_FPS_WINDOW = 50  # rolling completion timestamps for throughput calc
 
 
 class RealtimeExecutor:
@@ -98,7 +99,10 @@ class RealtimeExecutor:
         self._on_frame: Callable[[Frame, FrameIndex], None] | None = None
 
         self._fps_lock = threading.RLock()
-        self._fps_window: list[float] = []
+        # Timestamps of recent frame completions (any worker). FPS =
+        # (count - 1) / (newest - oldest), i.e. real cross-worker
+        # throughput — completions per wall-clock second.
+        self._completion_times: deque[float] = deque(maxlen=_FPS_WINDOW)
 
     # ---- Lifecycle ----
 
@@ -328,14 +332,12 @@ class RealtimeExecutor:
                 # Re-read every iteration so set_chain's swap is picked up
                 # without restarting the worker thread.
                 chain = self._chains[worker_id]
-                start = time.monotonic()
                 result = self._apply_chain(item.source_frame, chain)
-                elapsed = time.monotonic() - start
                 self._buffer.put(item.frame_index, result)
                 with self._state_lock:
                     if self._last_completed < item.frame_index:
                         self._last_completed = item.frame_index
-                self._record_processing_time(elapsed)
+                self._record_completion()
             except Exception as e:
                 self.status.set(f"worker error: {e}")
                 self._stop_event.set()
@@ -347,14 +349,20 @@ class RealtimeExecutor:
             frame = p.process(frame)
         return frame
 
-    def _record_processing_time(self, elapsed_s: float) -> None:
+    def _record_completion(self) -> None:
+        """Record one frame completion. Updates processing_fps as real
+        cross-worker throughput (completions per wall-clock second over
+        the last _FPS_WINDOW completions)."""
+        now = time.monotonic()
+        fps_to_set: float | None = None
         with self._fps_lock:
-            self._fps_window.append(elapsed_s)
-            if len(self._fps_window) > _FPS_WINDOW:
-                self._fps_window.pop(0)
-            avg = sum(self._fps_window) / len(self._fps_window)
-            fps = 1.0 / avg if avg > 0 else 0.0
-        self.processing_fps.set(fps)
+            self._completion_times.append(now)
+            if len(self._completion_times) >= 2:
+                span = self._completion_times[-1] - self._completion_times[0]
+                if span > 0:
+                    fps_to_set = (len(self._completion_times) - 1) / span
+        if fps_to_set is not None:
+            self.processing_fps.set(fps_to_set)
 
     # ---- Playback ----
 

@@ -56,6 +56,10 @@ class SinnerMainWindow(QMainWindow):
         )
         self.statusBar().addPermanentWidget(self._scratch_label)
         self._fps_label = QLabel("--- fps")
+        self._fps_label.setToolTip(
+            "Real cross-worker throughput — frames completed per wall-clock "
+            "second across all workers (rolling 50-completion window)."
+        )
         self.statusBar().addPermanentWidget(self._fps_label)
 
         self._controller = PlayerController(self._display, self._transport, parent=self)
