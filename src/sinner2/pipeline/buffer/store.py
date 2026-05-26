@@ -1,3 +1,5 @@
+import shutil
+import tempfile
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -62,3 +64,50 @@ class DiskFrameStore:
                     f.unlink()
             except (ValueError, OSError):
                 continue
+
+
+class SessionFrameStore:
+    """FrameStore that owns a fresh temp directory for the session.
+
+    Solves the stale-leftovers footgun for realtime executors: each
+    session gets a brand-new disk store, and close() removes the temp
+    directory entirely. Use for realtime mode; batch jobs that want
+    resumable shared frames should use plain DiskFrameStore.
+
+    Composition wrapper around DiskFrameStore — no inheritance, no
+    Liskov surprises. close() is idempotent and called from __del__
+    as a safety net.
+    """
+
+    def __init__(self, prefix: str = "sinner2-session-", extension: str = "png") -> None:
+        self._scratch_dir = Path(tempfile.mkdtemp(prefix=prefix))
+        self._inner = DiskFrameStore(self._scratch_dir / "frames", extension=extension)
+        self._closed = False
+
+    @property
+    def scratch_dir(self) -> Path:
+        return self._scratch_dir
+
+    def write(self, index: FrameIndex, frame: Frame) -> None:
+        self._inner.write(index, frame)
+
+    def read(self, index: FrameIndex) -> Frame | None:
+        return self._inner.read(index)
+
+    def has(self, index: FrameIndex) -> bool:
+        return self._inner.has(index)
+
+    def clear_from(self, index: FrameIndex) -> None:
+        self._inner.clear_from(index)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        shutil.rmtree(self._scratch_dir, ignore_errors=True)
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass

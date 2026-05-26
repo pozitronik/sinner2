@@ -3,7 +3,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from sinner2.pipeline.buffer.store import DiskFrameStore, FrameStore
+from sinner2.pipeline.buffer.store import DiskFrameStore, FrameStore, SessionFrameStore
 from sinner2.types import Frame
 
 
@@ -75,3 +75,46 @@ class TestDiskFrameStore:
         monkeypatch.setattr(cv2, "imwrite", lambda *_a, **_k: False)
         with pytest.raises(OSError):
             store.write(0, _frame())
+
+
+class TestSessionFrameStore:
+    def test_compliant_with_protocol(self):
+        store = SessionFrameStore()
+        try:
+            assert isinstance(store, FrameStore)
+        finally:
+            store.close()
+
+    def test_creates_fresh_scratch_dir(self):
+        a = SessionFrameStore()
+        b = SessionFrameStore()
+        try:
+            assert a.scratch_dir != b.scratch_dir
+            assert a.scratch_dir.is_dir()
+            assert b.scratch_dir.is_dir()
+        finally:
+            a.close()
+            b.close()
+
+    def test_write_read_roundtrip(self):
+        store = SessionFrameStore()
+        try:
+            f = _frame()
+            store.write(0, f)
+            out = store.read(0)
+            assert out is not None
+            assert np.array_equal(out, f)
+        finally:
+            store.close()
+
+    def test_close_removes_scratch_dir(self):
+        store = SessionFrameStore()
+        path = store.scratch_dir
+        store.write(0, _frame())
+        store.close()
+        assert not path.exists()
+
+    def test_close_is_idempotent(self):
+        store = SessionFrameStore()
+        store.close()
+        store.close()  # must not raise
