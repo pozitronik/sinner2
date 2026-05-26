@@ -60,3 +60,11 @@ class TestQProcessorControls:
         from sinner2.pipeline.skip_strategy import SyncedStrategy
 
         assert isinstance(widget.skip_strategy(), SyncedStrategy)
+
+    def test_default_worker_count(self, widget):
+        assert widget.worker_count() == 1
+
+    def test_changing_worker_count_emits_config_changed(self, widget, qtbot):
+        with qtbot.waitSignal(widget.configChanged, timeout=1000):
+            widget._worker_count.setValue(4)  # noqa: SLF001
+        assert widget.worker_count() == 4

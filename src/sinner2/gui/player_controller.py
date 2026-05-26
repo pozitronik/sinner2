@@ -22,7 +22,7 @@ from sinner2.pipeline.realtime.executor import RealtimeExecutor
 from sinner2.pipeline.skip_strategy import BestEffortStrategy, FrameSkipStrategy
 
 SessionFactory = Callable[
-    [TargetReader, list[Processor], FrameSkipStrategy],
+    [TargetReader, list[Processor], FrameSkipStrategy, int],
     tuple[RealtimeExecutor, ThreadPoolExecutor, SessionFrameStore],
 ]
 
@@ -39,6 +39,7 @@ def _default_session_factory(
     reader: TargetReader,
     chain: list[Processor],
     strategy: FrameSkipStrategy,
+    worker_count: int,
 ) -> tuple[RealtimeExecutor, ThreadPoolExecutor, SessionFrameStore]:
     """Build a realtime executor + the SessionFrameStore that owns its scratch.
 
@@ -56,6 +57,7 @@ def _default_session_factory(
         timeline=timeline,
         chain=chain,
         strategy=strategy,
+        worker_count=worker_count,
     )
     return executor, write_executor, store
 
@@ -97,6 +99,7 @@ class PlayerController(QObject):
         self._enhancer_params = FaceEnhancerParams()
         self._enhancer_enabled = True
         self._strategy: FrameSkipStrategy = BestEffortStrategy()
+        self._worker_count = 1
 
         transport.playRequested.connect(self._on_play)
         transport.pauseRequested.connect(self._on_pause)
@@ -112,7 +115,7 @@ class PlayerController(QObject):
             reader = _make_reader(target)
             chain = self._build_chain(source)
             executor, write_executor, session_store = self._session_factory(
-                reader, chain, self._strategy
+                reader, chain, self._strategy, self._worker_count
             )
         except Exception as exc:
             self.errorOccurred.emit(f"session setup failed: {exc}")
@@ -139,11 +142,15 @@ class PlayerController(QObject):
         enhancer_params: FaceEnhancerParams,
         enhancer_enabled: bool,
         strategy: FrameSkipStrategy,
+        worker_count: int,
     ) -> None:
         """Update stored params and strategy; hot-swap on the live executor.
 
-        No-op for the executor parts if no session is running yet — the next
-        session start picks up the stored values.
+        worker_count is stored but only takes effect at the next session start
+        — changing it mid-session would require tearing down and rebuilding
+        the executor, which we avoid here. No-op for the executor parts if
+        no session is running yet — the next session start picks up the
+        stored values.
         """
         chain_changed = (
             swapper_params != self._swapper_params
@@ -156,6 +163,7 @@ class PlayerController(QObject):
         self._enhancer_params = enhancer_params
         self._enhancer_enabled = enhancer_enabled
         self._strategy = strategy
+        self._worker_count = worker_count
 
         if self._executor is None or self._current_source is None:
             return

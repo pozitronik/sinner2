@@ -74,6 +74,15 @@ class QProcessorControls(QWidget):
             self._strategy_combo.addItem(label)
         self._strategy_combo.currentTextChanged.connect(lambda _: self.configChanged.emit())
         execution_form.addRow("Frame-skip strategy", self._strategy_combo)
+        self._worker_count = QSpinBox()
+        self._worker_count.setRange(1, 16)
+        self._worker_count.setValue(1)
+        self._worker_count.setToolTip(
+            "Number of parallel pipeline workers (each runs the full chain).\n"
+            "Applies on next session start — reload source or target to take effect."
+        )
+        self._worker_count.valueChanged.connect(self.configChanged)
+        execution_form.addRow("Worker count", self._worker_count)
 
         layout = QVBoxLayout(self)
         layout.addWidget(swapper_box)
@@ -99,3 +108,6 @@ class QProcessorControls(QWidget):
     def skip_strategy(self) -> FrameSkipStrategy:
         cls = _STRATEGIES[self._strategy_combo.currentText()]
         return cls()
+
+    def worker_count(self) -> int:
+        return self._worker_count.value()

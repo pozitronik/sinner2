@@ -86,6 +86,7 @@ class SinnerMainWindow(QMainWindow):
             enhancer_params=self._processors.enhancer_params(),
             enhancer_enabled=self._processors.enhancer_enabled(),
             strategy=self._processors.skip_strategy(),
+            worker_count=self._processors.worker_count(),
         )
 
     def _show_error(self, message: str) -> None:
