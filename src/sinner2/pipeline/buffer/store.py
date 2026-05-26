@@ -66,6 +66,40 @@ class DiskFrameStore:
                 continue
 
 
+class PersistentFrameStore:
+    """FrameStore backed by an explicit caller-provided directory.
+
+    Does NOT clean up on close. Use this for cross-session frame caches
+    where the user expects processed frames to survive between runs.
+    Combine with a cache-key directory layout (per source/target/chain
+    combination) so different setups don't write into each other.
+    """
+
+    def __init__(self, directory: Path, extension: str = "png") -> None:
+        self._dir = Path(directory)
+        self._inner = DiskFrameStore(self._dir, extension=extension)
+
+    @property
+    def directory(self) -> Path:
+        return self._dir
+
+    def write(self, index: FrameIndex, frame: Frame) -> None:
+        self._inner.write(index, frame)
+
+    def read(self, index: FrameIndex) -> Frame | None:
+        return self._inner.read(index)
+
+    def has(self, index: FrameIndex) -> bool:
+        return self._inner.has(index)
+
+    def clear_from(self, index: FrameIndex) -> None:
+        self._inner.clear_from(index)
+
+    def close(self) -> None:
+        # Persistent cache: nothing to clean up. Caller manages dir lifetime.
+        pass
+
+
 class SessionFrameStore:
     """FrameStore that owns a fresh temp directory for the session.
 

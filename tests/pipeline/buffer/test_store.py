@@ -3,7 +3,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from sinner2.pipeline.buffer.store import DiskFrameStore, FrameStore, SessionFrameStore
+from sinner2.pipeline.buffer.store import (
+    DiskFrameStore,
+    FrameStore,
+    PersistentFrameStore,
+    SessionFrameStore,
+)
 from sinner2.types import Frame
 
 
@@ -75,6 +80,39 @@ class TestDiskFrameStore:
         monkeypatch.setattr(cv2, "imwrite", lambda *_a, **_k: False)
         with pytest.raises(OSError):
             store.write(0, _frame())
+
+
+class TestPersistentFrameStore:
+    def test_compliant_with_protocol(self, tmp_path: Path):
+        store = PersistentFrameStore(tmp_path / "cache")
+        assert isinstance(store, FrameStore)
+
+    def test_creates_directory_lazily(self, tmp_path: Path):
+        path = tmp_path / "deep" / "cache"
+        store = PersistentFrameStore(path)
+        store.write(0, _frame())
+        assert path.is_dir()
+
+    def test_write_read_roundtrip(self, tmp_path: Path):
+        store = PersistentFrameStore(tmp_path)
+        f = _frame()
+        store.write(5, f)
+        assert np.array_equal(store.read(5), f)
+
+    def test_close_does_not_remove_directory(self, tmp_path: Path):
+        store = PersistentFrameStore(tmp_path)
+        store.write(0, _frame())
+        store.close()
+        assert tmp_path.is_dir()
+        assert (tmp_path / "00000000.png").is_file()
+
+    def test_reopen_finds_previous_frames(self, tmp_path: Path):
+        store1 = PersistentFrameStore(tmp_path)
+        store1.write(3, _frame())
+        store1.close()
+        store2 = PersistentFrameStore(tmp_path)
+        assert store2.has(3)
+        assert store2.read(3) is not None
 
 
 class TestSessionFrameStore:
