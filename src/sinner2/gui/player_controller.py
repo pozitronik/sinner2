@@ -73,6 +73,7 @@ class PlayerController(QObject):
 
     errorOccurred = Signal(str)
     processingFpsChanged = Signal(object)  # carries float; declared `object` to match the bridge
+    sessionScratchDirChanged = Signal(object)  # Path | None — emitted on session start/end
 
     def __init__(
         self,
@@ -124,6 +125,7 @@ class PlayerController(QObject):
         self._write_executor = write_executor
         self._session_store = session_store
         self._transport.set_frame_count(reader.frame_count)
+        self.sessionScratchDirChanged.emit(session_store.scratch_dir)
 
         try:
             executor.start()
@@ -208,6 +210,7 @@ class PlayerController(QObject):
         if self._session_store is not None:
             self._session_store.close()
             self._session_store = None
+            self.sessionScratchDirChanged.emit(None)
         self._current_source = None
 
     def _on_play(self) -> None:
