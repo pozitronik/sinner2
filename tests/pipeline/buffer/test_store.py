@@ -1,0 +1,77 @@
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+from sinner2.pipeline.buffer.store import DiskFrameStore, FrameStore
+from sinner2.types import Frame
+
+
+def _frame() -> Frame:
+    return np.full((20, 20, 3), 128, dtype=np.uint8)
+
+
+class TestDiskFrameStore:
+    def test_compliant_with_protocol(self, tmp_path: Path):
+        assert isinstance(DiskFrameStore(tmp_path), FrameStore)
+
+    def test_write_then_read_roundtrip(self, tmp_path: Path):
+        store = DiskFrameStore(tmp_path)
+        f = _frame()
+        store.write(42, f)
+        out = store.read(42)
+        assert out is not None
+        assert np.array_equal(out, f)
+
+    def test_has_reflects_write(self, tmp_path: Path):
+        store = DiskFrameStore(tmp_path)
+        assert not store.has(0)
+        store.write(0, _frame())
+        assert store.has(0)
+
+    def test_read_missing_returns_none(self, tmp_path: Path):
+        store = DiskFrameStore(tmp_path)
+        assert store.read(99) is None
+
+    def test_clear_from_drops_only_at_or_above(self, tmp_path: Path):
+        store = DiskFrameStore(tmp_path)
+        for i in [10, 20, 30, 40]:
+            store.write(i, _frame())
+        store.clear_from(25)
+        assert store.has(10)
+        assert store.has(20)
+        assert not store.has(30)
+        assert not store.has(40)
+
+    def test_clear_from_zero_drops_everything(self, tmp_path: Path):
+        store = DiskFrameStore(tmp_path)
+        store.write(0, _frame())
+        store.write(5, _frame())
+        store.clear_from(0)
+        assert not store.has(0)
+        assert not store.has(5)
+
+    def test_creates_nested_directory_if_missing(self, tmp_path: Path):
+        nested = tmp_path / "a" / "b" / "c"
+        store = DiskFrameStore(nested)
+        assert nested.exists()
+        store.write(0, _frame())
+        assert store.has(0)
+
+    def test_extension_strips_leading_dot(self, tmp_path: Path):
+        store = DiskFrameStore(tmp_path, extension=".jpg")
+        store.write(0, _frame())
+        assert (tmp_path / "00000000.jpg").exists()
+
+    def test_filename_uses_zero_padding(self, tmp_path: Path):
+        store = DiskFrameStore(tmp_path)
+        store.write(7, _frame())
+        assert (tmp_path / "00000007.png").exists()
+
+    def test_write_failure_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        import cv2
+
+        store = DiskFrameStore(tmp_path)
+        monkeypatch.setattr(cv2, "imwrite", lambda *_a, **_k: False)
+        with pytest.raises(OSError):
+            store.write(0, _frame())
