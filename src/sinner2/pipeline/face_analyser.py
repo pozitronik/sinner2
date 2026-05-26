@@ -54,15 +54,24 @@ class FaceAnalyser:
         self._lock = threading.RLock()
 
     def analyse(self, frame: Frame) -> list[Any]:
+        # The expensive insightface .get() call MUST happen outside the lock —
+        # otherwise N worker threads hammering the shared FaceAnalyser would
+        # serialize on detection and lose all parallelism. The race here is
+        # benign: two concurrent cache misses both detect, the second write
+        # overwrites the first, no incorrectness — just one wasted detection.
         with self._lock:
             cache_miss = (
                 self._cached_faces is None
                 or self._frame_counter % self._detection_interval == 0
             )
             self._frame_counter += 1
-            if cache_miss:
-                self._cached_faces = _get_shared_face_analysis().get(frame)
-            return list(self._cached_faces or [])
+            cached = self._cached_faces
+        if not cache_miss:
+            return list(cached or [])
+        faces = _get_shared_face_analysis().get(frame)
+        with self._lock:
+            self._cached_faces = faces
+        return list(faces or [])
 
     def analyse_uncached(self, frame: Frame) -> list[Any]:
         return list(_get_shared_face_analysis().get(frame))
