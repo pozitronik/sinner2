@@ -1,4 +1,5 @@
 import argparse
+import shutil
 import sys
 import threading
 import time
@@ -51,8 +52,13 @@ def main() -> int:
         chain.append(FaceEnhancer())
 
     timeline = Timeline(fps=1.0)
+    # Clear the frame store so leftovers from a prior run don't get surfaced
+    # by the playback thread before this run's worker completes.
+    frames_dir = args.work_dir / "frames"
+    if frames_dir.exists():
+        shutil.rmtree(frames_dir)
     args.work_dir.mkdir(parents=True, exist_ok=True)
-    store = DiskFrameStore(args.work_dir / "frames")
+    store = DiskFrameStore(frames_dir)
     cache = MemoryFrameCache(max_bytes=128 * 1024 * 1024)
     write_executor = ThreadPoolExecutor(max_workers=2)
     buffer = FrameBuffer(store, cache, timeline, write_executor)
