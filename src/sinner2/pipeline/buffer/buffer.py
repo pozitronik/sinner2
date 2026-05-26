@@ -69,6 +69,11 @@ class FrameBuffer:
                 self._last_displayed_index = target
         return target, frame
 
+    @property
+    def last_written_index(self) -> FrameIndex | None:
+        with self._lock:
+            return self._last_written_index
+
     def invalidate_from(self, index: FrameIndex) -> None:
         self._cache.evict_from(index)
         self._store.clear_from(index)

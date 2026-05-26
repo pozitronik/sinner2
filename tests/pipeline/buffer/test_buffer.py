@@ -94,6 +94,26 @@ class TestGetAtCurrentTime:
         assert buf.metrics().current_frame_miss == 1
 
 
+class TestLastWrittenIndex:
+    def test_none_initially(self):
+        buf, *_ = _mock_buffer()
+        assert buf.last_written_index is None
+
+    def test_tracks_highest_put_index(self):
+        buf, *_ = _mock_buffer()
+        buf.put(5, _frame())
+        buf.put(2, _frame())
+        buf.put(10, _frame())
+        assert buf.last_written_index == 10
+
+    def test_invalidate_from_rewinds(self):
+        buf, *_ = _mock_buffer()
+        buf.put(5, _frame())
+        buf.put(10, _frame())
+        buf.invalidate_from(8)
+        assert buf.last_written_index == 7
+
+
 class TestInvalidateFrom:
     def test_calls_cache_evict_from_and_store_clear_from(self):
         buf, store, cache, *_ = _mock_buffer()
