@@ -135,8 +135,14 @@ class RealtimeExecutor:
             if self._state is _State.STOPPED:
                 return
             self._stop_event.set()
-            for _ in range(self._worker_count):
-                self._work_queue.put(_WORKER_SENTINEL)
+
+        # Drain pending work and add exit sentinels OUTSIDE state_lock.
+        # If we held the lock during work_queue.put (which can block when
+        # the queue is full), the worker waiting for state_lock to mark a
+        # completion would be unable to consume — deadlock.
+        self._drain_work_queue()
+        for _ in range(self._worker_count):
+            self._work_queue.put(_WORKER_SENTINEL)
 
         if self._dispatcher_thread is not None:
             self._dispatcher_thread.join(timeout=2.0)
@@ -189,8 +195,9 @@ class RealtimeExecutor:
                 pass
 
             with self._state_lock:
-                if self._state is _State.PLAYING:
-                    self._try_submit_next_frame_locked()
+                should_submit = self._state is _State.PLAYING
+            if should_submit:
+                self._try_submit_next_frame()
 
     def _handle_message(self, msg: Message) -> None:
         match msg:
@@ -231,14 +238,15 @@ class RealtimeExecutor:
             self._last_submitted = target - 1
             if self._last_completed < target - 1:
                 self._last_completed = target - 1
-            # Submit the seeked frame immediately even when not PLAYING — the
-            # user expects visual feedback for a seek regardless of play
-            # state. When PLAYING, the regular dispatcher tick will continue
-            # from target+1 on its next iteration.
-            self._submit_specific_frame_locked(target)
+        # IMPORTANT: state_lock released BEFORE the slow read/put path. If we
+        # held the lock through the put, a full queue would freeze workers
+        # (they need the lock to mark frames complete, which is what drains
+        # the queue → deadlock-like priority inversion that caps throughput
+        # at ~9 fps with 1 worker).
+        self._submit_specific_frame(target)
 
-    def _submit_specific_frame_locked(self, frame_index: FrameIndex) -> None:
-        """Enqueue a specific frame regardless of state. Caller holds state_lock."""
+    def _submit_specific_frame(self, frame_index: FrameIndex) -> None:
+        """Enqueue a specific frame regardless of state. Must NOT be called while holding state_lock."""
         if frame_index < 0 or frame_index >= self._target_reader.frame_count:
             return
         source_frame = self._target_reader.read(frame_index)
@@ -247,9 +255,10 @@ class RealtimeExecutor:
         item = WorkItem(frame_index=frame_index, source_frame=source_frame)
         try:
             self._work_queue.put(item, timeout=0.1)
-            self._last_submitted = frame_index
         except Full:
-            pass
+            return
+        with self._state_lock:
+            self._last_submitted = frame_index
 
     def _handle_set_chain(self, chain: tuple[Processor, ...]) -> None:
         self._drain_work_queue()
@@ -275,36 +284,47 @@ class RealtimeExecutor:
             except Empty:
                 break
 
-    def _try_submit_next_frame_locked(self) -> None:
-        metrics = self._buffer.metrics()
-        decision = self._strategy.decide(
-            last_submitted=self._last_submitted,
-            last_completed=self._last_completed,
-            timeline=self._timeline,
-            metrics=metrics,
-        )
-        if decision.next_frame is None:
-            return
+    def _try_submit_next_frame(self) -> None:
+        """Decide what to submit (under lock), then submit (without lock).
 
-        frame_index = decision.next_frame
-        if frame_index >= self._target_reader.frame_count:
-            self._timeline.pause()
-            self._state = _State.PAUSED
-            self.is_playing.set(False)
-            self.status.set("end of target")
-            return
+        The `with state_lock` window is kept TINY because workers also need
+        the lock to mark frames complete. If the dispatcher held the lock
+        through `target_reader.read` and `work_queue.put` (both can take 10s
+        of ms), workers would queue up waiting for the lock and the system
+        would self-throttle to single-thread throughput.
+        """
+        with self._state_lock:
+            metrics = self._buffer.metrics()
+            decision = self._strategy.decide(
+                last_submitted=self._last_submitted,
+                last_completed=self._last_completed,
+                timeline=self._timeline,
+                metrics=metrics,
+            )
+            if decision.next_frame is None:
+                return
+            frame_index = decision.next_frame
+            if frame_index >= self._target_reader.frame_count:
+                self._timeline.pause()
+                self._state = _State.PAUSED
+                self.is_playing.set(False)
+                self.status.set("end of target")
+                return
 
+        # Lock RELEASED here. Workers can now mark frames complete without
+        # blocking on us during the slow read+put below.
         source_frame = self._target_reader.read(frame_index)
         if source_frame is None:
             self.status.set(f"target.read({frame_index}) returned None")
             return
-
         item = WorkItem(frame_index=frame_index, source_frame=source_frame)
         try:
             self._work_queue.put(item, timeout=0.1)
-            self._last_submitted = frame_index
         except Full:
-            pass
+            return
+        with self._state_lock:
+            if frame_index > self._last_submitted:
+                self._last_submitted = frame_index
 
     # ---- Workers ----
 
