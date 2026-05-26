@@ -60,10 +60,12 @@ def main() -> int:
 
     output_lock = threading.Lock()
     output_frame: list[Frame | None] = [None]
+    delivered = threading.Event()
 
     def on_frame(frame: Frame, _index: FrameIndex) -> None:
         with output_lock:
             output_frame[0] = frame
+        delivered.set()
 
     executor = RealtimeExecutor(
         target_reader=reader,
@@ -85,15 +87,16 @@ def main() -> int:
 
     executor.play()
 
-    deadline = time.monotonic() + 60.0
+    timeout_s = 300.0
+    deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
-        if executor.status.get() == "end of target":
+        end_of_target = executor.status.get() == "end of target"
+        if end_of_target and delivered.is_set():
             break
         time.sleep(0.1)
     else:
-        print("timeout waiting for processing to finish", file=sys.stderr)
+        print(f"timeout after {timeout_s}s waiting for output", file=sys.stderr)
 
-    time.sleep(0.5)
     executor.stop()
     write_executor.shutdown(wait=True)
 
