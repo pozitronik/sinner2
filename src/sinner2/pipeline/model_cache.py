@@ -20,20 +20,32 @@ _cuda_preloaded = False
 
 
 def _preload_bundled_cuda_libs() -> None:
-    """Load torch's bundled nvidia-*-cu12 shared libs into the process.
+    """Make torch's bundled CUDA libs findable by ORT's later dlopens.
 
-    ORT's CUDA EP dlopens cuDNN / cuBLAS / cuFFT etc. by short name, and on
-    Linux the dynamic linker doesn't search nvidia-*-cu12 packages by
-    default. Preloading them as RTLD_GLOBAL puts their symbols on the
-    global namespace so subsequent dlopens from ORT find them.
+    Two platforms, two mechanisms:
+      - **Linux**: ctypes.CDLL every .so under `nvidia/*/lib/` as RTLD_GLOBAL
+        so cuDNN/cuBLAS symbols live on the global namespace. The dynamic
+        linker doesn't auto-search those package dirs.
+      - **Windows**: import torch, which calls `os.add_dll_directory(torch/lib)`
+        and registers the bundled CUDA DLLs with the loader for subsequent
+        LoadLibraryEx calls (Python 3.8+ on Windows ignores PATH for
+        extension-module DLL loads).
 
-    Idempotent. Skipped on non-Linux. No-op if the nvidia namespace package
-    isn't installed (e.g. CPU-only environments).
+    Idempotent. Both branches are no-ops if the relevant package isn't
+    installed (CPU-only environments).
     """
     global _cuda_preloaded
-    if _cuda_preloaded or sys.platform != "linux":
+    if _cuda_preloaded:
         return
     _cuda_preloaded = True
+    if sys.platform == "win32":
+        try:
+            import torch  # noqa: F401  # registers torch/lib with the DLL loader
+        except ImportError:
+            pass
+        return
+    if sys.platform != "linux":
+        return
     try:
         import nvidia  # namespace package from nvidia-*-cu12 wheels
     except ImportError:
