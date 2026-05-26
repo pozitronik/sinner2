@@ -1,4 +1,5 @@
 import threading
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 
 from sinner2.pipeline.buffer.cache import FrameCache
@@ -6,6 +7,8 @@ from sinner2.pipeline.buffer.metrics import BufferMetrics
 from sinner2.pipeline.buffer.store import FrameStore
 from sinner2.pipeline.buffer.timeline import Timeline
 from sinner2.types import Frame, FrameIndex
+
+_RECENT_INDICES_CAP = 1024
 
 
 class FrameBuffer:
@@ -35,6 +38,7 @@ class FrameBuffer:
         self._lock = threading.RLock()
         self._last_written_index: FrameIndex | None = None
         self._last_displayed_index: FrameIndex | None = None
+        self._recent_indices: deque[FrameIndex] = deque(maxlen=_RECENT_INDICES_CAP)
         self._hits = 0
         self._misses = 0
         self._current_frame_miss = 0
@@ -45,6 +49,7 @@ class FrameBuffer:
         with self._lock:
             if self._last_written_index is None or index > self._last_written_index:
                 self._last_written_index = index
+            self._recent_indices.append(index)
 
     def get(self, index: FrameIndex) -> Frame | None:
         frame = self._cache.get(index)
@@ -73,6 +78,22 @@ class FrameBuffer:
     def last_written_index(self) -> FrameIndex | None:
         with self._lock:
             return self._last_written_index
+
+    def latest_index_at_or_below(self, target: FrameIndex) -> FrameIndex | None:
+        """Find the highest recently-written frame index ≤ target.
+
+        Used by the playback fallback so the display never jumps to a frame
+        ahead of the timeline — important after a backward seek, where the
+        most-recently-written frame is in the seeked-past future and would
+        otherwise stick on screen.
+
+        Backed by a bounded deque of recent put() indices; for windows
+        larger than the deque cap (1024), older frames are forgotten and
+        won't be candidates even if still in the store.
+        """
+        with self._lock:
+            candidates = [i for i in self._recent_indices if i <= target]
+        return max(candidates) if candidates else None
 
     def invalidate_from(self, index: FrameIndex) -> None:
         self._cache.evict_from(index)

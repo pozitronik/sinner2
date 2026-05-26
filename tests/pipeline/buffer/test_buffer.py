@@ -114,6 +114,33 @@ class TestLastWrittenIndex:
         assert buf.last_written_index == 7
 
 
+class TestLatestIndexAtOrBelow:
+    def test_none_when_nothing_written(self):
+        buf, *_ = _mock_buffer()
+        assert buf.latest_index_at_or_below(100) is None
+
+    def test_returns_highest_below_or_equal_target(self):
+        buf, *_ = _mock_buffer()
+        for i in [3, 7, 12, 20]:
+            buf.put(i, _frame())
+        assert buf.latest_index_at_or_below(15) == 12
+        assert buf.latest_index_at_or_below(7) == 7
+        assert buf.latest_index_at_or_below(100) == 20
+
+    def test_returns_none_when_all_above_target(self):
+        buf, *_ = _mock_buffer()
+        for i in [50, 60, 70]:
+            buf.put(i, _frame())
+        assert buf.latest_index_at_or_below(10) is None
+
+    def test_handles_out_of_order_puts(self):
+        buf, *_ = _mock_buffer()
+        for i in [10, 5, 20, 3, 15]:
+            buf.put(i, _frame())
+        assert buf.latest_index_at_or_below(12) == 10
+        assert buf.latest_index_at_or_below(4) == 3
+
+
 class TestInvalidateFrom:
     def test_calls_cache_evict_from_and_store_clear_from(self):
         buf, store, cache, *_ = _mock_buffer()

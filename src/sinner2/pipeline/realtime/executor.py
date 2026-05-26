@@ -325,10 +325,12 @@ class RealtimeExecutor:
                 index, frame = self._buffer.get_at_current_time()
                 if frame is None:
                     # Timeline is ahead of the worker — show the most recently
-                    # written frame so the display doesn't stay blank. The
-                    # reported `index` is still the timeline target so the
-                    # slider tracks wall-clock; only the displayed pixels lag.
-                    fallback_index = self._buffer.last_written_index
+                    # written frame ≤ current target so the display doesn't
+                    # stay blank. Clamp to ≤ target avoids the "stuck on a
+                    # future frame" effect after a backward seek. The reported
+                    # `index` is still the timeline target so the slider tracks
+                    # wall-clock; only the displayed pixels lag.
+                    fallback_index = self._buffer.latest_index_at_or_below(index)
                     if fallback_index is not None:
                         frame = self._buffer.get(fallback_index)
                 if frame is not None and self._on_frame is not None:
