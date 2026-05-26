@@ -105,7 +105,7 @@ class TestRealtimeExecutorLifecycle:
                 target_reader=_MultiFrameReader(1),
                 buffer=buffer,
                 timeline=timeline,
-                chain_factory=_factory(),
+                chain=[],
                 strategy=BestEffortStrategy(),
                 worker_count=0,
             )
@@ -117,7 +117,7 @@ class TestRealtimeExecutorLifecycle:
             target_reader=_MultiFrameReader(1),
             buffer=buffer,
             timeline=timeline,
-            chain_factory=_factory(p),
+            chain=[p],
             strategy=BestEffortStrategy(),
         )
         try:
@@ -133,7 +133,7 @@ class TestRealtimeExecutorLifecycle:
             target_reader=_MultiFrameReader(1),
             buffer=buffer,
             timeline=timeline,
-            chain_factory=_factory(p),
+            chain=[p],
             strategy=BestEffortStrategy(),
         )
         ex.start()
@@ -147,7 +147,7 @@ class TestRealtimeExecutorLifecycle:
             target_reader=reader,
             buffer=buffer,
             timeline=timeline,
-            chain_factory=_factory(),
+            chain=[],
             strategy=BestEffortStrategy(),
         )
         ex.start()
@@ -161,7 +161,7 @@ class TestRealtimeExecutorLifecycle:
             target_reader=_MultiFrameReader(1),
             buffer=buffer,
             timeline=timeline,
-            chain_factory=_factory(p),
+            chain=[p],
             strategy=BestEffortStrategy(),
         )
         try:
@@ -177,37 +177,34 @@ class TestRealtimeExecutorLifecycle:
             target_reader=_MultiFrameReader(1),
             buffer=buffer,
             timeline=timeline,
-            chain_factory=_factory(),
+            chain=[],
             strategy=BestEffortStrategy(),
         )
         ex.start()
         ex.stop()
         ex.stop()
 
-    def test_each_worker_gets_its_own_chain(self, buffer_setup):
+    def test_all_workers_share_one_chain(self, buffer_setup):
+        # Sinner1 model: ONE shared chain across N workers. ORT
+        # InferenceSession is thread-safe so concurrent .run() calls let
+        # the GPU schedule them efficiently. Per-worker chains were tried
+        # and were slower because of CUDA context contention.
         buffer, timeline, _ = buffer_setup
-        created: list[_CountingProcessor] = []
-
-        def factory() -> list[_CountingProcessor]:
-            p = _CountingProcessor()
-            created.append(p)
-            return [p]
-
+        p = _CountingProcessor()
         ex = RealtimeExecutor(
             target_reader=_MultiFrameReader(1),
             buffer=buffer,
             timeline=timeline,
-            chain_factory=factory,
+            chain=[p],
             strategy=BestEffortStrategy(),
-            worker_count=3,
+            worker_count=4,
         )
         try:
             ex.start()
-            assert len(created) == 3
-            assert all(p.setup_calls == 1 for p in created)
+            assert p.setup_calls == 1  # only one setup regardless of worker_count
         finally:
             ex.stop()
-            assert all(p.release_calls == 1 for p in created)
+        assert p.release_calls == 1
 
 
 class TestRealtimeExecutorPlayback:
@@ -218,7 +215,7 @@ class TestRealtimeExecutorPlayback:
             target_reader=_MultiFrameReader(5, fps=100.0),
             buffer=buffer,
             timeline=Timeline(fps=100.0),
-            chain_factory=_factory(p),
+            chain=[p],
             strategy=BestEffortStrategy(),
         )
         try:
@@ -235,7 +232,7 @@ class TestRealtimeExecutorPlayback:
             target_reader=_MultiFrameReader(1000, fps=100.0),
             buffer=buffer,
             timeline=Timeline(fps=100.0),
-            chain_factory=_factory(p),
+            chain=[p],
             strategy=BestEffortStrategy(),
         )
         try:
@@ -256,7 +253,7 @@ class TestRealtimeExecutorPlayback:
             target_reader=_MultiFrameReader(3, fps=100.0),
             buffer=buffer,
             timeline=Timeline(fps=100.0),
-            chain_factory=_factory(),
+            chain=[],
             strategy=BestEffortStrategy(),
         )
         try:
@@ -274,7 +271,7 @@ class TestRealtimeExecutorPlayback:
             target_reader=_MultiFrameReader(1000),
             buffer=buffer,
             timeline=target,
-            chain_factory=_factory(),
+            chain=[],
             strategy=BestEffortStrategy(),
         )
         try:
@@ -292,7 +289,7 @@ class TestRealtimeExecutorPlayback:
             target_reader=_MultiFrameReader(1000),
             buffer=buffer,
             timeline=target_timeline,
-            chain_factory=_factory(p),
+            chain=[p],
             strategy=BestEffortStrategy(),
         )
         try:
@@ -321,7 +318,7 @@ class TestRealtimeExecutorFrameDelivery:
             target_reader=_MultiFrameReader(3, fps=100.0),
             buffer=buffer,
             timeline=Timeline(fps=100.0),
-            chain_factory=_factory(_CountingProcessor()),
+            chain=[_CountingProcessor()],
             strategy=BestEffortStrategy(),
         )
         ex.on_frame_ready(on_frame)
@@ -340,7 +337,7 @@ class TestRealtimeExecutorObservables:
             target_reader=_MultiFrameReader(1000),
             buffer=buffer,
             timeline=Timeline(fps=100.0),
-            chain_factory=_factory(),
+            chain=[],
             strategy=BestEffortStrategy(),
         )
         try:
@@ -359,7 +356,7 @@ class TestRealtimeExecutorObservables:
             target_reader=_MultiFrameReader(20, fps=100.0),
             buffer=buffer,
             timeline=Timeline(fps=100.0),
-            chain_factory=_factory(_CountingProcessor()),
+            chain=[_CountingProcessor()],
             strategy=BestEffortStrategy(),
         )
         try:
@@ -379,14 +376,14 @@ class TestRealtimeExecutorSetChain:
             target_reader=_MultiFrameReader(1),
             buffer=buffer,
             timeline=Timeline(fps=100.0),
-            chain_factory=_factory(old),
+            chain=[old],
             strategy=BestEffortStrategy(),
         )
         try:
             ex.start()
             assert old.setup_calls == 1
             assert new.setup_calls == 0
-            ex.set_chain(_factory(new))
+            ex.set_chain([new])
             assert _wait_until(lambda: new.setup_calls == 1)
             assert _wait_until(lambda: old.release_calls == 1)
         finally:
@@ -408,7 +405,7 @@ class TestRealtimeExecutorWorkerError:
             target_reader=_MultiFrameReader(10, fps=100.0),
             buffer=buffer,
             timeline=Timeline(fps=100.0),
-            chain_factory=_factory(Boom()),
+            chain=[Boom()],
             strategy=BestEffortStrategy(),
         )
         try:
@@ -431,7 +428,7 @@ class TestRealtimeExecutorWithImageTarget:
             target_reader=reader,
             buffer=buffer,
             timeline=Timeline(fps=1.0),
-            chain_factory=_factory(_CountingProcessor()),
+            chain=[_CountingProcessor()],
             strategy=BestEffortStrategy(),
         )
         try:

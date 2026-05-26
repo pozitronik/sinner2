@@ -37,20 +37,15 @@ class SetParamsMsg:
 
 @dataclass(frozen=True)
 class SetChainMsg:
-    """Rebuild every worker's chain via the given factory.
+    """Hot-swap the shared processor chain.
 
-    The factory is called once per worker, giving each worker an independent
-    chain instance — separate Processor objects, separate ONNX sessions.
-    This is what enables real parallelism across workers (each holds its own
-    GPU session); the trade-off is N× the load time and N× GPU memory.
+    All workers share one chain — ORT sessions are thread-safe for concurrent
+    inference, so multiple workers can call the same swapper.get() in
+    parallel and let ORT schedule across the GPU efficiently. Processors
+    that aren't thread-safe (e.g. GFPGAN) must serialize internally.
     """
 
-    chain_factory: "ChainFactory"
-
-
-from collections.abc import Callable  # noqa: E402
-
-ChainFactory = Callable[[], list["Processor"]]
+    chain: tuple["Processor", ...]
 
 
 @dataclass(frozen=True)

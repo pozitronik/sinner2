@@ -28,12 +28,9 @@ class TestMessages:
         assert m.processor_name == "FaceSwapper"
         assert m.params == {"many_faces": False}
 
-    def test_set_chain_carries_factory(self):
-        def factory():
-            return []
-
-        m = SetChainMsg(chain_factory=factory)
-        assert m.chain_factory is factory
+    def test_set_chain_carries_tuple(self):
+        m = SetChainMsg(chain=())
+        assert m.chain == ()
 
     def test_set_skip_strategy_carries_strategy(self):
         from unittest.mock import MagicMock

@@ -24,7 +24,7 @@ from sinner2.pipeline.realtime.executor import RealtimeExecutor
 from sinner2.pipeline.skip_strategy import BestEffortStrategy, FrameSkipStrategy
 
 SessionFactory = Callable[
-    [TargetReader, Callable[[], list[Processor]], FrameSkipStrategy, int, FrameStore],
+    [TargetReader, list[Processor], FrameSkipStrategy, int, FrameStore],
     tuple[RealtimeExecutor, ThreadPoolExecutor],
 ]
 
@@ -70,17 +70,17 @@ def _make_reader(target: Target) -> TargetReader:
 
 def _default_session_factory(
     reader: TargetReader,
-    chain_factory: Callable[[], list[Processor]],
+    chain: list[Processor],
     strategy: FrameSkipStrategy,
     worker_count: int,
     store: FrameStore,
 ) -> tuple[RealtimeExecutor, ThreadPoolExecutor]:
-    """Build a realtime executor around reader + chain-factory + strategy + store.
+    """Build a realtime executor around reader + chain + strategy + store.
 
     Caller owns the store lifecycle. Caller takes ownership of (executor,
     write_executor) and is responsible for stop() → shutdown(wait=True)
-    in that order. The chain_factory is called worker_count times at
-    start() to give each worker its own independent chain.
+    in that order. The chain is shared by all workers — ORT sessions handle
+    concurrent inference, so this is the fast path.
     """
     timeline = Timeline(fps=reader.fps)
     cache = MemoryFrameCache(max_bytes=128 * 1024 * 1024)
@@ -90,7 +90,7 @@ def _default_session_factory(
         target_reader=reader,
         buffer=buffer,
         timeline=timeline,
-        chain_factory=chain_factory,
+        chain=chain,
         strategy=strategy,
         worker_count=worker_count,
     )
@@ -149,15 +149,11 @@ class PlayerController(QObject):
             source = Source(path=source_path)
             target = Target(path=target_path)
             reader = _make_reader(target)
-            chain_factory = self._make_chain_factory(source)
-            # Build a sample chain just for the cache key — different params
-            # → different cache dir, so stale frames from a different config
-            # stay out of the active session.
-            sample_chain = chain_factory()
-            cache_dir = _cache_root() / _cache_key(source, target, sample_chain)
+            chain = self._build_chain(source)
+            cache_dir = _cache_root() / _cache_key(source, target, chain)
             session_store = PersistentFrameStore(cache_dir)
             executor, write_executor = self._session_factory(
-                reader, chain_factory, self._strategy, self._worker_count, session_store
+                reader, chain, self._strategy, self._worker_count, session_store
             )
         except Exception as exc:
             self.errorOccurred.emit(f"session setup failed: {exc}")
@@ -211,30 +207,19 @@ class PlayerController(QObject):
             return
         if chain_changed:
             try:
-                factory = self._make_chain_factory(self._current_source)
+                new_chain = self._build_chain(self._current_source)
             except Exception as exc:
                 self.errorOccurred.emit(f"chain rebuild failed: {exc}")
                 return
-            self._executor.set_chain(factory)
+            self._executor.set_chain(new_chain)
         if strategy_changed:
             self._executor.set_skip_strategy(strategy)
 
-    def _make_chain_factory(self, source: Source) -> Callable[[], list[Processor]]:
-        # Returns a callable that builds a fresh chain on every call. Used by
-        # the executor to give each worker its own independent chain (separate
-        # ONNX sessions = real parallelism instead of serializing on a shared
-        # model).
-        swapper_params = self._swapper_params
-        enhancer_params = self._enhancer_params
-        enhancer_enabled = self._enhancer_enabled
-
-        def factory() -> list[Processor]:
-            chain: list[Processor] = [FaceSwapper(source=source, params=swapper_params)]
-            if enhancer_enabled:
-                chain.append(FaceEnhancer(params=enhancer_params))
-            return chain
-
-        return factory
+    def _build_chain(self, source: Source) -> list[Processor]:
+        chain: list[Processor] = [FaceSwapper(source=source, params=self._swapper_params)]
+        if self._enhancer_enabled:
+            chain.append(FaceEnhancer(params=self._enhancer_params))
+        return chain
 
     def shutdown(self) -> None:
         self._teardown_session()
