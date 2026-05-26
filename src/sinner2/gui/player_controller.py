@@ -18,11 +18,12 @@ from sinner2.pipeline.buffer.cache import MemoryFrameCache
 from sinner2.pipeline.buffer.store import DiskFrameStore
 from sinner2.pipeline.buffer.timeline import Timeline
 from sinner2.pipeline.processor import Processor
-from sinner2.pipeline.processors.face_swapper import FaceSwapper
+from sinner2.pipeline.processors.face_enhancer import FaceEnhancer, FaceEnhancerParams
+from sinner2.pipeline.processors.face_swapper import FaceSwapper, FaceSwapperParams
 from sinner2.pipeline.realtime.executor import RealtimeExecutor
 from sinner2.pipeline.skip_strategy import BestEffortStrategy
 
-SessionFactory = Callable[[Source, Target, Path], tuple[RealtimeExecutor, ThreadPoolExecutor]]
+SessionFactory = Callable[[TargetReader, list[Processor], Path], tuple[RealtimeExecutor, ThreadPoolExecutor]]
 
 
 def _make_reader(target: Target) -> TargetReader:
@@ -34,16 +35,14 @@ def _make_reader(target: Target) -> TargetReader:
 
 
 def _default_session_factory(
-    source: Source, target: Target, scratch_dir: Path
+    reader: TargetReader, chain: list[Processor], scratch_dir: Path
 ) -> tuple[RealtimeExecutor, ThreadPoolExecutor]:
-    """Build a realtime session from source/target. Owns all the wiring.
+    """Build a realtime executor around a reader + chain. Owns the wiring.
 
     Caller takes ownership of (executor, write_executor) and is responsible
     for stop()+shutdown() in that order. The scratch_dir is the disk store
     location — caller owns its lifecycle too.
     """
-    reader: TargetReader = _make_reader(target)
-    chain: list[Processor] = [FaceSwapper(source=source)]
     timeline = Timeline(fps=reader.fps)
     frames_dir = scratch_dir / "frames"
     if frames_dir.exists():
@@ -92,6 +91,11 @@ class PlayerController(QObject):
         self._bridges: list[ObservableValueBridge] = []
         self._scratch_dir = Path(tempfile.mkdtemp(prefix="sinner2-gui-"))
 
+        self._current_source: Source | None = None
+        self._swapper_params = FaceSwapperParams()
+        self._enhancer_params = FaceEnhancerParams()
+        self._enhancer_enabled = True
+
         transport.playRequested.connect(self._on_play)
         transport.pauseRequested.connect(self._on_pause)
         transport.seekRequested.connect(self._on_seek)
@@ -103,22 +107,54 @@ class PlayerController(QObject):
         try:
             source = Source(path=source_path)
             target = Target(path=target_path)
-            executor, write_executor = self._session_factory(source, target, self._scratch_dir)
+            reader = _make_reader(target)
+            chain = self._build_chain(source)
+            executor, write_executor = self._session_factory(reader, chain, self._scratch_dir)
         except Exception as exc:
             self.errorOccurred.emit(f"session setup failed: {exc}")
             return
 
         executor.on_frame_ready(self._display.show_frame)
         self._bind_observables(executor)
+        self._current_source = source
         self._executor = executor
         self._write_executor = write_executor
-        self._transport.set_frame_count(executor._target_reader.frame_count)  # noqa: SLF001
+        self._transport.set_frame_count(reader.frame_count)
 
         try:
             executor.start()
         except Exception as exc:
             self.errorOccurred.emit(f"executor.start failed: {exc}")
             self._teardown_session()
+
+    def apply_chain_config(
+        self,
+        swapper_params: FaceSwapperParams,
+        enhancer_params: FaceEnhancerParams,
+        enhancer_enabled: bool,
+    ) -> None:
+        """Update stored chain params and hot-swap the executor's chain.
+
+        No-op if no executor is running yet; the next session start will pick
+        up the new values from the stored fields.
+        """
+        self._swapper_params = swapper_params
+        self._enhancer_params = enhancer_params
+        self._enhancer_enabled = enhancer_enabled
+        if self._executor is None or self._current_source is None:
+            return
+        try:
+            new_chain = self._build_chain(self._current_source)
+        except Exception as exc:
+            self.errorOccurred.emit(f"chain rebuild failed: {exc}")
+            return
+        self._executor.set_chain(new_chain)
+
+    def _build_chain(self, source: Source) -> list[Processor]:
+        chain: list[Processor] = [FaceSwapper(source=source, params=self._swapper_params)]
+        if self._enhancer_enabled:
+            chain.append(FaceEnhancer(params=self._enhancer_params))
+        return chain
 
     def shutdown(self) -> None:
         self._teardown_session()
@@ -152,6 +188,7 @@ class PlayerController(QObject):
         if self._write_executor is not None:
             self._write_executor.shutdown(wait=True)
             self._write_executor = None
+        self._current_source = None
 
     def _on_play(self) -> None:
         if self._executor is not None:
