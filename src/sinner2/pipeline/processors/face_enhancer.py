@@ -1,3 +1,4 @@
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +37,12 @@ class FaceEnhancer:
     def __init__(self, params: FaceEnhancerParams | None = None) -> None:
         self._params = params or FaceEnhancerParams()
         self._restorer: Any = None
+        # GFPGAN's restorer.enhance() is not thread-safe — its PyTorch
+        # backend mutates internal state during inference. The semaphore
+        # serializes concurrent enhance() calls from multiple workers
+        # (matches sinner1's pattern). FaceSwapper has no such constraint
+        # because ORT InferenceSession is genuinely thread-safe.
+        self._enhance_lock = threading.Lock()
 
     def setup(self) -> None:
         self._restorer = _load_restorer(get_model_path(_MODEL_FILE), self._params.upscale)
@@ -43,12 +50,13 @@ class FaceEnhancer:
     def process(self, frame: Frame) -> Frame:
         if self._restorer is None:
             raise RuntimeError("FaceEnhancer.process called before setup()")
-        _, _, restored = self._restorer.enhance(
-            frame,
-            has_aligned=False,
-            only_center_face=self._params.only_center_face,
-            paste_back=True,
-        )
+        with self._enhance_lock:
+            _, _, restored = self._restorer.enhance(
+                frame,
+                has_aligned=False,
+                only_center_face=self._params.only_center_face,
+                paste_back=True,
+            )
         return restored if restored is not None else frame
 
     def release(self) -> None:
