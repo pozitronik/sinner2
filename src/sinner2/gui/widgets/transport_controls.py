@@ -27,6 +27,7 @@ class QTransportControls(QWidget):
         self._slider = QSlider(Qt.Orientation.Horizontal)
         self._slider.setMinimum(0)
         self._slider.setMaximum(0)
+        self._slider.sliderMoved.connect(self.seekRequested)
         self._slider.sliderReleased.connect(self._on_slider_released)
 
         self._label = QLabel("0 / 0")

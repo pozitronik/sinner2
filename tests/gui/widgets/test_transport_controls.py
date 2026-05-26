@@ -50,6 +50,12 @@ class TestTransportControls:
             widget._slider.sliderReleased.emit()  # noqa: SLF001
         assert blocker.args == [50]
 
+    def test_slider_drag_emits_seek_per_move(self, widget, qtbot):
+        widget.set_frame_count(100)
+        with qtbot.waitSignal(widget.seekRequested, timeout=1000) as blocker:
+            widget._slider.sliderMoved.emit(33)  # noqa: SLF001
+        assert blocker.args == [33]
+
     def test_set_current_frame_does_not_emit_seek(self, widget, qtbot):
         widget.set_frame_count(100)
         with qtbot.assertNotEmitted(widget.seekRequested, wait=100):
