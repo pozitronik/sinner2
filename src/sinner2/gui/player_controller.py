@@ -1,5 +1,3 @@
-import shutil
-import tempfile
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -15,7 +13,7 @@ from sinner2.io.target_reader import ImageTargetReader, TargetReader
 from sinner2.io.video_target_reader import VideoTargetReader
 from sinner2.pipeline.buffer.buffer import FrameBuffer
 from sinner2.pipeline.buffer.cache import MemoryFrameCache
-from sinner2.pipeline.buffer.store import DiskFrameStore
+from sinner2.pipeline.buffer.store import SessionFrameStore
 from sinner2.pipeline.buffer.timeline import Timeline
 from sinner2.pipeline.processor import Processor
 from sinner2.pipeline.processors.face_enhancer import FaceEnhancer, FaceEnhancerParams
@@ -24,8 +22,8 @@ from sinner2.pipeline.realtime.executor import RealtimeExecutor
 from sinner2.pipeline.skip_strategy import BestEffortStrategy, FrameSkipStrategy
 
 SessionFactory = Callable[
-    [TargetReader, list[Processor], FrameSkipStrategy, Path],
-    tuple[RealtimeExecutor, ThreadPoolExecutor],
+    [TargetReader, list[Processor], FrameSkipStrategy],
+    tuple[RealtimeExecutor, ThreadPoolExecutor, SessionFrameStore],
 ]
 
 
@@ -41,19 +39,14 @@ def _default_session_factory(
     reader: TargetReader,
     chain: list[Processor],
     strategy: FrameSkipStrategy,
-    scratch_dir: Path,
-) -> tuple[RealtimeExecutor, ThreadPoolExecutor]:
-    """Build a realtime executor around a reader + chain + strategy.
+) -> tuple[RealtimeExecutor, ThreadPoolExecutor, SessionFrameStore]:
+    """Build a realtime executor + the SessionFrameStore that owns its scratch.
 
-    Caller takes ownership of (executor, write_executor) and is responsible
-    for stop()+shutdown() in that order. The scratch_dir is the disk store
-    location — caller owns its lifecycle too.
+    Caller takes ownership of all three returned objects and is responsible
+    for stop() → shutdown(wait=True) → close() in that order.
     """
     timeline = Timeline(fps=reader.fps)
-    frames_dir = scratch_dir / "frames"
-    if frames_dir.exists():
-        shutil.rmtree(frames_dir)
-    store = DiskFrameStore(frames_dir)
+    store = SessionFrameStore(prefix="sinner2-gui-")
     cache = MemoryFrameCache(max_bytes=128 * 1024 * 1024)
     write_executor = ThreadPoolExecutor(max_workers=2)
     buffer = FrameBuffer(store, cache, timeline, write_executor)
@@ -64,7 +57,7 @@ def _default_session_factory(
         chain=chain,
         strategy=strategy,
     )
-    return executor, write_executor
+    return executor, write_executor, store
 
 
 class PlayerController(QObject):
@@ -95,8 +88,8 @@ class PlayerController(QObject):
 
         self._executor: RealtimeExecutor | None = None
         self._write_executor: ThreadPoolExecutor | None = None
+        self._session_store: SessionFrameStore | None = None
         self._bridges: list[ObservableValueBridge] = []
-        self._scratch_dir = Path(tempfile.mkdtemp(prefix="sinner2-gui-"))
 
         self._current_source: Source | None = None
         self._swapper_params = FaceSwapperParams()
@@ -117,8 +110,8 @@ class PlayerController(QObject):
             target = Target(path=target_path)
             reader = _make_reader(target)
             chain = self._build_chain(source)
-            executor, write_executor = self._session_factory(
-                reader, chain, self._strategy, self._scratch_dir
+            executor, write_executor, session_store = self._session_factory(
+                reader, chain, self._strategy
             )
         except Exception as exc:
             self.errorOccurred.emit(f"session setup failed: {exc}")
@@ -129,6 +122,7 @@ class PlayerController(QObject):
         self._current_source = source
         self._executor = executor
         self._write_executor = write_executor
+        self._session_store = session_store
         self._transport.set_frame_count(reader.frame_count)
 
         try:
@@ -181,8 +175,6 @@ class PlayerController(QObject):
 
     def shutdown(self) -> None:
         self._teardown_session()
-        if self._scratch_dir.exists():
-            shutil.rmtree(self._scratch_dir, ignore_errors=True)
 
     def executor(self) -> RealtimeExecutor | None:
         return self._executor
@@ -213,6 +205,9 @@ class PlayerController(QObject):
         if self._write_executor is not None:
             self._write_executor.shutdown(wait=True)
             self._write_executor = None
+        if self._session_store is not None:
+            self._session_store.close()
+            self._session_store = None
         self._current_source = None
 
     def _on_play(self) -> None:
