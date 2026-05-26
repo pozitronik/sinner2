@@ -1,4 +1,6 @@
+import ctypes
 import os
+import sys
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -14,6 +16,36 @@ _DEFAULT_PROVIDERS: tuple[str, ...] = ("CUDAExecutionProvider", "CPUExecutionPro
 
 _session_cache: dict[Path, "ort.InferenceSession"] = {}
 _session_lock = threading.RLock()
+_cuda_preloaded = False
+
+
+def _preload_bundled_cuda_libs() -> None:
+    """Load torch's bundled nvidia-*-cu12 shared libs into the process.
+
+    ORT's CUDA EP dlopens cuDNN / cuBLAS / cuFFT etc. by short name, and on
+    Linux the dynamic linker doesn't search nvidia-*-cu12 packages by
+    default. Preloading them as RTLD_GLOBAL puts their symbols on the
+    global namespace so subsequent dlopens from ORT find them.
+
+    Idempotent. Skipped on non-Linux. No-op if the nvidia namespace package
+    isn't installed (e.g. CPU-only environments).
+    """
+    global _cuda_preloaded
+    if _cuda_preloaded or sys.platform != "linux":
+        return
+    _cuda_preloaded = True
+    try:
+        import nvidia  # namespace package from nvidia-*-cu12 wheels
+    except ImportError:
+        return
+    paths = list(getattr(nvidia, "__path__", []))
+    for prefix in paths:
+        for lib_dir in Path(prefix).glob("*/lib"):
+            for so in lib_dir.glob("*.so*"):
+                try:
+                    ctypes.CDLL(str(so), mode=ctypes.RTLD_GLOBAL)
+                except OSError:
+                    pass
 
 
 def _project_models_dir() -> Path:
@@ -68,6 +100,7 @@ def get_onnx_session(
     same model from different Processor instances is free after the first
     call — heavy weights stay resident in GPU memory across the chain.
     """
+    _preload_bundled_cuda_libs()
     import onnxruntime as ort
 
     path = get_model_path(name, on_progress=on_progress)
