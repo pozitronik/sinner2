@@ -50,11 +50,20 @@ class TestTransportControls:
             widget._slider.sliderReleased.emit()  # noqa: SLF001
         assert blocker.args == [50]
 
-    def test_slider_drag_emits_seek_per_move(self, widget, qtbot):
+    def test_slider_drag_emits_seek_after_debounce(self, widget, qtbot):
         widget.set_frame_count(100)
         with qtbot.waitSignal(widget.seekRequested, timeout=1000) as blocker:
             widget._slider.sliderMoved.emit(33)  # noqa: SLF001
         assert blocker.args == [33]
+
+    def test_slider_drag_coalesces_rapid_moves(self, widget, qtbot):
+        widget.set_frame_count(100)
+        with qtbot.waitSignal(widget.seekRequested, timeout=1000) as blocker:
+            widget._slider.sliderMoved.emit(10)  # noqa: SLF001
+            widget._slider.sliderMoved.emit(20)  # noqa: SLF001
+            widget._slider.sliderMoved.emit(30)  # noqa: SLF001
+        # Only the last emitted value should reach seekRequested.
+        assert blocker.args == [30]
 
     def test_set_current_frame_does_not_emit_seek(self, widget, qtbot):
         widget.set_frame_count(100)

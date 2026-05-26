@@ -1,5 +1,7 @@
-from PySide6.QtCore import Qt, Signal, Slot
+from PySide6.QtCore import Qt, QTimer, Signal, Slot
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QSlider, QWidget
+
+_SEEK_DEBOUNCE_MS = 100
 
 
 class QTransportControls(QWidget):
@@ -27,8 +29,16 @@ class QTransportControls(QWidget):
         self._slider = QSlider(Qt.Orientation.Horizontal)
         self._slider.setMinimum(0)
         self._slider.setMaximum(0)
-        self._slider.sliderMoved.connect(self.seekRequested)
+        self._slider.sliderMoved.connect(self._on_slider_moved)
         self._slider.sliderReleased.connect(self._on_slider_released)
+        # Debounce rapid drag events. Without this, each slider tick during
+        # a drag fires a seek that drains the worker queue, so the worker
+        # never finishes any frame mid-drag.
+        self._seek_debounce = QTimer(self)
+        self._seek_debounce.setSingleShot(True)
+        self._seek_debounce.setInterval(_SEEK_DEBOUNCE_MS)
+        self._seek_debounce.timeout.connect(self._fire_debounced_seek)
+        self._pending_seek: int | None = None
 
         self._label = QLabel("0 / 0")
         self._label.setMinimumWidth(80)
@@ -64,7 +74,21 @@ class QTransportControls(QWidget):
         else:
             self.playRequested.emit()
 
+    def _on_slider_moved(self, value: int) -> None:
+        # Coalesce rapid drag updates — the debounce restarts on each tick.
+        self._pending_seek = value
+        self._seek_debounce.start()
+
+    def _fire_debounced_seek(self) -> None:
+        if self._pending_seek is not None:
+            self.seekRequested.emit(self._pending_seek)
+            self._pending_seek = None
+
     def _on_slider_released(self) -> None:
+        # Always fire the final position on release, even if a debounce is
+        # in flight, so the user's intended position lands deterministically.
+        self._seek_debounce.stop()
+        self._pending_seek = None
         self.seekRequested.emit(self._slider.value())
 
     def _update_label(self, frame: int) -> None:
