@@ -79,6 +79,7 @@ class PlayerController(QObject):
     """
 
     errorOccurred = Signal(str)
+    processingFpsChanged = Signal(float)
 
     def __init__(
         self,
@@ -193,7 +194,9 @@ class PlayerController(QObject):
         playing_bridge.valueChanged.connect(self._transport.set_is_playing)
         status_bridge = ObservableValueBridge(executor.status, self)
         status_bridge.valueChanged.connect(self._on_status)
-        self._bridges = [current_bridge, playing_bridge, status_bridge]
+        fps_bridge = ObservableValueBridge(executor.processing_fps, self)
+        fps_bridge.valueChanged.connect(self.processingFpsChanged)
+        self._bridges = [current_bridge, playing_bridge, status_bridge, fps_bridge]
 
     def _on_status(self, message: object) -> None:
         text = str(message)

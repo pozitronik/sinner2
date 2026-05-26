@@ -4,6 +4,7 @@ from PySide6.QtCore import QByteArray, Qt
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
     QHBoxLayout,
+    QLabel,
     QMainWindow,
     QMessageBox,
     QVBoxLayout,
@@ -48,9 +49,12 @@ class SinnerMainWindow(QMainWindow):
         self.setCentralWidget(central)
 
         self.statusBar().showMessage("ready")
+        self._fps_label = QLabel("--- fps")
+        self.statusBar().addPermanentWidget(self._fps_label)
 
         self._controller = PlayerController(self._display, self._transport, parent=self)
         self._controller.errorOccurred.connect(self._show_error)
+        self._controller.processingFpsChanged.connect(self._update_fps_label)
 
         self._pickers.sourceChanged.connect(self._reload_player)
         self._pickers.targetChanged.connect(self._reload_player)
@@ -62,6 +66,9 @@ class SinnerMainWindow(QMainWindow):
         self._controller.set_source_and_target(
             self._pickers.source_path(), self._pickers.target_path()
         )
+
+    def _update_fps_label(self, fps: float) -> None:
+        self._fps_label.setText(f"{fps:.1f} fps")
 
     def _on_processor_config_changed(self) -> None:
         self._controller.apply_session_config(
