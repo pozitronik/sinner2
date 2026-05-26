@@ -7,6 +7,7 @@ from sinner2.pipeline.skip_strategy import (
     BestEffortStrategy,
     FrameSkipStrategy,
     SkipDecision,
+    SyncedStrategy,
 )
 
 
@@ -80,3 +81,56 @@ class TestBestEffortStrategy:
             metrics=high_lag,
         )
         assert d.next_frame == 11
+
+
+class TestSyncedStrategy:
+    def test_compliant_with_protocol(self):
+        assert isinstance(SyncedStrategy(), FrameSkipStrategy)
+
+    def test_advances_by_one_when_in_sync(self):
+        s = SyncedStrategy()
+        timeline = MagicMock()
+        timeline.current_frame.return_value = 10
+        d = s.decide(
+            last_submitted=10,
+            last_completed=9,
+            timeline=timeline,
+            metrics=_zero_metrics(),
+        )
+        assert d.next_frame == 11
+
+    def test_jumps_to_target_when_behind(self):
+        s = SyncedStrategy()
+        timeline = MagicMock()
+        timeline.current_frame.return_value = 100
+        d = s.decide(
+            last_submitted=10,
+            last_completed=5,
+            timeline=timeline,
+            metrics=_zero_metrics(),
+        )
+        assert d.next_frame == 100
+
+    def test_never_goes_backward(self):
+        s = SyncedStrategy()
+        timeline = MagicMock()
+        timeline.current_frame.return_value = 5
+        d = s.decide(
+            last_submitted=10,
+            last_completed=8,
+            timeline=timeline,
+            metrics=_zero_metrics(),
+        )
+        assert d.next_frame == 11
+
+    def test_first_call_returns_zero(self):
+        s = SyncedStrategy()
+        timeline = MagicMock()
+        timeline.current_frame.return_value = 0
+        d = s.decide(
+            last_submitted=-1,
+            last_completed=-1,
+            timeline=timeline,
+            metrics=_zero_metrics(),
+        )
+        assert d.next_frame == 0
