@@ -72,7 +72,7 @@ class PlayerController(QObject):
     """
 
     errorOccurred = Signal(str)
-    processingFpsChanged = Signal(float)
+    processingFpsChanged = Signal(object)  # carries float; declared `object` to match the bridge
 
     def __init__(
         self,
