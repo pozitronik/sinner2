@@ -48,3 +48,15 @@ class TestQProcessorControls:
         with qtbot.waitSignal(widget.configChanged, timeout=1000):
             widget._enhancer_box.setChecked(False)  # noqa: SLF001
         assert widget.enhancer_enabled() is False
+
+    def test_default_strategy_is_best_effort(self, widget):
+        from sinner2.pipeline.skip_strategy import BestEffortStrategy
+
+        assert isinstance(widget.skip_strategy(), BestEffortStrategy)
+
+    def test_changing_strategy_emits_config_changed(self, widget, qtbot):
+        with qtbot.waitSignal(widget.configChanged, timeout=1000):
+            widget._strategy_combo.setCurrentIndex(1)  # noqa: SLF001
+        from sinner2.pipeline.skip_strategy import SyncedStrategy
+
+        assert isinstance(widget.skip_strategy(), SyncedStrategy)

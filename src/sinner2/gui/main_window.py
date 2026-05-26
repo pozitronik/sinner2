@@ -64,10 +64,11 @@ class SinnerMainWindow(QMainWindow):
         )
 
     def _on_processor_config_changed(self) -> None:
-        self._controller.apply_chain_config(
+        self._controller.apply_session_config(
             swapper_params=self._processors.swapper_params(),
             enhancer_params=self._processors.enhancer_params(),
             enhancer_enabled=self._processors.enhancer_enabled(),
+            strategy=self._processors.skip_strategy(),
         )
 
     def _show_error(self, message: str) -> None:

@@ -1,6 +1,7 @@
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QFormLayout,
     QGroupBox,
     QSpinBox,
@@ -10,6 +11,16 @@ from PySide6.QtWidgets import (
 
 from sinner2.pipeline.processors.face_enhancer import FaceEnhancerParams
 from sinner2.pipeline.processors.face_swapper import FaceSwapperParams
+from sinner2.pipeline.skip_strategy import (
+    BestEffortStrategy,
+    FrameSkipStrategy,
+    SyncedStrategy,
+)
+
+_STRATEGIES: dict[str, type[FrameSkipStrategy]] = {
+    "Best effort (process every frame, may lag)": BestEffortStrategy,
+    "Synced (skip to match wall-clock)": SyncedStrategy,
+}
 
 
 class QProcessorControls(QWidget):
@@ -56,9 +67,18 @@ class QProcessorControls(QWidget):
         enhancer_form.addRow("Center face only", self._only_center_face)
         self._enhancer_box = enhancer_box
 
+        execution_box = QGroupBox("Execution")
+        execution_form = QFormLayout(execution_box)
+        self._strategy_combo = QComboBox()
+        for label in _STRATEGIES:
+            self._strategy_combo.addItem(label)
+        self._strategy_combo.currentTextChanged.connect(lambda _: self.configChanged.emit())
+        execution_form.addRow("Frame-skip strategy", self._strategy_combo)
+
         layout = QVBoxLayout(self)
         layout.addWidget(swapper_box)
         layout.addWidget(enhancer_box)
+        layout.addWidget(execution_box)
         layout.addStretch()
 
     def swapper_params(self) -> FaceSwapperParams:
@@ -75,3 +95,7 @@ class QProcessorControls(QWidget):
 
     def enhancer_enabled(self) -> bool:
         return self._enhancer_box.isChecked()
+
+    def skip_strategy(self) -> FrameSkipStrategy:
+        cls = _STRATEGIES[self._strategy_combo.currentText()]
+        return cls()
