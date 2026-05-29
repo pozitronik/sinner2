@@ -71,6 +71,27 @@ class _StubInput:
         pass
 
 
+class _ShortInput:
+    """Claims `claimed` frames but read() returns None at/after `real` —
+    simulates a video shorter than its nb_frames metadata."""
+
+    def __init__(self, claimed: int, real: int) -> None:
+        self._claimed = claimed
+        self._real = real
+
+    @property
+    def frame_count(self) -> int:
+        return self._claimed
+
+    def read(self, index):
+        if index >= self._real:
+            return None
+        return np.full((8, 8, 3), index % 256, dtype=np.uint8)
+
+    def close(self) -> None:
+        pass
+
+
 @pytest.fixture
 def writer():
     return build_image_writer(ImageFormat.JPEG, 80)
@@ -172,6 +193,42 @@ class TestRunStage:
         assert seen
         assert seen[-1] == 4
         assert seen == sorted(seen)
+
+
+class TestEofTolerance:
+    def test_eof_on_none_truncates_to_real_count(self, tmp_path, writer):
+        out = tmp_path / "stage0"
+        res = run_stage(
+            stage_input=_ShortInput(claimed=10, real=7),
+            processor=_Pass(),
+            output_dir=out,
+            ext=writer.extension,
+            writer=writer,
+            workers=2,
+            pause_event=threading.Event(),
+            cancel_event=threading.Event(),
+            eof_on_none=True,
+        )
+        assert res.status is StageStatus.COMPLETED
+        assert res.total == 7  # discovered real count, not the claimed 10
+        assert res.completed_frames == 7
+        assert len(list(out.glob(f"*.{writer.extension}"))) == 7
+
+    def test_without_eof_flag_trailing_none_fails(self, tmp_path, writer):
+        out = tmp_path / "stage0"
+        res = run_stage(
+            stage_input=_ShortInput(claimed=10, real=7),
+            processor=_Pass(),
+            output_dir=out,
+            ext=writer.extension,
+            writer=writer,
+            workers=2,
+            pause_event=threading.Event(),
+            cancel_event=threading.Event(),
+            eof_on_none=False,
+        )
+        assert res.status is StageStatus.FAILED
+        assert res.missing == [7, 8, 9]
 
 
 class TestFramesDirInput:

@@ -188,6 +188,7 @@ class BatchDriver:
                         pause_event=self._pause_event,
                         cancel_event=self._cancel_event,
                         on_progress=stage_cb,
+                        eof_on_none=(i == 0),  # only the video source streams
                     )
                     if result.status is StageStatus.PAUSED:
                         task.status = BatchTaskStatus.PAUSED
@@ -206,6 +207,23 @@ class BatchDriver:
                         )
                         task.last_completed_frame = result.completed_frames - 1
                         return task.status
+                    # EOF: a streaming source can decode fewer frames than its
+                    # container metadata (nb_frames) claims. Accept a small
+                    # trailing shortfall as the true length; reject a large one
+                    # as a truncated / corrupt source.
+                    if i == 0 and result.total < total:
+                        shortfall = total - result.total
+                        if shortfall > max(round(2 * fps), 10):
+                            task.status = BatchTaskStatus.FAILED
+                            task.error_message = (
+                                f"decoded only {result.total} of {total} "
+                                "expected frames — source may be truncated "
+                                "or corrupt"
+                            )
+                            task.last_completed_frame = result.total - 1
+                            return task.status
+                        total = result.total
+                        task.total_frames = total
                 # max() so resuming a paused task can't regress the marker.
                 task.completed_stages = max(task.completed_stages, i + 1)
                 # Auto: drop the now-consumed previous stage to cap peak disk.

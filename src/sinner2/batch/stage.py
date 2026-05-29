@@ -6,7 +6,7 @@ optimized counterpart to the realtime (frame-major) executor: one model is
 resident at a time, so the device does one kind of work and peak VRAM stays
 low.
 
-Two design choices matter:
+Three design choices matter:
 
   * The frame READ happens on the single submit-loop thread, not in workers.
     For the first stage (video source) that means decode streams in index
@@ -15,8 +15,14 @@ Two design choices matter:
   * Resume and integrity are disk-truth. A frame counts as done iff its
     output file exists AND is non-empty. After the main pass, any missing or
     zero-byte frame gets one reprocess pass; if any remain, the stage fails
-    loudly rather than handing a gappy sequence to the encoder (ffmpeg
-    ``-i %08d.ext`` would silently truncate at the first gap).
+    loudly rather than handing a gappy sequence to the encoder.
+  * End-of-stream tolerance (`eof_on_none`): a streaming video source can
+    decode FEWER frames than its container metadata (ffprobe nb_frames)
+    claims. With eof_on_none the first None read is taken as the true end of
+    the media; the stage's effective total shrinks to that point and the
+    phantom trailing indices are not treated as "missing". The driver decides
+    whether the shortfall is benign (metadata glitch) or alarming (truncated
+    source).
 
 The processor is set up before the run and released after, so only this
 stage's model is resident while it runs.
@@ -59,6 +65,7 @@ class StageResult:
     status: StageStatus
     completed_frames: int  # contiguous valid frames from index 0
     missing: list[int] = field(default_factory=list)  # populated on FAILED
+    total: int = 0  # effective frame count (may shrink from EOF tolerance)
 
 
 class StageInput(Protocol):
@@ -121,27 +128,30 @@ def run_stage(
     pause_event: threading.Event,
     cancel_event: threading.Event,
     on_progress: Callable[[int], None] | None = None,
+    eof_on_none: bool = False,
 ) -> StageResult:
     """Run ``processor`` over every frame of ``stage_input``, writing
     ``output_dir/{idx:08d}.{ext}``. Resumes by skipping frames already valid
-    on disk. ``on_progress(done_count)`` fires as frames complete."""
+    on disk. ``on_progress(done_count)`` fires as frames complete. With
+    ``eof_on_none`` a None read ends the stage early (streaming source shorter
+    than its claimed frame_count); StageResult.total reports the real count."""
     output_dir.mkdir(parents=True, exist_ok=True)
     total = stage_input.frame_count
     workers = max(1, workers)
 
-    def contiguous() -> int:
-        for i in range(total):
-            if not frame_ok(output_dir / f"{i:08d}.{ext}"):
-                return i
-        return total
-
-    def missing() -> list[int]:
+    def missing(t: int) -> list[int]:
         return [
-            i for i in range(total)
+            i for i in range(t)
             if not frame_ok(output_dir / f"{i:08d}.{ext}")
         ]
 
-    pending = missing()
+    def contiguous(t: int) -> int:
+        for i in range(t):
+            if not frame_ok(output_dir / f"{i:08d}.{ext}"):
+                return i
+        return t
+
+    pending = missing(total)
     done = total - len(pending)
     if on_progress is not None:
         on_progress(done)
@@ -154,26 +164,33 @@ def run_stage(
 
     processor.setup()
     try:
-        status = _feed(
+        status, eof_at = _feed(
             pending, stage_input, processor, output_dir, ext, writer,
-            workers, pause_event, cancel_event, bump,
+            workers, pause_event, cancel_event, bump, eof_on_none,
         )
         if status in (StageStatus.PAUSED, StageStatus.CANCELLED):
-            return StageResult(status, contiguous())
+            return StageResult(status, contiguous(total), total=total)
 
-        # Integrity: one reprocess pass over anything still missing/zero-byte.
-        remaining = missing()
+        if eof_at is not None:
+            # Streaming source ended early — the real total is the EOF index.
+            total = eof_at
+
+        # Integrity: one reprocess pass over anything still missing/zero-byte
+        # within the (possibly shrunk) real range.
+        remaining = missing(total)
         if remaining:
-            status = _feed(
+            status, _ = _feed(
                 remaining, stage_input, processor, output_dir, ext, writer,
-                workers, pause_event, cancel_event, bump,
+                workers, pause_event, cancel_event, bump, eof_on_none=False,
             )
             if status is StageStatus.CANCELLED:
-                return StageResult(status, contiguous())
-            remaining = missing()
+                return StageResult(status, contiguous(total), total=total)
+            remaining = missing(total)
         if remaining:
-            return StageResult(StageStatus.FAILED, contiguous(), remaining)
-        return StageResult(StageStatus.COMPLETED, total)
+            return StageResult(
+                StageStatus.FAILED, contiguous(total), remaining, total=total
+            )
+        return StageResult(StageStatus.COMPLETED, total, total=total)
     finally:
         processor.release()
 
@@ -189,13 +206,15 @@ def _feed(
     pause_event: threading.Event,
     cancel_event: threading.Event,
     bump: Callable[[], None],
-) -> StageStatus:
+    eof_on_none: bool,
+) -> tuple[StageStatus, int | None]:
     """Submit ``indices`` through the processor pool. Reads happen here on a
-    single thread (sequential decode); workers only process + write. In-flight
-    work is allowed to finish so the on-disk cache stays consistent."""
+    single thread (sequential decode); workers only process + write. Returns
+    the interrupt status and, if eof_on_none hit a None read, the EOF index."""
     inflight: list[Future] = []
     cap = max(2, workers * 2)
     interrupted: StageStatus | None = None
+    eof_at: int | None = None
     with ThreadPoolExecutor(
         max_workers=workers, thread_name_prefix="sinner2-batch-stage"
     ) as pool:
@@ -208,7 +227,12 @@ def _feed(
                 break
             frame = stage_input.read(idx)  # single-thread sequential read
             if frame is None:
-                continue  # gap; the integrity pass will catch it
+                if eof_on_none:
+                    # Streaming source exhausted — everything from idx on is
+                    # past the real end of the media. Stop here.
+                    eof_at = idx
+                    break
+                continue  # gap within the real range; integrity catches it
             out_path = output_dir / f"{idx:08d}.{ext}"
             inflight.append(
                 pool.submit(_process_write, processor, frame, out_path, writer)
@@ -217,7 +241,7 @@ def _feed(
                 _drain_one(inflight, bump)
         while inflight:
             _drain_one(inflight, bump)
-    return interrupted or StageStatus.COMPLETED
+    return (interrupted or StageStatus.COMPLETED), eof_at
 
 
 def _drain_one(inflight: list[Future], bump: Callable[[], None]) -> None:

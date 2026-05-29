@@ -136,6 +136,31 @@ class _ConcurrencyCheckingReader:
         pass
 
 
+class _ShortReader:
+    """Reports `claimed` frames but read() returns None at/after `real` —
+    the ffprobe-over-counts-nb_frames case."""
+
+    def __init__(self, claimed: int, real: int) -> None:
+        self._claimed = claimed
+        self._real = real
+
+    @property
+    def fps(self) -> float:
+        return 25.0
+
+    @property
+    def frame_count(self) -> int:
+        return self._claimed
+
+    def read(self, index: int):
+        if index >= self._real:
+            return None
+        return np.full((8, 8, 3), index % 256, dtype=np.uint8)
+
+    def release(self) -> None:
+        pass
+
+
 def _make_image(path: Path, w: int = 16, h: int = 16) -> Path:
     Image.fromarray(np.full((h, w, 3), 128, dtype=np.uint8)).save(path)
     return path
@@ -486,3 +511,37 @@ class TestCleanupModes:
         assert not _stage_dir(driver, task, 0, "faceswapper").exists()
         assert not _stage_dir(driver, task, 1, "faceenhancer").exists()
         assert len(list(task.output_path.glob("*.jpg"))) == 3
+
+
+class TestOverReportedFrameCount:
+    def test_small_shortfall_completes_at_real_count(
+        self, driver, stub_stages, tmp_path, monkeypatch
+    ):
+        # Metadata claims 10 frames; the stream only decodes 8. Must complete
+        # with the real count, not fail on the 2 phantom frames.
+        reader = _ShortReader(claimed=10, real=8)
+        monkeypatch.setattr(
+            BatchDriver,
+            "_build_reader",
+            staticmethod(lambda target, backend: reader),
+        )
+        task = _make_task(tmp_path, image_target=True)
+        status = driver.run(task)
+        assert status is BatchTaskStatus.COMPLETED
+        assert task.total_frames == 8  # corrected down from 10
+        assert len(list(task.output_path.glob("*.jpg"))) == 8
+
+    def test_large_shortfall_fails_loudly(
+        self, driver, stub_stages, tmp_path, monkeypatch
+    ):
+        # Decoding only 10 of a claimed 100 is not a metadata glitch — fail.
+        reader = _ShortReader(claimed=100, real=10)
+        monkeypatch.setattr(
+            BatchDriver,
+            "_build_reader",
+            staticmethod(lambda target, backend: reader),
+        )
+        task = _make_task(tmp_path, image_target=True)
+        status = driver.run(task)
+        assert status is BatchTaskStatus.FAILED
+        assert "truncated" in (task.error_message or "")
