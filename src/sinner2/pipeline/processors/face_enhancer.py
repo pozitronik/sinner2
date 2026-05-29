@@ -1,3 +1,4 @@
+import sys
 import threading
 from pathlib import Path
 from typing import Any
@@ -19,8 +20,9 @@ class FaceEnhancerParams(SinnerBaseModel):
 _MODEL_FILE = "GFPGANv1.4.pth"
 
 
-def _load_restorer(path: Path, upscale: int) -> Any:
+def _load_restorer(path: Path, upscale: int, device: str) -> Any:
     """Loader indirection so tests can stub the gfpgan call cheaply."""
+    import torch
     from gfpgan import GFPGANer
 
     return GFPGANer(
@@ -28,6 +30,7 @@ def _load_restorer(path: Path, upscale: int) -> Any:
         upscale=upscale,
         arch="clean",
         channel_multiplier=2,
+        device=torch.device(device),
     )
 
 
@@ -45,7 +48,24 @@ class FaceEnhancer:
         self._enhance_lock = threading.Lock()
 
     def setup(self) -> None:
-        self._restorer = _load_restorer(get_model_path(_MODEL_FILE), self._params.upscale)
+        import torch
+
+        # GFPGAN is PyTorch, so its device is torch's CUDA — independent of the
+        # ONNX execution providers the swapper uses. Choose it explicitly and
+        # announce it: a CPU fallback pegs every core and is far slower, so
+        # surface it loudly instead of letting it look like a "slow GPU".
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        if device == "cuda":
+            print("[sinner2] FaceEnhancer (GFPGAN) device: cuda", file=sys.stderr)
+        else:
+            print(
+                "[sinner2] WARNING: FaceEnhancer (GFPGAN) running on CPU — "
+                "torch.cuda.is_available() is False.",
+                file=sys.stderr,
+            )
+        self._restorer = _load_restorer(
+            get_model_path(_MODEL_FILE), self._params.upscale, device
+        )
 
     def process(self, frame: Frame) -> Frame:
         # Local snapshot — release() can null self._restorer concurrently;

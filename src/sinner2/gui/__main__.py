@@ -10,6 +10,19 @@ import sys
 # (the entry point) catches every downstream import.
 os.environ.setdefault("OPENCV_FFMPEG_LOGLEVEL", "-8")
 
+# Claim PyTorch's CUDA context on the main thread NOW — before Qt, ONNX
+# Runtime, or any worker thread touches CUDA. torch otherwise initializes
+# CUDA lazily on first use, which in this app is a batch worker thread (after
+# ORT already has the device); eager main-thread init avoids the fragile
+# ordering that can leave the FaceEnhancer (GFPGAN) stuck on the CPU.
+try:
+    import torch
+
+    if torch.cuda.is_available():
+        torch.cuda.init()
+except Exception:  # noqa: BLE001  # CPU-only env / no torch — harmless
+    pass
+
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from sinner2.gui.main_window import SinnerMainWindow  # noqa: E402

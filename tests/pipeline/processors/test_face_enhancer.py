@@ -14,7 +14,9 @@ from sinner2.types import Frame
 def stub_restorer(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     restorer = MagicMock()
     restorer.enhance = MagicMock(side_effect=lambda f, **_k: ([], [], f))
-    monkeypatch.setattr(face_enhancer, "_load_restorer", lambda _path, _upscale: restorer)
+    monkeypatch.setattr(
+        face_enhancer, "_load_restorer", lambda _path, _upscale, _device: restorer
+    )
     return restorer
 
 
@@ -86,7 +88,7 @@ class TestFaceEnhancer:
     ):
         captured: dict[str, int] = {}
 
-        def fake_load(_path: Path, upscale: int) -> MagicMock:
+        def fake_load(_path: Path, upscale: int, _device: str) -> MagicMock:
             captured["upscale"] = upscale
             return MagicMock(enhance=MagicMock(return_value=([], [], None)))
 
@@ -95,6 +97,25 @@ class TestFaceEnhancer:
         fe = FaceEnhancer(params=FaceEnhancerParams(upscale=2))
         fe.setup()
         assert captured["upscale"] == 2
+
+    def test_device_follows_cuda_availability(
+        self, models_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        import torch
+
+        captured: dict[str, str] = {}
+
+        def fake_load(_path: Path, _upscale: int, device: str) -> MagicMock:
+            captured["device"] = device
+            return MagicMock(enhance=MagicMock(return_value=([], [], None)))
+
+        monkeypatch.setattr(face_enhancer, "_load_restorer", fake_load)
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+        FaceEnhancer().setup()
+        assert captured["device"] == "cpu"
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+        FaceEnhancer().setup()
+        assert captured["device"] == "cuda"
 
     def test_only_center_face_passed_to_enhance(
         self, models_dir: Path, stub_restorer: MagicMock
