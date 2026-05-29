@@ -24,7 +24,11 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QThread, Qt, Signal
 
 from sinner2.batch.driver import BatchDriver
-from sinner2.batch.task import BatchTask, BatchTaskStatus
+from sinner2.batch.task import (
+    BatchProgress,
+    BatchTask,
+    BatchTaskStatus,
+)
 from sinner2.batch.task_store import BatchTaskStore
 
 
@@ -32,7 +36,7 @@ class _DriverWorker(QObject):
     """Lives on a QThread; runs one task via driver.run() and emits
     completion + progress signals back to the queue."""
 
-    progress = Signal(str, int, int)   # task_id, completed, total
+    progress = Signal(str, object)      # task_id, BatchProgress
     completed = Signal(str, str)        # task_id, terminal_status_value
 
     def __init__(
@@ -45,8 +49,8 @@ class _DriverWorker(QObject):
         self._task = task
 
     def run(self) -> None:
-        def on_progress(completed: int, total: int) -> None:
-            self.progress.emit(self._task.id, completed, total)
+        def on_progress(progress: BatchProgress) -> None:
+            self.progress.emit(self._task.id, progress)
 
         status = self._driver.run(self._task, progress_callback=on_progress)
         self.completed.emit(self._task.id, status.value)
@@ -57,7 +61,7 @@ class BatchQueue(QObject):
     order → idle when queue empties."""
 
     taskStarted = Signal(str)              # task_id
-    taskProgress = Signal(str, int, int)   # task_id, completed, total
+    taskProgress = Signal(str, object)     # task_id, BatchProgress
     taskCompleted = Signal(str)            # task_id (terminal: completed/cancelled/failed/paused)
     taskFailed = Signal(str, str)          # task_id, error_message
     queueIdle = Signal()
@@ -200,16 +204,18 @@ class BatchQueue(QObject):
 
     # ---- Worker callbacks (GUI thread) ----
 
-    def _on_progress(self, task_id: str, completed: int, total: int) -> None:
-        # Persist progress so the GUI reload sees an up-to-date number
-        # even if the app restarts mid-task. Cheap (JSON write) — only
-        # fires on chunked frame completions, not per-frame.
+    def _on_progress(self, task_id: str, progress: BatchProgress) -> None:
+        # Persist a consistent snapshot so a reload (or app restart) mid-task
+        # shows sensible progress. completed_stages = stage_index (fully-done
+        # prior stages); last_completed_frame tracks the current stage. The
+        # final resume marker is written by _on_completed at terminal state.
         if self._store.exists(task_id):
             task = self._store.load(task_id)
-            task.last_completed_frame = completed - 1
-            task.total_frames = total
+            task.completed_stages = progress.stage_index
+            task.last_completed_frame = progress.stage_completed - 1
+            task.total_frames = progress.stage_total
             self._store.save(task)
-        self.taskProgress.emit(task_id, completed, total)
+        self.taskProgress.emit(task_id, progress)
 
     def _on_completed(self, task_id: str, status_value: str) -> None:
         # The driver mutated the task in place inside the worker

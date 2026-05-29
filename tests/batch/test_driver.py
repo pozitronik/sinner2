@@ -427,12 +427,31 @@ class TestReaderThreadSafety:
 
 
 class TestProgressCallback:
-    def test_progress_reaches_total(self, driver, stub_stages, tmp_path):
-        task = _make_task(tmp_path, image_target=False)
-        events: list[tuple[int, int]] = []
-        driver.run(task, progress_callback=lambda c, t: events.append((c, t)))
+    def test_progress_reports_overall_frame_units(
+        self, driver, stub_stages, tmp_path
+    ):
+        # Two stages × 3 frames = 6 overall units; final event hits 6/6 and
+        # the overall count is monotonic and bounded.
+        task = _make_task(tmp_path, image_target=False, enhancer_enabled=True)
+        events = []
+        driver.run(task, progress_callback=events.append)
         assert events
-        assert events[-1] == (3, 3)
+        last = events[-1]
+        assert last.stage_count == 2
+        assert last.overall_total == 6
+        assert last.overall_completed == 6
+        overall = [e.overall_completed for e in events]
+        assert overall == sorted(overall)
+        assert all(0 <= c <= 6 for c in overall)
+
+    def test_single_stage_overall(self, driver, stub_stages, tmp_path):
+        task = _make_task(tmp_path, image_target=False)  # 1 stage, 3 frames
+        events = []
+        driver.run(task, progress_callback=events.append)
+        last = events[-1]
+        assert last.stage_index == 0
+        assert last.overall_total == 3
+        assert last.overall_completed == 3
 
 
 class TestCleanupModes:

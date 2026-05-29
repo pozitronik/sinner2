@@ -178,3 +178,20 @@ class TestStopShutsDown:
         queue.stop()
         queue.stop()
         assert not queue.is_running
+
+
+class TestProgressSignal:
+    def test_emits_batch_progress_reaching_total(
+        self, qtbot, queue, store, stub_chain, tmp_path
+    ):
+        from sinner2.batch.task import BatchProgress
+
+        task = _make_task(tmp_path, "a")
+        store.save(task)
+        received: list[BatchProgress] = []
+        queue.taskProgress.connect(lambda _tid, p: received.append(p))
+        with qtbot.waitSignal(queue.queueIdle, timeout=5000):
+            queue.start()
+        assert received
+        assert all(isinstance(p, BatchProgress) for p in received)
+        assert received[-1].overall_completed == received[-1].overall_total

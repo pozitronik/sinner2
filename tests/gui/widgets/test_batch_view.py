@@ -113,11 +113,43 @@ class TestQueueSignalUpdates:
     def test_progress_signal_updates_cell(
         self, view, tmp_path, store, queue
     ):
+        from sinner2.batch.task import BatchProgress
+
         t = _task(tmp_path)
         store.save(t)
         view.reload_from_store()
-        queue.taskProgress.emit(t.id, 5, 10)
-        assert view._model.item(0, _COL_PROGRESS).text() == "5 / 10"  # noqa: SLF001
+        queue.taskProgress.emit(
+            t.id,
+            BatchProgress(
+                stage_index=1,
+                stage_count=2,
+                stage_name="faceenhancer",
+                stage_completed=5,
+                stage_total=10,
+                overall_completed=15,
+                overall_total=20,
+            ),
+        )
+        text = view._model.item(0, _COL_PROGRESS).text()  # noqa: SLF001
+        assert "75%" in text
+        assert "faceenhancer" in text
+        assert "5/10" in text
+
+    def test_progress_text_derives_overall_for_reloaded_task(
+        self, view, tmp_path, store
+    ):
+        # Paused mid stage-1 of 2 (stage 0 done): overall = 10 + 5 = 15/20.
+        t = _task(
+            tmp_path,
+            enhancer_enabled=True,
+            total_frames=10,
+            completed_stages=1,
+            last_completed_frame=4,
+            status=BatchTaskStatus.PAUSED,
+        )
+        store.save(t)
+        view.reload_from_store()
+        assert "75%" in view._model.item(0, _COL_PROGRESS).text()  # noqa: SLF001
 
     def test_completed_signal_refreshes_status_from_store(
         self, view, tmp_path, store, queue

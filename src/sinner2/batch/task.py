@@ -20,6 +20,7 @@ Design notes:
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
@@ -157,3 +158,30 @@ def resolve_output_path(
     if global_output_dir is not None:
         return global_output_dir / filename
     return task.target_path.parent / filename
+
+
+@dataclass(frozen=True)
+class BatchProgress:
+    """Live progress for a running task: position within the current stage
+    plus overall frame-units across all stages.
+
+    overall_completed / overall_total advances monotonically; it is NOT
+    linear in wall-clock time (stages differ in per-frame cost), so it is a
+    work-units gauge, not an ETA.
+    """
+
+    stage_index: int  # 0-based; also the count of fully-done prior stages
+    stage_count: int
+    stage_name: str
+    stage_completed: int
+    stage_total: int
+    overall_completed: int
+    overall_total: int
+
+    @property
+    def overall_fraction(self) -> float:
+        return (
+            self.overall_completed / self.overall_total
+            if self.overall_total
+            else 0.0
+        )

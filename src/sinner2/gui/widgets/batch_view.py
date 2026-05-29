@@ -185,9 +185,20 @@ class QBatchView(QWidget):
 
     @staticmethod
     def _progress_text(task: BatchTask) -> str:
-        if task.total_frames <= 0:
+        """Overall percent for a task loaded from the store (no live signal).
+        Derived from the persisted stage marker + current-stage frame, in
+        frame-units across all stages, clamped at 100%."""
+        total = task.total_frames
+        if total <= 0:
             return ""
-        return f"{max(0, task.last_completed_frame + 1)} / {task.total_frames}"
+        stage_count = 2 if task.enhancer_enabled else 1
+        overall_total = stage_count * total
+        done = min(
+            overall_total,
+            task.completed_stages * total + max(0, task.last_completed_frame + 1),
+        )
+        pct = round(done / overall_total * 100) if overall_total else 0
+        return f"{pct}% ({done}/{overall_total})"
 
     def _row_for_task_id(self, task_id: str) -> int | None:
         for row in range(self._model.rowCount()):
@@ -216,15 +227,19 @@ class QBatchView(QWidget):
     def _on_task_started(self, task_id: str) -> None:
         self._refresh_row(task_id)
 
-    def _on_task_progress(
-        self, task_id: str, completed: int, total: int
-    ) -> None:
+    def _on_task_progress(self, task_id: str, progress) -> None:
         row = self._row_for_task_id(task_id)
         if row is None:
             return
-        # Update progress cell directly (cheaper than _refresh_row,
-        # which re-loads the task from disk on every tick).
-        self._model.item(row, _COL_PROGRESS).setText(f"{completed} / {total}")
+        # Update the cell directly (cheaper than _refresh_row, which re-loads
+        # the task from disk on every tick). Shows overall % plus which stage
+        # is running and its frame count.
+        pct = round(progress.overall_fraction * 100)
+        text = (
+            f"{pct}% · {progress.stage_name} "
+            f"{progress.stage_completed}/{progress.stage_total}"
+        )
+        self._model.item(row, _COL_PROGRESS).setText(text)
 
     def _on_task_completed(self, task_id: str) -> None:
         self._refresh_row(task_id)

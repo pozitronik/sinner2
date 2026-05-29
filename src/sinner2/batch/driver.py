@@ -43,6 +43,7 @@ from sinner2.batch.task import (
     BatchCleanupMode,
     BatchExtractionMode,
     BatchOutputFormat,
+    BatchProgress,
     BatchTask,
     BatchTaskStatus,
     resolve_output_path,
@@ -65,9 +66,10 @@ from sinner2.pipeline.processors.face_swapper import (
 )
 
 
-# Progress callback: (completed_frames, total_frames) for the CURRENT stage.
-# Step 5 enriches this into a structured per-stage + overall update.
-ProgressCallback = Callable[[int, int], None]
+# Progress callback: a structured per-stage + overall update. The driver
+# calls this from a worker context — the caller marshals to the GUI thread
+# (BatchQueue does this via a queued Qt signal).
+ProgressCallback = Callable[[BatchProgress], None]
 
 
 class BatchDriver:
@@ -155,13 +157,12 @@ class BatchDriver:
             total = reader.frame_count
             fps = reader.fps
             task.total_frames = total
-            stage_cb: Callable[[int], None] | None = (
-                (lambda done: progress_callback(done, total))
-                if progress_callback is not None
-                else None
-            )
+            stage_count = len(stages)
 
             for i, (name, processor) in enumerate(stages):
+                stage_cb = self._stage_progress(
+                    progress_callback, i, stage_count, name, total
+                )
                 trusted = (
                     task.cleanup_mode is BatchCleanupMode.AUTO
                     and i < task.completed_stages
@@ -282,6 +283,34 @@ class BatchDriver:
         return all(
             frame_ok(stage_dir / f"{i:08d}.{ext}") for i in range(total)
         )
+
+    @staticmethod
+    def _stage_progress(
+        progress_callback: ProgressCallback | None,
+        stage_index: int,
+        stage_count: int,
+        stage_name: str,
+        total: int,
+    ) -> Callable[[int], None] | None:
+        """Adapt run_stage's int (frames done in THIS stage) into a
+        BatchProgress carrying stage position + overall frame-units."""
+        if progress_callback is None:
+            return None
+
+        def emit(stage_completed: int) -> None:
+            progress_callback(
+                BatchProgress(
+                    stage_index=stage_index,
+                    stage_count=stage_count,
+                    stage_name=stage_name,
+                    stage_completed=stage_completed,
+                    stage_total=total,
+                    overall_completed=stage_index * total + stage_completed,
+                    overall_total=stage_count * total,
+                )
+            )
+
+        return emit
 
     @staticmethod
     def _stage_failed_message(stage_name: str, missing: list[int]) -> str:
