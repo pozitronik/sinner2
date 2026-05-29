@@ -48,10 +48,13 @@ class FaceEnhancer:
         self._restorer = _load_restorer(get_model_path(_MODEL_FILE), self._params.upscale)
 
     def process(self, frame: Frame) -> Frame:
-        if self._restorer is None:
+        # Local snapshot — release() can null self._restorer concurrently;
+        # holding a local ref keeps the GFPGAN object alive for this call.
+        restorer = self._restorer
+        if restorer is None:
             raise RuntimeError("FaceEnhancer.process called before setup()")
         with self._enhance_lock:
-            _, _, restored = self._restorer.enhance(
+            _, _, restored = restorer.enhance(
                 frame,
                 has_aligned=False,
                 only_center_face=self._params.only_center_face,

@@ -11,6 +11,21 @@ class Processor(Protocol):
     Params are immutable on the instance — to change params, construct a new
     instance. This invariant is what lets the executor snapshot a chain into
     a WorkItem without worrying about mid-frame param mutation.
+
+    Thread safety contract:
+      * process() may be called concurrently from multiple worker threads.
+        Implementations must either be re-entrant or serialize internally
+        (e.g. a Lock around non-thread-safe backends — see FaceEnhancer).
+      * setup() and release() are called from the executor's dispatcher
+        thread, never concurrently with themselves.
+      * release() is normally called after all in-flight workers have drained
+        (RealtimeExecutor._wait_for_inflight). However, that wait has a
+        bounded timeout (currently 5s); if it expires, release() runs while
+        a worker may still be inside process(). Implementations that null out
+        backend handles in release() should defend by snapshotting the handle
+        into a local at the top of process() — see FaceEnhancer.process for
+        the pattern. Implementations whose release() is a no-op or only
+        clears Python-level state need no extra care.
     """
 
     name: str
