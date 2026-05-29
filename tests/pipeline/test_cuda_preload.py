@@ -50,18 +50,30 @@ class TestPreloadBundledCudaLibs:
         model_cache._preload_bundled_cuda_libs()
 
     def test_idempotent(self, monkeypatch: pytest.MonkeyPatch):
+        # Whichever platform-specific import the function attempts
+        # ("nvidia" on Linux, "torch" on Windows) should be tried at
+        # most once across N calls — the _cuda_preloaded flag is the
+        # idempotence guard.
         model_cache._cuda_preloaded = False
-        attempts: list[int] = []
+        real_import = (
+            __builtins__["__import__"]  # type: ignore[index]
+            if isinstance(__builtins__, dict)
+            else __builtins__.__import__
+        )
+        platform_targets = {"nvidia", "torch"}
+        attempts: list[str] = []
 
-        def fake_import(_name: str):
-            attempts.append(1)
-            raise ImportError("no nvidia for test")
+        def patched(name: str, *args, **kwargs):
+            if name in platform_targets:
+                attempts.append(name)
+                raise ImportError(f"no {name} for test")
+            return real_import(name, *args, **kwargs)
 
-        monkeypatch.setattr("builtins.__import__", lambda name, *a, **k: fake_import(name) if name == "nvidia" else __import__(name, *a, **k))
+        monkeypatch.setattr("builtins.__import__", patched)
         model_cache._preload_bundled_cuda_libs()
         model_cache._preload_bundled_cuda_libs()
         model_cache._preload_bundled_cuda_libs()
-        # nvidia should have been attempted at most once
+        # Platform-specific import should be attempted at most once.
         assert len(attempts) <= 1
 
     def test_returns_silently_when_nvidia_missing(self, monkeypatch: pytest.MonkeyPatch):

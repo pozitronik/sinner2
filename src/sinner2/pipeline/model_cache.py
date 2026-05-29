@@ -17,6 +17,84 @@ _DEFAULT_PROVIDERS: tuple[str, ...] = ("CUDAExecutionProvider", "CPUExecutionPro
 _session_cache: dict[Path, "ort.InferenceSession"] = {}
 _session_lock = threading.RLock()
 _cuda_preloaded = False
+# User-selected ONNX providers. None = use the platform-default tuple
+# (CUDA then CPU). Set via set_active_providers() from the GUI; read by
+# anything constructing an ORT session or an insightface model so the
+# user's choice flows through every code path that loads ONNX weights.
+_active_providers: tuple[str, ...] | None = None
+# What ORT actually wired up at session-construction time. Differs from
+# _active_providers when a requested provider can't initialise — e.g.
+# TensorRT EP DLL loads (so it appears in get_available_providers) but
+# nvinfer is missing, and ORT falls back to CPU silently. Surfaced to
+# the GUI so the status bar can tell the user the truth.
+_actual_providers: tuple[str, ...] | None = None
+_providers_lock = threading.RLock()
+
+
+def available_onnx_providers() -> list[str]:
+    """Providers ONNX Runtime reports as built-in for this install.
+
+    Lazy import + lazy call — ORT initialisation isn't free, and we'd
+    rather not pay it just for importing this module. Result is not
+    cached because the GUI may want to refresh after a runtime change
+    (rare, but harmless to allow)."""
+    import onnxruntime as ort
+
+    return list(ort.get_available_providers())
+
+
+def get_active_providers() -> tuple[str, ...]:
+    """Effective provider list for new ORT session / insightface model
+    creations. Falls back to _DEFAULT_PROVIDERS when the user hasn't
+    picked anything yet."""
+    with _providers_lock:
+        return _active_providers if _active_providers else _DEFAULT_PROVIDERS
+
+
+def record_actual_providers(providers: list[str] | tuple[str, ...]) -> None:
+    """Called by processors after an ORT session loads to surface the
+    list of providers ORT actually wired up. May differ from what was
+    requested if a provider failed to initialise (missing runtime libs,
+    GPU absent, etc.) — in that case ORT silently falls back to the
+    next provider in the list. The GUI uses this to show the truth
+    rather than the user's intent."""
+    global _actual_providers
+    with _providers_lock:
+        _actual_providers = tuple(providers)
+
+
+def get_actual_providers() -> tuple[str, ...] | None:
+    """What ORT actually used at the most recent session-load, or None
+    if no session has loaded since startup. None means "nothing loaded
+    yet; use get_active_providers() as the best guess"."""
+    with _providers_lock:
+        return _actual_providers
+
+
+def set_active_providers(providers: tuple[str, ...] | list[str] | None) -> None:
+    """Replace the active providers and invalidate caches that captured
+    the old list. None reverts to the default tuple.
+
+    Side effects: clears the InferenceSession cache (sessions are bound
+    to providers at creation time) and the FaceAnalysis singleton
+    (insightface picks providers at FaceAnalysis() construction). Callers
+    rebuild the chain after this so processors re-load with the new
+    providers picked up via get_active_providers().
+    """
+    global _active_providers, _actual_providers
+    with _providers_lock:
+        _active_providers = tuple(providers) if providers else None
+        # Clear actual too — the next session-load will record what
+        # ORT really picked. Without this, the GUI would show stale
+        # "actual" during the brief window between selection change
+        # and session rebuild.
+        _actual_providers = None
+    clear_session_cache()
+    # Imported here (not at module top) to avoid a circular import —
+    # face_analyser imports model_cache for get_active_providers.
+    from sinner2.pipeline import face_analyser
+
+    face_analyser.reset_shared_face_analysis()
 
 
 def _preload_bundled_cuda_libs() -> None:
@@ -122,7 +200,7 @@ def get_onnx_session(
             return cached
         session = ort.InferenceSession(
             str(path),
-            providers=list(providers) if providers else list(_DEFAULT_PROVIDERS),
+            providers=list(providers) if providers else list(get_active_providers()),
         )
         _session_cache[path] = session
         return session

@@ -16,13 +16,23 @@ def _get_shared_face_analysis() -> Any:
     The insightface model itself is expensive — load once and share across
     every FaceAnalyser instance in the process. Per-stream detection state
     lives on FaceAnalyser; the underlying model has no per-stream state.
+
+    Providers come from `model_cache.get_active_providers()` — the user's
+    selection from the GUI flows in here. Changing providers requires
+    calling `reset_shared_face_analysis()` so the next call rebuilds
+    with the new list (insightface picks providers at construction time).
     """
     global _shared_app
     with _shared_lock:
         if _shared_app is None:
             from insightface.app import FaceAnalysis
 
-            app = FaceAnalysis(name=_FACE_MODEL_NAME)
+            from sinner2.pipeline.model_cache import get_active_providers
+
+            app = FaceAnalysis(
+                name=_FACE_MODEL_NAME,
+                providers=list(get_active_providers()),
+            )
             app.prepare(ctx_id=0, det_size=_DET_SIZE)
             _shared_app = app
         return _shared_app
