@@ -11,11 +11,11 @@ from sinner2.audio.audio_backend import (
     AudioBackendName,
     build_audio_backend,
 )
+from sinner2.config.execution import DEFAULT_ONNX_PROVIDERS
 from sinner2.config.source import Source
 from sinner2.config.target import Target, TargetKind
 from sinner2.gui.bridges.observable_bridge import ObservableValueBridge
 from sinner2.gui.widgets.frame_display import QFrameDisplayWidget
-from sinner2.config.execution import DEFAULT_ONNX_PROVIDERS
 from sinner2.gui.widgets.transport_controls import QTransportControls
 from sinner2.io.reader_pool import ReaderPool
 from sinner2.io.target_reader import ImageTargetReader, TargetReader
