@@ -33,8 +33,13 @@ from sinner2.batch.task import (
     BatchTask,
     resolve_output_path,
 )
+from sinner2.config.execution import (
+    DEFAULT_ONNX_PROVIDERS,
+    available_torch_devices,
+)
 from sinner2.io.video_backend import VideoBackend
 from sinner2.pipeline.image_writer import ImageFormat
+from sinner2.pipeline.model_cache import available_onnx_providers
 from sinner2.pipeline.processors.face_swapper import TargetSex
 
 
@@ -132,6 +137,28 @@ class QBatchTaskDialog(QDialog):
             "session across threads, so more workers cost little extra VRAM."
         )
         swap_form.addRow("Workers:", self._swapper_workers)
+        # Swapper ONNX providers (multi-select). ORT tries them in the listed
+        # order, falling back through to CPU. Unchecking all = platform default.
+        providers_box = QWidget()
+        providers_layout = QVBoxLayout(providers_box)
+        providers_layout.setContentsMargins(0, 0, 0, 0)
+        providers_layout.setSpacing(2)
+        self._provider_checkboxes: dict[str, QCheckBox] = {}
+        try:
+            available = available_onnx_providers()
+        except Exception:
+            available = list(DEFAULT_ONNX_PROVIDERS)
+        wanted = set(task.swapper_execution.providers)
+        for prov in available:
+            cb = QCheckBox(prov)
+            cb.setChecked(prov in wanted)
+            providers_layout.addWidget(cb)
+            self._provider_checkboxes[prov] = cb
+        providers_box.setToolTip(
+            "ONNX execution providers for the swap + detection models. ORT "
+            "tries them in the order shown; uncheck all for platform defaults."
+        )
+        swap_form.addRow("ONNX providers:", providers_box)
 
         # ---- FaceEnhancer group ----
         enh_box = QGroupBox("FaceEnhancer (GFPGAN)")
@@ -154,6 +181,23 @@ class QBatchTaskDialog(QDialog):
             "so each worker loads its own model (~1.3 GB VRAM each)."
         )
         enh_form.addRow("Workers:", self._enhancer_workers)
+        # GFPGAN torch device (Auto / CPU / each CUDA GPU). Independent of the
+        # swapper's ONNX providers — different framework.
+        self._enhancer_device = QComboBox()
+        for value, label in available_torch_devices():
+            self._enhancer_device.addItem(label, value)
+        current_device = task.enhancer_execution.device
+        if self._enhancer_device.findData(current_device) < 0:
+            # Preserve a device token this machine doesn't expose (e.g. a
+            # cuda:N from another box) so editing doesn't silently reset it.
+            self._enhancer_device.addItem(current_device, current_device)
+        self._enhancer_device.setCurrentIndex(
+            self._enhancer_device.findData(current_device)
+        )
+        self._enhancer_device.setToolTip(
+            "Torch device for GFPGAN. Auto picks CUDA when available, else CPU."
+        )
+        enh_form.addRow("Device:", self._enhancer_device)
 
         # ---- Execution group ----
         exec_box = QGroupBox("Execution")
@@ -269,14 +313,17 @@ class QBatchTaskDialog(QDialog):
                 "enhancer_enabled": self._enhancer_box.isChecked(),
                 "enhancer_upscale": self._upscale.value(),
                 "enhancer_only_center_face": self._only_center_face.isChecked(),
-                # Only workers are editable here for now; providers/device are
-                # preserved from the original profile (their selectors land in
-                # a later step). model_copy keeps those fields intact.
                 "swapper_execution": self._task.swapper_execution.model_copy(
-                    update={"workers": self._swapper_workers.value()}
+                    update={
+                        "workers": self._swapper_workers.value(),
+                        "providers": self._selected_providers(),
+                    }
                 ),
                 "enhancer_execution": self._task.enhancer_execution.model_copy(
-                    update={"workers": self._enhancer_workers.value()}
+                    update={
+                        "workers": self._enhancer_workers.value(),
+                        "device": self._enhancer_device.currentData(),
+                    }
                 ),
                 "video_backend": VideoBackend(self._video_backend.currentData()),
                 "reader_pool_size": self._reader_pool_size.value(),
@@ -289,6 +336,13 @@ class QBatchTaskDialog(QDialog):
         )
 
     # ---- helpers ----
+
+    def _selected_providers(self) -> list[str]:
+        """Checked ONNX providers in display order. Empty = use the platform
+        default (the swapper treats an empty list as 'no override')."""
+        return [
+            name for name, cb in self._provider_checkboxes.items() if cb.isChecked()
+        ]
 
     def _resolve_default_output(self) -> Path:
         """The auto-derived output path for the current source / target /

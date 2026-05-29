@@ -893,7 +893,10 @@ class SinnerMainWindow(QMainWindow):
             if providers
             else OnnxExecution(workers=DEFAULT_SWAPPER_WORKERS)
         )
-        enhancer_execution = TorchExecution(workers=DEFAULT_ENHANCER_WORKERS)
+        enhancer_execution = TorchExecution(
+            workers=DEFAULT_ENHANCER_WORKERS,
+            device=self._processors.enhancer_device(),
+        )
         task = BatchTask(
             source_path=source,
             target_path=target,

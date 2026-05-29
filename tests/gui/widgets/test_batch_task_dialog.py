@@ -11,7 +11,7 @@ from sinner2.batch.task import (
     BatchTask,
     BatchTaskStatus,
 )
-from sinner2.config.execution import OnnxExecution
+from sinner2.config.execution import OnnxExecution, TorchExecution
 from sinner2.gui.widgets.batch_task_dialog import QBatchTaskDialog
 from sinner2.io.video_backend import VideoBackend
 from sinner2.pipeline.image_writer import ImageFormat
@@ -38,7 +38,10 @@ class TestPrefill:
             enhancer_enabled=False,
             enhancer_upscale=4,
             enhancer_only_center_face=True,
-            swapper_execution=OnnxExecution(workers=8),
+            swapper_execution=OnnxExecution(
+                workers=8, providers=["CPUExecutionProvider"]
+            ),
+            enhancer_execution=TorchExecution(workers=2, device="cpu"),
             video_backend=VideoBackend.CV2,
             reader_pool_size=4,
             image_format=ImageFormat.PNG,
@@ -58,6 +61,10 @@ class TestPrefill:
         assert dlg._upscale.value() == 4  # noqa: SLF001
         assert dlg._only_center_face.isChecked() is True  # noqa: SLF001
         assert dlg._swapper_workers.value() == 8  # noqa: SLF001
+        # Only the persisted provider is checked; CPU is always available.
+        assert dlg._selected_providers() == ["CPUExecutionProvider"]  # noqa: SLF001
+        assert dlg._enhancer_workers.value() == 2  # noqa: SLF001
+        assert dlg._enhancer_device.currentData() == "cpu"  # noqa: SLF001
         assert dlg._video_backend.currentData() == "cv2"  # noqa: SLF001
         assert dlg._reader_pool_size.value() == 4  # noqa: SLF001
 
@@ -154,6 +161,34 @@ class TestWritebackToTask:
         assert edited.swapper_execution.workers == 8
         # Original is unchanged (model_copy returns a new instance).
         assert t.swapper_execution.workers == 1
+
+    def test_to_task_writes_execution_profiles(self, qtbot, tmp_path):
+        t = _task(
+            tmp_path,
+            swapper_execution=OnnxExecution(
+                workers=2, providers=["CPUExecutionProvider"]
+            ),
+            enhancer_execution=TorchExecution(workers=1, device="cpu"),
+        )
+        dlg = QBatchTaskDialog.from_task(t)
+        qtbot.addWidget(dlg)
+        dlg._swapper_workers.setValue(5)  # noqa: SLF001
+        dlg._enhancer_workers.setValue(3)  # noqa: SLF001
+        edited = dlg.to_task()
+        assert edited.swapper_execution.workers == 5
+        # Providers round-trip from the checked boxes (only CPU was wanted).
+        assert edited.swapper_execution.providers == ["CPUExecutionProvider"]
+        assert edited.enhancer_execution.workers == 3
+        assert edited.enhancer_execution.device == "cpu"
+
+    def test_unknown_device_token_is_preserved(self, qtbot, tmp_path):
+        # A persisted cuda:N this machine doesn't expose must survive an edit
+        # rather than silently resetting to Auto.
+        t = _task(tmp_path, enhancer_execution=TorchExecution(device="cuda:9"))
+        dlg = QBatchTaskDialog.from_task(t)
+        qtbot.addWidget(dlg)
+        assert dlg._enhancer_device.currentData() == "cuda:9"  # noqa: SLF001
+        assert dlg.to_task().enhancer_execution.device == "cuda:9"
 
     def test_to_task_preserves_id_and_runtime_state(
         self, qtbot, tmp_path
