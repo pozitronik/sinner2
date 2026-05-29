@@ -887,15 +887,19 @@ class SinnerMainWindow(QMainWindow):
         )
 
     def _on_batch_task_started(self, _task_id: str) -> None:
-        # Mutual exclusion with realtime preview — sinner1 had GPU
-        # contention issues, and even on a beefy GPU two simultaneous
-        # ORT sessions can OOM on large videos.
+        # Mutual exclusion with realtime preview — two simultaneous ORT
+        # sessions contend for the GPU and can OOM. Pause the live executor
+        # AND lock the transport so playback can't be resumed mid-batch.
         if self._controller.executor() is not None:
             self._controller.executor().pause()
-        self.statusBar().showMessage("Batch task running…", 5000)
+        self._transport.setEnabled(False)
+        self.statusBar().showMessage("Batch running — playback disabled", 5000)
 
     def _on_batch_queue_idle(self) -> None:
-        self.statusBar().showMessage("Batch queue idle", 3000)
+        self._transport.setEnabled(True)
+        self.statusBar().showMessage(
+            "Batch queue idle — playback enabled", 3000
+        )
 
     def _on_batch_task_failed(self, _task_id: str, message: str) -> None:
         # Failures are otherwise quiet (Status cell + its hover tooltip); a

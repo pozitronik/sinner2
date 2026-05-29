@@ -128,6 +128,15 @@ class TestBatchIntegration:
         # Row also landed in the view.
         assert window._batch_view._model.rowCount() == 1  # noqa: SLF001
 
+    def test_batch_running_disables_then_reenables_transport(self, window):
+        # A running batch must lock the realtime transport (GPU contention);
+        # an idle queue unlocks it.
+        window._transport.setEnabled(True)  # noqa: SLF001
+        window._batch_queue.taskStarted.emit("x")  # noqa: SLF001
+        assert not window._transport.isEnabled()  # noqa: SLF001
+        window._batch_queue.queueIdle.emit()  # noqa: SLF001
+        assert window._transport.isEnabled()  # noqa: SLF001
+
 
 class TestSaveCurrentFrame:
     def test_save_no_op_when_no_frame_displayed(self, window, monkeypatch):
