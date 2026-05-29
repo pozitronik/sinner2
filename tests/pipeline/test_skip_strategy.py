@@ -99,17 +99,21 @@ class TestSyncedStrategy:
         )
         assert d.next_frame == 11
 
-    def test_jumps_to_target_when_behind(self):
+    def test_jumps_to_target_when_modestly_behind(self):
+        # "Modestly behind" = within the adaptive fallback threshold,
+        # so the strategy should still try to keep up by jumping ahead.
+        # Gap here (target - last_completed = 50) is below the default
+        # threshold of 60 frames.
         s = SyncedStrategy()
         timeline = MagicMock()
-        timeline.current_frame.return_value = 100
+        timeline.current_frame.return_value = 55
         d = s.decide(
             last_submitted=10,
             last_completed=5,
             timeline=timeline,
             metrics=_zero_metrics(),
         )
-        assert d.next_frame == 100
+        assert d.next_frame == 55
 
     def test_never_goes_backward(self):
         s = SyncedStrategy()
@@ -134,3 +138,158 @@ class TestSyncedStrategy:
             metrics=_zero_metrics(),
         )
         assert d.next_frame == 0
+
+
+class TestSyncedStrategyAdaptiveFallback:
+    """The adaptive fallback: when processing is catastrophically behind
+    the timeline, the strategy stops asking for jump-aheads and submits
+    sequentially. Prevents the death spiral on slow sources where every
+    jump-ahead is a costly random seek the reader can't service."""
+
+    def test_falls_back_to_sequential_when_far_behind(self):
+        # target - last_completed = 200, well above default threshold (60).
+        s = SyncedStrategy()
+        timeline = MagicMock()
+        timeline.current_frame.return_value = 200
+        d = s.decide(
+            last_submitted=10,
+            last_completed=0,
+            timeline=timeline,
+            metrics=_zero_metrics(),
+        )
+        # Sequential submission instead of jumping to 200.
+        assert d.next_frame == 11
+
+    def test_at_threshold_still_jumps(self):
+        # Exactly threshold = NOT over, so jump is allowed. Tests the
+        # boundary condition (`>` not `>=`).
+        s = SyncedStrategy(max_lag_frames=10)
+        timeline = MagicMock()
+        timeline.current_frame.return_value = 15
+        d = s.decide(
+            last_submitted=4,
+            last_completed=5,  # target - last_completed = 10 == threshold
+            timeline=timeline,
+            metrics=_zero_metrics(),
+        )
+        assert d.next_frame == 15
+
+    def test_just_over_threshold_falls_back(self):
+        s = SyncedStrategy(max_lag_frames=10)
+        timeline = MagicMock()
+        timeline.current_frame.return_value = 16
+        d = s.decide(
+            last_submitted=4,
+            last_completed=5,  # target - last_completed = 11 > threshold
+            timeline=timeline,
+            metrics=_zero_metrics(),
+        )
+        assert d.next_frame == 5
+
+    def test_warmup_does_not_trigger_fallback(self):
+        # last_completed = -1 means nothing has completed yet. We
+        # shouldn't claim we're "behind" before the first frame even
+        # processes — that would prevent the system from ever catching
+        # up from a cold start.
+        s = SyncedStrategy(max_lag_frames=0)  # aggressive — would trigger if -1 weren't guarded
+        timeline = MagicMock()
+        timeline.current_frame.return_value = 999
+        d = s.decide(
+            last_submitted=-1,
+            last_completed=-1,
+            timeline=timeline,
+            metrics=_zero_metrics(),
+        )
+        assert d.next_frame == 999
+
+    def test_recovers_when_caught_up(self):
+        # Once last_completed catches up to within threshold, behaviour
+        # returns to "jump to target." This is the recovery path —
+        # makes sense for transient slow periods.
+        s = SyncedStrategy(max_lag_frames=10)
+        timeline = MagicMock()
+        timeline.current_frame.return_value = 20
+        d = s.decide(
+            last_submitted=15,
+            last_completed=15,  # caught up — gap = 5, below threshold
+            timeline=timeline,
+            metrics=_zero_metrics(),
+        )
+        assert d.next_frame == 20
+
+    def test_custom_max_lag_frames(self):
+        s = SyncedStrategy(max_lag_frames=200)
+        timeline = MagicMock()
+        timeline.current_frame.return_value = 150
+        d = s.decide(
+            last_submitted=10,
+            last_completed=5,  # gap = 145, below the custom threshold
+            timeline=timeline,
+            metrics=_zero_metrics(),
+        )
+        assert d.next_frame == 150
+
+    def test_max_lag_frames_property(self):
+        # Public property — controller relies on this for change detection.
+        s = SyncedStrategy(max_lag_frames=120)
+        assert s.max_lag_frames == 120
+        assert SyncedStrategy().max_lag_frames == 60  # default
+
+
+class TestCurrentMode:
+    """current_mode() surfaces in the status bar so the user can tell
+    when an adaptive strategy has shifted behaviour."""
+
+    def test_best_effort_mode(self):
+        assert BestEffortStrategy().current_mode() == "best effort"
+
+    def test_synced_initial_mode(self):
+        # Before any decide() call, Synced reports the not-lagging mode.
+        assert SyncedStrategy().current_mode() == "synced"
+
+    def test_synced_mode_after_normal_decide(self):
+        s = SyncedStrategy(max_lag_frames=10)
+        timeline = MagicMock()
+        timeline.current_frame.return_value = 5
+        s.decide(
+            last_submitted=4,
+            last_completed=4,
+            timeline=timeline,
+            metrics=_zero_metrics(),
+        )
+        assert s.current_mode() == "synced"
+
+    def test_synced_mode_after_fallback_decide(self):
+        s = SyncedStrategy(max_lag_frames=10)
+        timeline = MagicMock()
+        timeline.current_frame.return_value = 100
+        s.decide(
+            last_submitted=4,
+            last_completed=5,  # gap = 95, over threshold
+            timeline=timeline,
+            metrics=_zero_metrics(),
+        )
+        assert s.current_mode() == "synced (lagging)"
+
+    def test_synced_mode_recovers(self):
+        # Mode should track decide() outcomes — falling into fallback
+        # then catching up should reset the mode label.
+        s = SyncedStrategy(max_lag_frames=10)
+        timeline = MagicMock()
+        timeline.current_frame.return_value = 100
+        s.decide(
+            last_submitted=4,
+            last_completed=5,
+            timeline=timeline,
+            metrics=_zero_metrics(),
+        )
+        assert s.current_mode() == "synced (lagging)"
+        # Now caught up.
+        timeline.current_frame.return_value = 15
+        s.decide(
+            last_submitted=14,
+            last_completed=14,
+            timeline=timeline,
+            metrics=_zero_metrics(),
+        )
+        assert s.current_mode() == "synced"

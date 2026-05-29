@@ -2,6 +2,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from sinner2.pipeline.playback_mode import PlaybackMode
 from sinner2.types import FrameIndex
 
 if TYPE_CHECKING:
@@ -53,6 +54,25 @@ class SetSkipStrategyMsg:
     strategy: "FrameSkipStrategy"
 
 
+@dataclass(frozen=True)
+class SetWorkerCountMsg:
+    """Scale the worker pool up or down without rebuilding the executor.
+
+    Adding workers spawns new threads against the existing shared chain and
+    queue. Removing workers signals the surplus to exit at their next loop
+    iteration (after finishing any frame they're currently mid-process on).
+    """
+
+    n: int
+
+
+@dataclass(frozen=True)
+class SetPlaybackModeMsg:
+    """Change how fast the display thread polls the buffer."""
+
+    mode: PlaybackMode
+
+
 type Message = (
     PlayMsg
     | PauseMsg
@@ -61,4 +81,6 @@ type Message = (
     | SetParamsMsg
     | SetChainMsg
     | SetSkipStrategyMsg
+    | SetWorkerCountMsg
+    | SetPlaybackModeMsg
 )
