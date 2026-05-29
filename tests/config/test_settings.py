@@ -260,6 +260,11 @@ class TestExtendedFieldsRoundtrip:
         settings.save(settings.Settings(batch_default_format=fmt))
         assert settings.load().batch_default_format == fmt
 
+    @pytest.mark.parametrize("mode", ["keep", "auto", "drop_at_end"])
+    def test_batch_default_cleanup(self, mode: str):
+        settings.save(settings.Settings(batch_default_cleanup=mode))
+        assert settings.load().batch_default_cleanup == mode
+
     def test_full_payload_roundtrip(self):
         original = settings.Settings(
             window_geometry_hex="abcd1234",
@@ -302,6 +307,7 @@ class TestExtendedFieldsRoundtrip:
             batch_store_path="/b",
             batch_global_output_path="/o",
             batch_default_format="frames",
+            batch_default_cleanup="auto",
         )
         settings.save(original)
         assert settings.load() == original
@@ -348,3 +354,4 @@ class TestExtendedFieldsRoundtrip:
         assert loaded.batch_store_path is None
         assert loaded.batch_global_output_path is None
         assert loaded.batch_default_format is None
+        assert loaded.batch_default_cleanup is None

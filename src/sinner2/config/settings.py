@@ -71,6 +71,7 @@ class Settings(SinnerBaseModel):
     batch_store_path: str | None = None  # default <install>/batch
     batch_global_output_path: str | None = None  # default: next to target
     batch_default_format: str | None = None  # "video" / "frames"
+    batch_default_cleanup: str | None = None  # "keep" / "auto" / "drop_at_end"
 
 
 def settings_path() -> Path:

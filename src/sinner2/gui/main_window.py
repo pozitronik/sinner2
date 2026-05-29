@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from sinner2.batch.queue import BatchQueue
-from sinner2.batch.task import BatchOutputFormat, BatchTask
+from sinner2.batch.task import BatchCleanupMode, BatchOutputFormat, BatchTask
 from sinner2.batch.task_store import BatchTaskStore
 from sinner2.config import settings as user_settings
 from sinner2.gui.player_controller import PlayerController, default_cache_root
@@ -854,10 +854,18 @@ class SinnerMainWindow(QMainWindow):
             default_format = BatchOutputFormat(default_format_value)
         except ValueError:
             default_format = BatchOutputFormat.VIDEO
+        default_cleanup_value = (
+            self._settings.batch_default_cleanup or BatchCleanupMode.KEEP.value
+        )
+        try:
+            default_cleanup = BatchCleanupMode(default_cleanup_value)
+        except ValueError:
+            default_cleanup = BatchCleanupMode.KEEP
         task = BatchTask(
             source_path=source,
             target_path=target,
             output_format=default_format,
+            cleanup_mode=default_cleanup,
             swapper_detection_interval=swapper.detection_interval,
             swapper_many_faces=swapper.many_faces,
             swapper_target_sex=swapper.target_sex.value,

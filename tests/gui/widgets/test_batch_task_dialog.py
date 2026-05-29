@@ -182,3 +182,23 @@ class TestWritebackToTask:
         dlg._output_edit.setText("")  # noqa: SLF001
         edited = dlg.to_task()
         assert edited.output_path is None
+
+
+class TestCleanupMode:
+    def test_prefills_from_task(self, qtbot, tmp_path):
+        from sinner2.batch.task import BatchCleanupMode
+
+        t = _task(tmp_path, cleanup_mode=BatchCleanupMode.DROP_AT_END)
+        dlg = QBatchTaskDialog.from_task(t)
+        qtbot.addWidget(dlg)
+        assert dlg._cleanup_combo.currentData() == "drop_at_end"  # noqa: SLF001
+
+    def test_writeback(self, qtbot, tmp_path):
+        from sinner2.batch.task import BatchCleanupMode
+
+        t = _task(tmp_path)  # defaults to Keep
+        dlg = QBatchTaskDialog.from_task(t)
+        qtbot.addWidget(dlg)
+        idx = dlg._cleanup_combo.findData("auto")  # noqa: SLF001
+        dlg._cleanup_combo.setCurrentIndex(idx)  # noqa: SLF001
+        assert dlg.to_task().cleanup_mode is BatchCleanupMode.AUTO

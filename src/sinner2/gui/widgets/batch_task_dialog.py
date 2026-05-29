@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from sinner2.batch.task import (
+    BatchCleanupMode,
     BatchOutputFormat,
     BatchTask,
     resolve_output_path,
@@ -42,6 +43,12 @@ _TARGET_SEX_OPTIONS = [
     ("Male only", TargetSex.MALE.value),
     ("Female only", TargetSex.FEMALE.value),
     ("As source face", TargetSex.AS_SOURCE.value),
+]
+
+_CLEANUP_OPTIONS = [
+    ("Keep all frames", BatchCleanupMode.KEEP.value),
+    ("Auto (drop consumed stages)", BatchCleanupMode.AUTO.value),
+    ("Drop all when done", BatchCleanupMode.DROP_AT_END.value),
 ]
 
 
@@ -148,6 +155,19 @@ class QBatchTaskDialog(QDialog):
         self._reader_pool_size.setRange(1, 16)
         self._reader_pool_size.setValue(task.reader_pool_size)
         exec_form.addRow("Reader pool size:", self._reader_pool_size)
+        self._cleanup_combo = QComboBox()
+        for label, value in _CLEANUP_OPTIONS:
+            self._cleanup_combo.addItem(label, value)
+            if value == task.cleanup_mode.value:
+                self._cleanup_combo.setCurrentIndex(
+                    self._cleanup_combo.count() - 1
+                )
+        self._cleanup_combo.setToolTip(
+            "Keep: retain every stage's frames. Auto: delete a stage once "
+            "the next has consumed it. Drop all when done: delete all "
+            "intermediates after the final output. The output is always kept."
+        )
+        exec_form.addRow("Intermediate frames:", self._cleanup_combo)
 
         # ---- Output encoding group ----
         out_box = QGroupBox("Output encoding (frames mode + ffmpeg input)")
@@ -236,6 +256,9 @@ class QBatchTaskDialog(QDialog):
                 "worker_count": self._worker_count.value(),
                 "video_backend": VideoBackend(self._video_backend.currentData()),
                 "reader_pool_size": self._reader_pool_size.value(),
+                "cleanup_mode": BatchCleanupMode(
+                    self._cleanup_combo.currentData()
+                ),
                 "image_format": ImageFormat(self._image_format.currentData()),
                 "image_quality": self._image_quality.value(),
             }
