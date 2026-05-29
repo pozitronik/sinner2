@@ -128,14 +128,35 @@ class TestBatchIntegration:
         # Row also landed in the view.
         assert window._batch_view._model.rowCount() == 1  # noqa: SLF001
 
-    def test_batch_running_disables_then_reenables_transport(self, window):
-        # A running batch must lock the realtime transport (GPU contention);
-        # an idle queue unlocks it.
-        window._transport.setEnabled(True)  # noqa: SLF001
+    def test_batch_running_locks_editing_surface(self, window):
+        # DaVinci-style: a running batch locks transport + pickers + settings
+        # + libraries, but the Batch tab stays interactive.
         window._batch_queue.taskStarted.emit("x")  # noqa: SLF001
         assert not window._transport.isEnabled()  # noqa: SLF001
+        assert not window._pickers.isEnabled()  # noqa: SLF001
+        assert not window._processors.isEnabled()  # noqa: SLF001
+        assert not window._side_panel.sources_library().isEnabled()  # noqa: SLF001
+        assert not window._side_panel.targets_library().isEnabled()  # noqa: SLF001
+        assert window._batch_view.isEnabled()  # noqa: SLF001  queue stays usable
         window._batch_queue.queueIdle.emit()  # noqa: SLF001
         assert window._transport.isEnabled()  # noqa: SLF001
+        assert window._pickers.isEnabled()  # noqa: SLF001
+        assert window._processors.isEnabled()  # noqa: SLF001
+
+    def test_config_change_ignored_while_batch_active(
+        self, window, monkeypatch
+    ):
+        # The live re-render path must be inert during a render — otherwise
+        # toggling a param would clobber the batch preview.
+        calls: list = []
+        monkeypatch.setattr(
+            window._controller,  # noqa: SLF001
+            "apply_session_config",
+            lambda **k: calls.append(k),
+        )
+        window._batch_active = True  # noqa: SLF001
+        window._on_processor_config_changed()  # noqa: SLF001
+        assert calls == []
 
     def test_batch_preview_shows_frame_on_display(self, window, qtbot):
         import numpy as np

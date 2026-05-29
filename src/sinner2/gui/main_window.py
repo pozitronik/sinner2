@@ -57,6 +57,9 @@ class SinnerMainWindow(QMainWindow):
         super().__init__(parent)
         self.setWindowTitle("sinner2")
         self._settings = user_settings.load()
+        # True while a batch task renders — locks the live-editing surface so
+        # the display acts purely as a render preview (DaVinci-style).
+        self._batch_active = False
         if not self._restore_geometry_from_settings():
             self.resize(960, 720)
 
@@ -440,6 +443,8 @@ class SinnerMainWindow(QMainWindow):
         )
 
     def _on_processor_config_changed(self) -> None:
+        if self._batch_active:
+            return  # editing is locked while a batch renders
         from sinner2.gui.player_controller import CacheSettings
 
         self._controller.apply_session_config(
@@ -887,19 +892,30 @@ class SinnerMainWindow(QMainWindow):
             f"Added to batch: {source.name} → {target.name}", 3000
         )
 
+    def _set_editing_locked(self, locked: bool) -> None:
+        """Lock/unlock the whole live-editing surface (transport, pickers,
+        settings + libraries). The Batch tab stays interactive so the queue
+        can still be driven; the display becomes a read-only render preview."""
+        self._transport.setEnabled(not locked)
+        self._pickers.setEnabled(not locked)
+        self._side_panel.set_editing_locked(locked)
+
     def _on_batch_task_started(self, _task_id: str) -> None:
-        # Mutual exclusion with realtime preview — two simultaneous ORT
-        # sessions contend for the GPU and can OOM. Pause the live executor
-        # AND lock the transport so playback can't be resumed mid-batch.
+        # DaVinci-style: while a batch renders, pause the live executor and
+        # lock the ENTIRE editing surface. Two simultaneous ORT sessions
+        # contend for the GPU (OOM risk), and — more importantly — the
+        # display must act purely as a render preview, not a live edit.
+        self._batch_active = True
         if self._controller.executor() is not None:
             self._controller.executor().pause()
-        self._transport.setEnabled(False)
-        self.statusBar().showMessage("Batch running — playback disabled", 5000)
+        self._set_editing_locked(True)
+        self.statusBar().showMessage("Batch running — editing locked", 5000)
 
     def _on_batch_queue_idle(self) -> None:
-        self._transport.setEnabled(True)
+        self._batch_active = False
+        self._set_editing_locked(False)
         self.statusBar().showMessage(
-            "Batch queue idle — playback enabled", 3000
+            "Batch queue idle — editing unlocked", 3000
         )
 
     def _on_batch_task_failed(self, _task_id: str, message: str) -> None:
@@ -927,9 +943,13 @@ class SinnerMainWindow(QMainWindow):
         """Library tile click → route through the same picker pipeline
         as the file dialog. Setting the picker fires its sourceChanged
         signal which wires straight into the controller."""
+        if self._batch_active:
+            return  # editing locked during a render
         self._pickers.set_source(path)
 
     def _on_library_target_selected(self, path: Path) -> None:
+        if self._batch_active:
+            return
         self._pickers.set_target(path)
 
     def _update_settings(self, **fields: object) -> None:

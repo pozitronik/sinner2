@@ -72,3 +72,13 @@ class TestQSidePanel:
         # And display_dim() accessor reads from either view (they're
         # in sync, so reading from sources is canonical).
         assert side_panel.display_dim() == 96
+
+    def test_set_editing_locked_toggles_editing_tabs(self, side_panel):
+        side_panel.set_editing_locked(True)
+        assert not side_panel.processors().isEnabled()
+        assert not side_panel.sources_library().isEnabled()
+        assert not side_panel.targets_library().isEnabled()
+        side_panel.set_editing_locked(False)
+        assert side_panel.processors().isEnabled()
+        assert side_panel.sources_library().isEnabled()
+        assert side_panel.targets_library().isEnabled()

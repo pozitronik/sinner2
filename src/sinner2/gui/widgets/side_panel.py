@@ -99,6 +99,14 @@ class QSidePanel(QTabWidget):
     def batch_view(self) -> QBatchView | None:
         return self._batch_view
 
+    def set_editing_locked(self, locked: bool) -> None:
+        """Lock the editing tabs (Settings + both libraries) during a batch
+        render, leaving the Batch tab interactive — DaVinci-style: you can't
+        edit while rendering."""
+        self._processors.setEnabled(not locked)
+        self._sources_library.setEnabled(not locked)
+        self._targets_library.setEnabled(not locked)
+
     def set_display_dim(self, dim: int) -> None:
         """Apply the same thumbnail display size to both libraries.
         Used to keep source/target tiles in sync (resizing one should
