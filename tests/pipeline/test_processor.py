@@ -6,6 +6,7 @@ from sinner2.types import Frame
 
 class _Compliant:
     name = "Compliant"
+    thread_safe = True
 
     def setup(self) -> None: ...
     def process(self, frame: Frame) -> Frame:

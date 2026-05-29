@@ -10,7 +10,7 @@ _shared_app: Any = None
 _shared_lock = threading.RLock()
 
 
-def _get_shared_face_analysis() -> Any:
+def _get_shared_face_analysis(providers: list[str] | None = None) -> Any:
     """Lazily load and cache the insightface FaceAnalysis singleton.
 
     The insightface model itself is expensive — load once and share across
@@ -29,10 +29,8 @@ def _get_shared_face_analysis() -> Any:
 
             from sinner2.pipeline.model_cache import get_active_providers
 
-            app = FaceAnalysis(
-                name=_FACE_MODEL_NAME,
-                providers=list(get_active_providers()),
-            )
+            eps = list(providers) if providers else list(get_active_providers())
+            app = FaceAnalysis(name=_FACE_MODEL_NAME, providers=eps)
             app.prepare(ctx_id=0, det_size=_DET_SIZE)
             _shared_app = app
         return _shared_app
@@ -55,10 +53,13 @@ class FaceAnalyser:
     processing in parallel, prefer `detection_interval=1`.
     """
 
-    def __init__(self, detection_interval: int = 1) -> None:
+    def __init__(
+        self, detection_interval: int = 1, providers: list[str] | None = None
+    ) -> None:
         if detection_interval < 1:
             raise ValueError(f"detection_interval must be >= 1; got {detection_interval}")
         self._detection_interval = detection_interval
+        self._providers = list(providers) if providers else None
         self._frame_counter = 0
         self._cached_faces: list[Any] | None = None
         self._lock = threading.RLock()
@@ -78,13 +79,13 @@ class FaceAnalyser:
             cached = self._cached_faces
         if not cache_miss:
             return list(cached or [])
-        faces = _get_shared_face_analysis().get(frame)
+        faces = _get_shared_face_analysis(self._providers).get(frame)
         with self._lock:
             self._cached_faces = faces
         return list(faces or [])
 
     def analyse_uncached(self, frame: Frame) -> list[Any]:
-        return list(_get_shared_face_analysis().get(frame))
+        return list(_get_shared_face_analysis(self._providers).get(frame))
 
     def reset_cache(self) -> None:
         with self._lock:

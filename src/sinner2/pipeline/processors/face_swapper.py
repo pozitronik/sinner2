@@ -60,19 +60,18 @@ def _face_matches(face: Any, target_sex: TargetSex) -> bool:
     return False
 
 
-def _load_inswapper(path: Path) -> Any:
+def _load_inswapper(path: Path, providers: list[str]) -> Any:
     """Loader indirection so tests can stub the insightface call cheaply.
 
-    Providers come from model_cache.get_active_providers() so the user's
-    GUI selection flows into the swap model's ORT session. After load,
-    record what ORT actually wired up — `get_available_providers()`
-    advertises EPs whose plugin DLL loads, but the EP can still fail at
-    session construction (TensorRT EP DLL loads even when nvinfer is
-    missing; ORT then silently falls back). The recorded actual list
-    drives the status-bar truth indicator."""
+    `providers` is the swapper's ONNX execution-provider list (from its
+    OnnxExecution profile). After load, record what ORT actually wired up —
+    `get_available_providers()` advertises EPs whose plugin DLL loads, but the
+    EP can still fail at session construction (the TensorRT EP DLL loads even
+    when nvinfer is missing; ORT then silently falls back). The recorded
+    actual list drives the status-bar truth indicator."""
     from insightface.model_zoo import get_model
 
-    model = get_model(str(path), providers=list(get_active_providers()))
+    model = get_model(str(path), providers=list(providers))
     # insightface wraps the ORT session in a Model object; the session
     # attribute name is stable for inswapper.
     session = getattr(model, "session", None)
@@ -86,17 +85,30 @@ def _load_inswapper(path: Path) -> Any:
 
 class FaceSwapper:
     name = "FaceSwapper"
+    thread_safe = True  # one ORT session, called concurrently by N workers
 
-    def __init__(self, source: Source, params: FaceSwapperParams | None = None) -> None:
+    def __init__(
+        self,
+        source: Source,
+        params: FaceSwapperParams | None = None,
+        providers: list[str] | None = None,
+    ) -> None:
         self._source = source
         self._params = params or FaceSwapperParams()
+        # ONNX providers from the swapper's OnnxExecution profile; None falls
+        # back to the process-wide active providers.
+        self._providers = list(providers) if providers else None
         self._analyser: FaceAnalyser | None = None
         self._swapper: Any = None
         self._source_face: Any = None
 
     def setup(self) -> None:
-        self._analyser = FaceAnalyser(detection_interval=self._params.detection_interval)
-        self._swapper = _load_inswapper(get_model_path(_MODEL_FILE))
+        providers = self._providers or list(get_active_providers())
+        self._analyser = FaceAnalyser(
+            detection_interval=self._params.detection_interval,
+            providers=providers,
+        )
+        self._swapper = _load_inswapper(get_model_path(_MODEL_FILE), providers)
         source_img = imread_unicode(self._source.path)
         if source_img is None:
             raise ValueError(f"cannot read source image: {self._source.path}")

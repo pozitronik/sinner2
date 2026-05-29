@@ -29,6 +29,11 @@ class Processor(Protocol):
     """
 
     name: str
+    # True if process() may be called concurrently on ONE shared instance
+    # (e.g. an ONNX Runtime session). False if each concurrent worker needs
+    # its OWN instance (e.g. GFPGAN, which mutates torch state) — the batch
+    # stage runner builds N instances for non-thread-safe processors.
+    thread_safe: bool
 
     def setup(self) -> None: ...
 

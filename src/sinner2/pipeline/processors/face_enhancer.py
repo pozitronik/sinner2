@@ -20,9 +20,9 @@ class FaceEnhancerParams(SinnerBaseModel):
 _MODEL_FILE = "GFPGANv1.4.pth"
 
 
-def _load_restorer(path: Path, upscale: int, device: str) -> Any:
-    """Loader indirection so tests can stub the gfpgan call cheaply."""
-    import torch
+def _load_restorer(path: Path, upscale: int, device: Any) -> Any:
+    """Loader indirection so tests can stub the gfpgan call cheaply.
+    ``device`` is a torch.device chosen by the caller."""
     from gfpgan import GFPGANer
 
     return GFPGANer(
@@ -30,37 +30,47 @@ def _load_restorer(path: Path, upscale: int, device: str) -> Any:
         upscale=upscale,
         arch="clean",
         channel_multiplier=2,
-        device=torch.device(device),
+        device=device,
     )
 
 
 class FaceEnhancer:
     name = "FaceEnhancer"
+    thread_safe = False  # GFPGAN mutates torch state — each worker needs its own
 
-    def __init__(self, params: FaceEnhancerParams | None = None) -> None:
+    def __init__(
+        self,
+        params: FaceEnhancerParams | None = None,
+        device: str = "auto",
+    ) -> None:
         self._params = params or FaceEnhancerParams()
+        # Torch device from the enhancer's TorchExecution profile
+        # ("auto"/"cpu"/"cuda"/"cuda:N"); resolved at setup().
+        self._device = device
         self._restorer: Any = None
-        # GFPGAN's restorer.enhance() is not thread-safe — its PyTorch
-        # backend mutates internal state during inference. The semaphore
-        # serializes concurrent enhance() calls from multiple workers
-        # (matches sinner1's pattern). FaceSwapper has no such constraint
-        # because ORT InferenceSession is genuinely thread-safe.
+        # GFPGAN's enhance() mutates torch state, so it isn't thread-safe. The
+        # batch runner gives each worker its OWN instance (thread_safe=False);
+        # this lock only matters where an instance is shared (the realtime
+        # chain), serializing concurrent enhance() calls there.
         self._enhance_lock = threading.Lock()
 
     def setup(self) -> None:
-        import torch
+        from sinner2.config.execution import resolve_torch_device
 
         # GFPGAN is PyTorch, so its device is torch's CUDA — independent of the
-        # ONNX execution providers the swapper uses. Choose it explicitly and
+        # ONNX providers the swapper uses. Resolve the requested device and
         # announce it: a CPU fallback pegs every core and is far slower, so
         # surface it loudly instead of letting it look like a "slow GPU".
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        if device == "cuda":
-            print("[sinner2] FaceEnhancer (GFPGAN) device: cuda", file=sys.stderr)
+        device = resolve_torch_device(self._device)
+        if device.type == "cuda":
+            print(
+                f"[sinner2] FaceEnhancer (GFPGAN) device: {device}",
+                file=sys.stderr,
+            )
         else:
             print(
-                "[sinner2] WARNING: FaceEnhancer (GFPGAN) running on CPU — "
-                "torch.cuda.is_available() is False.",
+                "[sinner2] WARNING: FaceEnhancer (GFPGAN) running on CPU "
+                f"(requested device={self._device!r}).",
                 file=sys.stderr,
             )
         self._restorer = _load_restorer(

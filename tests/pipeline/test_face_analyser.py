@@ -12,7 +12,7 @@ from sinner2.types import Frame
 def stub_insightface(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     stub = MagicMock()
     stub.get = MagicMock(return_value=[MagicMock(name="Face")])
-    monkeypatch.setattr(face_analyser, "_get_shared_face_analysis", lambda: stub)
+    monkeypatch.setattr(face_analyser, "_get_shared_face_analysis", lambda *a, **k: stub)
     return stub
 
 

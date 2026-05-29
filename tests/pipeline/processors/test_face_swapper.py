@@ -22,7 +22,7 @@ from sinner2.types import Frame
 def stub_insightface_app(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     stub = MagicMock()
     stub.get = MagicMock(return_value=[MagicMock(name="Face")])
-    monkeypatch.setattr(face_analyser, "_get_shared_face_analysis", lambda: stub)
+    monkeypatch.setattr(face_analyser, "_get_shared_face_analysis", lambda *a, **k: stub)
     face_analyser.reset_shared_face_analysis()
     return stub
 
@@ -31,7 +31,7 @@ def stub_insightface_app(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
 def stub_inswapper(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     swapper = MagicMock()
     swapper.get = MagicMock(side_effect=lambda f, *a, **k: f)
-    monkeypatch.setattr(face_swapper, "_load_inswapper", lambda _path: swapper)
+    monkeypatch.setattr(face_swapper, "_load_inswapper", lambda *a, **k: swapper)
     return swapper
 
 
@@ -53,6 +53,11 @@ def models_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
 
 def _blank() -> Frame:
     return np.zeros((10, 10, 3), dtype=np.uint8)
+
+
+class TestThreadSafety:
+    def test_swapper_is_thread_safe(self):
+        assert FaceSwapper.thread_safe is True
 
 
 class TestFaceSwapperParams:

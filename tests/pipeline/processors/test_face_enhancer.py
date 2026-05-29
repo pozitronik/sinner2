@@ -52,6 +52,9 @@ class TestFaceEnhancer:
     def test_name(self):
         assert FaceEnhancer.name == "FaceEnhancer"
 
+    def test_not_thread_safe(self):
+        assert FaceEnhancer.thread_safe is False
+
     def test_compliant_with_processor_protocol(self):
         assert isinstance(FaceEnhancer(), Processor)
 
@@ -105,17 +108,33 @@ class TestFaceEnhancer:
 
         captured: dict[str, str] = {}
 
-        def fake_load(_path: Path, _upscale: int, device: str) -> MagicMock:
+        def fake_load(_path: Path, _upscale: int, device) -> MagicMock:
             captured["device"] = device
             return MagicMock(enhance=MagicMock(return_value=([], [], None)))
 
         monkeypatch.setattr(face_enhancer, "_load_restorer", fake_load)
         monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
-        FaceEnhancer().setup()
-        assert captured["device"] == "cpu"
+        FaceEnhancer().setup()  # device="auto" → resolves to cpu
+        assert captured["device"].type == "cpu"
         monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
         FaceEnhancer().setup()
-        assert captured["device"] == "cuda"
+        assert captured["device"].type == "cuda"
+
+    def test_explicit_cpu_device_overrides_available_cuda(
+        self, models_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        import torch
+
+        captured: dict = {}
+
+        def fake_load(_path, _upscale, device):
+            captured["device"] = device
+            return MagicMock(enhance=MagicMock(return_value=([], [], None)))
+
+        monkeypatch.setattr(face_enhancer, "_load_restorer", fake_load)
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+        FaceEnhancer(device="cpu").setup()
+        assert captured["device"].type == "cpu"
 
     def test_only_center_face_passed_to_enhance(
         self, models_dir: Path, stub_restorer: MagicMock
