@@ -63,8 +63,10 @@ class TestDiskFrameStore:
         store.write(0, _frame())
         assert store.has(0)
 
-    def test_extension_strips_leading_dot(self, tmp_path: Path):
-        store = DiskFrameStore(tmp_path, extension=".jpg")
+    def test_extension_from_writer(self, tmp_path: Path):
+        from sinner2.pipeline.image_writer import JPEGImageWriter
+
+        store = DiskFrameStore(tmp_path, writer=JPEGImageWriter())
         store.write(0, _frame())
         assert (tmp_path / "00000000.jpg").exists()
 
@@ -74,10 +76,15 @@ class TestDiskFrameStore:
         assert (tmp_path / "00000007.png").exists()
 
     def test_write_failure_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        # The PNG writer now goes through imwrite_unicode (cv2.imencode +
+        # Path.write_bytes) rather than cv2.imwrite directly. Force the
+        # encode step to fail so write() surfaces as an OSError.
         import cv2
 
         store = DiskFrameStore(tmp_path)
-        monkeypatch.setattr(cv2, "imwrite", lambda *_a, **_k: False)
+        monkeypatch.setattr(
+            cv2, "imencode", lambda *_a, **_k: (False, None)
+        )
         with pytest.raises(OSError):
             store.write(0, _frame())
 
