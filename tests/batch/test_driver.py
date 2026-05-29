@@ -19,6 +19,7 @@ from PIL import Image
 
 from sinner2.batch.driver import BatchDriver
 from sinner2.batch.task import (
+    BatchCleanupMode,
     BatchOutputFormat,
     BatchTask,
     BatchTaskStatus,
@@ -432,3 +433,37 @@ class TestProgressCallback:
         driver.run(task, progress_callback=lambda c, t: events.append((c, t)))
         assert events
         assert events[-1] == (3, 3)
+
+
+class TestCleanupModes:
+    def _two_stage(self, tmp_path, mode: BatchCleanupMode) -> BatchTask:
+        task = _make_task(
+            tmp_path, image_target=False, enhancer_enabled=True
+        )
+        task.cleanup_mode = mode
+        return task
+
+    def test_keep_retains_all_stage_dirs(self, driver, stub_stages, tmp_path):
+        task = self._two_stage(tmp_path, BatchCleanupMode.KEEP)
+        assert driver.run(task) is BatchTaskStatus.COMPLETED
+        assert _stage_dir(driver, task, 0, "faceswapper").is_dir()
+        assert _stage_dir(driver, task, 1, "faceenhancer").is_dir()
+        assert len(list(task.output_path.glob("*.jpg"))) == 3
+
+    def test_auto_removes_all_stage_dirs_keeps_output(
+        self, driver, stub_stages, tmp_path
+    ):
+        task = self._two_stage(tmp_path, BatchCleanupMode.AUTO)
+        assert driver.run(task) is BatchTaskStatus.COMPLETED
+        assert not _stage_dir(driver, task, 0, "faceswapper").exists()
+        assert not _stage_dir(driver, task, 1, "faceenhancer").exists()
+        assert len(list(task.output_path.glob("*.jpg"))) == 3
+
+    def test_drop_at_end_removes_all_stage_dirs_keeps_output(
+        self, driver, stub_stages, tmp_path
+    ):
+        task = self._two_stage(tmp_path, BatchCleanupMode.DROP_AT_END)
+        assert driver.run(task) is BatchTaskStatus.COMPLETED
+        assert not _stage_dir(driver, task, 0, "faceswapper").exists()
+        assert not _stage_dir(driver, task, 1, "faceenhancer").exists()
+        assert len(list(task.output_path.glob("*.jpg"))) == 3

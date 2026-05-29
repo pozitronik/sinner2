@@ -40,6 +40,7 @@ from sinner2.batch.stage import (
     run_stage,
 )
 from sinner2.batch.task import (
+    BatchCleanupMode,
     BatchExtractionMode,
     BatchOutputFormat,
     BatchTask,
@@ -161,52 +162,73 @@ class BatchDriver:
             )
 
             for i, (name, processor) in enumerate(stages):
-                # Skip a fully-rendered stage without loading its model
-                # (matters on resume — stage 0 done, resume into stage 1).
-                if self._stage_complete(stage_dirs[i], ext, total):
-                    task.completed_stages = i + 1
+                trusted = (
+                    task.cleanup_mode is BatchCleanupMode.AUTO
+                    and i < task.completed_stages
+                )
+                if trusted or self._stage_complete(stage_dirs[i], ext, total):
+                    # Done already — verified on disk, or (under Auto, whose
+                    # intermediate dirs get deleted) trusted via the marker.
                     if stage_cb is not None:
                         stage_cb(total)
-                    continue
-                stage_input: StageInput = (
-                    ReaderStageInput(reader)
-                    if i == 0
-                    else FramesDirInput(stage_dirs[i - 1], ext, total)
-                )
-                result = run_stage(
-                    stage_input=stage_input,
-                    processor=processor,
-                    output_dir=stage_dirs[i],
-                    ext=ext,
-                    writer=writer,
-                    workers=task.worker_count,
-                    pause_event=self._pause_event,
-                    cancel_event=self._cancel_event,
-                    on_progress=stage_cb,
-                )
-                if result.status is StageStatus.PAUSED:
-                    task.status = BatchTaskStatus.PAUSED
-                    task.last_completed_frame = result.completed_frames - 1
-                    return task.status
-                if result.status is StageStatus.CANCELLED:
-                    self._wipe_cache(task_cache)
-                    task.status = BatchTaskStatus.CANCELLED
-                    task.last_completed_frame = -1
-                    task.completed_stages = 0
-                    return task.status
-                if result.status is StageStatus.FAILED:
-                    task.status = BatchTaskStatus.FAILED
-                    task.error_message = self._stage_failed_message(
-                        name, result.missing
+                else:
+                    stage_input: StageInput = (
+                        ReaderStageInput(reader)
+                        if i == 0
+                        else FramesDirInput(stage_dirs[i - 1], ext, total)
                     )
-                    task.last_completed_frame = result.completed_frames - 1
-                    return task.status
-                task.completed_stages = i + 1
+                    result = run_stage(
+                        stage_input=stage_input,
+                        processor=processor,
+                        output_dir=stage_dirs[i],
+                        ext=ext,
+                        writer=writer,
+                        workers=task.worker_count,
+                        pause_event=self._pause_event,
+                        cancel_event=self._cancel_event,
+                        on_progress=stage_cb,
+                    )
+                    if result.status is StageStatus.PAUSED:
+                        task.status = BatchTaskStatus.PAUSED
+                        task.last_completed_frame = result.completed_frames - 1
+                        return task.status
+                    if result.status is StageStatus.CANCELLED:
+                        self._wipe_cache(task_cache)
+                        task.status = BatchTaskStatus.CANCELLED
+                        task.last_completed_frame = -1
+                        task.completed_stages = 0
+                        return task.status
+                    if result.status is StageStatus.FAILED:
+                        task.status = BatchTaskStatus.FAILED
+                        task.error_message = self._stage_failed_message(
+                            name, result.missing
+                        )
+                        task.last_completed_frame = result.completed_frames - 1
+                        return task.status
+                # max() so resuming a paused task can't regress the marker.
+                task.completed_stages = max(task.completed_stages, i + 1)
+                # Auto: drop the now-consumed previous stage to cap peak disk.
+                if task.cleanup_mode is BatchCleanupMode.AUTO and i > 0:
+                    shutil.rmtree(stage_dirs[i - 1], ignore_errors=True)
 
-            # All stages complete → package the last stage's frames.
+            # Guard: the last stage's frames must be present to package.
+            # Normally they are (we package before any cleanup); this only
+            # trips if a completed Auto task is re-run without a refresh (its
+            # intermediate dirs are gone) — fail loudly, never write empty.
+            if not self._stage_complete(stage_dirs[-1], ext, total):
+                task.status = BatchTaskStatus.FAILED
+                task.error_message = (
+                    "intermediate frames were cleaned up; refresh the task "
+                    "to re-run it from scratch"
+                )
+                return task.status
+
+            # All stages complete → package the last stage's frames, then
+            # clean up per the cleanup mode (Keep leaves everything).
             self._package_output(task, stage_dirs[-1], fps, ext)
             task.status = BatchTaskStatus.COMPLETED
             task.last_completed_frame = total - 1
+            self._cleanup_stage_dirs(task, stage_dirs)
             return task.status
         finally:
             reader.release()
@@ -277,6 +299,15 @@ class BatchDriver:
             shutil.rmtree(cache_dir)
         except OSError:
             pass
+
+    @staticmethod
+    def _cleanup_stage_dirs(task: BatchTask, stage_dirs: list[Path]) -> None:
+        """Post-run cleanup. Auto and Drop-at-end remove all stage dirs once
+        the final output exists; Keep leaves them for inspection / re-export."""
+        if task.cleanup_mode is BatchCleanupMode.KEEP:
+            return
+        for stage_dir in stage_dirs:
+            shutil.rmtree(stage_dir, ignore_errors=True)
 
     # ---- Output packaging ----
 
