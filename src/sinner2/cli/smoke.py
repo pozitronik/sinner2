@@ -3,14 +3,13 @@ import shutil
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-
-import cv2
 
 from sinner2.config.source import Source
 from sinner2.config.target import Target
+from sinner2.io.cv2_unicode import imwrite_unicode
 from sinner2.io.target_reader import ImageTargetReader
+from sinner2.pipeline.buffer.bounded_write_executor import BoundedWriteExecutor
 from sinner2.pipeline.buffer.buffer import FrameBuffer
 from sinner2.pipeline.buffer.cache import MemoryFrameCache
 from sinner2.pipeline.buffer.store import DiskFrameStore
@@ -60,7 +59,7 @@ def main() -> int:
     args.work_dir.mkdir(parents=True, exist_ok=True)
     store = DiskFrameStore(frames_dir)
     cache = MemoryFrameCache(max_bytes=128 * 1024 * 1024)
-    write_executor = ThreadPoolExecutor(max_workers=2)
+    write_executor = BoundedWriteExecutor(max_workers=2, max_outstanding=8)
     buffer = FrameBuffer(store, cache, timeline, write_executor)
     reader = ImageTargetReader(target)
 
@@ -111,8 +110,8 @@ def main() -> int:
     if frame is None:
         print("no output frame was delivered", file=sys.stderr)
         return 1
-    if not cv2.imwrite(str(args.output), frame):
-        print(f"cv2.imwrite failed for {args.output}", file=sys.stderr)
+    if not imwrite_unicode(args.output, frame):
+        print(f"imwrite failed for {args.output}", file=sys.stderr)
         return 2
     print(f"wrote {args.output} (shape={frame.shape})")
     return 0
