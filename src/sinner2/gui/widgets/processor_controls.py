@@ -162,6 +162,43 @@ class QProcessorControls(QWidget):
         self._target_sex.currentIndexChanged.connect(self.configChanged)
         swapper_form.addRow("Swap which", self._target_sex)
 
+        # ONNX execution providers — multi-select for the swapper + analyser
+        # (both ONNX). Order matters: ORT tries providers in the order listed,
+        # falling back through to CPU. We expose every available provider as a
+        # checkbox and preserve the platform-default order from
+        # get_available_providers (already "best first"). Unchecking all
+        # reverts to the default order at session-build time.
+        providers_box = QWidget()
+        providers_layout = QVBoxLayout(providers_box)
+        providers_layout.setContentsMargins(0, 0, 0, 0)
+        providers_layout.setSpacing(2)
+        self._provider_checkboxes: dict[str, QCheckBox] = {}
+        try:
+            available = available_onnx_providers()
+        except Exception:
+            # ORT might fail to load on a broken install — fall back to
+            # the known-good defaults so the panel still renders.
+            available = list(DEFAULT_ONNX_PROVIDERS)
+        # Pre-check the platform-default EP order (CUDA + CPU) so the user
+        # sees the actual effective state on a fresh launch instead of an
+        # all-unchecked column that lies about what ORT will use.
+        # apply_restored_settings overrides this when there's a persisted list.
+        default_active = set(DEFAULT_ONNX_PROVIDERS)
+        for prov in available:
+            cb = QCheckBox(prov)
+            cb.setToolTip(
+                "ONNX execution provider. Multiple may be checked; ORT\n"
+                "tries them in the order shown. If you uncheck everything,\n"
+                "the system falls back to the platform defaults (CUDA + CPU)\n"
+                "so inference still works. Applies immediately — rebuilds\n"
+                "the session (chain reloads)."
+            )
+            cb.setChecked(prov in default_active)
+            cb.toggled.connect(self.configChanged)
+            providers_layout.addWidget(cb)
+            self._provider_checkboxes[prov] = cb
+        swapper_form.addRow("ONNX providers", providers_box)
+
         enhancer_box = QGroupBox("FaceEnhancer (GFPGAN)")
         enhancer_box.setCheckable(True)
         enhancer_box.setChecked(True)
@@ -184,7 +221,7 @@ class QProcessorControls(QWidget):
             self._enhancer_device.addItem(label, value)
         self._enhancer_device.setToolTip(
             "Torch device for GFPGAN. Auto picks CUDA when available, else\n"
-            "CPU (much slower). Independent of the ONNX providers below.\n"
+            "CPU (much slower). Independent of the swapper's ONNX providers.\n"
             "Applies immediately — rebuilds the chain (reloads the model)."
         )
         self._enhancer_device.currentIndexChanged.connect(self.configChanged)
@@ -274,43 +311,6 @@ class QProcessorControls(QWidget):
         )
         self._video_backend_combo.currentTextChanged.connect(lambda _: self.configChanged.emit())
         execution_form.addRow("Video backend", self._video_backend_combo)
-
-        # ONNX execution providers — multi-select. Order matters: ORT
-        # tries providers in the order listed, falling back through to
-        # CPU. We expose every available provider as a checkbox and
-        # preserve the platform-default order from get_available_providers
-        # (which is already "best first"). Unchecking all reverts to the
-        # default order at session-build time.
-        providers_box = QWidget()
-        providers_layout = QVBoxLayout(providers_box)
-        providers_layout.setContentsMargins(0, 0, 0, 0)
-        providers_layout.setSpacing(2)
-        self._provider_checkboxes: dict[str, QCheckBox] = {}
-        try:
-            available = available_onnx_providers()
-        except Exception:
-            # ORT might fail to load on a broken install — fall back to
-            # the known-good defaults so the panel still renders.
-            available = list(DEFAULT_ONNX_PROVIDERS)
-        # Pre-check the platform-default EP order (CUDA + CPU) so the user
-        # sees the actual effective state on a fresh launch instead of an
-        # all-unchecked column that lies about what ORT will use.
-        # apply_restored_settings overrides this when there's a persisted list.
-        default_active = set(DEFAULT_ONNX_PROVIDERS)
-        for prov in available:
-            cb = QCheckBox(prov)
-            cb.setToolTip(
-                "ONNX execution provider. Multiple may be checked; ORT\n"
-                "tries them in the order shown. If you uncheck everything,\n"
-                "the system falls back to the platform defaults (CUDA + CPU)\n"
-                "so inference still works. Applies immediately — rebuilds\n"
-                "the session (chain reloads)."
-            )
-            cb.setChecked(prov in default_active)
-            cb.toggled.connect(self.configChanged)
-            providers_layout.addWidget(cb)
-            self._provider_checkboxes[prov] = cb
-        execution_form.addRow("ONNX providers", providers_box)
 
         cache_box = QGroupBox("Cache")
         cache_form = QFormLayout(cache_box)
