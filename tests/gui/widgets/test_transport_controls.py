@@ -73,3 +73,4 @@ class TestTransportControls:
     def test_set_frame_count_does_not_emit_seek(self, widget, qtbot):
         with qtbot.assertNotEmitted(widget.seekRequested, wait=100):
             widget.set_frame_count(100)
+
