@@ -8,6 +8,7 @@ from sinner2.config.source import Source
 from sinner2.gui.player_controller import PlayerController
 from sinner2.gui.widgets.frame_display import QFrameDisplayWidget
 from sinner2.gui.widgets.transport_controls import QTransportControls
+from sinner2.pipeline.realtime.per_worker import PerWorkerProcessor
 
 
 class _MarkSwap:
@@ -17,6 +18,8 @@ class _MarkSwap:
 
 
 class _MarkEnh:
+    name = "FaceEnhancer"  # _build_chain reads FaceEnhancer.name for the wrapper
+
     def __init__(self, params, device="auto") -> None:
         self.kind = "enh"
         self.device = device
@@ -47,7 +50,11 @@ def source(tmp_path):
 
 
 def _kinds(chain):
-    return [p.kind for p in chain]
+    # The enhancer is wrapped in a PerWorkerProcessor (each realtime worker
+    # gets its own GFPGAN), so it no longer exposes _MarkEnh.kind directly.
+    return [
+        "enh" if isinstance(p, PerWorkerProcessor) else p.kind for p in chain
+    ]
 
 
 class TestChainComposition:

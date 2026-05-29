@@ -37,6 +37,7 @@ from sinner2.pipeline.processor import Processor
 from sinner2.pipeline.processors.face_enhancer import FaceEnhancer, FaceEnhancerParams
 from sinner2.pipeline.processors.face_swapper import FaceSwapper, FaceSwapperParams
 from sinner2.pipeline.realtime.executor import RealtimeExecutor
+from sinner2.pipeline.realtime.per_worker import PerWorkerProcessor
 from sinner2.pipeline.skip_strategy import (
     BestEffortStrategy,
     FrameSkipStrategy,
@@ -513,9 +514,15 @@ class PlayerController(QObject):
                 providers=list(self._swapper_providers) or None,
             ))
         if self._enhancer_enabled:
-            chain.append(FaceEnhancer(
-                params=self._enhancer_params,
-                device=self._enhancer_device,
+            # GFPGAN isn't thread-safe, so a single shared instance serialises
+            # every worker on its lock. Wrap it so each realtime worker gets
+            # its own instance and the live chain enhances in parallel. The
+            # swapper stays a shared single instance (thread-safe ORT session).
+            params = self._enhancer_params
+            device = self._enhancer_device
+            chain.append(PerWorkerProcessor(
+                factory=lambda p=params, d=device: FaceEnhancer(params=p, device=d),
+                name=FaceEnhancer.name,
             ))
         return chain
 

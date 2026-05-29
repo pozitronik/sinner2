@@ -133,11 +133,14 @@ class RealtimeExecutor:
 
         self._state_lock = threading.RLock()
         # ONE chain shared by all workers. ORT InferenceSession is thread-safe
-        # for concurrent .run() calls — N workers calling the same swapper
-        # let ORT schedule across the GPU efficiently. Per-worker independent
-        # chains (the previous attempt) created N CUDA contexts and SLOWED
-        # things down. Processors that aren't thread-safe (e.g. GFPGAN) must
-        # serialize internally (see FaceEnhancer's semaphore).
+        # for concurrent .run() calls — N workers calling the same swapper let
+        # ORT schedule across the GPU efficiently. Building N independent
+        # swappers (an earlier attempt) created N CUDA contexts and SLOWED
+        # things down, so the thread-safe swapper stays shared. A processor
+        # that ISN'T thread-safe (e.g. GFPGAN) is wrapped upstream in a
+        # PerWorkerProcessor, which hands each worker thread its own instance —
+        # parallel enhance without multiplying the swapper's context. From
+        # here it still looks like one shared chain of Processors.
         self._chain: tuple[Processor, ...] = tuple(chain)
         self._state: _State = _State.STOPPED
         self._last_submitted: FrameIndex = -1
