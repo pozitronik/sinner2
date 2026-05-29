@@ -6,6 +6,8 @@ from pathlib import Path
 import pytest
 
 from sinner2.batch.task import (
+    BatchCleanupMode,
+    BatchExtractionMode,
     BatchOutputFormat,
     BatchTask,
     BatchTaskStatus,
@@ -151,3 +153,31 @@ class TestBatchTaskStatus:
         for member in BatchTaskStatus:
             assert isinstance(member.value, str)
             assert member.value == member.value.lower()
+
+
+class TestStageConfigDefaults:
+    def test_cleanup_defaults_to_keep(self, tmp_path):
+        assert _task(tmp_path).cleanup_mode is BatchCleanupMode.KEEP
+
+    def test_extraction_defaults_to_stream(self, tmp_path):
+        assert _task(tmp_path).extraction_mode is BatchExtractionMode.STREAM
+
+    def test_completed_stages_starts_zero(self, tmp_path):
+        assert _task(tmp_path).completed_stages == 0
+
+    def test_stage_config_roundtrips(self, tmp_path):
+        t = _task(
+            tmp_path,
+            cleanup_mode=BatchCleanupMode.AUTO,
+            extraction_mode=BatchExtractionMode.PREEXTRACT,
+            completed_stages=2,
+        )
+        back = BatchTask.model_validate_json(t.model_dump_json())
+        assert back.cleanup_mode is BatchCleanupMode.AUTO
+        assert back.extraction_mode is BatchExtractionMode.PREEXTRACT
+        assert back.completed_stages == 2
+
+    def test_mode_tokens_are_lowercase(self):
+        for enum in (BatchCleanupMode, BatchExtractionMode):
+            for member in enum:
+                assert member.value == member.value.lower()

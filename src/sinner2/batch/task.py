@@ -51,6 +51,38 @@ class BatchOutputFormat(str, Enum):
     FRAMES = "frames"
 
 
+class BatchCleanupMode(str, Enum):
+    """When to delete per-stage intermediate frame directories.
+
+    KEEP         — never delete (default); every stage dir + the final
+                   output remain. Pure disk-truth resume, highest disk use.
+    AUTO         — delete stage N-1 once stage N completes (peak ≈ 2 stages).
+                   Needs the completed_stages marker for cross-restart resume
+                   since the intermediate dirs are gone.
+    DROP_AT_END  — keep all stage dirs during the run, delete them once the
+                   final output validates. Pure disk-truth, drops at the end.
+
+    The final output file is never deleted by any mode.
+    """
+
+    KEEP = "keep"
+    AUTO = "auto"
+    DROP_AT_END = "drop_at_end"
+
+
+class BatchExtractionMode(str, Enum):
+    """How the first stage gets frames from a video source.
+
+    STREAM      — decode the source sequentially on demand (default).
+    PREEXTRACT  — bulk-extract all frames to disk first, then run the first
+                  stage off those files. Not implemented in v1; the field is
+                  the seam (the driver rejects PREEXTRACT for now).
+    """
+
+    STREAM = "stream"
+    PREEXTRACT = "preextract"
+
+
 def _new_id() -> str:
     # Short uuid4 — full uuid is 32 hex chars; the leading 12 are plenty
     # to disambiguate across thousands of tasks and shorter for filenames.
@@ -85,10 +117,15 @@ class BatchTask(SinnerBaseModel):
     image_format: ImageFormat = ImageFormat.JPEG
     image_quality: int = 95
 
+    # ---- Stage execution config (processor-major batch) ----
+    cleanup_mode: BatchCleanupMode = BatchCleanupMode.KEEP
+    extraction_mode: BatchExtractionMode = BatchExtractionMode.STREAM
+
     # ---- Runtime state ----
     status: BatchTaskStatus = BatchTaskStatus.PENDING
     last_completed_frame: int = -1
     total_frames: int = -1
+    completed_stages: int = 0  # fully-validated stages (AUTO-cleanup resume)
     error_message: str | None = None
     started_at: float | None = None  # epoch seconds
     finished_at: float | None = None
