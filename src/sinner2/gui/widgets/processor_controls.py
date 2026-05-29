@@ -124,6 +124,10 @@ class QProcessorControls(QWidget):
         enhancer_defaults = FaceEnhancerParams()
 
         swapper_box = QGroupBox("FaceSwapper")
+        swapper_box.setCheckable(True)
+        swapper_box.setChecked(True)
+        swapper_box.toggled.connect(self.configChanged)
+        self._swapper_box = swapper_box
         swapper_form = QFormLayout(swapper_box)
         self._detection_interval = QSpinBox()
         self._detection_interval.setRange(1, 30)
@@ -539,6 +543,9 @@ class QProcessorControls(QWidget):
     def enhancer_enabled(self) -> bool:
         return self._enhancer_box.isChecked()
 
+    def swapper_enabled(self) -> bool:
+        return self._swapper_box.isChecked()
+
     def skip_strategy(self) -> FrameSkipStrategy:
         cls = _STRATEGIES[self._strategy_combo.currentText()]
         if cls is SyncedStrategy:
@@ -624,6 +631,7 @@ class QProcessorControls(QWidget):
         worker_count: int | None,
         strategy_name: str | None,
         enhancer_enabled: bool | None,
+        swapper_enabled: bool | None = None,
         swapper_detection_interval: int | None,
         swapper_many_faces: bool | None,
         swapper_target_sex: str | None,
@@ -648,6 +656,7 @@ class QProcessorControls(QWidget):
         widget defaults stay in place when no persisted value exists.
         """
         widgets = (
+            self._swapper_box,
             self._detection_interval,
             self._many_faces,
             self._target_sex,
@@ -682,6 +691,8 @@ class QProcessorControls(QWidget):
                     if self._target_sex.itemData(i) == swapper_target_sex:
                         self._target_sex.setCurrentIndex(i)
                         break
+            if swapper_enabled is not None:
+                self._swapper_box.setChecked(swapper_enabled)
             if enhancer_enabled is not None:
                 self._enhancer_box.setChecked(enhancer_enabled)
             if enhancer_upscale is not None:

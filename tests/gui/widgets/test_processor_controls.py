@@ -31,6 +31,14 @@ class TestQProcessorControls:
     def test_default_enhancer_enabled(self, widget):
         assert widget.enhancer_enabled() is True
 
+    def test_default_swapper_enabled(self, widget):
+        assert widget.swapper_enabled() is True
+
+    def test_toggling_swapper_box_reflects_and_emits(self, widget, qtbot):
+        with qtbot.waitSignal(widget.configChanged, timeout=1000):
+            widget._swapper_box.setChecked(False)  # noqa: SLF001
+        assert widget.swapper_enabled() is False
+
     def test_changing_detection_interval_emits_config_changed(self, widget, qtbot):
         with qtbot.waitSignal(widget.configChanged, timeout=1000):
             widget._detection_interval.setValue(5)  # noqa: SLF001
@@ -152,6 +160,12 @@ class TestApplyRestoredSettings:
     def test_applies_worker_count(self, widget):
         widget.apply_restored_settings(**{**_NONE_RESTORE_KWARGS, "worker_count": 7})
         assert widget.worker_count() == 7
+
+    def test_applies_swapper_enabled(self, widget):
+        widget.apply_restored_settings(
+            **{**_NONE_RESTORE_KWARGS, "swapper_enabled": False}
+        )
+        assert widget.swapper_enabled() is False
 
     def test_applies_strategy_name(self, widget):
         from sinner2.pipeline.skip_strategy import SyncedStrategy

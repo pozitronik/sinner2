@@ -232,6 +232,7 @@ class PlayerController(QObject):
         self._swapper_params = FaceSwapperParams()
         self._enhancer_params = FaceEnhancerParams()
         self._enhancer_enabled = True
+        self._swapper_enabled = True
         self._strategy: FrameSkipStrategy = BestEffortStrategy()
         self._worker_count = 1
         self._playback_mode: PlaybackMode = PlaybackMode.FIXED_30
@@ -406,6 +407,7 @@ class PlayerController(QObject):
         worker_count: int,
         playback_mode: PlaybackMode,
         cache_settings: CacheSettings,
+        swapper_enabled: bool = True,
     ) -> None:
         """Update stored params and propagate any changes to the live session.
 
@@ -420,6 +422,7 @@ class PlayerController(QObject):
             swapper_params != self._swapper_params
             or enhancer_params != self._enhancer_params
             or enhancer_enabled != self._enhancer_enabled
+            or swapper_enabled != self._swapper_enabled
         )
         strategy_changed = type(strategy) is not type(self._strategy)
         # Synced threshold changes don't change the type, but still need
@@ -438,6 +441,7 @@ class PlayerController(QObject):
         self._swapper_params = swapper_params
         self._enhancer_params = enhancer_params
         self._enhancer_enabled = enhancer_enabled
+        self._swapper_enabled = swapper_enabled
         self._strategy = strategy
         self._worker_count = worker_count
         self._playback_mode = playback_mode
@@ -471,7 +475,11 @@ class PlayerController(QObject):
             self._executor.set_cache_mode(cache_settings.mode)
 
     def _build_chain(self, source: Source) -> list[Processor]:
-        chain: list[Processor] = [FaceSwapper(source=source, params=self._swapper_params)]
+        # Both processors are optional. An empty chain is valid — the
+        # executor passes frames through unchanged (raw preview).
+        chain: list[Processor] = []
+        if self._swapper_enabled:
+            chain.append(FaceSwapper(source=source, params=self._swapper_params))
         if self._enhancer_enabled:
             chain.append(FaceEnhancer(params=self._enhancer_params))
         return chain

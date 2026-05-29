@@ -451,6 +451,7 @@ class SinnerMainWindow(QMainWindow):
             swapper_params=self._processors.swapper_params(),
             enhancer_params=self._processors.enhancer_params(),
             enhancer_enabled=self._processors.enhancer_enabled(),
+            swapper_enabled=self._processors.swapper_enabled(),
             strategy=self._processors.skip_strategy(),
             worker_count=self._processors.worker_count(),
             playback_mode=self._processors.playback_mode(),
@@ -728,6 +729,7 @@ class SinnerMainWindow(QMainWindow):
             worker_count=self._settings.worker_count,
             strategy_name=self._settings.strategy_name,
             enhancer_enabled=self._settings.enhancer_enabled,
+            swapper_enabled=self._settings.swapper_enabled,
             swapper_detection_interval=self._settings.swapper_detection_interval,
             swapper_many_faces=self._settings.swapper_many_faces,
             swapper_target_sex=self._settings.swapper_target_sex,
@@ -753,6 +755,7 @@ class SinnerMainWindow(QMainWindow):
             worker_count=self._processors.worker_count(),
             strategy_name=self._processors.strategy_name(),
             enhancer_enabled=self._processors.enhancer_enabled(),
+            swapper_enabled=self._processors.swapper_enabled(),
             swapper_detection_interval=swapper.detection_interval,
             swapper_many_faces=swapper.many_faces,
             # str-Enum .value is the single-letter token, kept stable

@@ -265,6 +265,11 @@ class TestExtendedFieldsRoundtrip:
         settings.save(settings.Settings(batch_default_cleanup=mode))
         assert settings.load().batch_default_cleanup == mode
 
+    @pytest.mark.parametrize("enabled", [True, False])
+    def test_swapper_enabled_roundtrip(self, enabled: bool):
+        settings.save(settings.Settings(swapper_enabled=enabled))
+        assert settings.load().swapper_enabled is enabled
+
     def test_full_payload_roundtrip(self):
         original = settings.Settings(
             window_geometry_hex="abcd1234",
@@ -355,3 +360,4 @@ class TestExtendedFieldsRoundtrip:
         assert loaded.batch_global_output_path is None
         assert loaded.batch_default_format is None
         assert loaded.batch_default_cleanup is None
+        assert loaded.swapper_enabled is None

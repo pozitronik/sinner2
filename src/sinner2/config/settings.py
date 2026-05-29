@@ -37,6 +37,7 @@ class Settings(SinnerBaseModel):
     worker_count: int | None = None
     strategy_name: str | None = None
     enhancer_enabled: bool | None = None
+    swapper_enabled: bool | None = None
     swapper_detection_interval: int | None = None
     swapper_many_faces: bool | None = None
     swapper_target_sex: str | None = None  # "M"/"F"/"B"/"I"
