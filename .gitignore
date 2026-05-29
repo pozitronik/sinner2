@@ -21,3 +21,4 @@ models/
 gfpgan/
 settings.json
 temp/
+/batch/
