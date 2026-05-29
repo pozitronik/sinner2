@@ -1,25 +1,27 @@
-"""Headless per-task processing loop.
+"""Headless per-task batch processing — processor-major staged execution.
 
-One BatchDriver = one task end-to-end:
-  1. Build reader + chain + writer from the task's config.
-  2. Sequentially walk every frame index.
-     - If the corresponding cache file exists, skip (resume-from-cache).
-     - Else submit through the chain → write cache file.
-  3. Honor pause / cancel between submissions.
-  4. When all frames are present, encode:
-     - VIDEO: ffmpeg from cache_dir to output_path.mp4, audio re-muxed.
-     - FRAMES: copy cache_dir to output_path directory.
-  5. Update task status / last_completed_frame / error_message on the
-     instance the caller passed in. Caller persists via the store.
+One BatchDriver = one task end-to-end. Unlike the realtime executor
+(frame-major, latency-optimized), the batch driver runs each processor over
+ALL frames before the next — "stage-major" — so only one model is resident
+at a time and the device does one kind of work (throughput-optimized):
 
-Threading: BatchDriver.run() itself runs on whatever thread the caller
-chose (the BatchQueue spins it on a QThread). Inside run(), it manages
-its own ThreadPoolExecutor for the per-frame chain.process() calls.
+    stage 0  FaceSwapper  : source video  → <cache>/<task>/stage0-faceswapper/
+    stage 1  FaceEnhancer : stage0 frames → <cache>/<task>/stage1-faceenhancer/  [if enabled]
+    encode                : last stage dir → output.mp4 (audio re-muxed) | frames copy
 
-Pause/resume contract: pause_event.set() makes the driver stop
-submitting NEW frames; in-flight frames complete and land in the cache.
-Resume = re-call run(task) on the same instance — the cache covers
-what was done.
+Each stage is resume-aware and integrity-checked by run_stage()
+(batch/stage.py): the frame read happens on a single thread (sequential
+decode for stage 0; no concurrent reader access), workers only process +
+write, and a stage fails loudly rather than handing a gappy sequence to the
+encoder.
+
+Pause/resume: pause makes the running stage stop submitting new frames;
+in-flight frames land on disk. Resume = re-run the task — completed stages
+are skipped and the interrupted stage continues from its on-disk frames.
+Cancel wipes the whole task cache so a re-run starts fresh.
+
+Threading: run() executes on whatever thread the caller chose (BatchQueue
+spins it on a QThread); each stage manages its own worker pool internally.
 """
 from __future__ import annotations
 
@@ -27,11 +29,18 @@ import shutil
 import threading
 import time
 from collections.abc import Callable
-from concurrent.futures import Future, ThreadPoolExecutor, wait
 from pathlib import Path
-from typing import Any
 
+from sinner2.batch.stage import (
+    FramesDirInput,
+    ReaderStageInput,
+    StageInput,
+    StageStatus,
+    frame_ok,
+    run_stage,
+)
 from sinner2.batch.task import (
+    BatchExtractionMode,
     BatchOutputFormat,
     BatchTask,
     BatchTaskStatus,
@@ -41,15 +50,8 @@ from sinner2.config.source import Source
 from sinner2.config.target import Target, TargetKind
 from sinner2.io.target_reader import ImageTargetReader, TargetReader
 from sinner2.io.video_backend import VideoBackend, build_video_target_reader
-from sinner2.io.video_encoder import (
-    FfmpegMissingError,
-    encode_frames_to_mp4,
-)
-from sinner2.pipeline.image_writer import (
-    ImageFormat,
-    ImageWriter,
-    build_image_writer,
-)
+from sinner2.io.video_encoder import FfmpegMissingError, encode_frames_to_mp4
+from sinner2.pipeline.image_writer import build_image_writer
 from sinner2.pipeline.processor import Processor
 from sinner2.pipeline.processors.face_enhancer import (
     FaceEnhancer,
@@ -60,12 +62,10 @@ from sinner2.pipeline.processors.face_swapper import (
     FaceSwapperParams,
     TargetSex,
 )
-from sinner2.types import Frame, FrameIndex
 
 
-# Progress callback: (completed_frames, total_frames). Driver calls
-# this from worker threads — caller is responsible for marshalling
-# back to the GUI thread (BatchQueue does this via Qt signals).
+# Progress callback: (completed_frames, total_frames) for the CURRENT stage.
+# Step 5 enriches this into a structured per-stage + overall update.
 ProgressCallback = Callable[[int, int], None]
 
 
@@ -78,17 +78,14 @@ class BatchDriver:
         *,
         global_output_dir: Path | None = None,
     ) -> None:
-        # cache_root is the parent of per-task cache subdirs. Each task
-        # gets its own <cache_root>/<task_id>/ folder. Distinct from
-        # the realtime preview cache so a pause+cancel+rerun doesn't
-        # pick up stale preview frames.
+        # cache_root is the parent of per-task cache subdirs. Each task gets
+        # <cache_root>/<task_id>/stage{N}-{name}/ folders. Distinct from the
+        # realtime preview cache so a pause+cancel+rerun doesn't pick up
+        # stale preview frames.
         self._cache_root = cache_root
         self._global_output_dir = global_output_dir
         self._pause_event = threading.Event()
         self._cancel_event = threading.Event()
-        # Serializes reader.read() across the worker pool — TargetReaders
-        # are not thread-safe (see _process_one).
-        self._read_lock = threading.Lock()
 
     # ---- External controls (call from any thread) ----
 
@@ -110,10 +107,9 @@ class BatchDriver:
         task: BatchTask,
         progress_callback: ProgressCallback | None = None,
     ) -> BatchTaskStatus:
-        """Drive the task to a terminal status. Returns the final
-        status; also mutates task.status / last_completed_frame /
-        error_message / started_at / finished_at on the input model
-        so the caller can persist via the store."""
+        """Drive the task to a terminal status. Returns the final status and
+        also mutates task.status / last_completed_frame / completed_stages /
+        error_message / timing on the input model so the caller can persist."""
         self.reset_signals()
         task.status = BatchTaskStatus.RUNNING
         task.started_at = time.time()
@@ -133,203 +129,87 @@ class BatchDriver:
         task: BatchTask,
         progress_callback: ProgressCallback | None,
     ) -> BatchTaskStatus:
-        # Build reader + chain + writer per-task. None of these can be
-        # shared across tasks (different source, different target).
+        if task.extraction_mode is BatchExtractionMode.PREEXTRACT:
+            # Seam exists (task field + FramesDirInput); the bulk-extract
+            # pass isn't built yet. Fail clearly rather than silently
+            # falling back, so the choice is honoured or surfaced.
+            task.status = BatchTaskStatus.FAILED
+            task.error_message = "pre-extraction mode is not implemented yet"
+            return task.status
+
         target = Target(path=task.target_path)
         source = Source(path=task.source_path)
-        reader = self._build_reader(target, task.video_backend)
-        chain = self._build_chain(source, task)
         writer = build_image_writer(task.image_format, task.image_quality)
-
+        ext = writer.extension
+        stages = self._build_stages(source, task)
         task_cache = self._cache_root / task.id
-        task_cache.mkdir(parents=True, exist_ok=True)
+        stage_dirs = [
+            task_cache / f"stage{i}-{name}"
+            for i, (name, _) in enumerate(stages)
+        ]
 
+        # The first-stage reader also probes total frame count + fps.
+        reader = self._build_reader(target, task.video_backend)
         try:
             total = reader.frame_count
+            fps = reader.fps
             task.total_frames = total
-            ext = writer.extension
+            stage_cb: Callable[[int], None] | None = (
+                (lambda done: progress_callback(done, total))
+                if progress_callback is not None
+                else None
+            )
 
-            # Set up chain processors. Setup can take seconds (GFPGAN
-            # weight load), so this is the visible "task started"
-            # latency. We don't surface it specially — the queue's
-            # taskStarted signal fires before run().
-            for p in chain:
-                p.setup()
-
-            try:
-                terminal = self._process_frames(
-                    reader, chain, writer, task_cache, total, ext,
-                    progress_callback, task,
+            for i, (name, processor) in enumerate(stages):
+                # Skip a fully-rendered stage without loading its model
+                # (matters on resume — stage 0 done, resume into stage 1).
+                if self._stage_complete(stage_dirs[i], ext, total):
+                    task.completed_stages = i + 1
+                    if stage_cb is not None:
+                        stage_cb(total)
+                    continue
+                stage_input: StageInput = (
+                    ReaderStageInput(reader)
+                    if i == 0
+                    else FramesDirInput(stage_dirs[i - 1], ext, total)
                 )
-                if terminal is not None:
-                    return terminal
-
-                # Completeness gate: never feed a gappy / zero-byte
-                # sequence to the encoder — ffmpeg `-i %08d.ext` stops at
-                # the first missing index, silently truncating the video.
-                # Fail loudly and keep the cache so a re-run retries the
-                # bad frames. (Proper auto-reprocess arrives with the
-                # processor-major integrity model.)
-                missing = self._missing_frames(task_cache, total, ext)
-                if missing:
-                    task.status = BatchTaskStatus.FAILED
-                    task.error_message = self._missing_message(missing)
-                    task.last_completed_frame = (
-                        self._count_existing_cached_frames(
-                            task_cache, total, ext
-                        )
-                        - 1
-                    )
+                result = run_stage(
+                    stage_input=stage_input,
+                    processor=processor,
+                    output_dir=stage_dirs[i],
+                    ext=ext,
+                    writer=writer,
+                    workers=task.worker_count,
+                    pause_event=self._pause_event,
+                    cancel_event=self._cancel_event,
+                    on_progress=stage_cb,
+                )
+                if result.status is StageStatus.PAUSED:
+                    task.status = BatchTaskStatus.PAUSED
+                    task.last_completed_frame = result.completed_frames - 1
                     return task.status
+                if result.status is StageStatus.CANCELLED:
+                    self._wipe_cache(task_cache)
+                    task.status = BatchTaskStatus.CANCELLED
+                    task.last_completed_frame = -1
+                    task.completed_stages = 0
+                    return task.status
+                if result.status is StageStatus.FAILED:
+                    task.status = BatchTaskStatus.FAILED
+                    task.error_message = self._stage_failed_message(
+                        name, result.missing
+                    )
+                    task.last_completed_frame = result.completed_frames - 1
+                    return task.status
+                task.completed_stages = i + 1
 
-                # Every frame present & non-empty → encode / package.
-                self._package_output(task, task_cache, reader.fps, ext)
-                task.status = BatchTaskStatus.COMPLETED
-                return task.status
-            finally:
-                for p in chain:
-                    p.release()
+            # All stages complete → package the last stage's frames.
+            self._package_output(task, stage_dirs[-1], fps, ext)
+            task.status = BatchTaskStatus.COMPLETED
+            task.last_completed_frame = total - 1
+            return task.status
         finally:
             reader.release()
-
-    # ---- Frame processing ----
-
-    def _process_frames(
-        self,
-        reader: TargetReader,
-        chain: list[Processor],
-        writer: ImageWriter,
-        cache_dir: Path,
-        total: int,
-        ext: str,
-        progress_callback: ProgressCallback | None,
-        task: BatchTask,
-    ) -> BatchTaskStatus | None:
-        """Submit every uncached frame through the chain. Returns a
-        terminal status (PAUSED / CANCELLED) when interrupted, or
-        None when all frames landed in cache."""
-        max_workers = max(1, task.worker_count)
-        completed = self._count_existing_cached_frames(cache_dir, total, ext)
-        task.last_completed_frame = completed - 1
-        if progress_callback is not None:
-            progress_callback(completed, total)
-        # Backpressure: at most 2× workers worth of in-flight futures
-        # so the submit loop doesn't outpace the workers by orders of
-        # magnitude (would balloon memory with frame buffers).
-        in_flight_cap = max_workers * 2
-        active: list[Future] = []
-        with ThreadPoolExecutor(
-            max_workers=max_workers,
-            thread_name_prefix="sinner2-batch-worker",
-        ) as pool:
-            for idx in range(total):
-                if self._cancel_event.is_set():
-                    return self._after_interrupt(
-                        BatchTaskStatus.CANCELLED, active, cache_dir, task
-                    )
-                if self._pause_event.is_set():
-                    return self._after_interrupt(
-                        BatchTaskStatus.PAUSED, active, cache_dir, task
-                    )
-                cache_path = cache_dir / f"{idx:08d}.{ext}"
-                if self._frame_ok(cache_path):
-                    continue  # resume: skip only valid (non-empty) frames
-                fut = pool.submit(
-                    self._process_one, reader, idx, chain, writer, cache_path
-                )
-                active.append(fut)
-                # Drain to keep in-flight under cap.
-                if len(active) >= in_flight_cap:
-                    self._drain_one(active, cache_dir, total, ext,
-                                    progress_callback, task)
-            # All submitted; wait for the tail.
-            while active:
-                if self._cancel_event.is_set():
-                    return self._after_interrupt(
-                        BatchTaskStatus.CANCELLED, active, cache_dir, task
-                    )
-                self._drain_one(active, cache_dir, total, ext,
-                                progress_callback, task)
-        # Final progress update.
-        if progress_callback is not None:
-            progress_callback(total, total)
-        return None
-
-    def _drain_one(
-        self,
-        active: list[Future],
-        cache_dir: Path,
-        total: int,
-        ext: str,
-        progress_callback: ProgressCallback | None,
-        task: BatchTask,
-    ) -> None:
-        done, _pending = wait(active, return_when="FIRST_COMPLETED")
-        for fut in done:
-            active.remove(fut)
-            exc = fut.exception()
-            if exc is not None:
-                # One frame failed — log and continue; the encoder
-                # will skip missing frames or fail loudly if too many
-                # are missing. Could be more aggressive (fail task);
-                # for v1 stay resilient to single-frame issues.
-                task.error_message = (
-                    f"frame error (one or more): {exc}"
-                )
-        completed = self._count_existing_cached_frames(cache_dir, total, ext)
-        task.last_completed_frame = completed - 1
-        if progress_callback is not None:
-            progress_callback(completed, total)
-
-    def _after_interrupt(
-        self,
-        status: BatchTaskStatus,
-        active: list[Future],
-        cache_dir: Path,
-        task: BatchTask,
-    ) -> BatchTaskStatus:
-        """Pause / cancel branch. Let in-flight workers finish so cache
-        stays consistent; on CANCELLED, clear the cache so a re-run
-        starts fresh."""
-        # Wait for in-flight frames to finish so their cache writes
-        # land. They check the cancel flag too but only between frames;
-        # the cooperative model is "don't start new, finish current."
-        for fut in active:
-            try:
-                fut.result(timeout=30)
-            except Exception:
-                pass
-        if status is BatchTaskStatus.CANCELLED:
-            # Clear cache so a fresh run starts from 0. Pause keeps the
-            # cache (that's the whole point of resume-from-cache).
-            self._wipe_cache(cache_dir)
-            task.last_completed_frame = -1
-        task.status = status
-        return status
-
-    def _process_one(
-        self,
-        reader: TargetReader,
-        idx: FrameIndex,
-        chain: list[Processor],
-        writer: ImageWriter,
-        cache_path: Path,
-    ) -> None:
-        # TargetReaders (cv2.VideoCapture / ffmpeg pipe) are NOT
-        # thread-safe: each holds a single capture/subprocess plus a
-        # mutable _next_index, and documents single-threaded access as a
-        # caller invariant. With worker_count > 1 the batch pool violated
-        # that, racing concurrent seeks/reads. Serialize the decode; the
-        # expensive chain.process() runs OUTSIDE the lock, so GPU work
-        # still parallelizes across workers.
-        with self._read_lock:
-            frame = reader.read(idx)
-        if frame is None:
-            raise OSError(f"reader returned None at index {idx}")
-        result: Frame = frame
-        for p in chain:
-            result = p.process(result)
-        writer.write(cache_path, result)
 
     # ---- Builders ----
 
@@ -337,9 +217,6 @@ class BatchDriver:
     def _build_reader(
         target: Target, video_backend: VideoBackend
     ) -> TargetReader:
-        # Mirrors PlayerController._make_reader. Kept duplicated for
-        # now to avoid pulling player_controller into batch (one less
-        # GUI dep for the headless driver).
         if target.kind == TargetKind.IMAGE:
             return ImageTargetReader(target)
         if target.kind == TargetKind.VIDEO:
@@ -347,68 +224,52 @@ class BatchDriver:
         raise ValueError(f"unsupported target kind: {target.kind}")
 
     @staticmethod
-    def _build_chain(source: Source, task: BatchTask) -> list[Processor]:
-        swapper_params = FaceSwapperParams(
-            detection_interval=task.swapper_detection_interval,
-            many_faces=task.swapper_many_faces,
-            target_sex=TargetSex(task.swapper_target_sex),
+    def _build_stages(
+        source: Source, task: BatchTask
+    ) -> list[tuple[str, Processor]]:
+        """Ordered (name, processor) stages. One processor per stage — they
+        run in turns, not chained per-frame."""
+        swapper = FaceSwapper(
+            source=source,
+            params=FaceSwapperParams(
+                detection_interval=task.swapper_detection_interval,
+                many_faces=task.swapper_many_faces,
+                target_sex=TargetSex(task.swapper_target_sex),
+            ),
         )
-        chain: list[Processor] = [FaceSwapper(source=source, params=swapper_params)]
+        stages: list[tuple[str, Processor]] = [("faceswapper", swapper)]
         if task.enhancer_enabled:
-            chain.append(
-                FaceEnhancer(
-                    params=FaceEnhancerParams(
-                        upscale=task.enhancer_upscale,
-                        only_center_face=task.enhancer_only_center_face,
-                    )
+            stages.append(
+                (
+                    "faceenhancer",
+                    FaceEnhancer(
+                        params=FaceEnhancerParams(
+                            upscale=task.enhancer_upscale,
+                            only_center_face=task.enhancer_only_center_face,
+                        )
+                    ),
                 )
             )
-        return chain
+        return stages
 
-    # ---- Cache helpers ----
-
-    @staticmethod
-    def _frame_ok(path: Path) -> bool:
-        """A cached frame counts as done only if it exists AND is
-        non-empty. Zero-byte files (disk full mid-write) must be
-        reprocessed, never handed to the encoder."""
-        try:
-            return path.is_file() and path.stat().st_size > 0
-        except OSError:
-            return False
-
-    @classmethod
-    def _missing_frames(
-        cls, cache_dir: Path, total: int, ext: str
-    ) -> list[int]:
-        """Indices in [0, total) whose cache frame is absent or empty."""
-        return [
-            idx
-            for idx in range(total)
-            if not cls._frame_ok(cache_dir / f"{idx:08d}.{ext}")
-        ]
+    # ---- Helpers ----
 
     @staticmethod
-    def _missing_message(missing: list[int]) -> str:
+    def _stage_complete(stage_dir: Path, ext: str, total: int) -> bool:
+        """True iff every frame for this stage is already valid on disk."""
+        return all(
+            frame_ok(stage_dir / f"{i:08d}.{ext}") for i in range(total)
+        )
+
+    @staticmethod
+    def _stage_failed_message(stage_name: str, missing: list[int]) -> str:
         preview = ", ".join(str(i) for i in missing[:8])
         more = "" if len(missing) <= 8 else f", +{len(missing) - 8} more"
         return (
-            f"{len(missing)} frame(s) missing or empty ({preview}{more}); "
-            "refusing to encode a truncated video. Re-run to retry — "
-            "cached frames are kept."
+            f"stage '{stage_name}': {len(missing)} frame(s) missing or empty "
+            f"({preview}{more}); refusing to encode a truncated video. "
+            "Re-run to retry — cached frames are kept."
         )
-
-    @classmethod
-    def _count_existing_cached_frames(
-        cls, cache_dir: Path, total: int, ext: str
-    ) -> int:
-        """Count contiguous VALID (present + non-empty) cached frames
-        from 0. Stops at the first missing/empty index so a gap mid-cache
-        isn't reported as completed."""
-        for idx in range(total):
-            if not cls._frame_ok(cache_dir / f"{idx:08d}.{ext}"):
-                return idx
-        return total
 
     @staticmethod
     def _wipe_cache(cache_dir: Path) -> None:
@@ -416,14 +277,13 @@ class BatchDriver:
             shutil.rmtree(cache_dir)
         except OSError:
             pass
-        cache_dir.mkdir(parents=True, exist_ok=True)
 
     # ---- Output packaging ----
 
     def _package_output(
         self,
         task: BatchTask,
-        cache_dir: Path,
+        frames_dir: Path,
         fps: float,
         ext: str,
     ) -> None:
@@ -431,27 +291,25 @@ class BatchDriver:
         if task.output_format is BatchOutputFormat.VIDEO:
             try:
                 encode_frames_to_mp4(
-                    cache_dir,
+                    frames_dir,
                     output,
                     fps=fps,
                     frame_ext=ext,
                     audio_source=task.target_path,
                 )
             except FfmpegMissingError as exc:
-                # Fallback: ship the frames as a directory next to where
-                # the mp4 would have lived. User keeps something usable.
+                # Fallback: ship the frames as a directory next to where the
+                # mp4 would have lived. The user keeps something usable.
                 task.error_message = (
                     f"ffmpeg missing — fell back to frames mode: {exc}"
                 )
-                self._copy_frames(cache_dir, output.with_suffix(""))
+                self._copy_frames(frames_dir, output.with_suffix(""))
         else:
-            self._copy_frames(cache_dir, output)
+            self._copy_frames(frames_dir, output)
 
     @staticmethod
-    def _copy_frames(cache_dir: Path, output_dir: Path) -> None:
+    def _copy_frames(frames_dir: Path, output_dir: Path) -> None:
         output_dir.mkdir(parents=True, exist_ok=True)
-        for src in cache_dir.glob("*"):
-            if not src.is_file():
-                continue
-            dst = output_dir / src.name
-            shutil.copy2(src, dst)
+        for src in frames_dir.glob("*"):
+            if src.is_file():
+                shutil.copy2(src, output_dir / src.name)

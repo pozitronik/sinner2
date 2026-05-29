@@ -48,9 +48,9 @@ def stub_chain(monkeypatch):
     def fake_build(_source, task):
         p = _PassthroughProcessor()
         procs.append(p)
-        return [p]
+        return [("faceswapper", p)]
 
-    monkeypatch.setattr(BatchDriver, "_build_chain", staticmethod(fake_build))
+    monkeypatch.setattr(BatchDriver, "_build_stages", staticmethod(fake_build))
     return procs
 
 
@@ -141,7 +141,7 @@ class TestRefreshTask:
             queue.start()
         task_cache = queue._cache_root / task.id  # noqa: SLF001
         assert task_cache.exists()
-        assert len(list(task_cache.glob("*.jpg"))) >= 1
+        assert len(list(task_cache.rglob("*.jpg"))) >= 1  # frames live in stage dirs
         queue.refresh_task(task.id)
         # Cache discarded → a re-run reprocesses from scratch rather than
         # short-circuiting to re-encode.
