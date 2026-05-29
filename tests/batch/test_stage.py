@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import threading
+import time
 
 import numpy as np
 import pytest
@@ -47,6 +48,36 @@ class _FailAt(_Pass):
     def process(self, frame: Frame) -> Frame:
         if int(frame[0, 0, 0]) == self._value:
             raise RuntimeError("boom")
+        return super().process(frame)
+
+
+class _SetupFails(_Pass):
+    """setup() raises — simulates a worker instance that fails to load (e.g.
+    the Nth GFPGAN OOMs while building a per-worker pool)."""
+
+    def setup(self) -> None:
+        super().setup()
+        raise RuntimeError("setup boom")
+
+
+class _ConcurrencyTracked(_Pass):
+    """Records the max number of threads simultaneously inside process() for
+    THIS instance, so a test can prove leasing keeps a non-thread-safe
+    instance single-user while a shared instance is genuinely concurrent."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._active = 0
+        self._guard = threading.Lock()
+        self.max_active = 0
+
+    def process(self, frame: Frame) -> Frame:
+        with self._guard:
+            self._active += 1
+            self.max_active = max(self.max_active, self._active)
+        time.sleep(0.005)  # widen the window so real overlap is observable
+        with self._guard:
+            self._active -= 1
         return super().process(frame)
 
 
@@ -100,7 +131,8 @@ def writer():
 def _run(out, inp, proc, writer, **kw):
     return run_stage(
         stage_input=inp,
-        processor=proc,
+        processor_factory=lambda: proc,
+        thread_safe=kw.get("thread_safe", True),
         output_dir=out,
         ext=writer.extension,
         writer=writer,
@@ -198,7 +230,8 @@ class TestRunStage:
         previews: list = []
         run_stage(
             stage_input=_StubInput(5),
-            processor=_Pass(),
+            processor_factory=_Pass,
+            thread_safe=True,
             output_dir=tmp_path / "stage0",
             ext=writer.extension,
             writer=writer,
@@ -216,7 +249,8 @@ class TestEofTolerance:
         out = tmp_path / "stage0"
         res = run_stage(
             stage_input=_ShortInput(claimed=10, real=7),
-            processor=_Pass(),
+            processor_factory=_Pass,
+            thread_safe=True,
             output_dir=out,
             ext=writer.extension,
             writer=writer,
@@ -234,7 +268,8 @@ class TestEofTolerance:
         out = tmp_path / "stage0"
         res = run_stage(
             stage_input=_ShortInput(claimed=10, real=7),
-            processor=_Pass(),
+            processor_factory=_Pass,
+            thread_safe=True,
             output_dir=out,
             ext=writer.extension,
             writer=writer,
@@ -259,3 +294,96 @@ class TestFramesDirInput:
         assert inp.frame_count == 2
         assert inp.read(0) is not None
         assert inp.read(1) is None  # not written
+
+
+class TestProcessorPool:
+    """run_stage's instance strategy: one shared instance for thread-safe
+    processors, one-per-worker (leased) for non-thread-safe ones."""
+
+    def _run(self, tmp_path, writer, *, factory, thread_safe, workers, frames):
+        return run_stage(
+            stage_input=_StubInput(frames),
+            processor_factory=factory,
+            thread_safe=thread_safe,
+            output_dir=tmp_path / "stage",
+            ext=writer.extension,
+            writer=writer,
+            workers=workers,
+            pause_event=threading.Event(),
+            cancel_event=threading.Event(),
+        )
+
+    def test_thread_safe_builds_single_shared_instance(self, tmp_path, writer):
+        built: list[_Pass] = []
+
+        def factory() -> _Pass:
+            p = _Pass()
+            built.append(p)
+            return p
+
+        self._run(tmp_path, writer, factory=factory, thread_safe=True,
+                  workers=4, frames=6)
+        assert len(built) == 1  # shared, not one per worker
+        assert built[0].process_calls == 6
+        assert built[0].setup_calls == 1
+        assert built[0].release_calls == 1
+
+    def test_non_thread_safe_builds_one_instance_per_worker(self, tmp_path, writer):
+        built: list[_Pass] = []
+
+        def factory() -> _Pass:
+            p = _Pass()
+            built.append(p)
+            return p
+
+        self._run(tmp_path, writer, factory=factory, thread_safe=False,
+                  workers=3, frames=6)
+        assert len(built) == 3  # one per worker
+        assert all(p.setup_calls == 1 for p in built)
+        assert all(p.release_calls == 1 for p in built)
+        assert sum(p.process_calls for p in built) == 6  # all frames covered
+
+    def test_leased_instance_never_used_concurrently(self, tmp_path, writer):
+        built: list[_ConcurrencyTracked] = []
+
+        def factory() -> _ConcurrencyTracked:
+            p = _ConcurrencyTracked()
+            built.append(p)
+            return p
+
+        self._run(tmp_path, writer, factory=factory, thread_safe=False,
+                  workers=3, frames=8)
+        assert len(built) == 3
+        # The point of one-instance-per-worker: each lease is exclusive.
+        assert all(p.max_active == 1 for p in built)
+
+    def test_shared_instance_is_used_concurrently(self, tmp_path, writer):
+        # Counterpart to the leased test — proves the tracker isn't vacuous:
+        # a thread-safe (shared) instance really does run on multiple workers
+        # at once.
+        built: list[_ConcurrencyTracked] = []
+
+        def factory() -> _ConcurrencyTracked:
+            p = _ConcurrencyTracked()
+            built.append(p)
+            return p
+
+        self._run(tmp_path, writer, factory=factory, thread_safe=True,
+                  workers=3, frames=8)
+        assert len(built) == 1
+        assert built[0].max_active >= 2
+
+    def test_setup_failure_releases_already_built_instances(self, tmp_path, writer):
+        built: list[_Pass] = []
+
+        def factory() -> _Pass:
+            # 2nd instance fails to set up; the 1st (already built) must be
+            # released rather than leaked.
+            p: _Pass = _SetupFails() if len(built) == 1 else _Pass()
+            built.append(p)
+            return p
+
+        with pytest.raises(RuntimeError, match="setup boom"):
+            self._run(tmp_path, writer, factory=factory, thread_safe=False,
+                      workers=3, frames=4)
+        assert built[0].release_calls == 1

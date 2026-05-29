@@ -217,11 +217,17 @@ def stub_stages(monkeypatch):
     built: list[_PassthroughProcessor] = []
 
     def fake_build(_source, task):
-        stages = [("faceswapper", _PassthroughProcessor())]
+        # Build instances eagerly and record them so tests can inspect
+        # setup/process/release counts after the run; the factory just hands
+        # back the pre-built instance (thread_safe=True → built once).
+        names = ["faceswapper"]
         if task.enhancer_enabled:
-            stages.append(("faceenhancer", _PassthroughProcessor()))
-        for _, p in stages:
+            names.append("faceenhancer")
+        stages = []
+        for name in names:
+            p = _PassthroughProcessor()
             built.append(p)
+            stages.append((name, lambda _p=p: _p, True))
         return stages
 
     monkeypatch.setattr(BatchDriver, "_build_stages", staticmethod(fake_build))
@@ -323,7 +329,7 @@ class TestPauseCancel:
         def fake_build(_source, task):
             p = _SleepProcessor(0.05)
             procs.append(p)
-            return [("faceswapper", p)]
+            return [("faceswapper", lambda _p=p: _p, True)]
 
         monkeypatch.setattr(
             BatchDriver, "_build_stages", staticmethod(fake_build)
@@ -344,7 +350,7 @@ class TestPauseCancel:
         def fake_build(_source, task):
             p = _SleepProcessor(0.02)
             procs.append(p)
-            return [("faceswapper", p)]
+            return [("faceswapper", lambda _p=p: _p, True)]
 
         monkeypatch.setattr(
             BatchDriver, "_build_stages", staticmethod(fake_build)
@@ -364,7 +370,7 @@ class TestPauseCancel:
 
     def test_cancel_wipes_cache(self, tmp_path, monkeypatch):
         def fake_build(_source, task):
-            return [("faceswapper", _SleepProcessor(0.03))]
+            return [("faceswapper", lambda: _SleepProcessor(0.03), True)]
 
         monkeypatch.setattr(
             BatchDriver, "_build_stages", staticmethod(fake_build)
@@ -395,7 +401,9 @@ class TestStageFailure:
             BatchDriver,
             "_build_stages",
             staticmethod(
-                lambda _source, task: [("faceswapper", _FailFrameProcessor(2))]
+                lambda _source, task: [
+                    ("faceswapper", lambda: _FailFrameProcessor(2), True)
+                ]
             ),
         )
         task = _make_task(tmp_path, image_target=True)
@@ -564,12 +572,14 @@ class TestBuildStages:
 
         class _S:
             name = "faceswapper"
+            thread_safe = True
 
             def __init__(self, source, params):
                 ...
 
         class _E:
             name = "faceenhancer"
+            thread_safe = False
 
             def __init__(self, params):
                 ...
@@ -586,7 +596,7 @@ class TestBuildStages:
         stages = BatchDriver._build_stages(  # noqa: SLF001
             Source(path=task.source_path), task
         )
-        assert [n for n, _ in stages] == ["faceswapper", "faceenhancer"]
+        assert [n for n, *_ in stages] == ["faceswapper", "faceenhancer"]
 
     def test_swapper_disabled_enhancer_only(self, tmp_path, monkeypatch):
         from sinner2.config.source import Source
@@ -597,7 +607,7 @@ class TestBuildStages:
         stages = BatchDriver._build_stages(  # noqa: SLF001
             Source(path=task.source_path), task
         )
-        assert [n for n, _ in stages] == ["faceenhancer"]
+        assert [n for n, *_ in stages] == ["faceenhancer"]
 
     def test_both_disabled_is_passthrough(self, tmp_path, monkeypatch):
         from sinner2.config.source import Source
@@ -608,7 +618,7 @@ class TestBuildStages:
         stages = BatchDriver._build_stages(  # noqa: SLF001
             Source(path=task.source_path), task
         )
-        assert [n for n, _ in stages] == ["passthrough"]
+        assert [n for n, *_ in stages] == ["passthrough"]
 
     def test_both_disabled_runs_to_passthrough_output(self, driver, tmp_path):
         # End-to-end (no stub): the identity passthrough re-encodes the

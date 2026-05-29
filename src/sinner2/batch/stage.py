@@ -29,10 +29,12 @@ stage's model is resident while it runs.
 """
 from __future__ import annotations
 
+import queue
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor, wait
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -121,7 +123,8 @@ class FramesDirInput:
 def run_stage(
     *,
     stage_input: StageInput,
-    processor: Processor,
+    processor_factory: Callable[[], Processor],
+    thread_safe: bool,
     output_dir: Path,
     ext: str,
     writer: ImageWriter,
@@ -133,12 +136,21 @@ def run_stage(
     on_preview: Callable[[Frame], None] | None = None,
     preview_interval: float = 0.5,
 ) -> StageResult:
-    """Run ``processor`` over every frame of ``stage_input``, writing
+    """Run a processor over every frame of ``stage_input``, writing
     ``output_dir/{idx:08d}.{ext}``. Resumes by skipping frames already valid
     on disk. ``on_progress(done_count)`` fires as frames complete;
     ``on_preview(frame)`` fires at most once per ``preview_interval`` seconds
     with a just-processed frame. With ``eof_on_none`` a None read ends the
-    stage early; StageResult.total reports the real count."""
+    stage early; StageResult.total reports the real count.
+
+    The processor is created via ``processor_factory`` and its lifecycle
+    (setup → process* → release) is owned here. ``thread_safe`` decides how
+    many instances back the worker pool: a thread-safe processor (e.g.
+    FaceSwapper's shared ORT session) is built ONCE and used concurrently by
+    all workers; a non-thread-safe one (e.g. FaceEnhancer/GFPGAN, which mutates
+    torch state) gets ONE instance per worker, leased so no instance is ever
+    used by two workers at once — that's what lets it actually run in parallel
+    instead of serializing on an internal lock."""
     output_dir.mkdir(parents=True, exist_ok=True)
     total = stage_input.frame_count
     workers = max(1, workers)
@@ -179,10 +191,10 @@ def run_stage(
             preview_last = now
             on_preview(frame)
 
-    processor.setup()
+    pool = _ProcessorPool(processor_factory, thread_safe, workers)
     try:
         status, eof_at = _feed(
-            pending, stage_input, processor, output_dir, ext, writer,
+            pending, stage_input, pool, output_dir, ext, writer,
             workers, pause_event, cancel_event, bump, eof_on_none,
             maybe_preview,
         )
@@ -198,7 +210,7 @@ def run_stage(
         remaining = missing(total)
         if remaining:
             status, _ = _feed(
-                remaining, stage_input, processor, output_dir, ext, writer,
+                remaining, stage_input, pool, output_dir, ext, writer,
                 workers, pause_event, cancel_event, bump, False,
                 maybe_preview,
             )
@@ -211,13 +223,70 @@ def run_stage(
             )
         return StageResult(StageStatus.COMPLETED, total, total=total)
     finally:
-        processor.release()
+        pool.release()
+
+
+class _ProcessorPool:
+    """Owns the processor instance(s) for one stage run and leases them to
+    worker tasks. Built and torn down by run_stage; not reused across stages.
+
+    thread_safe=True  → ONE instance, shared by every worker concurrently
+                        (e.g. FaceSwapper's shared ORT session).
+    thread_safe=False → ONE instance per worker, each leased to at most one
+                        task at a time (e.g. FaceEnhancer/GFPGAN). Because the
+                        worker pool has exactly ``workers`` threads and there
+                        are ``workers`` instances, a lease never blocks.
+    """
+
+    def __init__(
+        self,
+        factory: Callable[[], Processor],
+        thread_safe: bool,
+        workers: int,
+    ) -> None:
+        self._thread_safe = thread_safe
+        self._free: queue.SimpleQueue[Processor] | None = None
+        self._instances: list[Processor] = []
+        count = 1 if thread_safe else max(1, workers)
+        try:
+            for _ in range(count):
+                proc = factory()
+                proc.setup()
+                self._instances.append(proc)
+        except Exception:
+            # A partial build (e.g. 2nd GFPGAN OOMs) must not leak the
+            # instances that did load — release them before propagating.
+            self.release()
+            raise
+        if not thread_safe:
+            self._free = queue.SimpleQueue()
+            for proc in self._instances:
+                self._free.put(proc)
+
+    @contextmanager
+    def lease(self) -> Iterator[Processor]:
+        if self._thread_safe or self._free is None:
+            yield self._instances[0]
+            return
+        proc = self._free.get()
+        try:
+            yield proc
+        finally:
+            self._free.put(proc)
+
+    def release(self) -> None:
+        for proc in self._instances:
+            try:
+                proc.release()
+            except Exception:
+                pass
+        self._instances = []
 
 
 def _feed(
     indices: list[int],
     stage_input: StageInput,
-    processor: Processor,
+    pool: _ProcessorPool,
     output_dir: Path,
     ext: str,
     writer: ImageWriter,
@@ -237,7 +306,7 @@ def _feed(
     eof_at: int | None = None
     with ThreadPoolExecutor(
         max_workers=workers, thread_name_prefix="sinner2-batch-stage"
-    ) as pool:
+    ) as executor:
         for idx in indices:
             if cancel_event.is_set():
                 interrupted = StageStatus.CANCELLED
@@ -255,7 +324,7 @@ def _feed(
                 continue  # gap within the real range; integrity catches it
             out_path = output_dir / f"{idx:08d}.{ext}"
             inflight.append(
-                pool.submit(_process_write, processor, frame, out_path, writer)
+                executor.submit(_process_write, pool, frame, out_path, writer)
             )
             if len(inflight) >= cap:
                 _drain_one(inflight, bump, maybe_preview)
@@ -280,8 +349,12 @@ def _drain_one(
 
 
 def _process_write(
-    processor: Processor, frame: Frame, out_path: Path, writer: ImageWriter
+    pool: _ProcessorPool, frame: Frame, out_path: Path, writer: ImageWriter
 ) -> Frame:
-    result = processor.process(frame)
+    # Hold the lease only across process(); the disk write doesn't touch the
+    # processor, so release the instance back to the pool before writing to
+    # keep non-thread-safe instances available to other workers sooner.
+    with pool.lease() as processor:
+        result = processor.process(frame)
     writer.write(out_path, result)
     return result

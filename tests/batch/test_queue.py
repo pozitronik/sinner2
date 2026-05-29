@@ -48,7 +48,7 @@ def stub_chain(monkeypatch):
     def fake_build(_source, task):
         p = _PassthroughProcessor()
         procs.append(p)
-        return [("faceswapper", p)]
+        return [("faceswapper", lambda _p=p: _p, True)]
 
     monkeypatch.setattr(BatchDriver, "_build_stages", staticmethod(fake_build))
     return procs

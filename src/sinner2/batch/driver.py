@@ -82,6 +82,7 @@ class _IdentityProcessor:
     source frames unchanged (the user-requested raw passthrough)."""
 
     name = "passthrough"
+    thread_safe = True  # stateless no-op — safe to share across workers
 
     def setup(self) -> None:
         pass
@@ -171,7 +172,7 @@ class BatchDriver:
         task_cache = self._cache_root / task.id
         stage_dirs = [
             task_cache / f"stage{i}-{name}"
-            for i, (name, _) in enumerate(stages)
+            for i, (name, *_) in enumerate(stages)
         ]
 
         # The first-stage reader also probes total frame count + fps.
@@ -182,7 +183,7 @@ class BatchDriver:
             task.total_frames = total
             stage_count = len(stages)
 
-            for i, (name, processor) in enumerate(stages):
+            for i, (name, factory, thread_safe) in enumerate(stages):
                 stage_cb = self._stage_progress(
                     progress_callback, i, stage_count, name, total
                 )
@@ -203,7 +204,8 @@ class BatchDriver:
                     )
                     result = run_stage(
                         stage_input=stage_input,
-                        processor=processor,
+                        processor_factory=factory,
+                        thread_safe=thread_safe,
                         output_dir=stage_dirs[i],
                         ext=ext,
                         writer=writer,
@@ -291,40 +293,40 @@ class BatchDriver:
     @staticmethod
     def _build_stages(
         source: Source, task: BatchTask
-    ) -> list[tuple[str, Processor]]:
-        """Ordered (name, processor) stages. One processor per stage — they
-        run in turns, not chained per-frame. Either processor can be disabled;
-        with both off, a single identity stage re-encodes the source
+    ) -> list[tuple[str, Callable[[], Processor], bool]]:
+        """Ordered (name, factory, thread_safe) stages. One processor per
+        stage — they run in turns, not chained per-frame. The factory (not a
+        pre-built instance) lets the stage runner build the right NUMBER of
+        instances: a thread-safe processor is shared across workers, a
+        non-thread-safe one gets one per worker. Either processor can be
+        disabled; with both off, a single identity stage re-encodes the source
         unprocessed (the user-requested passthrough)."""
-        stages: list[tuple[str, Processor]] = []
+        stages: list[tuple[str, Callable[[], Processor], bool]] = []
         if task.swapper_enabled:
-            stages.append(
-                (
-                    "faceswapper",
-                    FaceSwapper(
-                        source=source,
-                        params=FaceSwapperParams(
-                            detection_interval=task.swapper_detection_interval,
-                            many_faces=task.swapper_many_faces,
-                            target_sex=TargetSex(task.swapper_target_sex),
-                        ),
-                    ),
-                )
+            swapper_params = FaceSwapperParams(
+                detection_interval=task.swapper_detection_interval,
+                many_faces=task.swapper_many_faces,
+                target_sex=TargetSex(task.swapper_target_sex),
             )
+            stages.append((
+                "faceswapper",
+                lambda p=swapper_params: FaceSwapper(source=source, params=p),
+                FaceSwapper.thread_safe,
+            ))
         if task.enhancer_enabled:
-            stages.append(
-                (
-                    "faceenhancer",
-                    FaceEnhancer(
-                        params=FaceEnhancerParams(
-                            upscale=task.enhancer_upscale,
-                            only_center_face=task.enhancer_only_center_face,
-                        )
-                    ),
-                )
+            enhancer_params = FaceEnhancerParams(
+                upscale=task.enhancer_upscale,
+                only_center_face=task.enhancer_only_center_face,
             )
+            stages.append((
+                "faceenhancer",
+                lambda p=enhancer_params: FaceEnhancer(params=p),
+                FaceEnhancer.thread_safe,
+            ))
         if not stages:
-            stages.append(("passthrough", _IdentityProcessor()))
+            stages.append(
+                ("passthrough", _IdentityProcessor, _IdentityProcessor.thread_safe)
+            )
         return stages
 
     # ---- Helpers ----
