@@ -68,3 +68,53 @@ class TestQFrameDisplayWidget:
         qtbot.waitUntil(lambda: widget._pixmap is not None, timeout=1000)  # noqa: SLF001
         pixel = widget._pixmap.toImage().pixelColor(5, 5)  # noqa: SLF001
         assert pixel.red() == 255
+
+
+class TestRotation:
+    """Rotation is display-only: the underlying pixel buffer is left
+    intact (so save-current-frame and the executor both see un-rotated
+    content), but paint applies a quarter-turn transform."""
+
+    def test_initial_rotation_is_zero(self, widget):
+        assert widget.rotation() == 0
+
+    def test_set_rotation_clamps_to_valid_quarter_turns(self, widget):
+        widget.set_rotation(45)  # not a quarter turn — snap to 0
+        assert widget.rotation() == 0
+        widget.set_rotation(90)
+        assert widget.rotation() == 90
+        widget.set_rotation(720)  # out of range — snap to 0
+        assert widget.rotation() == 0
+
+    def test_cycle_rotation_advances_through_quarter_turns(self, widget):
+        # Cycle: 0 → 90 → 180 → 270 → 0
+        seq = [widget.cycle_rotation() for _ in range(5)]
+        assert seq == [90, 180, 270, 0, 90]
+
+    def test_current_pixmap_applies_rotation(self, widget, qtbot):
+        # Source frame is 20 wide × 50 tall. After 90° rotation the
+        # current pixmap should be 50 wide × 20 tall.
+        widget.show_frame(_bgr(h=50, w=20))
+        qtbot.waitUntil(lambda: widget._pixmap is not None, timeout=1000)  # noqa: SLF001
+        widget.set_rotation(90)
+        out = widget.current_pixmap()
+        assert out is not None
+        assert out.width() == 50
+        assert out.height() == 20
+
+    def test_current_pixmap_none_before_first_frame(self, widget):
+        # Save-current-frame should be a no-op when nothing's on screen.
+        assert widget.current_pixmap() is None
+
+    def test_rotation_does_not_mutate_source_pixmap(
+        self, widget, qtbot
+    ):
+        # The underlying _pixmap stays at the source dimensions even
+        # after rotation — only the rotated copy returned by
+        # current_pixmap differs. Important so executor's pixel buffer
+        # isn't accidentally aliased through the display.
+        widget.show_frame(_bgr(h=50, w=20))
+        qtbot.waitUntil(lambda: widget._pixmap is not None, timeout=1000)  # noqa: SLF001
+        widget.set_rotation(180)
+        assert widget._pixmap.width() == 20  # noqa: SLF001
+        assert widget._pixmap.height() == 50  # noqa: SLF001
