@@ -1,3 +1,4 @@
+from concurrent.futures import Future
 from dataclasses import dataclass
 
 from sinner2.types import Frame, FrameIndex
@@ -7,11 +8,13 @@ from sinner2.types import Frame, FrameIndex
 class WorkItem:
     """A single task on the work queue: one frame to process.
 
-    Workers use their own indexed chain (built per-worker at start time) so
-    the item doesn't carry the chain itself. The frame field is a numpy
-    ndarray and intentionally excluded from equality — ndarray __eq__ is
-    element-wise, not boolean, which would break dict / set membership.
+    The source frame is delivered asynchronously via the ReaderPool —
+    `source_future.result()` blocks until the reader thread services
+    the request. Workers await the future before calling the chain so
+    the dispatcher isn't blocked by source I/O. The future is `eq=False`
+    (Future identity is what matters, not value equality) and the dataclass
+    is intentionally `eq=False` to avoid comparing the carried future.
     """
 
     frame_index: FrameIndex
-    source_frame: Frame
+    source_future: Future[Frame | None]
