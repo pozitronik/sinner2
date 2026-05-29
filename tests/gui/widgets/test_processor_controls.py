@@ -1,6 +1,13 @@
+from pathlib import Path
+
 import pytest
 
+from sinner2.config import settings
 from sinner2.gui.widgets.processor_controls import QProcessorControls
+from sinner2.io.video_backend import VideoBackend
+from sinner2.pipeline.cache_mode import CacheMode
+from sinner2.pipeline.image_writer import ImageFormat
+from sinner2.pipeline.playback_mode import PlaybackMode
 
 
 @pytest.fixture
@@ -28,6 +35,26 @@ class TestQProcessorControls:
         with qtbot.waitSignal(widget.configChanged, timeout=1000):
             widget._detection_interval.setValue(5)  # noqa: SLF001
         assert widget.swapper_params().detection_interval == 5
+
+    def test_default_target_sex_is_both(self, widget):
+        from sinner2.pipeline.processors.face_swapper import TargetSex
+
+        assert widget.swapper_params().target_sex is TargetSex.BOTH
+
+    def test_target_sex_combo_emits_config_changed(self, widget, qtbot):
+        # Change the combo via setCurrentIndex (the path a click takes
+        # via the dropdown) and verify configChanged fires AND the new
+        # value reaches the params accessor.
+        from sinner2.pipeline.processors.face_swapper import TargetSex
+
+        female_index = next(
+            i
+            for i in range(widget._target_sex.count())  # noqa: SLF001
+            if widget._target_sex.itemData(i) == TargetSex.FEMALE.value  # noqa: SLF001
+        )
+        with qtbot.waitSignal(widget.configChanged, timeout=1000):
+            widget._target_sex.setCurrentIndex(female_index)  # noqa: SLF001
+        assert widget.swapper_params().target_sex is TargetSex.FEMALE
 
     def test_toggling_many_faces_emits_config_changed(self, widget, qtbot):
         with qtbot.waitSignal(widget.configChanged, timeout=1000):
@@ -68,3 +95,363 @@ class TestQProcessorControls:
         with qtbot.waitSignal(widget.configChanged, timeout=1000):
             widget._worker_count.setValue(4)  # noqa: SLF001
         assert widget.worker_count() == 4
+
+
+_FULL_RESTORE_KWARGS = dict(
+    worker_count=8,
+    strategy_name="SyncedStrategy",
+    enhancer_enabled=False,
+    swapper_detection_interval=3,
+    swapper_many_faces=False,
+    swapper_target_sex="F",
+    enhancer_upscale=4,
+    enhancer_only_center_face=True,
+    playback_mode=PlaybackMode.UNLIMITED,
+    cache_mode=CacheMode.READ_ONLY,
+    image_format=ImageFormat.PNG,
+    image_quality=80,
+    memory_cache_mb=256,
+    write_workers=8,
+    write_queue_size=16,
+    video_backend=VideoBackend.CV2,
+    reader_pool_size=4,
+    synced_max_lag_frames=120,
+    onnx_providers=["CPUExecutionProvider"],
+)
+
+_NONE_RESTORE_KWARGS = dict(
+    worker_count=None,
+    strategy_name=None,
+    enhancer_enabled=None,
+    swapper_detection_interval=None,
+    swapper_many_faces=None,
+    swapper_target_sex=None,
+    enhancer_upscale=None,
+    enhancer_only_center_face=None,
+    playback_mode=None,
+    cache_mode=None,
+    image_format=None,
+    image_quality=None,
+    memory_cache_mb=None,
+    write_workers=None,
+    write_queue_size=None,
+    video_backend=None,
+    reader_pool_size=None,
+    synced_max_lag_frames=None,
+    onnx_providers=None,
+)
+
+
+class TestApplyRestoredSettings:
+    """apply_restored_settings is the seam main_window uses on startup to
+    push persisted values back into the widget. Each field must land where
+    the corresponding getter reads from, and None values must leave widget
+    defaults alone (so a first-run user with no settings.json sees the
+    spinbox defaults rather than zeros)."""
+
+    def test_applies_worker_count(self, widget):
+        widget.apply_restored_settings(**{**_NONE_RESTORE_KWARGS, "worker_count": 7})
+        assert widget.worker_count() == 7
+
+    def test_applies_strategy_name(self, widget):
+        from sinner2.pipeline.skip_strategy import SyncedStrategy
+
+        widget.apply_restored_settings(
+            **{**_NONE_RESTORE_KWARGS, "strategy_name": "SyncedStrategy"}
+        )
+        assert widget.strategy_name() == "SyncedStrategy"
+        assert isinstance(widget.skip_strategy(), SyncedStrategy)
+
+    def test_applies_enhancer_enabled(self, widget):
+        widget.apply_restored_settings(
+            **{**_NONE_RESTORE_KWARGS, "enhancer_enabled": False}
+        )
+        assert widget.enhancer_enabled() is False
+
+    def test_applies_swapper_params(self, widget):
+        from sinner2.pipeline.processors.face_swapper import TargetSex
+
+        widget.apply_restored_settings(
+            **{
+                **_NONE_RESTORE_KWARGS,
+                "swapper_detection_interval": 5,
+                "swapper_many_faces": False,
+                "swapper_target_sex": "F",
+            }
+        )
+        params = widget.swapper_params()
+        assert params.detection_interval == 5
+        assert params.many_faces is False
+        assert params.target_sex is TargetSex.FEMALE
+
+    def test_applies_enhancer_params(self, widget):
+        widget.apply_restored_settings(
+            **{
+                **_NONE_RESTORE_KWARGS,
+                "enhancer_upscale": 3,
+                "enhancer_only_center_face": True,
+            }
+        )
+        params = widget.enhancer_params()
+        assert params.upscale == 3
+        assert params.only_center_face is True
+
+    def test_none_values_preserve_widget_defaults(self, widget):
+        default_worker = widget.worker_count()
+        default_strategy = widget.strategy_name()
+        default_enhancer_enabled = widget.enhancer_enabled()
+        default_swapper = widget.swapper_params()
+        default_enhancer = widget.enhancer_params()
+        widget.apply_restored_settings(**_NONE_RESTORE_KWARGS)
+        assert widget.worker_count() == default_worker
+        assert widget.strategy_name() == default_strategy
+        assert widget.enhancer_enabled() is default_enhancer_enabled
+        assert widget.swapper_params() == default_swapper
+        assert widget.enhancer_params() == default_enhancer
+
+    def test_unknown_strategy_name_falls_back_to_current(self, widget):
+        original = widget.strategy_name()
+        widget.apply_restored_settings(
+            **{**_NONE_RESTORE_KWARGS, "strategy_name": "DoesNotExistStrategy"}
+        )
+        assert widget.strategy_name() == original
+
+    def test_emits_config_changed_exactly_once(self, widget):
+        # The whole point of the bulk apply: bypass per-field signal storms
+        # so the controller doesn't get spammed during startup restore.
+        count = [0]
+        widget.configChanged.connect(lambda: count.__setitem__(0, count[0] + 1))
+        widget.apply_restored_settings(**_FULL_RESTORE_KWARGS)
+        assert count[0] == 1
+
+    def test_applies_all_fields_together(self, widget):
+        widget.apply_restored_settings(**_FULL_RESTORE_KWARGS)
+        assert widget.worker_count() == 8
+        assert widget.strategy_name() == "SyncedStrategy"
+        assert widget.enhancer_enabled() is False
+        sp = widget.swapper_params()
+        assert sp.detection_interval == 3
+        assert sp.many_faces is False
+        ep = widget.enhancer_params()
+        assert ep.upscale == 4
+        assert ep.only_center_face is True
+        assert widget.playback_mode() is PlaybackMode.UNLIMITED
+
+    @pytest.mark.parametrize("mode", list(PlaybackMode))
+    def test_applies_each_playback_mode(self, widget, mode):
+        widget.apply_restored_settings(
+            **{**_NONE_RESTORE_KWARGS, "playback_mode": mode}
+        )
+        assert widget.playback_mode() is mode
+
+    def test_default_playback_mode_is_fixed_30(self, widget):
+        assert widget.playback_mode() is PlaybackMode.FIXED_30
+
+    @pytest.mark.parametrize("mode", list(CacheMode))
+    def test_applies_each_cache_mode(self, widget, mode):
+        widget.apply_restored_settings(
+            **{**_NONE_RESTORE_KWARGS, "cache_mode": mode}
+        )
+        assert widget.cache_mode() is mode
+
+    @pytest.mark.parametrize("fmt", list(ImageFormat))
+    def test_applies_each_image_format(self, widget, fmt):
+        widget.apply_restored_settings(
+            **{**_NONE_RESTORE_KWARGS, "image_format": fmt}
+        )
+        assert widget.image_format() is fmt
+
+    def test_image_quality_disabled_for_png(self, widget):
+        widget.apply_restored_settings(
+            **{**_NONE_RESTORE_KWARGS, "image_format": ImageFormat.PNG}
+        )
+        assert not widget._image_quality.isEnabled()  # noqa: SLF001
+        widget.apply_restored_settings(
+            **{**_NONE_RESTORE_KWARGS, "image_format": ImageFormat.JPEG}
+        )
+        assert widget._image_quality.isEnabled()  # noqa: SLF001
+
+    def test_applies_memory_cache_mb(self, widget):
+        widget.apply_restored_settings(
+            **{**_NONE_RESTORE_KWARGS, "memory_cache_mb": 256}
+        )
+        assert widget.memory_cache_mb() == 256
+
+    def test_applies_write_workers(self, widget):
+        widget.apply_restored_settings(
+            **{**_NONE_RESTORE_KWARGS, "write_workers": 6}
+        )
+        assert widget.write_workers() == 6
+
+    def test_applies_write_queue_size(self, widget):
+        widget.apply_restored_settings(
+            **{**_NONE_RESTORE_KWARGS, "write_queue_size": 32}
+        )
+        assert widget.write_queue_size() == 32
+
+    @pytest.mark.parametrize("backend", list(VideoBackend))
+    def test_applies_each_video_backend(self, widget, backend):
+        widget.apply_restored_settings(
+            **{**_NONE_RESTORE_KWARGS, "video_backend": backend}
+        )
+        assert widget.video_backend() is backend
+
+    def test_default_video_backend_is_ffmpeg(self, widget):
+        assert widget.video_backend() is VideoBackend.FFMPEG
+
+
+class TestCacheManagementControls:
+    """Verify the cache-storage panel surface — signal emissions and the
+    setter methods main_window uses to push state into the widget."""
+
+    def test_size_cap_emits_zero_when_disabled(self, widget, qtbot):
+        widget._size_cap_enabled.setChecked(True)  # noqa: SLF001 — UI state
+        with qtbot.waitSignal(widget.sizeCapChanged, timeout=1000) as blocker:
+            widget._size_cap_enabled.setChecked(False)  # noqa: SLF001
+        assert blocker.args == [0]
+
+    def test_size_cap_emits_bytes_when_enabled(self, widget, qtbot):
+        widget._size_cap_mb.setValue(500)  # noqa: SLF001 — UI state
+        with qtbot.waitSignal(widget.sizeCapChanged, timeout=1000) as blocker:
+            widget._size_cap_enabled.setChecked(True)  # noqa: SLF001
+        assert blocker.args == [500 * 1024 * 1024]
+
+    def test_size_cap_widget_setter_does_not_emit(self, widget):
+        # main_window restores persisted values via set_cache_size_cap_bytes;
+        # we don't want that to feed back into the change handler.
+        received: list[int] = []
+        widget.sizeCapChanged.connect(received.append)
+        widget.set_cache_size_cap_bytes(256 * 1024 * 1024)
+        assert received == []
+        assert widget.cache_size_cap_bytes() == 256 * 1024 * 1024
+
+    def test_zero_disables_size_cap_widget(self, widget):
+        widget.set_cache_size_cap_bytes(128 * 1024 * 1024)
+        assert widget._size_cap_enabled.isChecked()  # noqa: SLF001
+        widget.set_cache_size_cap_bytes(0)
+        assert not widget._size_cap_enabled.isChecked()  # noqa: SLF001
+        assert widget.cache_size_cap_bytes() == 0
+
+    def test_browse_button_emits_signal(self, widget, qtbot):
+        with qtbot.waitSignal(widget.browseRootRequested, timeout=1000):
+            # Find the Browse button by walking children.
+            from PySide6.QtWidgets import QPushButton
+
+            for btn in widget.findChildren(QPushButton):
+                if btn.text() == "Browse...":
+                    btn.click()
+                    break
+
+    def test_clear_all_button_emits_signal(self, widget, qtbot):
+        from PySide6.QtWidgets import QPushButton
+
+        with qtbot.waitSignal(widget.clearAllRequested, timeout=1000):
+            for btn in widget.findChildren(QPushButton):
+                if btn.text() == "Clear all caches":
+                    btn.click()
+                    break
+
+    def test_invalidate_button_disabled_initially(self, widget):
+        assert not widget._invalidate_btn.isEnabled()  # noqa: SLF001
+
+    def test_set_invalidate_enabled(self, widget):
+        widget.set_invalidate_enabled(True)
+        assert widget._invalidate_btn.isEnabled()  # noqa: SLF001
+        widget.set_invalidate_enabled(False)
+        assert not widget._invalidate_btn.isEnabled()  # noqa: SLF001
+
+    def test_cache_root_text_setter(self, widget):
+        widget.set_cache_root_text(Path("/some/custom/path"))
+        assert widget._cache_root_edit.text() == str(Path("/some/custom/path"))  # noqa: SLF001
+
+    def test_cache_stats_text_setter(self, widget):
+        widget.set_cache_stats_text("5 entries · 1.0 GB · 50.0 GB free")
+        assert "5 entries" in widget._cache_stats_label.text()  # noqa: SLF001
+
+
+class TestSettingsEndToEnd:
+    """Mimics the full path main_window takes: live widget values → Settings
+    dataclass → JSON on disk → Settings → fresh widget. Catches any field
+    that's wired into apply_restored_settings but missing from the persist
+    path, or vice versa — the kind of drift that would silently lose
+    user preferences on the next launch."""
+
+    def test_widget_state_persists_through_save_load_apply(
+        self, qtbot, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        monkeypatch.setenv("SINNER2_SETTINGS_PATH", str(tmp_path / "s.json"))
+
+        first = QProcessorControls()
+        qtbot.addWidget(first)
+        first.apply_restored_settings(**_FULL_RESTORE_KWARGS)
+
+        # Build Settings from live widget state — same composition as
+        # main_window._persist_processor_settings.
+        swapper = first.swapper_params()
+        enhancer = first.enhancer_params()
+        settings.save(
+            settings.Settings(
+                worker_count=first.worker_count(),
+                strategy_name=first.strategy_name(),
+                enhancer_enabled=first.enhancer_enabled(),
+                swapper_detection_interval=swapper.detection_interval,
+                swapper_many_faces=swapper.many_faces,
+                swapper_target_sex=swapper.target_sex.value,
+                enhancer_upscale=enhancer.upscale,
+                enhancer_only_center_face=enhancer.only_center_face,
+                playback_mode=first.playback_mode(),
+                cache_mode=first.cache_mode(),
+                image_format=first.image_format(),
+                image_quality=first.image_quality(),
+                memory_cache_mb=first.memory_cache_mb(),
+                write_workers=first.write_workers(),
+                write_queue_size=first.write_queue_size(),
+                video_backend=first.video_backend(),
+                reader_pool_size=first.reader_pool_size(),
+                synced_max_lag_frames=first.synced_max_lag_frames(),
+                onnx_providers=first.onnx_providers(),
+            )
+        )
+
+        # Fresh widget + load — mimics next launch's startup.
+        reloaded = settings.load()
+        second = QProcessorControls()
+        qtbot.addWidget(second)
+        second.apply_restored_settings(
+            worker_count=reloaded.worker_count,
+            strategy_name=reloaded.strategy_name,
+            enhancer_enabled=reloaded.enhancer_enabled,
+            swapper_detection_interval=reloaded.swapper_detection_interval,
+            swapper_many_faces=reloaded.swapper_many_faces,
+            swapper_target_sex=reloaded.swapper_target_sex,
+            enhancer_upscale=reloaded.enhancer_upscale,
+            enhancer_only_center_face=reloaded.enhancer_only_center_face,
+            playback_mode=reloaded.playback_mode,
+            cache_mode=reloaded.cache_mode,
+            image_format=reloaded.image_format,
+            image_quality=reloaded.image_quality,
+            memory_cache_mb=reloaded.memory_cache_mb,
+            write_workers=reloaded.write_workers,
+            write_queue_size=reloaded.write_queue_size,
+            video_backend=reloaded.video_backend,
+            reader_pool_size=reloaded.reader_pool_size,
+            synced_max_lag_frames=reloaded.synced_max_lag_frames,
+            onnx_providers=reloaded.onnx_providers,
+        )
+
+        assert second.worker_count() == first.worker_count()
+        assert second.strategy_name() == first.strategy_name()
+        assert second.enhancer_enabled() == first.enhancer_enabled()
+        assert second.swapper_params() == first.swapper_params()
+        assert second.enhancer_params() == first.enhancer_params()
+        assert second.playback_mode() is first.playback_mode()
+        assert second.cache_mode() is first.cache_mode()
+        assert second.image_format() is first.image_format()
+        assert second.image_quality() == first.image_quality()
+        assert second.memory_cache_mb() == first.memory_cache_mb()
+        assert second.write_workers() == first.write_workers()
+        assert second.write_queue_size() == first.write_queue_size()
+        assert second.video_backend() is first.video_backend()
+        assert second.reader_pool_size() == first.reader_pool_size()
+        assert second.synced_max_lag_frames() == first.synced_max_lag_frames()
+        assert second.onnx_providers() == first.onnx_providers()
