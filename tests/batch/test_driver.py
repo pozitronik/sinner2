@@ -17,13 +17,14 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from sinner2.batch.driver import BatchDriver
+from sinner2.batch.driver import BatchDriver, StageSpec
 from sinner2.batch.task import (
     BatchCleanupMode,
     BatchOutputFormat,
     BatchTask,
     BatchTaskStatus,
 )
+from sinner2.config.execution import OnnxExecution
 from sinner2.io.video_encoder import FfmpegMissingError
 from sinner2.pipeline.image_writer import ImageFormat
 from sinner2.types import Frame
@@ -202,7 +203,6 @@ def _make_task(
         enhancer_enabled=enhancer_enabled,
         image_format=ImageFormat.JPEG,
         image_quality=80,
-        worker_count=2,
     )
 
 
@@ -227,7 +227,15 @@ def stub_stages(monkeypatch):
         for name in names:
             p = _PassthroughProcessor()
             built.append(p)
-            stages.append((name, lambda _p=p: _p, True))
+            workers = (
+                task.enhancer_execution.workers
+                if name == "faceenhancer"
+                else task.swapper_execution.workers
+            )
+            stages.append(
+                StageSpec(name=name, factory=lambda _p=p: _p,
+                          thread_safe=True, workers=workers)
+            )
         return stages
 
     monkeypatch.setattr(BatchDriver, "_build_stages", staticmethod(fake_build))
@@ -318,7 +326,7 @@ class TestPauseCancel:
             target_path=_make_video(tmp_path / "long.mp4", frames),
             output_path=tmp_path / "out",
             output_format=BatchOutputFormat.FRAMES,
-            worker_count=1,
+            swapper_execution=OnnxExecution(workers=1),
             image_format=ImageFormat.JPEG,
             image_quality=80,
         )
@@ -329,7 +337,10 @@ class TestPauseCancel:
         def fake_build(_source, task):
             p = _SleepProcessor(0.05)
             procs.append(p)
-            return [("faceswapper", lambda _p=p: _p, True)]
+            return [
+                StageSpec("faceswapper", lambda _p=p: _p, True,
+                          task.swapper_execution.workers)
+            ]
 
         monkeypatch.setattr(
             BatchDriver, "_build_stages", staticmethod(fake_build)
@@ -350,7 +361,10 @@ class TestPauseCancel:
         def fake_build(_source, task):
             p = _SleepProcessor(0.02)
             procs.append(p)
-            return [("faceswapper", lambda _p=p: _p, True)]
+            return [
+                StageSpec("faceswapper", lambda _p=p: _p, True,
+                          task.swapper_execution.workers)
+            ]
 
         monkeypatch.setattr(
             BatchDriver, "_build_stages", staticmethod(fake_build)
@@ -370,7 +384,10 @@ class TestPauseCancel:
 
     def test_cancel_wipes_cache(self, tmp_path, monkeypatch):
         def fake_build(_source, task):
-            return [("faceswapper", lambda: _SleepProcessor(0.03), True)]
+            return [
+                StageSpec("faceswapper", lambda: _SleepProcessor(0.03), True,
+                          task.swapper_execution.workers)
+            ]
 
         monkeypatch.setattr(
             BatchDriver, "_build_stages", staticmethod(fake_build)
@@ -402,12 +419,13 @@ class TestStageFailure:
             "_build_stages",
             staticmethod(
                 lambda _source, task: [
-                    ("faceswapper", lambda: _FailFrameProcessor(2), True)
+                    StageSpec("faceswapper", lambda: _FailFrameProcessor(2),
+                              True, task.swapper_execution.workers)
                 ]
             ),
         )
         task = _make_task(tmp_path, image_target=True)
-        task.worker_count = 1
+        task.swapper_execution.workers = 1
         driver = BatchDriver(cache_root=tmp_path / "cache")
         status = driver.run(task)
         assert status is BatchTaskStatus.FAILED
@@ -453,7 +471,7 @@ class TestReaderThreadSafety:
             staticmethod(lambda target, backend: reader),
         )
         task = _make_task(tmp_path, image_target=True)
-        task.worker_count = 4  # would race if reads happened in workers
+        task.swapper_execution.workers = 4  # would race if reads happened in workers
         driver = BatchDriver(cache_root=tmp_path / "cache")
         assert driver.run(task) is BatchTaskStatus.COMPLETED
         assert overlaps == [], "stage-0 reads overlapped"
@@ -596,7 +614,7 @@ class TestBuildStages:
         stages = BatchDriver._build_stages(  # noqa: SLF001
             Source(path=task.source_path), task
         )
-        assert [n for n, *_ in stages] == ["faceswapper", "faceenhancer"]
+        assert [s.name for s in stages] == ["faceswapper", "faceenhancer"]
 
     def test_swapper_disabled_enhancer_only(self, tmp_path, monkeypatch):
         from sinner2.config.source import Source
@@ -607,7 +625,7 @@ class TestBuildStages:
         stages = BatchDriver._build_stages(  # noqa: SLF001
             Source(path=task.source_path), task
         )
-        assert [n for n, *_ in stages] == ["faceenhancer"]
+        assert [s.name for s in stages] == ["faceenhancer"]
 
     def test_both_disabled_is_passthrough(self, tmp_path, monkeypatch):
         from sinner2.config.source import Source
@@ -618,7 +636,7 @@ class TestBuildStages:
         stages = BatchDriver._build_stages(  # noqa: SLF001
             Source(path=task.source_path), task
         )
-        assert [n for n, *_ in stages] == ["passthrough"]
+        assert [s.name for s in stages] == ["passthrough"]
 
     def test_both_disabled_runs_to_passthrough_output(self, driver, tmp_path):
         # End-to-end (no stub): the identity passthrough re-encodes the

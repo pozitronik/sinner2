@@ -11,6 +11,7 @@ from sinner2.batch.task import (
     BatchTask,
     BatchTaskStatus,
 )
+from sinner2.config.execution import OnnxExecution
 from sinner2.gui.widgets.batch_task_dialog import QBatchTaskDialog
 from sinner2.io.video_backend import VideoBackend
 from sinner2.pipeline.image_writer import ImageFormat
@@ -37,7 +38,7 @@ class TestPrefill:
             enhancer_enabled=False,
             enhancer_upscale=4,
             enhancer_only_center_face=True,
-            worker_count=8,
+            swapper_execution=OnnxExecution(workers=8),
             video_backend=VideoBackend.CV2,
             reader_pool_size=4,
             image_format=ImageFormat.PNG,
@@ -56,7 +57,7 @@ class TestPrefill:
         assert dlg._enhancer_box.isChecked() is False  # noqa: SLF001
         assert dlg._upscale.value() == 4  # noqa: SLF001
         assert dlg._only_center_face.isChecked() is True  # noqa: SLF001
-        assert dlg._worker_count.value() == 8  # noqa: SLF001
+        assert dlg._swapper_workers.value() == 8  # noqa: SLF001
         assert dlg._video_backend.currentData() == "cv2"  # noqa: SLF001
         assert dlg._reader_pool_size.value() == 4  # noqa: SLF001
 
@@ -145,14 +146,14 @@ class TestAutoOutputBehavior:
 
 class TestWritebackToTask:
     def test_to_task_returns_edited_copy(self, qtbot, tmp_path):
-        t = _task(tmp_path, worker_count=1)
+        t = _task(tmp_path, swapper_execution=OnnxExecution(workers=1))
         dlg = QBatchTaskDialog.from_task(t)
         qtbot.addWidget(dlg)
-        dlg._worker_count.setValue(8)  # noqa: SLF001
+        dlg._swapper_workers.setValue(8)  # noqa: SLF001
         edited = dlg.to_task()
-        assert edited.worker_count == 8
+        assert edited.swapper_execution.workers == 8
         # Original is unchanged (model_copy returns a new instance).
-        assert t.worker_count == 1
+        assert t.swapper_execution.workers == 1
 
     def test_to_task_preserves_id_and_runtime_state(
         self, qtbot, tmp_path
@@ -166,7 +167,7 @@ class TestWritebackToTask:
         )
         dlg = QBatchTaskDialog.from_task(t)
         qtbot.addWidget(dlg)
-        dlg._worker_count.setValue(2)  # noqa: SLF001
+        dlg._swapper_workers.setValue(2)  # noqa: SLF001
         edited = dlg.to_task()
         # Runtime state stays put — the dialog is for params, not state.
         assert edited.id == t.id

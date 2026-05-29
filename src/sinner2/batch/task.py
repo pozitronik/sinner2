@@ -9,8 +9,9 @@ Design notes:
   - Config fields mirror the Settings subset that the realtime preview
     exposes, so "Add current state to batch" is just a field-by-field
     copy. The chain knobs (swapper / enhancer params + enhancer_enabled)
-    affect the OUTPUT pixels; execution knobs (worker_count, providers,
-    video_backend, reader_pool_size) affect throughput, not pixels.
+    affect the OUTPUT pixels; execution knobs (the per-processor
+    swapper_execution / enhancer_execution profiles, video_backend,
+    reader_pool_size) affect throughput, not pixels.
   - Output path: Path | None. None = auto-derive via resolve_output_path()
     using the global default (next to target) or the user's configured
     batch_global_output_path.
@@ -27,8 +28,17 @@ from pathlib import Path
 from pydantic import Field
 
 from sinner2.config.base import SinnerBaseModel
+from sinner2.config.execution import OnnxExecution, TorchExecution
 from sinner2.io.video_backend import VideoBackend
 from sinner2.pipeline.image_writer import ImageFormat
+
+# Per-processor batch worker defaults. The swapper shares one ORT session
+# across threads, so more workers ride the GPU harder for little extra VRAM;
+# the enhancer needs one GFPGAN instance per worker (~1.3 GB each), so its
+# default is lower. Single source of truth for both the BatchTask field
+# defaults and the GUI's "Add to batch" capture.
+DEFAULT_SWAPPER_WORKERS = 4
+DEFAULT_ENHANCER_WORKERS = 2
 
 
 class BatchTaskStatus(str, Enum):
@@ -110,10 +120,17 @@ class BatchTask(SinnerBaseModel):
     enhancer_only_center_face: bool = False
 
     # ---- Execution config (throughput-affecting) ----
-    worker_count: int = 1
+    # Per-processor profiles: the swapper is ONNX (providers), the enhancer is
+    # PyTorch (device). Each carries its own worker count — they run as
+    # separate stages, so there's no single shared pool size.
+    swapper_execution: OnnxExecution = Field(
+        default_factory=lambda: OnnxExecution(workers=DEFAULT_SWAPPER_WORKERS)
+    )
+    enhancer_execution: TorchExecution = Field(
+        default_factory=lambda: TorchExecution(workers=DEFAULT_ENHANCER_WORKERS)
+    )
     video_backend: VideoBackend = VideoBackend.FFMPEG
     reader_pool_size: int = 1
-    onnx_providers: list[str] | None = None
 
     # ---- Output / cache config (used by frames mode + ffmpeg input glob) ----
     image_format: ImageFormat = ImageFormat.JPEG

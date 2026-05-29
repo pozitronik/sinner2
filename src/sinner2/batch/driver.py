@@ -29,6 +29,7 @@ import shutil
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from sinner2.batch.stage import (
@@ -75,6 +76,20 @@ ProgressCallback = Callable[[BatchProgress], None]
 # Preview callback: a recently-processed frame (throttled by the stage) so
 # the GUI can show what the batch is producing. Same marshalling caveat.
 PreviewCallback = Callable[[Frame], None]
+
+
+@dataclass(frozen=True)
+class StageSpec:
+    """One processor-major stage: how to build its processor, whether the
+    processor can be shared across workers, and how many workers to run it
+    with. The factory (not a pre-built instance) lets the stage runner build
+    the right NUMBER of instances — one shared for thread-safe processors,
+    one per worker otherwise."""
+
+    name: str
+    factory: Callable[[], Processor]
+    thread_safe: bool
+    workers: int
 
 
 class _IdentityProcessor:
@@ -171,8 +186,8 @@ class BatchDriver:
         stages = self._build_stages(source, task)
         task_cache = self._cache_root / task.id
         stage_dirs = [
-            task_cache / f"stage{i}-{name}"
-            for i, (name, *_) in enumerate(stages)
+            task_cache / f"stage{i}-{spec.name}"
+            for i, spec in enumerate(stages)
         ]
 
         # The first-stage reader also probes total frame count + fps.
@@ -183,7 +198,8 @@ class BatchDriver:
             task.total_frames = total
             stage_count = len(stages)
 
-            for i, (name, factory, thread_safe) in enumerate(stages):
+            for i, spec in enumerate(stages):
+                name = spec.name
                 stage_cb = self._stage_progress(
                     progress_callback, i, stage_count, name, total
                 )
@@ -204,12 +220,12 @@ class BatchDriver:
                     )
                     result = run_stage(
                         stage_input=stage_input,
-                        processor_factory=factory,
-                        thread_safe=thread_safe,
+                        processor_factory=spec.factory,
+                        thread_safe=spec.thread_safe,
                         output_dir=stage_dirs[i],
                         ext=ext,
                         writer=writer,
-                        workers=task.worker_count,
+                        workers=spec.workers,
                         pause_event=self._pause_event,
                         cancel_event=self._cancel_event,
                         on_progress=stage_cb,
@@ -291,42 +307,50 @@ class BatchDriver:
         raise ValueError(f"unsupported target kind: {target.kind}")
 
     @staticmethod
-    def _build_stages(
-        source: Source, task: BatchTask
-    ) -> list[tuple[str, Callable[[], Processor], bool]]:
-        """Ordered (name, factory, thread_safe) stages. One processor per
-        stage — they run in turns, not chained per-frame. The factory (not a
-        pre-built instance) lets the stage runner build the right NUMBER of
-        instances: a thread-safe processor is shared across workers, a
-        non-thread-safe one gets one per worker. Either processor can be
-        disabled; with both off, a single identity stage re-encodes the source
-        unprocessed (the user-requested passthrough)."""
-        stages: list[tuple[str, Callable[[], Processor], bool]] = []
+    def _build_stages(source: Source, task: BatchTask) -> list[StageSpec]:
+        """Ordered stages, one processor each — they run in turns, not chained
+        per-frame. Each stage carries its own execution profile: the swapper is
+        ONNX (providers + workers), the enhancer is PyTorch (device + workers).
+        Either processor can be disabled; with both off, a single identity
+        stage re-encodes the source unprocessed (the user-requested
+        passthrough)."""
+        stages: list[StageSpec] = []
         if task.swapper_enabled:
             swapper_params = FaceSwapperParams(
                 detection_interval=task.swapper_detection_interval,
                 many_faces=task.swapper_many_faces,
                 target_sex=TargetSex(task.swapper_target_sex),
             )
-            stages.append((
-                "faceswapper",
-                lambda p=swapper_params: FaceSwapper(source=source, params=p),
-                FaceSwapper.thread_safe,
+            providers = list(task.swapper_execution.providers)
+            stages.append(StageSpec(
+                name="faceswapper",
+                factory=lambda p=swapper_params, eps=providers: FaceSwapper(
+                    source=source, params=p, providers=eps
+                ),
+                thread_safe=FaceSwapper.thread_safe,
+                workers=task.swapper_execution.workers,
             ))
         if task.enhancer_enabled:
             enhancer_params = FaceEnhancerParams(
                 upscale=task.enhancer_upscale,
                 only_center_face=task.enhancer_only_center_face,
             )
-            stages.append((
-                "faceenhancer",
-                lambda p=enhancer_params: FaceEnhancer(params=p),
-                FaceEnhancer.thread_safe,
+            device = task.enhancer_execution.device
+            stages.append(StageSpec(
+                name="faceenhancer",
+                factory=lambda p=enhancer_params, d=device: FaceEnhancer(
+                    params=p, device=d
+                ),
+                thread_safe=FaceEnhancer.thread_safe,
+                workers=task.enhancer_execution.workers,
             ))
         if not stages:
-            stages.append(
-                ("passthrough", _IdentityProcessor, _IdentityProcessor.thread_safe)
-            )
+            stages.append(StageSpec(
+                name="passthrough",
+                factory=_IdentityProcessor,
+                thread_safe=_IdentityProcessor.thread_safe,
+                workers=1,
+            ))
         return stages
 
     # ---- Helpers ----

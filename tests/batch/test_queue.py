@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from sinner2.batch.driver import BatchDriver
+from sinner2.batch.driver import BatchDriver, StageSpec
 from sinner2.batch.queue import BatchQueue
 from sinner2.batch.task import (
     BatchOutputFormat,
@@ -18,6 +18,7 @@ from sinner2.batch.task import (
     BatchTaskStatus,
 )
 from sinner2.batch.task_store import BatchTaskStore
+from sinner2.config.execution import OnnxExecution
 from sinner2.pipeline.image_writer import ImageFormat
 from sinner2.types import Frame
 
@@ -48,7 +49,10 @@ def stub_chain(monkeypatch):
     def fake_build(_source, task):
         p = _PassthroughProcessor()
         procs.append(p)
-        return [("faceswapper", lambda _p=p: _p, True)]
+        return [
+            StageSpec("faceswapper", lambda _p=p: _p, True,
+                      task.swapper_execution.workers)
+        ]
 
     monkeypatch.setattr(BatchDriver, "_build_stages", staticmethod(fake_build))
     return procs
@@ -66,7 +70,7 @@ def _make_task(tmp_path: Path, suffix: str) -> BatchTask:
         target_path=_make_image(tmp_path / f"tgt_{suffix}.png"),
         output_path=tmp_path / f"out_{suffix}",
         output_format=BatchOutputFormat.FRAMES,
-        worker_count=1,
+        swapper_execution=OnnxExecution(workers=1),
         image_format=ImageFormat.JPEG,
         image_quality=80,
     )

@@ -124,6 +124,14 @@ class QBatchTaskDialog(QDialog):
             if value == task.swapper_target_sex:
                 self._target_sex.setCurrentIndex(self._target_sex.count() - 1)
         swap_form.addRow("Swap which:", self._target_sex)
+        self._swapper_workers = QSpinBox()
+        self._swapper_workers.setRange(1, 16)
+        self._swapper_workers.setValue(task.swapper_execution.workers)
+        self._swapper_workers.setToolTip(
+            "Worker threads for the swap stage. The swapper shares one ONNX "
+            "session across threads, so more workers cost little extra VRAM."
+        )
+        swap_form.addRow("Workers:", self._swapper_workers)
 
         # ---- FaceEnhancer group ----
         enh_box = QGroupBox("FaceEnhancer (GFPGAN)")
@@ -138,14 +146,18 @@ class QBatchTaskDialog(QDialog):
         self._only_center_face = QCheckBox()
         self._only_center_face.setChecked(task.enhancer_only_center_face)
         enh_form.addRow("Only center face:", self._only_center_face)
+        self._enhancer_workers = QSpinBox()
+        self._enhancer_workers.setRange(1, 16)
+        self._enhancer_workers.setValue(task.enhancer_execution.workers)
+        self._enhancer_workers.setToolTip(
+            "Worker threads for the enhance stage. GFPGAN isn't thread-safe, "
+            "so each worker loads its own model (~1.3 GB VRAM each)."
+        )
+        enh_form.addRow("Workers:", self._enhancer_workers)
 
         # ---- Execution group ----
         exec_box = QGroupBox("Execution")
         exec_form = QFormLayout(exec_box)
-        self._worker_count = QSpinBox()
-        self._worker_count.setRange(1, 16)
-        self._worker_count.setValue(task.worker_count)
-        exec_form.addRow("Worker count:", self._worker_count)
         self._video_backend = QComboBox()
         for backend in VideoBackend:
             self._video_backend.addItem(backend.value, backend.value)
@@ -257,7 +269,15 @@ class QBatchTaskDialog(QDialog):
                 "enhancer_enabled": self._enhancer_box.isChecked(),
                 "enhancer_upscale": self._upscale.value(),
                 "enhancer_only_center_face": self._only_center_face.isChecked(),
-                "worker_count": self._worker_count.value(),
+                # Only workers are editable here for now; providers/device are
+                # preserved from the original profile (their selectors land in
+                # a later step). model_copy keeps those fields intact.
+                "swapper_execution": self._task.swapper_execution.model_copy(
+                    update={"workers": self._swapper_workers.value()}
+                ),
+                "enhancer_execution": self._task.enhancer_execution.model_copy(
+                    update={"workers": self._enhancer_workers.value()}
+                ),
                 "video_backend": VideoBackend(self._video_backend.currentData()),
                 "reader_pool_size": self._reader_pool_size.value(),
                 "cleanup_mode": BatchCleanupMode(

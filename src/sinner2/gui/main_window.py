@@ -14,9 +14,16 @@ from PySide6.QtWidgets import (
 )
 
 from sinner2.batch.queue import BatchQueue
-from sinner2.batch.task import BatchCleanupMode, BatchOutputFormat, BatchTask
+from sinner2.batch.task import (
+    DEFAULT_ENHANCER_WORKERS,
+    DEFAULT_SWAPPER_WORKERS,
+    BatchCleanupMode,
+    BatchOutputFormat,
+    BatchTask,
+)
 from sinner2.batch.task_store import BatchTaskStore
 from sinner2.config import settings as user_settings
+from sinner2.config.execution import OnnxExecution, TorchExecution
 from sinner2.gui.player_controller import PlayerController, default_cache_root
 from sinner2.gui.widgets.batch_task_dialog import QBatchTaskDialog
 from sinner2.gui.widgets.batch_view import QBatchView
@@ -871,6 +878,17 @@ class SinnerMainWindow(QMainWindow):
             default_cleanup = BatchCleanupMode(default_cleanup_value)
         except ValueError:
             default_cleanup = BatchCleanupMode.KEEP
+        # Per-processor execution profiles. Carry the current ONNX providers
+        # into the swapper profile (CPU vs GPU is a meaningful captured choice);
+        # workers default to the batch throughput defaults rather than the
+        # realtime pool size (live latency tuning ≠ batch throughput tuning).
+        providers = self._processors.onnx_providers()
+        swapper_execution = (
+            OnnxExecution(workers=DEFAULT_SWAPPER_WORKERS, providers=list(providers))
+            if providers
+            else OnnxExecution(workers=DEFAULT_SWAPPER_WORKERS)
+        )
+        enhancer_execution = TorchExecution(workers=DEFAULT_ENHANCER_WORKERS)
         task = BatchTask(
             source_path=source,
             target_path=target,
@@ -883,10 +901,10 @@ class SinnerMainWindow(QMainWindow):
             enhancer_enabled=self._processors.enhancer_enabled(),
             enhancer_upscale=enhancer.upscale,
             enhancer_only_center_face=enhancer.only_center_face,
-            worker_count=self._processors.worker_count(),
+            swapper_execution=swapper_execution,
+            enhancer_execution=enhancer_execution,
             video_backend=self._processors.video_backend(),
             reader_pool_size=self._processors.reader_pool_size(),
-            onnx_providers=self._processors.onnx_providers(),
             image_format=self._processors.image_format(),
             image_quality=self._processors.image_quality(),
         )
