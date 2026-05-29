@@ -11,6 +11,7 @@ class FrameCache(Protocol):
 
     def put(self, index: FrameIndex, frame: Frame) -> None: ...
     def get(self, index: FrameIndex) -> Frame | None: ...
+    def evict_at(self, index: FrameIndex) -> None: ...
     def evict_before(self, index: FrameIndex) -> None: ...
     def evict_from(self, index: FrameIndex) -> None: ...
     def memory_used_bytes(self) -> int: ...
@@ -56,6 +57,14 @@ class MemoryFrameCache:
             if frame is not None:
                 self._frames.move_to_end(index)
             return frame
+
+    def evict_at(self, index: FrameIndex) -> None:
+        with self._lock:
+            if index not in self._frames:
+                return
+            self._total_bytes -= self._sizes[index]
+            del self._frames[index]
+            del self._sizes[index]
 
     def evict_before(self, index: FrameIndex) -> None:
         with self._lock:

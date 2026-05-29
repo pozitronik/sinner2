@@ -1,15 +1,29 @@
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 
+from sinner2.pipeline.buffer.bounded_write_executor import (
+    BoundedWriteExecutor,
+    WriteExecutorMetrics,
+)
 from sinner2.pipeline.buffer.buffer import FrameBuffer
 from sinner2.pipeline.buffer.cache import FrameCache, MemoryFrameCache
 from sinner2.pipeline.buffer.store import DiskFrameStore, FrameStore
 from sinner2.pipeline.buffer.timeline import Timeline
+from sinner2.pipeline.cache_mode import CacheMode
 from sinner2.types import Frame
+
+_ZERO_WRITE_METRICS = WriteExecutorMetrics(
+    outstanding=0,
+    max_outstanding=8,
+    submitted=0,
+    completed=0,
+    dropped=0,
+    latency_p50_ms=0.0,
+    latency_p95_ms=0.0,
+)
 
 
 def _frame() -> Frame:
@@ -30,7 +44,8 @@ def _mock_buffer(
     timeline = MagicMock(spec=Timeline)
     timeline.current_frame.return_value = timeline_current
     timeline.fps = timeline_fps
-    executor = MagicMock(spec=ThreadPoolExecutor)
+    executor = MagicMock(spec=BoundedWriteExecutor)
+    executor.metrics_snapshot.return_value = _ZERO_WRITE_METRICS
     buf = FrameBuffer(store=store, cache=cache, timeline=timeline, write_executor=executor)
     return buf, store, cache, timeline, executor
 
@@ -149,6 +164,71 @@ class TestInvalidateFrom:
         store.clear_from.assert_called_once_with(50)
 
 
+class TestInvalidate:
+    """Per-index tombstone for chain-swap reprocessing.
+
+    The executor calls invalidate(target) on seek so that a subsequent
+    get(target), if it happens before the worker writes the new frame,
+    doesn't return stale cache/store data and trick the playback
+    duplicate-frame guard into recording target as 'shown' — which would
+    silently swallow the worker's actual new frame for the same index.
+    """
+
+    def test_get_returns_none_until_next_put(self, tmp_path: Path):
+        store = DiskFrameStore(tmp_path)
+        cache = MemoryFrameCache(max_bytes=10 * 1024)
+        timeline = Timeline(fps=30)
+        executor = BoundedWriteExecutor(max_workers=2, max_outstanding=8)
+        try:
+            buf = FrameBuffer(store, cache, timeline, executor)
+            buf.put(5, _frame())
+            assert buf.get(5) is not None  # in cache
+            buf.invalidate(5)
+            # Even though cache + (post-flush) store have a frame, get
+            # must return None until put supersedes the tombstone.
+            assert buf.get(5) is None
+            buf.put(5, _frame())
+            assert buf.get(5) is not None
+        finally:
+            executor.shutdown(wait=True)
+
+    def test_invalidate_evicts_cache_entry(self, tmp_path: Path):
+        # Cache must be cleared on invalidate; otherwise a parallel
+        # get() that bypasses the tombstone check (none exist today,
+        # but defence in depth) would still see the stale frame.
+        store = DiskFrameStore(tmp_path)
+        cache = MemoryFrameCache(max_bytes=10 * 1024)
+        timeline = Timeline(fps=30)
+        executor = BoundedWriteExecutor(max_workers=2, max_outstanding=8)
+        try:
+            buf = FrameBuffer(store, cache, timeline, executor)
+            buf.put(7, _frame())
+            assert cache.get(7) is not None
+            buf.invalidate(7)
+            assert cache.get(7) is None
+        finally:
+            executor.shutdown(wait=True)
+
+    def test_put_clears_tombstone_for_other_indices_only_if_explicit(
+        self, tmp_path: Path
+    ):
+        # Tombstone is per-index; putting a different index doesn't
+        # accidentally clear an unrelated invalidation.
+        store = DiskFrameStore(tmp_path)
+        cache = MemoryFrameCache(max_bytes=10 * 1024)
+        timeline = Timeline(fps=30)
+        executor = BoundedWriteExecutor(max_workers=2, max_outstanding=8)
+        try:
+            buf = FrameBuffer(store, cache, timeline, executor)
+            buf.put(3, _frame())
+            buf.invalidate(3)
+            buf.put(4, _frame())  # different index
+            assert buf.get(3) is None  # tombstone still in effect
+            assert buf.get(4) is not None
+        finally:
+            executor.shutdown(wait=True)
+
+
 class TestMetrics:
     def test_initial_state(self):
         buf, *_ = _mock_buffer(timeline_current=0)
@@ -188,28 +268,91 @@ class TestIntegrationWithRealComponents:
         store = DiskFrameStore(tmp_path)
         cache = MemoryFrameCache(max_bytes=10 * 1024)
         timeline = Timeline(fps=30)
-        with ThreadPoolExecutor(max_workers=2) as executor:
+        executor = BoundedWriteExecutor(max_workers=2, max_outstanding=8)
+        try:
             buf = FrameBuffer(store, cache, timeline, executor)
             f = _frame()
             buf.put(5, f)
-            # Cache should have it immediately; store will get it asynchronously
+            # Cache should have it immediately; store will get it asynchronously.
             assert buf.get(5) is not None
-        # After executor shutdown, async writes are flushed
+        finally:
+            executor.shutdown(wait=True)
+        # After executor shutdown, async writes are flushed.
         assert store.has(5)
 
     def test_invalidate_clears_real_store_and_cache(self, tmp_path: Path):
         store = DiskFrameStore(tmp_path)
         cache = MemoryFrameCache(max_bytes=10 * 1024)
         timeline = Timeline(fps=30)
-        with ThreadPoolExecutor(max_workers=2) as executor:
+        executor = BoundedWriteExecutor(max_workers=2, max_outstanding=8)
+        try:
             buf = FrameBuffer(store, cache, timeline, executor)
             for i in range(5):
                 buf.put(i, _frame())
-        # Re-open with a fresh executor to verify after-flush state
-        with ThreadPoolExecutor(max_workers=2) as executor:
+        finally:
+            executor.shutdown(wait=True)
+        executor = BoundedWriteExecutor(max_workers=2, max_outstanding=8)
+        try:
             buf = FrameBuffer(store, cache, timeline, executor)
             buf.invalidate_from(3)
+        finally:
+            executor.shutdown(wait=True)
         assert store.has(0)
         assert store.has(2)
         assert not store.has(3)
         assert not store.has(4)
+
+
+class TestCacheMode:
+    """Cache mode gates which I/O paths the buffer takes:
+       WRITE_READ: write submits to executor + cache misses fall back to store
+       READ_ONLY:  no write submit + cache misses still fall back to store
+       OFF:        no write submit + cache misses skip the store entirely
+    """
+
+    def test_write_read_submits_writes(self):
+        buf, store, _, _, executor = _mock_buffer()
+        buf.set_cache_mode(CacheMode.WRITE_READ)
+        buf.put(0, _frame())
+        assert executor.submit.call_count == 1
+        # The submitted callable is store.write; first arg is the index.
+        executor.submit.assert_called_with(store.write, 0, executor.submit.call_args[0][2])
+
+    def test_read_only_skips_writes(self):
+        buf, _, _, _, executor = _mock_buffer()
+        buf.set_cache_mode(CacheMode.READ_ONLY)
+        buf.put(0, _frame())
+        executor.submit.assert_not_called()
+
+    def test_off_skips_writes(self):
+        buf, _, _, _, executor = _mock_buffer()
+        buf.set_cache_mode(CacheMode.OFF)
+        buf.put(0, _frame())
+        executor.submit.assert_not_called()
+
+    def test_read_only_still_falls_back_to_store_on_miss(self):
+        wanted = _frame()
+        buf, store, cache, _, _ = _mock_buffer(store_read_returns=wanted)
+        buf.set_cache_mode(CacheMode.READ_ONLY)
+        result = buf.get(0)
+        assert result is wanted
+        store.read.assert_called_once_with(0)
+
+    def test_off_does_not_read_store_on_miss(self):
+        buf, store, _, _, _ = _mock_buffer(store_read_returns=_frame())
+        buf.set_cache_mode(CacheMode.OFF)
+        result = buf.get(0)
+        assert result is None
+        store.read.assert_not_called()
+
+    def test_set_cache_mode_hot_swaps(self):
+        # Live switch must take effect on the very next put/get without rebuild.
+        buf, store, _, _, executor = _mock_buffer(store_read_returns=_frame())
+        buf.set_cache_mode(CacheMode.WRITE_READ)
+        buf.put(0, _frame())
+        assert executor.submit.call_count == 1
+        buf.set_cache_mode(CacheMode.OFF)
+        buf.put(1, _frame())
+        assert executor.submit.call_count == 1  # no new submission
+        assert buf.get(2) is None  # OFF blocks store fallback
+        store.read.assert_not_called()

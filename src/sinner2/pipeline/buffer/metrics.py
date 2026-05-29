@@ -10,6 +10,11 @@ class BufferMetrics:
     workers — clamping keeps the fields useful for "how far behind?" UX.
 
     cache_hit_ratio is 0.0 until at least one get() call has been made.
+
+    The write_* fields surface BoundedWriteExecutor state directly so the
+    metrics panel can show one row per concern (cache pressure, write
+    queue depth, dropped writes, write latency). They are 0/0.0 when the
+    cache_mode is OFF or the executor has not yet run any tasks.
     """
 
     frame_lag: int
@@ -19,3 +24,10 @@ class BufferMetrics:
     current_frame_miss: int
     memory_used_bytes: int
     cache_hit_ratio: float
+    write_outstanding: int = 0
+    write_max_outstanding: int = 0
+    write_submitted: int = 0
+    write_completed: int = 0
+    write_dropped: int = 0
+    write_latency_p50_ms: float = 0.0
+    write_latency_p95_ms: float = 0.0

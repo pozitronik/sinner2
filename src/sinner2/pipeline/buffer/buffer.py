@@ -1,11 +1,12 @@
 import threading
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor
 
+from sinner2.pipeline.buffer.bounded_write_executor import BoundedWriteExecutor
 from sinner2.pipeline.buffer.cache import FrameCache
 from sinner2.pipeline.buffer.metrics import BufferMetrics
 from sinner2.pipeline.buffer.store import FrameStore
 from sinner2.pipeline.buffer.timeline import Timeline
+from sinner2.pipeline.cache_mode import CacheMode
 from sinner2.types import Frame, FrameIndex
 
 _RECENT_INDICES_CAP = 1024
@@ -15,13 +16,22 @@ class FrameBuffer:
     """The single seam the executor uses for frame I/O.
 
     Composes a FrameStore (canonical persistence), a FrameCache (hot
-    in-memory copies), and a Timeline (wall-clock → frame index). Workers
-    call put(); playback calls get_at_current_time(). Read path is cache,
-    then store on miss, with backfill into cache.
+    in-memory copies), a Timeline (wall-clock → frame index), and a
+    BoundedWriteExecutor (background disk writes with backpressure).
+    Workers call put(); playback calls get_at_current_time(). Read path
+    is cache, then store on miss (skipped when cache_mode == OFF), with
+    backfill into cache.
 
-    Disk writes are submitted asynchronously to an injected ThreadPoolExecutor
-    so workers don't block on filesystem I/O. The executor's lifecycle is
-    owned by the caller (typically RealtimeExecutor).
+    Disk writes go through a BoundedWriteExecutor so the in-flight write
+    queue can't grow without limit — when the cap is hit, the write is
+    silently dropped and the frame stays in the memory cache until LRU
+    evicts it. The drop count is surfaced in metrics so the user can see
+    when the disk is the bottleneck.
+
+    cache_mode runtime semantics:
+      WRITE_READ: writes submitted, cache misses fall back to store.read
+      READ_ONLY:  no writes submitted; cache misses still read from store
+      OFF:        no writes, no reads — memory only
     """
 
     def __init__(
@@ -29,12 +39,14 @@ class FrameBuffer:
         store: FrameStore,
         cache: FrameCache,
         timeline: Timeline,
-        write_executor: ThreadPoolExecutor,
+        write_executor: BoundedWriteExecutor,
+        cache_mode: CacheMode = CacheMode.WRITE_READ,
     ) -> None:
         self._store = store
         self._cache = cache
         self._timeline = timeline
         self._write_executor = write_executor
+        self._cache_mode = cache_mode
         self._lock = threading.RLock()
         self._last_written_index: FrameIndex | None = None
         self._last_displayed_index: FrameIndex | None = None
@@ -42,16 +54,62 @@ class FrameBuffer:
         self._hits = 0
         self._misses = 0
         self._current_frame_miss = 0
+        # Tombstones: indices whose cached data is logically invalid
+        # (e.g. the executor just swapped the processing chain and
+        # reprocessed the index). get() must return None for these
+        # until the next put() lands, even if the cache or store still
+        # holds the old frame. Without this, the playback duplicate-
+        # frame guard would compare the index of the just-reprocessed
+        # frame to the same index it last emitted and skip the repaint,
+        # leaving stale pixels on screen. Cleared atomically by put().
+        self._invalidated: set[FrameIndex] = set()
+
+    @property
+    def cache_mode(self) -> CacheMode:
+        return self._cache_mode
+
+    def set_cache_mode(self, mode: CacheMode) -> None:
+        """Switch cache behaviour at runtime. Pending writes complete; new
+        writes start (or stop) honouring the new mode immediately."""
+        with self._lock:
+            self._cache_mode = mode
 
     def put(self, index: FrameIndex, frame: Frame) -> None:
         self._cache.put(index, frame)
-        self._write_executor.submit(self._store.write, index, frame)
+        if self._cache_mode is CacheMode.WRITE_READ:
+            self._write_executor.submit(self._store.write, index, frame)
         with self._lock:
             if self._last_written_index is None or index > self._last_written_index:
                 self._last_written_index = index
             self._recent_indices.append(index)
+            # A fresh put for an invalidated index supersedes the tombstone.
+            self._invalidated.discard(index)
+
+    def invalidate(self, index: FrameIndex) -> None:
+        """Mark index's cached/stored data as logically invalid.
+
+        Used when the processing chain changes mid-session and the same
+        index is about to be reprocessed: without invalidation, a get()
+        before the worker writes the new frame would return the OLD
+        cached/disk data, the playback duplicate-frame guard would
+        record that index as "shown", and the worker's new frame for
+        the same index would then be silently dropped (same index,
+        already shown). After this call, get() returns None for the
+        index until the next put() clears the tombstone.
+        """
+        self._cache.evict_at(index)
+        with self._lock:
+            self._invalidated.add(index)
 
     def get(self, index: FrameIndex) -> Frame | None:
+        with self._lock:
+            tombstoned = index in self._invalidated
+        if tombstoned:
+            # Tombstoned indices behave as cache-and-store misses regardless
+            # of what's actually present, until put() supersedes the tombstone.
+            with self._lock:
+                self._misses += 1
+            return None
         frame = self._cache.get(index)
         if frame is not None:
             with self._lock:
@@ -59,6 +117,8 @@ class FrameBuffer:
             return frame
         with self._lock:
             self._misses += 1
+        if self._cache_mode is CacheMode.OFF:
+            return None
         frame = self._store.read(index)
         if frame is not None:
             self._cache.put(index, frame)
@@ -122,12 +182,20 @@ class FrameBuffer:
             total_reads = self._hits + self._misses
             ratio = (self._hits / total_reads) if total_reads > 0 else 0.0
 
-            return BufferMetrics(
-                frame_lag=frame_lag,
-                time_lag_s=frame_lag * frame_time_s,
-                display_frame_lag=display_frame_lag,
-                display_time_lag_s=display_frame_lag * frame_time_s,
-                current_frame_miss=self._current_frame_miss,
-                memory_used_bytes=self._cache.memory_used_bytes(),
-                cache_hit_ratio=ratio,
-            )
+        write_m = self._write_executor.metrics_snapshot()
+        return BufferMetrics(
+            frame_lag=frame_lag,
+            time_lag_s=frame_lag * frame_time_s,
+            display_frame_lag=display_frame_lag,
+            display_time_lag_s=display_frame_lag * frame_time_s,
+            current_frame_miss=self._current_frame_miss,
+            memory_used_bytes=self._cache.memory_used_bytes(),
+            cache_hit_ratio=ratio,
+            write_outstanding=write_m.outstanding,
+            write_max_outstanding=write_m.max_outstanding,
+            write_submitted=write_m.submitted,
+            write_completed=write_m.completed,
+            write_dropped=write_m.dropped,
+            write_latency_p50_ms=write_m.latency_p50_ms,
+            write_latency_p95_ms=write_m.latency_p95_ms,
+        )
