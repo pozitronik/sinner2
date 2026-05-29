@@ -97,16 +97,16 @@ class TestQProcessorControls:
         assert isinstance(widget.skip_strategy(), SyncedStrategy)
 
     def test_default_worker_count(self, widget):
-        assert widget.worker_count() == 1
+        assert widget.realtime_workers() == 1
 
     def test_changing_worker_count_emits_config_changed(self, widget, qtbot):
         with qtbot.waitSignal(widget.configChanged, timeout=1000):
             widget._worker_count.setValue(4)  # noqa: SLF001
-        assert widget.worker_count() == 4
+        assert widget.realtime_workers() == 4
 
 
 _FULL_RESTORE_KWARGS = dict(
-    worker_count=8,
+    realtime_workers=8,
     strategy_name="SyncedStrategy",
     enhancer_enabled=False,
     swapper_detection_interval=3,
@@ -124,11 +124,12 @@ _FULL_RESTORE_KWARGS = dict(
     video_backend=VideoBackend.CV2,
     reader_pool_size=4,
     synced_max_lag_frames=120,
-    onnx_providers=["CPUExecutionProvider"],
+    swapper_providers=["CPUExecutionProvider"],
+    enhancer_device="cpu",
 )
 
 _NONE_RESTORE_KWARGS = dict(
-    worker_count=None,
+    realtime_workers=None,
     strategy_name=None,
     enhancer_enabled=None,
     swapper_detection_interval=None,
@@ -146,7 +147,8 @@ _NONE_RESTORE_KWARGS = dict(
     video_backend=None,
     reader_pool_size=None,
     synced_max_lag_frames=None,
-    onnx_providers=None,
+    swapper_providers=None,
+    enhancer_device=None,
 )
 
 
@@ -158,8 +160,17 @@ class TestApplyRestoredSettings:
     spinbox defaults rather than zeros)."""
 
     def test_applies_worker_count(self, widget):
-        widget.apply_restored_settings(**{**_NONE_RESTORE_KWARGS, "worker_count": 7})
-        assert widget.worker_count() == 7
+        widget.apply_restored_settings(**{**_NONE_RESTORE_KWARGS, "realtime_workers": 7})
+        assert widget.realtime_workers() == 7
+
+    def test_applies_enhancer_device(self, widget):
+        widget.apply_restored_settings(
+            **{**_NONE_RESTORE_KWARGS, "enhancer_device": "cpu"}
+        )
+        assert widget.enhancer_device() == "cpu"
+
+    def test_default_enhancer_device_is_auto(self, widget):
+        assert widget.enhancer_device() == "auto"
 
     def test_applies_swapper_enabled(self, widget):
         widget.apply_restored_settings(
@@ -211,13 +222,13 @@ class TestApplyRestoredSettings:
         assert params.only_center_face is True
 
     def test_none_values_preserve_widget_defaults(self, widget):
-        default_worker = widget.worker_count()
+        default_worker = widget.realtime_workers()
         default_strategy = widget.strategy_name()
         default_enhancer_enabled = widget.enhancer_enabled()
         default_swapper = widget.swapper_params()
         default_enhancer = widget.enhancer_params()
         widget.apply_restored_settings(**_NONE_RESTORE_KWARGS)
-        assert widget.worker_count() == default_worker
+        assert widget.realtime_workers() == default_worker
         assert widget.strategy_name() == default_strategy
         assert widget.enhancer_enabled() is default_enhancer_enabled
         assert widget.swapper_params() == default_swapper
@@ -240,7 +251,7 @@ class TestApplyRestoredSettings:
 
     def test_applies_all_fields_together(self, widget):
         widget.apply_restored_settings(**_FULL_RESTORE_KWARGS)
-        assert widget.worker_count() == 8
+        assert widget.realtime_workers() == 8
         assert widget.strategy_name() == "SyncedStrategy"
         assert widget.enhancer_enabled() is False
         sp = widget.swapper_params()
@@ -249,6 +260,7 @@ class TestApplyRestoredSettings:
         ep = widget.enhancer_params()
         assert ep.upscale == 4
         assert ep.only_center_face is True
+        assert widget.enhancer_device() == "cpu"
         assert widget.playback_mode() is PlaybackMode.UNLIMITED
 
     @pytest.mark.parametrize("mode", list(PlaybackMode))
@@ -405,7 +417,7 @@ class TestSettingsEndToEnd:
         enhancer = first.enhancer_params()
         settings.save(
             settings.Settings(
-                worker_count=first.worker_count(),
+                realtime_workers=first.realtime_workers(),
                 strategy_name=first.strategy_name(),
                 enhancer_enabled=first.enhancer_enabled(),
                 swapper_detection_interval=swapper.detection_interval,
@@ -423,7 +435,8 @@ class TestSettingsEndToEnd:
                 video_backend=first.video_backend(),
                 reader_pool_size=first.reader_pool_size(),
                 synced_max_lag_frames=first.synced_max_lag_frames(),
-                onnx_providers=first.onnx_providers(),
+                swapper_providers=first.swapper_providers(),
+                enhancer_device=first.enhancer_device(),
             )
         )
 
@@ -432,7 +445,7 @@ class TestSettingsEndToEnd:
         second = QProcessorControls()
         qtbot.addWidget(second)
         second.apply_restored_settings(
-            worker_count=reloaded.worker_count,
+            realtime_workers=reloaded.realtime_workers,
             strategy_name=reloaded.strategy_name,
             enhancer_enabled=reloaded.enhancer_enabled,
             swapper_detection_interval=reloaded.swapper_detection_interval,
@@ -450,10 +463,11 @@ class TestSettingsEndToEnd:
             video_backend=reloaded.video_backend,
             reader_pool_size=reloaded.reader_pool_size,
             synced_max_lag_frames=reloaded.synced_max_lag_frames,
-            onnx_providers=reloaded.onnx_providers,
+            swapper_providers=reloaded.swapper_providers,
+            enhancer_device=reloaded.enhancer_device,
         )
 
-        assert second.worker_count() == first.worker_count()
+        assert second.realtime_workers() == first.realtime_workers()
         assert second.strategy_name() == first.strategy_name()
         assert second.enhancer_enabled() == first.enhancer_enabled()
         assert second.swapper_params() == first.swapper_params()
@@ -468,4 +482,5 @@ class TestSettingsEndToEnd:
         assert second.video_backend() is first.video_backend()
         assert second.reader_pool_size() == first.reader_pool_size()
         assert second.synced_max_lag_frames() == first.synced_max_lag_frames()
-        assert second.onnx_providers() == first.onnx_providers()
+        assert second.swapper_providers() == first.swapper_providers()
+        assert second.enhancer_device() == first.enhancer_device()

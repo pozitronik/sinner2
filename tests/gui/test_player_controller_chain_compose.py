@@ -11,13 +11,15 @@ from sinner2.gui.widgets.transport_controls import QTransportControls
 
 
 class _MarkSwap:
-    def __init__(self, source, params) -> None:
+    def __init__(self, source, params, providers=None) -> None:
         self.kind = "swap"
+        self.providers = providers
 
 
 class _MarkEnh:
-    def __init__(self, params) -> None:
+    def __init__(self, params, device="auto") -> None:
         self.kind = "enh"
+        self.device = device
 
 
 @pytest.fixture(autouse=True)

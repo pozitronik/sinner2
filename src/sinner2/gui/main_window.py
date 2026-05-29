@@ -410,7 +410,7 @@ class SinnerMainWindow(QMainWindow):
         EP loaded but no nvinfer, etc.). Pulled here instead of
         emitted by the controller so the styling is purely a view
         concern."""
-        requested = set(self._processors.onnx_providers())
+        requested = set(self._processors.swapper_providers())
         actual = set(self._controller.effective_onnx_providers())
         # Empty `requested` = user unchecked everything → we use
         # defaults; nothing to flag as failed in that case.
@@ -460,7 +460,7 @@ class SinnerMainWindow(QMainWindow):
             enhancer_enabled=self._processors.enhancer_enabled(),
             swapper_enabled=self._processors.swapper_enabled(),
             strategy=self._processors.skip_strategy(),
-            worker_count=self._processors.worker_count(),
+            worker_count=self._processors.realtime_workers(),
             playback_mode=self._processors.playback_mode(),
             cache_settings=CacheSettings(
                 mode=self._processors.cache_mode(),
@@ -470,6 +470,8 @@ class SinnerMainWindow(QMainWindow):
                 write_workers=self._processors.write_workers(),
                 write_queue_size=self._processors.write_queue_size(),
             ),
+            swapper_providers=tuple(self._processors.swapper_providers()),
+            enhancer_device=self._processors.enhancer_device(),
         )
         # Video backend isn't part of the session-config bundle because
         # it's used by set_source_and_target rather than the executor;
@@ -479,8 +481,9 @@ class SinnerMainWindow(QMainWindow):
         # Reader pool size triggers a session rebuild via its own setter
         # (same pattern as video_backend).
         self._controller.set_reader_pool_size(self._processors.reader_pool_size())
-        # ONNX provider list — also a rebuild trigger when changed.
-        self._controller.set_onnx_providers(self._processors.onnx_providers())
+        # Swapper-provider / enhancer-device rebuilds are folded into
+        # apply_session_config above; just refresh the status-bar EP label
+        # and the failed-provider highlight afterwards.
         self._refresh_providers_label()
         self._highlight_failed_providers()
 
@@ -733,7 +736,7 @@ class SinnerMainWindow(QMainWindow):
 
     def _restore_processor_settings(self) -> None:
         self._processors.apply_restored_settings(
-            worker_count=self._settings.worker_count,
+            realtime_workers=self._settings.realtime_workers,
             strategy_name=self._settings.strategy_name,
             enhancer_enabled=self._settings.enhancer_enabled,
             swapper_enabled=self._settings.swapper_enabled,
@@ -752,14 +755,15 @@ class SinnerMainWindow(QMainWindow):
             video_backend=self._settings.video_backend,
             reader_pool_size=self._settings.reader_pool_size,
             synced_max_lag_frames=self._settings.synced_max_lag_frames,
-            onnx_providers=self._settings.onnx_providers,
+            swapper_providers=self._settings.swapper_providers,
+            enhancer_device=self._settings.enhancer_device,
         )
 
     def _persist_processor_settings(self) -> None:
         swapper = self._processors.swapper_params()
         enhancer = self._processors.enhancer_params()
         self._update_settings(
-            worker_count=self._processors.worker_count(),
+            realtime_workers=self._processors.realtime_workers(),
             strategy_name=self._processors.strategy_name(),
             enhancer_enabled=self._processors.enhancer_enabled(),
             swapper_enabled=self._processors.swapper_enabled(),
@@ -780,7 +784,8 @@ class SinnerMainWindow(QMainWindow):
             video_backend=self._processors.video_backend(),
             reader_pool_size=self._processors.reader_pool_size(),
             synced_max_lag_frames=self._processors.synced_max_lag_frames(),
-            onnx_providers=self._processors.onnx_providers(),
+            swapper_providers=self._processors.swapper_providers(),
+            enhancer_device=self._processors.enhancer_device(),
         )
 
     def _restore_paths_from_settings(self) -> None:
@@ -882,7 +887,7 @@ class SinnerMainWindow(QMainWindow):
         # into the swapper profile (CPU vs GPU is a meaningful captured choice);
         # workers default to the batch throughput defaults rather than the
         # realtime pool size (live latency tuning ≠ batch throughput tuning).
-        providers = self._processors.onnx_providers()
+        providers = self._processors.swapper_providers()
         swapper_execution = (
             OnnxExecution(workers=DEFAULT_SWAPPER_WORKERS, providers=list(providers))
             if providers

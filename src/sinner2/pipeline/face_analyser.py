@@ -17,19 +17,21 @@ def _get_shared_face_analysis(providers: list[str] | None = None) -> Any:
     every FaceAnalyser instance in the process. Per-stream detection state
     lives on FaceAnalyser; the underlying model has no per-stream state.
 
-    Providers come from `model_cache.get_active_providers()` — the user's
-    selection from the GUI flows in here. Changing providers requires
-    calling `reset_shared_face_analysis()` so the next call rebuilds
-    with the new list (insightface picks providers at construction time).
+    Providers are passed in by the caller (FaceAnalyser, from its owning
+    processor's execution profile); None falls back to the platform-default
+    EP order. The model is a process-wide singleton, so it picks up the
+    FIRST caller's providers — changing providers requires calling
+    `reset_shared_face_analysis()` so the next call rebuilds with the new
+    list (insightface picks providers at construction time).
     """
     global _shared_app
     with _shared_lock:
         if _shared_app is None:
             from insightface.app import FaceAnalysis
 
-            from sinner2.pipeline.model_cache import get_active_providers
+            from sinner2.config.execution import DEFAULT_ONNX_PROVIDERS
 
-            eps = list(providers) if providers else list(get_active_providers())
+            eps = list(providers) if providers else list(DEFAULT_ONNX_PROVIDERS)
             app = FaceAnalysis(name=_FACE_MODEL_NAME, providers=eps)
             app.prepare(ctx_id=0, det_size=_DET_SIZE)
             _shared_app = app

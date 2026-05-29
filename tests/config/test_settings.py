@@ -83,9 +83,9 @@ class TestExtendedFieldsRoundtrip:
     ) -> None:
         monkeypatch.setenv("SINNER2_SETTINGS_PATH", str(tmp_path / "settings.json"))
 
-    def test_worker_count(self):
-        settings.save(settings.Settings(worker_count=7))
-        assert settings.load().worker_count == 7
+    def test_realtime_workers(self):
+        settings.save(settings.Settings(realtime_workers=7))
+        assert settings.load().realtime_workers == 7
 
     def test_strategy_name(self):
         settings.save(settings.Settings(strategy_name="SyncedStrategy"))
@@ -195,19 +195,27 @@ class TestExtendedFieldsRoundtrip:
         settings.save(settings.Settings(metrics_overlay_visible=value))
         assert settings.load().metrics_overlay_visible is value
 
-    def test_onnx_providers(self):
-        settings.save(settings.Settings(onnx_providers=["CUDAExecutionProvider", "CPUExecutionProvider"]))
-        assert settings.load().onnx_providers == [
+    def test_swapper_providers(self):
+        settings.save(
+            settings.Settings(
+                swapper_providers=["CUDAExecutionProvider", "CPUExecutionProvider"]
+            )
+        )
+        assert settings.load().swapper_providers == [
             "CUDAExecutionProvider",
             "CPUExecutionProvider",
         ]
 
-    def test_onnx_providers_empty_list(self):
+    def test_swapper_providers_empty_list(self):
         # Empty list is distinct from None (None = "never set", empty
         # list = "user explicitly unchecked everything"). Pydantic keeps
         # the distinction.
-        settings.save(settings.Settings(onnx_providers=[]))
-        assert settings.load().onnx_providers == []
+        settings.save(settings.Settings(swapper_providers=[]))
+        assert settings.load().swapper_providers == []
+
+    def test_enhancer_device(self):
+        settings.save(settings.Settings(enhancer_device="cuda:1"))
+        assert settings.load().enhancer_device == "cuda:1"
 
     def test_recent_sources(self):
         settings.save(settings.Settings(recent_sources=["/a.jpg", "/b.png"]))
@@ -275,7 +283,7 @@ class TestExtendedFieldsRoundtrip:
             window_geometry_hex="abcd1234",
             source_path="/path/source.jpg",
             target_path="/path/target.mp4",
-            worker_count=8,
+            realtime_workers=8,
             strategy_name="SyncedStrategy",
             enhancer_enabled=False,
             swapper_detection_interval=3,
@@ -300,7 +308,8 @@ class TestExtendedFieldsRoundtrip:
             synced_max_lag_frames=120,
             side_panel_visible=False,
             metrics_overlay_visible=True,
-            onnx_providers=["CUDAExecutionProvider"],
+            swapper_providers=["CUDAExecutionProvider"],
+            enhancer_device="cuda:0",
             recent_sources=["/a.jpg"],
             recent_targets=["/x.mp4"],
             library_sources=["/lib/a.jpg"],
@@ -320,9 +329,9 @@ class TestExtendedFieldsRoundtrip:
     def test_unspecified_fields_load_as_none(self):
         # Persisting one field must NOT inject defaults for the others; the
         # widget defaults take over on restore when a field is None.
-        settings.save(settings.Settings(worker_count=2))
+        settings.save(settings.Settings(realtime_workers=2))
         loaded = settings.load()
-        assert loaded.worker_count == 2
+        assert loaded.realtime_workers == 2
         assert loaded.strategy_name is None
         assert loaded.enhancer_enabled is None
         assert loaded.swapper_detection_interval is None
@@ -347,7 +356,8 @@ class TestExtendedFieldsRoundtrip:
         assert loaded.synced_max_lag_frames is None
         assert loaded.side_panel_visible is None
         assert loaded.metrics_overlay_visible is None
-        assert loaded.onnx_providers is None
+        assert loaded.swapper_providers is None
+        assert loaded.enhancer_device is None
         assert loaded.recent_sources is None
         assert loaded.recent_targets is None
         assert loaded.library_sources is None

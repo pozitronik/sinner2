@@ -16,12 +16,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sinner2.config.execution import (
+    DEFAULT_ONNX_PROVIDERS,
+    available_torch_devices,
+)
 from sinner2.io.video_backend import VideoBackend
 from sinner2.pipeline.cache_mode import CacheMode
-from sinner2.pipeline.model_cache import (
-    available_onnx_providers,
-    get_active_providers,
-)
+from sinner2.pipeline.model_cache import available_onnx_providers
 from sinner2.pipeline.image_writer import ImageFormat
 from sinner2.pipeline.playback_mode import PlaybackMode
 from sinner2.pipeline.processors.face_enhancer import FaceEnhancerParams
@@ -175,6 +176,19 @@ class QProcessorControls(QWidget):
         self._only_center_face.setChecked(enhancer_defaults.only_center_face)
         self._only_center_face.toggled.connect(self.configChanged)
         enhancer_form.addRow("Center face only", self._only_center_face)
+        # GFPGAN runs on PyTorch, so its device is torch's CUDA — independent
+        # of the swapper's ONNX providers. Enumerate the actual devices (Auto,
+        # CPU, then each CUDA GPU by name) so the user picks from what exists.
+        self._enhancer_device = QComboBox()
+        for value, label in available_torch_devices():
+            self._enhancer_device.addItem(label, value)
+        self._enhancer_device.setToolTip(
+            "Torch device for GFPGAN. Auto picks CUDA when available, else\n"
+            "CPU (much slower). Independent of the ONNX providers below.\n"
+            "Applies immediately — rebuilds the chain (reloads the model)."
+        )
+        self._enhancer_device.currentIndexChanged.connect(self.configChanged)
+        enhancer_form.addRow("Device", self._enhancer_device)
         self._enhancer_box = enhancer_box
 
         execution_box = QGroupBox("Execution")
@@ -216,7 +230,7 @@ class QProcessorControls(QWidget):
             "immediately — the pool grows or shrinks live, no model reload."
         )
         self._worker_count.valueChanged.connect(self.configChanged)
-        execution_form.addRow("Worker count", self._worker_count)
+        execution_form.addRow("Realtime workers", self._worker_count)
 
         self._reader_pool_size = QSpinBox()
         self._reader_pool_size.setRange(1, 16)
@@ -277,14 +291,12 @@ class QProcessorControls(QWidget):
         except Exception:
             # ORT might fail to load on a broken install — fall back to
             # the known-good defaults so the panel still renders.
-            available = list(get_active_providers())
-        # Pre-check whatever the model_cache currently treats as active —
-        # on a fresh launch this is the platform defaults (CUDA + CPU),
-        # so the user sees the actual effective state instead of an
+            available = list(DEFAULT_ONNX_PROVIDERS)
+        # Pre-check the platform-default EP order (CUDA + CPU) so the user
+        # sees the actual effective state on a fresh launch instead of an
         # all-unchecked column that lies about what ORT will use.
-        # apply_restored_settings will override this when there's a
-        # persisted list.
-        default_active = set(get_active_providers())
+        # apply_restored_settings overrides this when there's a persisted list.
+        default_active = set(DEFAULT_ONNX_PROVIDERS)
         for prov in available:
             cb = QCheckBox(prov)
             cb.setToolTip(
@@ -555,7 +567,7 @@ class QProcessorControls(QWidget):
     def synced_max_lag_frames(self) -> int:
         return self._synced_max_lag_frames.value()
 
-    def worker_count(self) -> int:
+    def realtime_workers(self) -> int:
         return self._worker_count.value()
 
     def reader_pool_size(self) -> int:
@@ -570,15 +582,20 @@ class QProcessorControls(QWidget):
     def video_backend(self) -> VideoBackend:
         return _VIDEO_BACKENDS[self._video_backend_combo.currentText()]
 
-    def onnx_providers(self) -> list[str]:
-        """Currently selected providers in the order they appear in
-        the checkbox column (the platform's default preference order).
-        Empty list = use the default (caller decides what that means)."""
+    def swapper_providers(self) -> list[str]:
+        """Realtime ONNX providers for the swapper + analyser, in the order
+        they appear in the checkbox column (the platform's default preference
+        order). Empty list = use the default (caller decides what that means)."""
         return [
             name
             for name, cb in self._provider_checkboxes.items()
             if cb.isChecked()
         ]
+
+    def enhancer_device(self) -> str:
+        """Selected torch device token for the realtime enhancer
+        ("auto" / "cpu" / "cuda:N")."""
+        return self._enhancer_device.currentData()
 
     def mark_providers_failed(self, failed: set[str]) -> None:
         """Visually flag providers that were requested but ORT couldn't
@@ -628,7 +645,7 @@ class QProcessorControls(QWidget):
     def apply_restored_settings(
         self,
         *,
-        worker_count: int | None,
+        realtime_workers: int | None,
         strategy_name: str | None,
         enhancer_enabled: bool | None,
         swapper_enabled: bool | None = None,
@@ -647,7 +664,8 @@ class QProcessorControls(QWidget):
         video_backend: VideoBackend | None,
         reader_pool_size: int | None,
         synced_max_lag_frames: int | None,
-        onnx_providers: list[str] | None,
+        swapper_providers: list[str] | None,
+        enhancer_device: str | None,
     ) -> None:
         """Apply persisted values without firing configChanged per field.
 
@@ -663,6 +681,7 @@ class QProcessorControls(QWidget):
             self._enhancer_box,
             self._upscale,
             self._only_center_face,
+            self._enhancer_device,
             self._strategy_combo,
             self._worker_count,
             self._playback_combo,
@@ -699,12 +718,19 @@ class QProcessorControls(QWidget):
                 self._upscale.setValue(enhancer_upscale)
             if enhancer_only_center_face is not None:
                 self._only_center_face.setChecked(enhancer_only_center_face)
+            if enhancer_device is not None:
+                # Match by stored token; a persisted cuda:N that no longer
+                # exists on this machine simply isn't found → keep default.
+                for i in range(self._enhancer_device.count()):
+                    if self._enhancer_device.itemData(i) == enhancer_device:
+                        self._enhancer_device.setCurrentIndex(i)
+                        break
             if strategy_name is not None:
                 label = _label_for_strategy_name(strategy_name)
                 if label is not None:
                     self._strategy_combo.setCurrentText(label)
-            if worker_count is not None:
-                self._worker_count.setValue(worker_count)
+            if realtime_workers is not None:
+                self._worker_count.setValue(realtime_workers)
             if playback_mode is not None:
                 label = _label_for_playback_mode(playback_mode)
                 if label is not None:
@@ -733,12 +759,12 @@ class QProcessorControls(QWidget):
                 self._reader_pool_size.setValue(reader_pool_size)
             if synced_max_lag_frames is not None:
                 self._synced_max_lag_frames.setValue(synced_max_lag_frames)
-            if onnx_providers is not None:
+            if swapper_providers is not None:
                 # Restore exact selection — only providers in the
                 # persisted list become checked; unknown providers in
                 # the list are ignored (a different machine may not
                 # have the same ORT build).
-                wanted = set(onnx_providers)
+                wanted = set(swapper_providers)
                 for name, cb in self._provider_checkboxes.items():
                     cb.setChecked(name in wanted)
         finally:

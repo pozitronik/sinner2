@@ -6,14 +6,11 @@ import cv2
 from pydantic import Field
 
 from sinner2.config.base import SinnerBaseModel
+from sinner2.config.execution import DEFAULT_ONNX_PROVIDERS
 from sinner2.config.source import Source
 from sinner2.io.cv2_unicode import imread_unicode
 from sinner2.pipeline.face_analyser import FaceAnalyser
-from sinner2.pipeline.model_cache import (
-    get_active_providers,
-    get_model_path,
-    record_actual_providers,
-)
+from sinner2.pipeline.model_cache import get_model_path, record_actual_providers
 from sinner2.types import Frame
 
 
@@ -96,14 +93,14 @@ class FaceSwapper:
         self._source = source
         self._params = params or FaceSwapperParams()
         # ONNX providers from the swapper's OnnxExecution profile; None falls
-        # back to the process-wide active providers.
+        # back to the platform-default EP order (CUDA then CPU).
         self._providers = list(providers) if providers else None
         self._analyser: FaceAnalyser | None = None
         self._swapper: Any = None
         self._source_face: Any = None
 
     def setup(self) -> None:
-        providers = self._providers or list(get_active_providers())
+        providers = self._providers or list(DEFAULT_ONNX_PROVIDERS)
         self._analyser = FaceAnalyser(
             detection_interval=self._params.detection_interval,
             providers=providers,

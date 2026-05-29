@@ -34,7 +34,7 @@ class Settings(SinnerBaseModel):
     window_geometry_hex: str | None = None
     source_path: str | None = None
     target_path: str | None = None
-    worker_count: int | None = None
+    realtime_workers: int | None = None
     strategy_name: str | None = None
     enhancer_enabled: bool | None = None
     swapper_enabled: bool | None = None
@@ -60,7 +60,8 @@ class Settings(SinnerBaseModel):
     synced_max_lag_frames: int | None = None
     side_panel_visible: bool | None = None
     metrics_overlay_visible: bool | None = None
-    onnx_providers: list[str] | None = None
+    swapper_providers: list[str] | None = None  # realtime ONNX EPs (swapper + analyser)
+    enhancer_device: str | None = None  # realtime torch device for GFPGAN
     recent_sources: list[str] | None = None
     recent_targets: list[str] | None = None
     library_sources: list[str] | None = None

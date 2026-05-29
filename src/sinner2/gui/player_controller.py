@@ -15,6 +15,7 @@ from sinner2.config.source import Source
 from sinner2.config.target import Target, TargetKind
 from sinner2.gui.bridges.observable_bridge import ObservableValueBridge
 from sinner2.gui.widgets.frame_display import QFrameDisplayWidget
+from sinner2.config.execution import DEFAULT_ONNX_PROVIDERS
 from sinner2.gui.widgets.transport_controls import QTransportControls
 from sinner2.io.reader_pool import ReaderPool
 from sinner2.io.target_reader import ImageTargetReader, TargetReader
@@ -256,10 +257,12 @@ class PlayerController(QObject):
         # single-reader behaviour. Raise for slow sources (network/HDD)
         # with SyncedStrategy. Changes rebuild the session.
         self._reader_pool_size: int = 1
-        # Selected ONNX execution providers as a tuple in priority order.
-        # Empty → use the platform defaults (model_cache.get_active_providers
-        # falls back when set_active_providers is called with None).
-        self._onnx_providers: tuple[str, ...] = ()
+        # Realtime swapper ONNX providers (priority order) + the realtime
+        # enhancer torch device. Empty providers → platform-default EP order;
+        # "auto" device → CUDA if available else CPU. Both are passed
+        # explicitly into the chain at build time — no global provider state.
+        self._swapper_providers: tuple[str, ...] = ()
+        self._enhancer_device: str = "auto"
 
         transport.playRequested.connect(self._on_play)
         transport.pauseRequested.connect(self._on_pause)
@@ -408,21 +411,34 @@ class PlayerController(QObject):
         playback_mode: PlaybackMode,
         cache_settings: CacheSettings,
         swapper_enabled: bool = True,
+        swapper_providers: tuple[str, ...] = (),
+        enhancer_device: str = "auto",
     ) -> None:
         """Update stored params and propagate any changes to the live session.
 
-        Hot-swap surface: chain (on param change), strategy, worker_count,
-        playback_mode, cache_mode. The rest of cache_settings (format,
-        quality, memory cache size, write workers, write queue size) is
-        stored and takes effect at the next session start — switching them
-        live would require re-creating the buffer + write executor + store
-        directory hash, which is what `set_source_and_target` already does.
+        Hot-swap surface: chain (on param / providers / device change),
+        strategy, worker_count, playback_mode, cache_mode. The rest of
+        cache_settings (format, quality, memory cache size, write workers,
+        write queue size) is stored and takes effect at the next session start
+        — switching them live would require re-creating the buffer + write
+        executor + store directory hash, which is what `set_source_and_target`
+        already does.
+
+        Providers (swapper, ONNX) and device (enhancer, torch) are part of the
+        chain: changing either rebuilds the chain so the processors reload on
+        the new hardware. A swapper-providers change also drops the shared
+        insightface model + ONNX session cache, which are bound to the EP list
+        they were built with.
         """
+        swapper_providers = tuple(swapper_providers)
+        providers_changed = swapper_providers != self._swapper_providers
         chain_changed = (
             swapper_params != self._swapper_params
             or enhancer_params != self._enhancer_params
             or enhancer_enabled != self._enhancer_enabled
             or swapper_enabled != self._swapper_enabled
+            or providers_changed
+            or enhancer_device != self._enhancer_device
         )
         strategy_changed = type(strategy) is not type(self._strategy)
         # Synced threshold changes don't change the type, but still need
@@ -446,10 +462,20 @@ class PlayerController(QObject):
         self._worker_count = worker_count
         self._playback_mode = playback_mode
         self._cache_settings = cache_settings
+        self._swapper_providers = swapper_providers
+        self._enhancer_device = enhancer_device
 
         if self._executor is None or self._current_source is None:
             return
         if chain_changed:
+            if providers_changed:
+                # The shared insightface model + any cached ONNX sessions were
+                # built with the OLD providers; drop them so the rebuilt chain
+                # re-creates them on the new EP list.
+                from sinner2.pipeline import face_analyser, model_cache
+
+                model_cache.clear_session_cache()
+                face_analyser.reset_shared_face_analysis()
             try:
                 new_chain = self._build_chain(self._current_source)
             except Exception as exc:
@@ -476,12 +502,21 @@ class PlayerController(QObject):
 
     def _build_chain(self, source: Source) -> list[Processor]:
         # Both processors are optional. An empty chain is valid — the
-        # executor passes frames through unchanged (raw preview).
+        # executor passes frames through unchanged (raw preview). Each
+        # processor gets its framework-native execution param: ONNX providers
+        # for the swapper, a torch device for the enhancer.
         chain: list[Processor] = []
         if self._swapper_enabled:
-            chain.append(FaceSwapper(source=source, params=self._swapper_params))
+            chain.append(FaceSwapper(
+                source=source,
+                params=self._swapper_params,
+                providers=list(self._swapper_providers) or None,
+            ))
         if self._enhancer_enabled:
-            chain.append(FaceEnhancer(params=self._enhancer_params))
+            chain.append(FaceEnhancer(
+                params=self._enhancer_params,
+                device=self._enhancer_device,
+            ))
         return chain
 
     def shutdown(self) -> None:
@@ -733,8 +768,8 @@ class PlayerController(QObject):
         if was_playing:
             self._executor.play()
 
-    def onnx_providers(self) -> tuple[str, ...]:
-        return self._onnx_providers
+    def swapper_providers(self) -> tuple[str, ...]:
+        return self._swapper_providers
 
     def effective_onnx_providers(self) -> tuple[str, ...]:
         """Whatever ORT will actually use right now.
@@ -744,47 +779,15 @@ class PlayerController(QObject):
         request — because ORT silently falls back when a requested
         provider can't initialise (missing runtime libs, GPU absent),
         and the GUI should show the truth. Falls back to the requested
-        list when no session has loaded yet (pre-startup state).
+        swapper providers (or the platform default) when no session has
+        loaded yet (pre-startup state).
         """
         from sinner2.pipeline import model_cache
 
         actual = model_cache.get_actual_providers()
         if actual:
             return actual
-        return model_cache.get_active_providers()
-
-    def set_onnx_providers(self, providers: list[str] | tuple[str, ...]) -> None:
-        """Replace the active ONNX provider list.
-
-        The new list is published globally via model_cache.set_active_providers
-        — which also resets the shared insightface model. If a session is
-        running, rebuild it so the chain reloads with the new providers
-        (same pattern as set_video_backend). Empty input is normalised
-        to "use platform defaults" via the model_cache fallback.
-        """
-        from sinner2.pipeline import model_cache
-
-        new_tuple = tuple(providers)
-        if new_tuple == self._onnx_providers:
-            return
-        self._onnx_providers = new_tuple
-        model_cache.set_active_providers(new_tuple if new_tuple else None)
-        if (
-            self._executor is None
-            or self._current_source_path is None
-            or self._current_target_path is None
-        ):
-            return
-        was_playing = self._executor.is_playing.get()
-        last_frame = self._executor.current_frame.get()
-        source_path = self._current_source_path
-        target_path = self._current_target_path
-        self.set_source_and_target(source_path, target_path)
-        if self._executor is None:
-            return
-        self._executor.seek(max(0, last_frame))
-        if was_playing:
-            self._executor.play()
+        return self._swapper_providers or tuple(DEFAULT_ONNX_PROVIDERS)
 
     def change_source(self, source_path: Path) -> None:
         """Replace the source while preserving frame position + play state.
