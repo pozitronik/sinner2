@@ -64,12 +64,17 @@ from sinner2.pipeline.processors.face_swapper import (
     FaceSwapperParams,
     TargetSex,
 )
+from sinner2.types import Frame
 
 
 # Progress callback: a structured per-stage + overall update. The driver
 # calls this from a worker context — the caller marshals to the GUI thread
 # (BatchQueue does this via a queued Qt signal).
 ProgressCallback = Callable[[BatchProgress], None]
+
+# Preview callback: a recently-processed frame (throttled by the stage) so
+# the GUI can show what the batch is producing. Same marshalling caveat.
+PreviewCallback = Callable[[Frame], None]
 
 
 class BatchDriver:
@@ -109,6 +114,7 @@ class BatchDriver:
         self,
         task: BatchTask,
         progress_callback: ProgressCallback | None = None,
+        preview_callback: PreviewCallback | None = None,
     ) -> BatchTaskStatus:
         """Drive the task to a terminal status. Returns the final status and
         also mutates task.status / last_completed_frame / completed_stages /
@@ -119,7 +125,7 @@ class BatchDriver:
         task.error_message = None
 
         try:
-            return self._run_inner(task, progress_callback)
+            return self._run_inner(task, progress_callback, preview_callback)
         except Exception as exc:  # any unexpected failure → failed
             task.status = BatchTaskStatus.FAILED
             task.error_message = f"unexpected: {exc}"
@@ -131,6 +137,7 @@ class BatchDriver:
         self,
         task: BatchTask,
         progress_callback: ProgressCallback | None,
+        preview_callback: PreviewCallback | None,
     ) -> BatchTaskStatus:
         if task.extraction_mode is BatchExtractionMode.PREEXTRACT:
             # Seam exists (task field + FramesDirInput); the bulk-extract
@@ -189,6 +196,7 @@ class BatchDriver:
                         cancel_event=self._cancel_event,
                         on_progress=stage_cb,
                         eof_on_none=(i == 0),  # only the video source streams
+                        on_preview=preview_callback,
                     )
                     if result.status is StageStatus.PAUSED:
                         task.status = BatchTaskStatus.PAUSED

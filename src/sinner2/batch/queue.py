@@ -37,6 +37,7 @@ class _DriverWorker(QObject):
     completion + progress signals back to the queue."""
 
     progress = Signal(str, object)      # task_id, BatchProgress
+    preview = Signal(str, object)       # task_id, Frame
     completed = Signal(str, str)        # task_id, terminal_status_value
 
     def __init__(
@@ -52,7 +53,14 @@ class _DriverWorker(QObject):
         def on_progress(progress: BatchProgress) -> None:
             self.progress.emit(self._task.id, progress)
 
-        status = self._driver.run(self._task, progress_callback=on_progress)
+        def on_preview(frame: object) -> None:
+            self.preview.emit(self._task.id, frame)
+
+        status = self._driver.run(
+            self._task,
+            progress_callback=on_progress,
+            preview_callback=on_preview,
+        )
         self.completed.emit(self._task.id, status.value)
 
 
@@ -62,6 +70,7 @@ class BatchQueue(QObject):
 
     taskStarted = Signal(str)              # task_id
     taskProgress = Signal(str, object)     # task_id, BatchProgress
+    taskPreview = Signal(str, object)      # task_id, Frame (throttled)
     taskCompleted = Signal(str)            # task_id (terminal: completed/cancelled/failed/paused)
     taskFailed = Signal(str, str)          # task_id, error_message
     queueIdle = Signal()
@@ -212,6 +221,9 @@ class BatchQueue(QObject):
         worker.progress.connect(
             self._on_progress, type=Qt.ConnectionType.QueuedConnection
         )
+        worker.preview.connect(
+            self._on_preview, type=Qt.ConnectionType.QueuedConnection
+        )
         worker.completed.connect(
             self._on_completed, type=Qt.ConnectionType.QueuedConnection
         )
@@ -235,6 +247,10 @@ class BatchQueue(QObject):
             task.total_frames = progress.stage_total
             self._store.save(task)
         self.taskProgress.emit(task_id, progress)
+
+    def _on_preview(self, task_id: str, frame: object) -> None:
+        # Transient — not persisted; forward straight to the GUI.
+        self.taskPreview.emit(task_id, frame)
 
     def _on_completed(self, task_id: str, status_value: str) -> None:
         # The driver mutated the task in place inside the worker

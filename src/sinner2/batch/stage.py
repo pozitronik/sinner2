@@ -6,7 +6,7 @@ optimized counterpart to the realtime (frame-major) executor: one model is
 resident at a time, so the device does one kind of work and peak VRAM stays
 low.
 
-Three design choices matter:
+Design choices that matter:
 
   * The frame READ happens on the single submit-loop thread, not in workers.
     For the first stage (video source) that means decode streams in index
@@ -19,10 +19,10 @@ Three design choices matter:
   * End-of-stream tolerance (`eof_on_none`): a streaming video source can
     decode FEWER frames than its container metadata (ffprobe nb_frames)
     claims. With eof_on_none the first None read is taken as the true end of
-    the media; the stage's effective total shrinks to that point and the
-    phantom trailing indices are not treated as "missing". The driver decides
-    whether the shortfall is benign (metadata glitch) or alarming (truncated
-    source).
+    the media; the stage's effective total shrinks to that point.
+  * Live preview (`on_preview`): a throttled callback fires with a recently
+    processed frame so the GUI can show what the batch is producing without
+    flooding it (one frame every `preview_interval` seconds).
 
 The processor is set up before the run and released after, so only this
 stage's model is resident while it runs.
@@ -30,6 +30,7 @@ stage's model is resident while it runs.
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
@@ -129,12 +130,15 @@ def run_stage(
     cancel_event: threading.Event,
     on_progress: Callable[[int], None] | None = None,
     eof_on_none: bool = False,
+    on_preview: Callable[[Frame], None] | None = None,
+    preview_interval: float = 0.5,
 ) -> StageResult:
     """Run ``processor`` over every frame of ``stage_input``, writing
     ``output_dir/{idx:08d}.{ext}``. Resumes by skipping frames already valid
-    on disk. ``on_progress(done_count)`` fires as frames complete. With
-    ``eof_on_none`` a None read ends the stage early (streaming source shorter
-    than its claimed frame_count); StageResult.total reports the real count."""
+    on disk. ``on_progress(done_count)`` fires as frames complete;
+    ``on_preview(frame)`` fires at most once per ``preview_interval`` seconds
+    with a just-processed frame. With ``eof_on_none`` a None read ends the
+    stage early; StageResult.total reports the real count."""
     output_dir.mkdir(parents=True, exist_ok=True)
     total = stage_input.frame_count
     workers = max(1, workers)
@@ -162,11 +166,25 @@ def run_stage(
         if on_progress is not None:
             on_progress(done)
 
+    preview_last = 0.0
+
+    def maybe_preview(frame: Frame | None) -> None:
+        # Throttled live preview. The submit loop drains on a single thread,
+        # so this needs no lock.
+        nonlocal preview_last
+        if on_preview is None or frame is None:
+            return
+        now = time.monotonic()
+        if now - preview_last >= preview_interval:
+            preview_last = now
+            on_preview(frame)
+
     processor.setup()
     try:
         status, eof_at = _feed(
             pending, stage_input, processor, output_dir, ext, writer,
             workers, pause_event, cancel_event, bump, eof_on_none,
+            maybe_preview,
         )
         if status in (StageStatus.PAUSED, StageStatus.CANCELLED):
             return StageResult(status, contiguous(total), total=total)
@@ -181,7 +199,8 @@ def run_stage(
         if remaining:
             status, _ = _feed(
                 remaining, stage_input, processor, output_dir, ext, writer,
-                workers, pause_event, cancel_event, bump, eof_on_none=False,
+                workers, pause_event, cancel_event, bump, False,
+                maybe_preview,
             )
             if status is StageStatus.CANCELLED:
                 return StageResult(status, contiguous(total), total=total)
@@ -207,6 +226,7 @@ def _feed(
     cancel_event: threading.Event,
     bump: Callable[[], None],
     eof_on_none: bool,
+    maybe_preview: Callable[[Frame | None], None],
 ) -> tuple[StageStatus, int | None]:
     """Submit ``indices`` through the processor pool. Reads happen here on a
     single thread (sequential decode); workers only process + write. Returns
@@ -238,13 +258,17 @@ def _feed(
                 pool.submit(_process_write, processor, frame, out_path, writer)
             )
             if len(inflight) >= cap:
-                _drain_one(inflight, bump)
+                _drain_one(inflight, bump, maybe_preview)
         while inflight:
-            _drain_one(inflight, bump)
+            _drain_one(inflight, bump, maybe_preview)
     return (interrupted or StageStatus.COMPLETED), eof_at
 
 
-def _drain_one(inflight: list[Future], bump: Callable[[], None]) -> None:
+def _drain_one(
+    inflight: list[Future],
+    bump: Callable[[], None],
+    maybe_preview: Callable[[Frame | None], None],
+) -> None:
     done, _pending = wait(inflight, return_when="FIRST_COMPLETED")
     for fut in done:
         inflight.remove(fut)
@@ -252,9 +276,12 @@ def _drain_one(inflight: list[Future], bump: Callable[[], None]) -> None:
         # integrity pass, which reprocesses then fails loudly if persistent.
         if fut.exception() is None:
             bump()
+            maybe_preview(fut.result())
 
 
 def _process_write(
     processor: Processor, frame: Frame, out_path: Path, writer: ImageWriter
-) -> None:
-    writer.write(out_path, processor.process(frame))
+) -> Frame:
+    result = processor.process(frame)
+    writer.write(out_path, result)
+    return result

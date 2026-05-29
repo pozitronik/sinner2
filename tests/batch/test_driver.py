@@ -451,6 +451,16 @@ class TestReaderThreadSafety:
         assert overlaps == [], "stage-0 reads overlapped"
 
 
+class TestPreview:
+    def test_preview_callback_receives_frames(
+        self, driver, stub_stages, tmp_path
+    ):
+        previews: list = []
+        task = _make_task(tmp_path, image_target=False)  # 3-frame video
+        driver.run(task, preview_callback=previews.append)
+        assert previews  # at least one processed frame surfaced
+
+
 class TestProgressCallback:
     def test_progress_reports_overall_frame_units(
         self, driver, stub_stages, tmp_path

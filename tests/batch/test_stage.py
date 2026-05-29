@@ -194,6 +194,22 @@ class TestRunStage:
         assert seen[-1] == 4
         assert seen == sorted(seen)
 
+    def test_on_preview_receives_a_frame(self, tmp_path, writer):
+        previews: list = []
+        run_stage(
+            stage_input=_StubInput(5),
+            processor=_Pass(),
+            output_dir=tmp_path / "stage0",
+            ext=writer.extension,
+            writer=writer,
+            workers=2,
+            pause_event=threading.Event(),
+            cancel_event=threading.Event(),
+            on_preview=previews.append,
+        )
+        assert previews  # at least the first frame is previewed
+        assert previews[0].shape == (8, 8, 3)
+
 
 class TestEofTolerance:
     def test_eof_on_none_truncates_to_real_count(self, tmp_path, writer):

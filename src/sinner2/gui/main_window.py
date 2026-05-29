@@ -176,6 +176,7 @@ class SinnerMainWindow(QMainWindow):
         self._batch_queue.taskStarted.connect(self._on_batch_task_started)
         self._batch_queue.queueIdle.connect(self._on_batch_queue_idle)
         self._batch_queue.taskFailed.connect(self._on_batch_task_failed)
+        self._batch_queue.taskPreview.connect(self._on_batch_preview)
         self._batch_view.editRequested.connect(self._on_edit_batch_task)
         self._processors.configChanged.connect(self._on_processor_config_changed)
         self._processors.configChanged.connect(self._persist_processor_settings)
@@ -905,6 +906,10 @@ class SinnerMainWindow(QMainWindow):
         # Failures are otherwise quiet (Status cell + its hover tooltip); a
         # status-bar notice makes sure the user notices something stopped.
         self.statusBar().showMessage(f"Batch task failed: {message}", 12000)
+
+    def _on_batch_preview(self, _task_id: str, frame: object) -> None:
+        # Show what the batch is producing on the (idle) preview surface.
+        self._display.show_frame(frame)
 
     def _on_edit_batch_task(self, task_id: str) -> None:
         if not self._batch_store.exists(task_id):

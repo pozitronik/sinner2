@@ -137,6 +137,16 @@ class TestBatchIntegration:
         window._batch_queue.queueIdle.emit()  # noqa: SLF001
         assert window._transport.isEnabled()  # noqa: SLF001
 
+    def test_batch_preview_shows_frame_on_display(self, window, qtbot):
+        import numpy as np
+
+        frame = np.full((12, 12, 3), 90, dtype=np.uint8)
+        window._batch_queue.taskPreview.emit("x", frame)  # noqa: SLF001
+        qtbot.waitUntil(
+            lambda: window._display._pixmap is not None,  # noqa: SLF001
+            timeout=1000,
+        )
+
 
 class TestSaveCurrentFrame:
     def test_save_no_op_when_no_frame_displayed(self, window, monkeypatch):
