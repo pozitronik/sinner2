@@ -1,0 +1,188 @@
+"""Tests for the processor-major stage runner."""
+from __future__ import annotations
+
+import threading
+
+import numpy as np
+import pytest
+
+from sinner2.batch.stage import (
+    FramesDirInput,
+    StageStatus,
+    frame_ok,
+    run_stage,
+)
+from sinner2.pipeline.image_writer import ImageFormat, build_image_writer
+from sinner2.types import Frame
+
+
+class _Pass:
+    name = "Pass"
+
+    def __init__(self) -> None:
+        self.setup_calls = 0
+        self.process_calls = 0
+        self.release_calls = 0
+        self._lock = threading.Lock()
+
+    def setup(self) -> None:
+        self.setup_calls += 1
+
+    def process(self, frame: Frame) -> Frame:
+        with self._lock:
+            self.process_calls += 1
+        return frame
+
+    def release(self) -> None:
+        self.release_calls += 1
+
+
+class _FailAt(_Pass):
+    """Raises on the frame whose pixel (0,0) equals `value`."""
+
+    def __init__(self, value: int) -> None:
+        super().__init__()
+        self._value = value
+
+    def process(self, frame: Frame) -> Frame:
+        if int(frame[0, 0, 0]) == self._value:
+            raise RuntimeError("boom")
+        return super().process(frame)
+
+
+class _StubInput:
+    """Frames encode their index in pixel (0,0). read() returns None for
+    indices in `none_at`, simulating a decode gap."""
+
+    def __init__(self, frame_count: int, none_at=()) -> None:
+        self._n = frame_count
+        self._none_at = set(none_at)
+
+    @property
+    def frame_count(self) -> int:
+        return self._n
+
+    def read(self, index):
+        if index in self._none_at:
+            return None
+        return np.full((8, 8, 3), index % 256, dtype=np.uint8)
+
+    def close(self) -> None:
+        pass
+
+
+@pytest.fixture
+def writer():
+    return build_image_writer(ImageFormat.JPEG, 80)
+
+
+def _run(out, inp, proc, writer, **kw):
+    return run_stage(
+        stage_input=inp,
+        processor=proc,
+        output_dir=out,
+        ext=writer.extension,
+        writer=writer,
+        workers=kw.get("workers", 2),
+        pause_event=kw.get("pause", threading.Event()),
+        cancel_event=kw.get("cancel", threading.Event()),
+        on_progress=kw.get("on_progress"),
+    )
+
+
+class TestFrameOk:
+    def test_nonempty_file_is_ok(self, tmp_path):
+        p = tmp_path / "f.jpg"
+        p.write_bytes(b"x")
+        assert frame_ok(p)
+
+    def test_missing_file_not_ok(self, tmp_path):
+        assert not frame_ok(tmp_path / "nope.jpg")
+
+    def test_zero_byte_file_not_ok(self, tmp_path):
+        p = tmp_path / "z.jpg"
+        p.write_bytes(b"")
+        assert not frame_ok(p)
+
+
+class TestRunStage:
+    def test_runs_all_frames(self, tmp_path, writer):
+        out = tmp_path / "stage0"
+        proc = _Pass()
+        res = _run(out, _StubInput(5), proc, writer)
+        assert res.status is StageStatus.COMPLETED
+        assert res.completed_frames == 5
+        assert proc.process_calls == 5
+        assert proc.setup_calls == 1
+        assert proc.release_calls == 1
+        assert len(list(out.glob(f"*.{writer.extension}"))) == 5
+
+    def test_resume_skips_valid_outputs(self, tmp_path, writer):
+        out = tmp_path / "stage0"
+        out.mkdir()
+        for i in (0, 1):  # pre-mark as done (non-empty)
+            (out / f"{i:08d}.{writer.extension}").write_bytes(b"x")
+        proc = _Pass()
+        res = _run(out, _StubInput(5), proc, writer)
+        assert res.status is StageStatus.COMPLETED
+        assert proc.process_calls == 3  # only 2, 3, 4
+
+    def test_zero_byte_output_reprocessed(self, tmp_path, writer):
+        out = tmp_path / "stage0"
+        out.mkdir()
+        (out / f"{1:08d}.{writer.extension}").write_bytes(b"")  # corrupt
+        proc = _Pass()
+        res = _run(out, _StubInput(3), proc, writer)
+        assert res.status is StageStatus.COMPLETED
+        assert proc.process_calls == 3  # 1 was zero-byte → redone
+
+    def test_persistent_input_gap_fails(self, tmp_path, writer):
+        out = tmp_path / "stage0"
+        res = _run(out, _StubInput(4, none_at=(2,)), _Pass(), writer)
+        assert res.status is StageStatus.FAILED
+        assert res.missing == [2]
+
+    def test_processor_error_fails(self, tmp_path, writer):
+        out = tmp_path / "stage0"
+        res = _run(out, _StubInput(4), _FailAt(2), writer, workers=1)
+        assert res.status is StageStatus.FAILED
+        assert 2 in res.missing
+
+    def test_pause_returns_paused_and_releases(self, tmp_path, writer):
+        out = tmp_path / "stage0"
+        pause = threading.Event()
+        pause.set()  # paused before the first frame
+        proc = _Pass()
+        res = _run(out, _StubInput(5), proc, writer, pause=pause)
+        assert res.status is StageStatus.PAUSED
+        assert proc.process_calls == 0
+        assert proc.release_calls == 1  # released even when interrupted
+
+    def test_cancel_returns_cancelled(self, tmp_path, writer):
+        out = tmp_path / "stage0"
+        cancel = threading.Event()
+        cancel.set()
+        res = _run(out, _StubInput(5), _Pass(), writer, cancel=cancel)
+        assert res.status is StageStatus.CANCELLED
+
+    def test_progress_is_monotonic_and_reaches_total(self, tmp_path, writer):
+        out = tmp_path / "stage0"
+        seen: list[int] = []
+        _run(out, _StubInput(4), _Pass(), writer, on_progress=seen.append)
+        assert seen
+        assert seen[-1] == 4
+        assert seen == sorted(seen)
+
+
+class TestFramesDirInput:
+    def test_reads_written_frames_and_none_for_missing(self, tmp_path, writer):
+        d = tmp_path / "frames"
+        d.mkdir()
+        writer.write(
+            d / f"{0:08d}.{writer.extension}",
+            np.full((8, 8, 3), 7, dtype=np.uint8),
+        )
+        inp = FramesDirInput(d, writer.extension, frame_count=2)
+        assert inp.frame_count == 2
+        assert inp.read(0) is not None
+        assert inp.read(1) is None  # not written
