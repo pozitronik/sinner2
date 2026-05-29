@@ -77,6 +77,22 @@ ProgressCallback = Callable[[BatchProgress], None]
 PreviewCallback = Callable[[Frame], None]
 
 
+class _IdentityProcessor:
+    """No-op stage used when BOTH processors are disabled — re-encodes the
+    source frames unchanged (the user-requested raw passthrough)."""
+
+    name = "passthrough"
+
+    def setup(self) -> None:
+        pass
+
+    def process(self, frame: Frame) -> Frame:
+        return frame
+
+    def release(self) -> None:
+        pass
+
+
 class BatchDriver:
     """Run one BatchTask to completion (or to pause/cancel)."""
 
@@ -277,16 +293,24 @@ class BatchDriver:
         source: Source, task: BatchTask
     ) -> list[tuple[str, Processor]]:
         """Ordered (name, processor) stages. One processor per stage — they
-        run in turns, not chained per-frame."""
-        swapper = FaceSwapper(
-            source=source,
-            params=FaceSwapperParams(
-                detection_interval=task.swapper_detection_interval,
-                many_faces=task.swapper_many_faces,
-                target_sex=TargetSex(task.swapper_target_sex),
-            ),
-        )
-        stages: list[tuple[str, Processor]] = [("faceswapper", swapper)]
+        run in turns, not chained per-frame. Either processor can be disabled;
+        with both off, a single identity stage re-encodes the source
+        unprocessed (the user-requested passthrough)."""
+        stages: list[tuple[str, Processor]] = []
+        if task.swapper_enabled:
+            stages.append(
+                (
+                    "faceswapper",
+                    FaceSwapper(
+                        source=source,
+                        params=FaceSwapperParams(
+                            detection_interval=task.swapper_detection_interval,
+                            many_faces=task.swapper_many_faces,
+                            target_sex=TargetSex(task.swapper_target_sex),
+                        ),
+                    ),
+                )
+            )
         if task.enhancer_enabled:
             stages.append(
                 (
@@ -299,6 +323,8 @@ class BatchDriver:
                     ),
                 )
             )
+        if not stages:
+            stages.append(("passthrough", _IdentityProcessor()))
         return stages
 
     # ---- Helpers ----

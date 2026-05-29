@@ -876,6 +876,7 @@ class SinnerMainWindow(QMainWindow):
             target_path=target,
             output_format=default_format,
             cleanup_mode=default_cleanup,
+            swapper_enabled=self._processors.swapper_enabled(),
             swapper_detection_interval=swapper.detection_interval,
             swapper_many_faces=swapper.many_faces,
             swapper_target_sex=swapper.target_sex.value,

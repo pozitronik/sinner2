@@ -105,8 +105,11 @@ class QBatchTaskDialog(QDialog):
         )
         paths_form.addRow("Output format:", self._format_combo)
 
-        # ---- FaceSwapper group ----
+        # ---- FaceSwapper group (checkable: disable for enhancer-only) ----
         swap_box = QGroupBox("FaceSwapper")
+        swap_box.setCheckable(True)
+        swap_box.setChecked(task.swapper_enabled)
+        self._swapper_box = swap_box
         swap_form = QFormLayout(swap_box)
         self._detection_interval = QSpinBox()
         self._detection_interval.setRange(1, 30)
@@ -247,6 +250,7 @@ class QBatchTaskDialog(QDialog):
                 "target_path": Path(self._target_edit.text()),
                 "output_path": output_path,
                 "output_format": BatchOutputFormat(format_value),
+                "swapper_enabled": self._swapper_box.isChecked(),
                 "swapper_detection_interval": self._detection_interval.value(),
                 "swapper_many_faces": self._many_faces.isChecked(),
                 "swapper_target_sex": self._target_sex.currentData(),

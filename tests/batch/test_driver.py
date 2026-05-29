@@ -555,3 +555,67 @@ class TestOverReportedFrameCount:
         status = driver.run(task)
         assert status is BatchTaskStatus.FAILED
         assert "truncated" in (task.error_message or "")
+
+
+class TestBuildStages:
+    @staticmethod
+    def _stub_procs(monkeypatch):
+        import sinner2.batch.driver as drv
+
+        class _S:
+            name = "faceswapper"
+
+            def __init__(self, source, params):
+                ...
+
+        class _E:
+            name = "faceenhancer"
+
+            def __init__(self, params):
+                ...
+
+        monkeypatch.setattr(drv, "FaceSwapper", _S)
+        monkeypatch.setattr(drv, "FaceEnhancer", _E)
+
+    def test_both_enabled(self, tmp_path, monkeypatch):
+        from sinner2.config.source import Source
+
+        self._stub_procs(monkeypatch)
+        task = _make_task(tmp_path, enhancer_enabled=True)
+        task.swapper_enabled = True
+        stages = BatchDriver._build_stages(  # noqa: SLF001
+            Source(path=task.source_path), task
+        )
+        assert [n for n, _ in stages] == ["faceswapper", "faceenhancer"]
+
+    def test_swapper_disabled_enhancer_only(self, tmp_path, monkeypatch):
+        from sinner2.config.source import Source
+
+        self._stub_procs(monkeypatch)
+        task = _make_task(tmp_path, enhancer_enabled=True)
+        task.swapper_enabled = False
+        stages = BatchDriver._build_stages(  # noqa: SLF001
+            Source(path=task.source_path), task
+        )
+        assert [n for n, _ in stages] == ["faceenhancer"]
+
+    def test_both_disabled_is_passthrough(self, tmp_path, monkeypatch):
+        from sinner2.config.source import Source
+
+        self._stub_procs(monkeypatch)
+        task = _make_task(tmp_path, enhancer_enabled=False)
+        task.swapper_enabled = False
+        stages = BatchDriver._build_stages(  # noqa: SLF001
+            Source(path=task.source_path), task
+        )
+        assert [n for n, _ in stages] == ["passthrough"]
+
+    def test_both_disabled_runs_to_passthrough_output(self, driver, tmp_path):
+        # End-to-end (no stub): the identity passthrough re-encodes the
+        # source frames unchanged — no face models loaded.
+        task = _make_task(tmp_path, image_target=False)  # 3-frame video
+        task.swapper_enabled = False
+        task.enhancer_enabled = False
+        status = driver.run(task)
+        assert status is BatchTaskStatus.COMPLETED
+        assert len(list(task.output_path.glob("*.jpg"))) == 3

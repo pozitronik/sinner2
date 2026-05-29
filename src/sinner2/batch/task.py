@@ -101,6 +101,7 @@ class BatchTask(SinnerBaseModel):
     output_format: BatchOutputFormat = BatchOutputFormat.VIDEO
 
     # ---- Chain config (output-affecting) ----
+    swapper_enabled: bool = True
     swapper_detection_interval: int = 1
     swapper_many_faces: bool = True
     swapper_target_sex: str = "B"  # M/F/B/I (matches FaceSwapperParams)

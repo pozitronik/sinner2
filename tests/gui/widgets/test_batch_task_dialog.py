@@ -202,3 +202,18 @@ class TestCleanupMode:
         idx = dlg._cleanup_combo.findData("auto")  # noqa: SLF001
         dlg._cleanup_combo.setCurrentIndex(idx)  # noqa: SLF001
         assert dlg.to_task().cleanup_mode is BatchCleanupMode.AUTO
+
+
+class TestSwapperToggle:
+    def test_prefills_swapper_enabled(self, qtbot, tmp_path):
+        t = _task(tmp_path, swapper_enabled=False)
+        dlg = QBatchTaskDialog.from_task(t)
+        qtbot.addWidget(dlg)
+        assert dlg._swapper_box.isChecked() is False  # noqa: SLF001
+
+    def test_writeback_swapper_enabled(self, qtbot, tmp_path):
+        t = _task(tmp_path)  # defaults to enabled
+        dlg = QBatchTaskDialog.from_task(t)
+        qtbot.addWidget(dlg)
+        dlg._swapper_box.setChecked(False)  # noqa: SLF001
+        assert dlg.to_task().swapper_enabled is False

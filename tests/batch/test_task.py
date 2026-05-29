@@ -37,6 +37,9 @@ class TestBatchTaskDefaults:
     def test_status_defaults_to_pending(self, tmp_path):
         assert _task(tmp_path).status is BatchTaskStatus.PENDING
 
+    def test_swapper_enabled_defaults_true(self, tmp_path):
+        assert _task(tmp_path).swapper_enabled is True
+
     def test_output_format_defaults_to_video(self, tmp_path):
         assert _task(tmp_path).output_format is BatchOutputFormat.VIDEO
 
