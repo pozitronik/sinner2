@@ -236,3 +236,33 @@ class TestResetToPending:
         )
         view._reset_task_to_pending(t.id)  # noqa: SLF001
         assert called == []
+
+
+class TestFailureSurfacing:
+    def test_failed_task_status_tooltip_shows_error(
+        self, view, tmp_path, store
+    ):
+        t = _task(
+            tmp_path,
+            status=BatchTaskStatus.FAILED,
+            error_message="boom: 5 frames missing",
+        )
+        store.save(t)
+        view.reload_from_store()
+        tip = view._model.item(0, _COL_STATUS).toolTip()  # noqa: SLF001
+        assert tip == "boom: 5 frames missing"
+
+
+class TestResumeAction:
+    def test_resume_calls_queue_resume(
+        self, view, tmp_path, store, queue, monkeypatch
+    ):
+        t = _task(tmp_path, status=BatchTaskStatus.PAUSED)
+        store.save(t)
+        view.reload_from_store()
+        called: list[str] = []
+        monkeypatch.setattr(
+            queue, "resume_task", lambda tid: called.append(tid)
+        )
+        view._resume_task(t.id)  # noqa: SLF001
+        assert called == [t.id]

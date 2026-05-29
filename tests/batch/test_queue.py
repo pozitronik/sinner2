@@ -195,3 +195,25 @@ class TestProgressSignal:
         assert received
         assert all(isinstance(p, BatchProgress) for p in received)
         assert received[-1].overall_completed == received[-1].overall_total
+
+
+class TestResumeTask:
+    def test_resume_failed_reruns_to_completion(
+        self, qtbot, queue, store, stub_chain, tmp_path
+    ):
+        task = _make_task(tmp_path, "a")
+        task.status = BatchTaskStatus.FAILED
+        task.error_message = "boom"
+        store.save(task)
+        with qtbot.waitSignal(queue.queueIdle, timeout=5000):
+            queue.resume_task(task.id)
+        reloaded = store.load(task.id)
+        assert reloaded.status is BatchTaskStatus.COMPLETED
+        assert reloaded.error_message is None
+
+    def test_resume_completed_task_is_noop(self, queue, store, tmp_path):
+        task = _make_task(tmp_path, "b")
+        task.status = BatchTaskStatus.COMPLETED
+        store.save(task)
+        queue.resume_task(task.id)  # not a resumable state
+        assert store.load(task.id).status is BatchTaskStatus.COMPLETED

@@ -175,6 +175,7 @@ class SinnerMainWindow(QMainWindow):
         # the user knows it's safe to play again.
         self._batch_queue.taskStarted.connect(self._on_batch_task_started)
         self._batch_queue.queueIdle.connect(self._on_batch_queue_idle)
+        self._batch_queue.taskFailed.connect(self._on_batch_task_failed)
         self._batch_view.editRequested.connect(self._on_edit_batch_task)
         self._processors.configChanged.connect(self._on_processor_config_changed)
         self._processors.configChanged.connect(self._persist_processor_settings)
@@ -895,6 +896,11 @@ class SinnerMainWindow(QMainWindow):
 
     def _on_batch_queue_idle(self) -> None:
         self.statusBar().showMessage("Batch queue idle", 3000)
+
+    def _on_batch_task_failed(self, _task_id: str, message: str) -> None:
+        # Failures are otherwise quiet (Status cell + its hover tooltip); a
+        # status-bar notice makes sure the user notices something stopped.
+        self.statusBar().showMessage(f"Batch task failed: {message}", 12000)
 
     def _on_edit_batch_task(self, task_id: str) -> None:
         if not self._batch_store.exists(task_id):

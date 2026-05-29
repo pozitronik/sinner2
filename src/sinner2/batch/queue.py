@@ -136,6 +136,25 @@ class BatchQueue(QObject):
         if self._current_task_id == task_id and self._driver is not None:
             self._driver.cancel()
 
+    def resume_task(self, task_id: str) -> None:
+        """Re-queue a paused or failed task WITHOUT discarding its cache, so
+        the driver continues from where it stopped, then start scheduling.
+        No-op if the task is running or not in a resumable state."""
+        if self._current_task_id == task_id:
+            return
+        if not self._store.exists(task_id):
+            return
+        task = self._store.load(task_id)
+        if task.status not in (
+            BatchTaskStatus.PAUSED,
+            BatchTaskStatus.FAILED,
+        ):
+            return
+        task.status = BatchTaskStatus.PENDING
+        task.error_message = None
+        self._store.save(task)
+        self.start()
+
     def refresh_task(self, task_id: str) -> None:
         """Reset a task to Pending and DISCARD its processed-frame cache
         so the queue re-runs it from scratch. No-op if currently running."""

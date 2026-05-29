@@ -176,6 +176,8 @@ class QBatchView(QWidget):
         items[_COL_OUTPUT].setToolTip(str(out_resolved))
         items[_COL_FORMAT].setText(task.output_format.value)
         items[_COL_STATUS].setText(task.status.value)
+        if task.error_message:
+            items[_COL_STATUS].setToolTip(task.error_message)
         items[_COL_PROGRESS].setText(self._progress_text(task))
         # Stash the id on column 0 so we can resolve a row → task.
         items[_COL_SOURCE].setData(task.id, _ROLE_TASK_ID)
@@ -215,7 +217,10 @@ class QBatchView(QWidget):
         if row is None or not self._store.exists(task_id):
             return
         task = self._store.load(task_id)
-        self._model.item(row, _COL_STATUS).setText(task.status.value)
+        status_item = self._model.item(row, _COL_STATUS)
+        status_item.setText(task.status.value)
+        # Surface the failure reason on hover (Status cell tooltip).
+        status_item.setToolTip(task.error_message or "")
         self._model.item(row, _COL_PROGRESS).setText(self._progress_text(task))
         out_resolved = resolve_output_path(task, self._resolve_global_output_dir())
         self._model.item(row, _COL_OUTPUT).setText(out_resolved.name)
@@ -264,38 +269,40 @@ class QBatchView(QWidget):
             return
         task = self._store.load(task_id)
         menu = QMenu(self._table)
-        edit_action = QAction("Edit…", menu)
-        edit_action.triggered.connect(
-            lambda _checked=False, tid=task_id: self.editRequested.emit(tid)
-        )
-        menu.addAction(edit_action)
-        # Per-task actions depend on current status + whether the
-        # task is the one currently running.
+        # Per-task actions depend on status + whether it's the running one.
         is_running = task.id == self._queue.current_task_id
+        if not is_running:
+            self._add_action(
+                menu, "Edit…", lambda: self.editRequested.emit(task_id)
+            )
         if is_running:
-            pause_action = QAction("Pause this task", menu)
-            pause_action.triggered.connect(
-                lambda _checked=False, tid=task_id: self._queue.pause_task(tid)
+            self._add_action(
+                menu, "Pause this task",
+                lambda: self._queue.pause_task(task_id),
             )
-            menu.addAction(pause_action)
-            cancel_action = QAction("Cancel this task", menu)
-            cancel_action.triggered.connect(
-                lambda _checked=False, tid=task_id: self._queue.cancel_task(tid)
+            self._add_action(
+                menu, "Cancel this task (discard cache)",
+                lambda: self._queue.cancel_task(task_id),
             )
-            menu.addAction(cancel_action)
-        if task.status in (
+        elif task.status is BatchTaskStatus.PENDING:
+            self._add_action(menu, "Run", self._queue.start)
+        elif task.status in (
+            BatchTaskStatus.PAUSED,
+            BatchTaskStatus.FAILED,
+        ):
+            self._add_action(menu, "Resume", lambda: self._resume_task(task_id))
+            self._add_action(
+                menu, "Reset to Pending (discard cache)",
+                lambda: self._reset_task_to_pending(task_id),
+            )
+        elif task.status in (
             BatchTaskStatus.COMPLETED,
             BatchTaskStatus.CANCELLED,
-            BatchTaskStatus.FAILED,
-            BatchTaskStatus.PAUSED,
         ):
-            refresh_action = QAction("Reset to Pending", menu)
-            refresh_action.triggered.connect(
-                lambda _checked=False, tid=task_id: self._reset_task_to_pending(
-                    tid
-                )
+            self._add_action(
+                menu, "Reset to Pending (discard cache)",
+                lambda: self._reset_task_to_pending(task_id),
             )
-            menu.addAction(refresh_action)
         menu.addSeparator()
         delete_action = QAction("Delete", menu)
         delete_action.triggered.connect(
@@ -303,6 +310,17 @@ class QBatchView(QWidget):
         )
         menu.addAction(delete_action)
         menu.exec(self._table.viewport().mapToGlobal(pos))
+
+    @staticmethod
+    def _add_action(menu: QMenu, label: str, slot) -> None:
+        action = QAction(label, menu)
+        action.triggered.connect(lambda _checked=False: slot())
+        menu.addAction(action)
+
+    def _resume_task(self, task_id: str) -> None:
+        """Re-queue a paused/failed task keeping its cache, then refresh."""
+        self._queue.resume_task(task_id)
+        self._refresh_row(task_id)
 
     def _reset_task_to_pending(self, task_id: str) -> None:
         """Confirm, then reset the task to Pending and discard its
