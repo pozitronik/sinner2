@@ -668,13 +668,12 @@ class SinnerMainWindow(QMainWindow):
         self._metrics_overlay.setVisible(visible)
 
     def _reposition_metrics_overlay(self) -> None:
-        # Anchor top-right of the frame display with an 8 px margin.
+        # Anchor top-left of the frame display with an 8 px margin.
         # Called on toggle-on and whenever the display resizes.
         hint = self._metrics_overlay.sizeHint()
-        parent_w = self._display.width()
         margin = 8
         self._metrics_overlay.setGeometry(
-            parent_w - hint.width() - margin,
+            margin,
             margin,
             hint.width(),
             hint.height(),
