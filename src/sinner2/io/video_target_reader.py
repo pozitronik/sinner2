@@ -7,12 +7,14 @@ from sinner2.config.target import Target
 from sinner2.types import Frame, FrameIndex
 
 
-class VideoTargetReader:
+class FFmpegVideoTargetReader:
     """Reads BGR frames from a video file via a persistent ffmpeg subprocess.
 
     Sequential reads share one decoder process — efficient for normal
     playback. An out-of-order or random-seek read restarts the subprocess
-    at the target frame, which costs a fork + ffmpeg init (~100-200ms).
+    at the target frame, which costs a fork + ffmpeg init (~100-200ms
+    locally, much more on slow / network sources). Pick the CV2 backend
+    for scrubbing-heavy or SyncedStrategy workloads.
 
     Frame seek uses `-ss <time> -i <input>` which is the fast form — it
     seeks to the nearest preceding keyframe, then drops frames until the
@@ -137,3 +139,7 @@ class VideoTargetReader:
             .reshape(self._height, self._width, 3)
             .copy()
         )
+
+
+# Back-compat alias — preserves the symbol older tests / callers import.
+VideoTargetReader = FFmpegVideoTargetReader

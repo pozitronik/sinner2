@@ -1,8 +1,7 @@
 from typing import Protocol, runtime_checkable
 
-import cv2
-
 from sinner2.config.target import Target
+from sinner2.io.cv2_unicode import imread_unicode
 from sinner2.types import Frame, FrameIndex
 
 
@@ -49,7 +48,7 @@ class ImageTargetReader:
         if index != 0:
             return None
         if self._frame is None:
-            img = cv2.imread(str(self._target.path))
+            img = imread_unicode(self._target.path)
             if img is None:
                 raise OSError(f"cannot read image: {self._target.path}")
             self._frame = img
