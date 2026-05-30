@@ -63,9 +63,15 @@ class QTransportControls(QWidget):
         # target are loaded. Sits where the Mute toggle used to — mute is
         # redundant with dragging the volume slider to zero.
         self._add_to_batch = QToolButton()
-        # Emoji caption: reads as a control among the playback widgets (a wide
-        # text label looked out of place) and the green glyph is noticeable.
-        self._add_to_batch.setText("➕")
+        # A green "+" reads as an add control among the playback widgets. Plain
+        # text + stylesheet (not the ➕ emoji) so the green is guaranteed
+        # regardless of the platform's emoji font; greyed when disabled so the
+        # green doubles as a "source + target loaded, ready to add" cue.
+        self._add_to_batch.setText("+")
+        self._add_to_batch.setStyleSheet(
+            "QToolButton { color: #2e9e3f; font-weight: bold; font-size: 16px; }"
+            "QToolButton:disabled { color: #888888; }"
+        )
         self._add_to_batch.setToolTip(
             "Add to batch: save the current source + target + settings as a "
             "task. Edit / run it from the Batch tab."
