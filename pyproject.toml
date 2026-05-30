@@ -68,6 +68,12 @@ packages = ["src/sinner2"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+# Slow end-to-end tests (real models + real video) are deselected by default;
+# run them explicitly with `pytest -m slow`.
+addopts = "-m 'not slow'"
+markers = [
+    "slow: end-to-end tests on a real video with real models (opt-in via -m slow)",
+]
 
 [tool.ruff]
 line-length = 120
