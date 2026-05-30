@@ -72,6 +72,58 @@ class TestStaysOnTop:
             window.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
         )
 
+    def test_corner_button_sets_flag(self, window):
+        from PySide6.QtCore import Qt
+
+        window._on_top_button.setChecked(True)  # noqa: SLF001
+        assert window.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
+        window._on_top_button.setChecked(False)  # noqa: SLF001
+        assert not (window.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
+
+    def test_f12_keeps_corner_button_in_sync(self, window):
+        from PySide6.QtCore import QEvent, Qt
+        from PySide6.QtGui import QKeyEvent
+
+        assert window._on_top_button.isChecked() is False  # noqa: SLF001
+        evt = QKeyEvent(
+            QEvent.Type.KeyPress, Qt.Key.Key_F12, Qt.KeyboardModifier.NoModifier
+        )
+        window.keyPressEvent(evt)
+        assert window._on_top_button.isChecked() is True  # noqa: SLF001
+        window.keyPressEvent(evt)
+        assert window._on_top_button.isChecked() is False  # noqa: SLF001
+
+
+class TestFullscreenRestore:
+    """F11 exit must return to the PRE-fullscreen window state — a window that
+    was maximized comes back maximized, not dropped to a restored size."""
+
+    def _spy_show_methods(self, window, monkeypatch, *, maximized: bool):
+        calls: list[str] = []
+        monkeypatch.setattr(window, "isMaximized", lambda: maximized)
+        monkeypatch.setattr(window, "showFullScreen", lambda: calls.append("fs"))
+        monkeypatch.setattr(window, "showMaximized", lambda: calls.append("max"))
+        monkeypatch.setattr(window, "showNormal", lambda: calls.append("normal"))
+        return calls
+
+    def test_exit_restores_maximized_when_entered_maximized(
+        self, window, monkeypatch
+    ):
+        calls = self._spy_show_methods(window, monkeypatch, maximized=True)
+        window._toggle_fullscreen()  # noqa: SLF001  # enter
+        window._toggle_fullscreen()  # noqa: SLF001  # exit
+        assert "max" in calls
+        assert "normal" not in calls
+
+    def test_exit_restores_normal_when_entered_windowed(
+        self, window, monkeypatch
+    ):
+        calls = self._spy_show_methods(window, monkeypatch, maximized=False)
+        window._toggle_fullscreen()  # noqa: SLF001  # enter
+        window._toggle_fullscreen()  # noqa: SLF001  # exit
+        assert "normal" in calls
+        assert "max" not in calls
+
 
 class TestRotationShortcut:
     def test_r_key_cycles_rotation(self, window):
