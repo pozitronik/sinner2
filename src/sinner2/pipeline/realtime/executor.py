@@ -777,6 +777,26 @@ class RealtimeExecutor:
                     self._inflight_count -= 1
                     if self._inflight_count == 0:
                         self._inflight_cv.notify_all()
+        # Worker is exiting (pool shrank, or executor stopping): drop any
+        # per-thread processor instances THIS worker built so a live shrink
+        # frees the surplus model now, not at chain teardown.
+        self._release_thread_local_chain()
+
+    def _release_thread_local_chain(self) -> None:
+        """Release any per-thread processor instances the calling (exiting)
+        worker built — e.g. a PerWorkerProcessor's own GFPGAN. Plain shared
+        processors don't expose release_thread_local() and are skipped. On a
+        full stop() the chain is released wholesale anyway; this matters for
+        the live worker-count-DECREASE path, where the surplus worker's model
+        would otherwise linger until the next chain swap."""
+        for p in self._chain:
+            release = getattr(p, "release_thread_local", None)
+            if release is None:
+                continue
+            try:
+                release()
+            except Exception as e:  # noqa: BLE001
+                self.status.set(f"thread-local release error: {e}")
 
     def _apply_chain(self, frame: Frame, chain: tuple[Processor, ...]) -> Frame:
         # Wrap each processor with perf_counter so the metrics overlay

@@ -48,10 +48,14 @@ class FaceEnhancer:
         # ("auto"/"cpu"/"cuda"/"cuda:N"); resolved at setup().
         self._device = device
         self._restorer: Any = None
-        # GFPGAN's enhance() mutates torch state, so it isn't thread-safe. The
-        # batch runner gives each worker its OWN instance (thread_safe=False);
-        # this lock only matters where an instance is shared (the realtime
-        # chain), serializing concurrent enhance() calls there.
+        # Set at setup(): whether the resolved device is CUDA, so release()
+        # knows whether to hand the model's VRAM back to the driver.
+        self._device_is_cuda = False
+        # GFPGAN's enhance() mutates torch state, so it isn't thread-safe.
+        # Both run modes now give each worker its OWN instance (batch via the
+        # stage runner's per-worker pool, realtime via PerWorkerProcessor), so
+        # this lock is effectively never contended — kept as a safety net for
+        # any path that might share an instance.
         self._enhance_lock = threading.Lock()
 
     def setup(self) -> None:
@@ -62,6 +66,7 @@ class FaceEnhancer:
         # announce it: a CPU fallback pegs every core and is far slower, so
         # surface it loudly instead of letting it look like a "slow GPU".
         device = resolve_torch_device(self._device)
+        self._device_is_cuda = device.type == "cuda"
         if device.type == "cuda":
             print(
                 f"[sinner2] FaceEnhancer (GFPGAN) device: {device}",
@@ -94,3 +99,11 @@ class FaceEnhancer:
 
     def release(self) -> None:
         self._restorer = None
+        # Hand the model's VRAM back to the driver. Torch's caching allocator
+        # otherwise keeps the freed blocks reserved, so a realtime worker-count
+        # DECREASE (or a chain rebuild) wouldn't visibly free GPU memory —
+        # nvidia-smi would still show the per-worker models resident.
+        if self._device_is_cuda:
+            import torch
+
+            torch.cuda.empty_cache()

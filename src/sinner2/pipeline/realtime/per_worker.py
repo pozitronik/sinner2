@@ -62,6 +62,30 @@ class PerWorkerProcessor:
                 self._instances.append(inst)
         return inst.process(frame)
 
+    def release_thread_local(self) -> None:
+        """Release just the CALLING thread's instance. The executor calls this
+        as a worker exits (e.g. the realtime pool shrinks) so the surplus
+        worker's model is freed immediately instead of lingering until the
+        whole chain is torn down. No-op if this thread never built one.
+
+        Each instance is removed from ``_instances`` under the lock before
+        release, so it's freed exactly once even if a full release() races a
+        worker exit."""
+        inst: Processor | None = getattr(self._local, "instance", None)
+        if inst is None:
+            return
+        self._local.instance = None
+        with self._lock:
+            if inst in self._instances:
+                self._instances.remove(inst)
+            else:
+                inst = None  # already claimed by a concurrent release()
+        if inst is not None:
+            try:
+                inst.release()
+            except Exception:
+                pass
+
     def release(self) -> None:
         # The executor calls this only after in-flight work has drained, so no
         # worker is inside process() here. Tear down every per-thread instance

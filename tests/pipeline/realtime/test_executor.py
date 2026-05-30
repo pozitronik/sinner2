@@ -27,6 +27,49 @@ def _pool_for(reader, size: int = 1) -> ReaderPool:
     return ReaderPool(lambda: reader, size=size, name="test")
 
 
+class TestReleaseThreadLocalChain:
+    """On worker exit, the executor releases any per-thread processor
+    instances (PerWorkerProcessor's GFPGAN) so a live pool shrink frees the
+    surplus model. Plain shared processors are skipped."""
+
+    def _bare_executor(self, chain):
+        # __init__ wires threads + queues; this method needs only _chain and
+        # status, so bypass construction (test-convention object.__new__).
+        from sinner2.observable import ObservableValue
+
+        ex = object.__new__(RealtimeExecutor)
+        ex._chain = tuple(chain)  # noqa: SLF001
+        ex.status = ObservableValue("")
+        return ex
+
+    def test_invokes_release_thread_local_on_wrappers_only(self):
+        calls: list[str] = []
+
+        class _Wrapper:
+            name = "enh"
+
+            def release_thread_local(self) -> None:
+                calls.append("released")
+
+        class _Plain:
+            name = "swap"  # no release_thread_local → skipped
+
+        ex = self._bare_executor([_Plain(), _Wrapper()])
+        ex._release_thread_local_chain()  # noqa: SLF001
+        assert calls == ["released"]
+
+    def test_swallows_release_errors_into_status(self):
+        class _Boom:
+            name = "enh"
+
+            def release_thread_local(self) -> None:
+                raise RuntimeError("kaboom")
+
+        ex = self._bare_executor([_Boom()])
+        ex._release_thread_local_chain()  # noqa: SLF001  # must not raise
+        assert "kaboom" in ex.status.get()
+
+
 class _CountingProcessor:
     """Returns the input frame unchanged; counts setup/process/release calls."""
 

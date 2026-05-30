@@ -133,3 +133,45 @@ class TestPerWorkerProcessor:
     def test_release_with_nothing_built_is_safe(self):
         w = PerWorkerProcessor(factory=_Stub, name="x")
         w.release()  # no instances yet — must not raise
+
+    def test_release_thread_local_frees_and_rebuilds_calling_thread(self):
+        factory, built = _recording_factory()
+        w = PerWorkerProcessor(factory=factory, name="x")
+        w.process(_frame())  # build instance 0 on this thread
+        assert len(built) == 1
+        w.release_thread_local()  # free this thread's instance
+        assert built[0].release_calls == 1
+        w.process(_frame())  # next call rebuilds a fresh instance
+        assert len(built) == 2
+        assert built[1].release_calls == 0
+
+    def test_release_thread_local_leaves_other_threads_instances(self):
+        # The shrink path: one worker exits and frees ITS model, while the
+        # surviving workers' instances must stay resident.
+        factory, built = _recording_factory()
+        w = PerWorkerProcessor(factory=factory, name="x")
+        built_evt = threading.Event()
+        hold_evt = threading.Event()
+
+        def survivor() -> None:
+            w.process(_frame())  # builds its own instance
+            built_evt.set()
+            hold_evt.wait()  # park WITHOUT releasing
+
+        t = threading.Thread(target=survivor)
+        t.start()
+        built_evt.wait()
+        survivor_inst = built[0]
+
+        w.process(_frame())  # main thread builds its own
+        main_inst = built[1]
+        w.release_thread_local()  # main thread frees only its own
+
+        assert main_inst.release_calls == 1
+        assert survivor_inst.release_calls == 0  # survivor untouched
+        hold_evt.set()
+        t.join()
+
+    def test_release_thread_local_with_nothing_built_is_safe(self):
+        w = PerWorkerProcessor(factory=_Stub, name="x")
+        w.release_thread_local()  # this thread never built one — no-op

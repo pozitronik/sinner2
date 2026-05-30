@@ -144,3 +144,41 @@ class TestFaceEnhancer:
         fe.process(_blank())
         _, kwargs = stub_restorer.enhance.call_args
         assert kwargs["only_center_face"] is True
+
+    def test_release_returns_cuda_memory_when_on_gpu(
+        self, models_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        # nvidia-smi only reflects a freed model if torch's caching allocator
+        # hands the blocks back — release() must call empty_cache on CUDA so a
+        # realtime worker-count decrease visibly frees VRAM.
+        import torch
+
+        monkeypatch.setattr(
+            face_enhancer,
+            "_load_restorer",
+            lambda *a: MagicMock(enhance=MagicMock(return_value=([], [], None))),
+        )
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+        empties: list[int] = []
+        monkeypatch.setattr(torch.cuda, "empty_cache", lambda: empties.append(1))
+        fe = FaceEnhancer(device="cuda")
+        fe.setup()
+        fe.release()
+        assert empties == [1]
+
+    def test_release_skips_cuda_cache_on_cpu(
+        self, models_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        import torch
+
+        monkeypatch.setattr(
+            face_enhancer,
+            "_load_restorer",
+            lambda *a: MagicMock(enhance=MagicMock(return_value=([], [], None))),
+        )
+        empties: list[int] = []
+        monkeypatch.setattr(torch.cuda, "empty_cache", lambda: empties.append(1))
+        fe = FaceEnhancer(device="cpu")
+        fe.setup()
+        fe.release()
+        assert empties == []
