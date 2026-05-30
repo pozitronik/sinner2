@@ -1,23 +1,29 @@
 name: Release
 
-# Push a version tag (e.g. `git tag v0.2.0 && git push origin v0.2.0`) to build
-# the artifacts and open a DRAFT GitHub release for review. hatch-vcs stamps the
-# build with the tag's version, so the tag is the single source of truth.
+# Push a version tag (e.g. `git tag v0.2.0 && git push origin v0.2.0`) to run the
+# full check suite and, ONLY if it passes, open a DRAFT GitHub release for review.
+# hatch-vcs stamps the build with the tag's version, so the tag is the single
+# source of truth.
 on:
   push:
     tags:
       - "v*"
 
-permissions:
-  contents: write  # required for softprops/action-gh-release to create the release
-
 jobs:
+  # Gate: reuse the same lint + test pipeline as normal pushes. The release job
+  # `needs` this, so no draft is created unless it is green.
+  checks:
+    uses: ./.github/workflows/checks.yml
+
   release:
+    needs: checks
     runs-on: ubuntu-latest
+    permissions:
+      contents: write  # required for softprops/action-gh-release to create the release
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # full history + tags so hatch-vcs can resolve the version
+          fetch-depth: 0  # full history + tags for hatch-vcs AND the changelog below
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -25,9 +31,47 @@ jobs:
         run: |
           python -m pip install --upgrade pip build
           python -m build
+      # Notes are built from the commits since the previous tag, grouped by the
+      # project's "Type: description" convention (Added / Fixed / Changed /
+      # Removed). This works for direct-to-master commits, where GitHub's native
+      # PR-based notes would be empty. Contributors come from the commit authors.
+      - name: Generate release notes
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          PREV="$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)"
+          if [ -n "${PREV}" ]; then
+            RANGE="${PREV}..${TAG}"
+            LINK="https://github.com/${GITHUB_REPOSITORY}/compare/${PREV}...${TAG}"
+          else
+            RANGE="${TAG}"
+            LINK="https://github.com/${GITHUB_REPOSITORY}/commits/${TAG}"
+          fi
+          emit() {  # $1 = heading, $2 = subject-prefix regex
+            local items
+            items="$(git log "${RANGE}" --no-merges -i --grep="$2" --pretty='- %s (%an)')"
+            if [ -n "${items}" ]; then printf '### %s\n%s\n\n' "$1" "${items}"; fi
+          }
+          {
+            echo "## What's Changed"
+            echo
+            emit "✨ Added"    '^Added'
+            emit "🐛 Fixed"    '^Fixed'
+            emit "♻️ Changed"  '^Changed'
+            emit "🗑️ Removed"  '^Removed'
+            other="$(git log "${RANGE}" --no-merges --pretty='- %s (%an)' \
+              | grep -viE '^- (Added|Fixed|Changed|Removed)' || true)"
+            if [ -n "${other}" ]; then printf '### Other\n%s\n\n' "${other}"; fi
+            echo "## Contributors"
+            git log "${RANGE}" --no-merges --pretty='%an' | sort -u | sed 's/^/- /'
+            echo
+            echo "**Full Changelog**: ${LINK}"
+          } > notes.md
+          echo "----- generated notes -----"
+          cat notes.md
       - name: Draft release
         uses: softprops/action-gh-release@v2
         with:
           draft: true
-          generate_release_notes: true
+          body_path: notes.md
           files: dist/*

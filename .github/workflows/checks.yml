@@ -1,0 +1,50 @@
+name: Checks
+
+# Reusable lint + test pipeline, called by both ci.yml (push / PR) and
+# release.yml. Keeping it here means a release draft is only ever cut after the
+# exact same checks that gate normal pushes have passed — one source of truth.
+on:
+  workflow_call:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      # flake8 is AST-only and mypy uses ignore_missing_imports, so the heavy
+      # extras (torch / PySide6 / onnxruntime / insightface / gfpgan) are NOT
+      # installed here. pydantic / numpy / opencv are the typed deps mypy can
+      # resolve, so they are installed to match the configured clean baseline.
+      - name: Install linters
+        run: |
+          python -m pip install --upgrade pip
+          pip install flake8 mypy pydantic numpy opencv-python-headless
+      - name: flake8
+        run: flake8 .
+      - name: mypy
+        run: mypy
+
+  test:
+    runs-on: ubuntu-latest
+    env:
+      QT_QPA_PLATFORM: offscreen  # Qt widget tests run headless (no X server)
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # hatch-vcs derives the version from git tags
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install (CPU + GUI + dev)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[cpu,gui,dev]"
+      # The default suite deselects 'slow' (see [tool.pytest] addopts) and stubs
+      # the ONNX/GFPGAN model loaders, so no model weights are needed.
+      - name: Run tests
+        run: pytest -q
