@@ -249,7 +249,6 @@ class PlayerController(QObject):
         self._audio_backend: AudioBackend | None = None
         self._audio_backend_name: AudioBackendName = AudioBackendName.QT
         self._audio_volume: int = 100
-        self._audio_muted: bool = False
         # Target fps cached on load so seek-by-frame can convert to seconds.
         self._target_fps: float = 0.0
         # Video reader backend (applies on next session start).
@@ -269,7 +268,6 @@ class PlayerController(QObject):
         transport.pauseRequested.connect(self._on_pause)
         transport.seekRequested.connect(self._on_seek)
         transport.volumeChanged.connect(self._on_audio_volume_changed)
-        transport.mutedChanged.connect(self._on_audio_muted_changed)
 
     def set_source_and_target(self, source_path: Path | None, target_path: Path | None) -> None:
         if source_path is None or target_path is None:
@@ -679,10 +677,9 @@ class PlayerController(QObject):
         if self._audio_backend is None:
             try:
                 self._audio_backend = self._audio_backend_factory(self._audio_backend_name)
-                # Replay cached volume/mute so the backend matches the UI
-                # state the user set before any media was loaded.
+                # Replay cached volume so the backend matches the UI state the
+                # user set before any media was loaded.
                 self._audio_backend.set_volume(self._audio_volume / 100.0)
-                self._audio_backend.set_muted(self._audio_muted)
             except Exception as exc:
                 self.errorOccurred.emit(f"audio backend init failed: {exc}")
                 self._audio_backend = None
@@ -695,19 +692,14 @@ class PlayerController(QObject):
             self._audio_backend.shutdown()
             self._audio_backend = None
         self._audio_backend_name = name
-        # Reconstruct so the new backend picks up the cached volume/mute
-        # and is ready for the next session's load() call.
+        # Reconstruct so the new backend picks up the cached volume and is
+        # ready for the next session's load() call.
         self.audio_backend()
 
     def _on_audio_volume_changed(self, value: int) -> None:
         self._audio_volume = max(0, min(100, value))
         if self.audio_backend() is not None:
             self._audio_backend.set_volume(self._audio_volume / 100.0)  # type: ignore[union-attr]
-
-    def _on_audio_muted_changed(self, muted: bool) -> None:
-        self._audio_muted = bool(muted)
-        if self.audio_backend() is not None:
-            self._audio_backend.set_muted(self._audio_muted)  # type: ignore[union-attr]
 
     def video_backend(self) -> VideoBackend:
         return self._video_backend
@@ -840,14 +832,12 @@ class PlayerController(QObject):
         if was_playing:
             self._executor.play()
 
-    def apply_initial_audio_state(self, volume: int, muted: bool) -> None:
-        """Push persisted audio state into the controller + (lazy) backend
+    def apply_initial_audio_state(self, volume: int) -> None:
+        """Push persisted audio volume into the controller + (lazy) backend
         without re-emitting transport signals. Called once on startup
         before any session loads."""
         self._audio_volume = max(0, min(100, volume))
-        self._audio_muted = bool(muted)
         # If the backend is already constructed (it isn't on first launch,
-        # but be defensive), reflect the values immediately.
+        # but be defensive), reflect the value immediately.
         if self._audio_backend is not None:
             self._audio_backend.set_volume(self._audio_volume / 100.0)
-            self._audio_backend.set_muted(self._audio_muted)

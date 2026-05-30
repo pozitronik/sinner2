@@ -58,16 +58,15 @@ class TestAudioBackendConstruction:
         assert len(fake_factory.instances) == 1
         ctrl.shutdown()
 
-    def test_cached_volume_and_mute_applied_on_first_access(
+    def test_cached_volume_applied_on_first_access(
         self, widgets, fake_factory
     ):
         ctrl, _ = _make_controller(widgets, fake_factory)
-        ctrl.apply_initial_audio_state(volume=40, muted=True)
+        ctrl.apply_initial_audio_state(volume=40)
         backend = ctrl.audio_backend()
         assert backend is not None
         # Volume comes in as 0-1 scale after the factory hook runs.
         assert backend.volume == pytest.approx(0.4)
-        assert backend.muted is True
         ctrl.shutdown()
 
 
@@ -78,13 +77,6 @@ class TestTransportSignalsRoutedToBackend:
         transport.volumeChanged.emit(60)
         backend = fake_factory.instances[0]
         assert backend.volume == pytest.approx(0.6)
-        ctrl.shutdown()
-
-    def test_mute_toggle_forwarded(self, widgets, fake_factory):
-        ctrl, transport = _make_controller(widgets, fake_factory)
-        ctrl.audio_backend()
-        transport.mutedChanged.emit(True)
-        assert fake_factory.instances[0].muted is True
         ctrl.shutdown()
 
 

@@ -196,7 +196,11 @@ class SinnerMainWindow(QMainWindow):
         self._pickers.targetChanged.connect(self._persist_target_path)
         self._pickers.sourceRecentsChanged.connect(self._persist_source_recents)
         self._pickers.targetRecentsChanged.connect(self._persist_target_recents)
-        self._pickers.addToBatchRequested.connect(self._on_add_to_batch)
+        # "Add to batch" now lives in the transport row; enable it only when
+        # both a source and target are loaded.
+        self._transport.addToBatchRequested.connect(self._on_add_to_batch)
+        self._pickers.sourceChanged.connect(self._update_add_to_batch_enabled)
+        self._pickers.targetChanged.connect(self._update_add_to_batch_enabled)
         # Batch queue → realtime preview coordination. Mutually
         # exclusive: when the queue starts a task, pause the live
         # preview; when the queue empties, drop a status-bar note so
@@ -219,7 +223,6 @@ class SinnerMainWindow(QMainWindow):
         # own slots already update the backend; we only need to write
         # settings back here.
         self._transport.volumeChanged.connect(self._persist_audio_volume)
-        self._transport.mutedChanged.connect(self._persist_audio_muted)
         self._controller.cacheStorageStatsChanged.connect(self._refresh_cache_stats)
         # Library wiring: click a thumbnail to load it as source/target,
         # use the same controller hooks as the file picker so frame state
@@ -397,20 +400,25 @@ class SinnerMainWindow(QMainWindow):
 
     def _restore_audio_state(self) -> None:
         volume = self._settings.audio_volume if self._settings.audio_volume is not None else 100
-        muted = bool(self._settings.audio_muted) if self._settings.audio_muted is not None else False
-        # Push silently into the widgets so we don't echo back as a user
-        # "change" (which would re-save settings unnecessarily).
+        # Push silently into the widget so we don't echo back as a user
+        # "change" (which would re-save settings unnecessarily). Mute was
+        # dropped — volume 0 is silence.
         self._transport.set_volume_silently(volume)
-        self._transport.set_muted_silently(muted)
         # Push into the controller so the backend (constructed lazily on
-        # first audio_backend() call) starts with the right values.
-        self._controller.apply_initial_audio_state(volume=volume, muted=muted)
+        # first audio_backend() call) starts with the right value.
+        self._controller.apply_initial_audio_state(volume=volume)
 
     def _persist_audio_volume(self, value: int) -> None:
         self._update_settings(audio_volume=int(value))
 
-    def _persist_audio_muted(self, muted: bool) -> None:
-        self._update_settings(audio_muted=bool(muted))
+    def _update_add_to_batch_enabled(self, *_: object) -> None:
+        # The transport's Add-to-batch button is meaningful only once both a
+        # source and target are loaded.
+        ok = (
+            self._pickers.source_path() is not None
+            and self._pickers.target_path() is not None
+        )
+        self._transport.set_add_to_batch_enabled(ok)
 
     def _update_strategy_mode_label(self, mode: object) -> None:
         text = str(mode) if mode else ""

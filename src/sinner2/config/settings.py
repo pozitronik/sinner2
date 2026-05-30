@@ -54,7 +54,6 @@ class Settings(SinnerBaseModel):
     cache_size_cap_mb: int | None = None
     audio_backend: AudioBackendName | None = None
     audio_volume: int | None = None  # 0-100
-    audio_muted: bool | None = None
     video_backend: VideoBackend | None = None
     reader_pool_size: int | None = None
     synced_max_lag_frames: int | None = None

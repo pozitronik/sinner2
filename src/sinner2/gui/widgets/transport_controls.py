@@ -1,10 +1,10 @@
 from PySide6.QtCore import Qt, QTimer, Signal, Slot
 from PySide6.QtWidgets import (
-    QCheckBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
     QSlider,
+    QToolButton,
     QWidget,
 )
 
@@ -25,7 +25,7 @@ class QTransportControls(QWidget):
     pauseRequested = Signal()
     seekRequested = Signal(int)
     volumeChanged = Signal(int)  # 0-100
-    mutedChanged = Signal(bool)
+    addToBatchRequested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -58,23 +58,35 @@ class QTransportControls(QWidget):
         self._label = QLabel("0 / 0")
         self._label.setMinimumWidth(80)
 
-        # Audio controls. Mute is a separate state from volume so the user
-        # can unmute and find their preferred volume preserved. Both emit
-        # dedicated signals so the controller can drive any AudioBackend.
-        self._mute = QCheckBox("Mute")
-        self._mute.toggled.connect(self.mutedChanged)
+        # "Add to batch": capture the current source + target + settings as a
+        # batch task. Disabled (driven by the main window) until a source AND
+        # target are loaded. Sits where the Mute toggle used to — mute is
+        # redundant with dragging the volume slider to zero.
+        self._add_to_batch = QToolButton()
+        self._add_to_batch.setText("Add to batch")
+        self._add_to_batch.setToolTip(
+            "Save the current source + target + settings as a batch task. "
+            "Edit / run it from the Batch tab."
+        )
+        self._add_to_batch.setEnabled(False)
+        self._add_to_batch.clicked.connect(self.addToBatchRequested)
+
+        # Audio volume (0 = silent, which replaces the old mute toggle).
         self._volume = QSlider(Qt.Orientation.Horizontal)
         self._volume.setRange(0, 100)
         self._volume.setValue(100)
         self._volume.setFixedWidth(100)
-        self._volume.setToolTip("Audio volume (0-100). Affects only the playback path.")
+        self._volume.setToolTip("Audio volume (0 = silent). Affects only the playback path.")
         self._volume.valueChanged.connect(self.volumeChanged)
 
         layout = QHBoxLayout(self)
+        # Zero horizontal margins so the controls line up with the display
+        # above; tight vertical margins keep the row short.
+        layout.setContentsMargins(0, 2, 0, 2)
         layout.addWidget(self._play_button)
         layout.addWidget(self._slider, stretch=1)
         layout.addWidget(self._label)
-        layout.addWidget(self._mute)
+        layout.addWidget(self._add_to_batch)
         layout.addWidget(self._volume)
 
     def set_frame_count(self, count: int) -> None:
@@ -136,9 +148,6 @@ class QTransportControls(QWidget):
     def volume(self) -> int:
         return self._volume.value()
 
-    def muted(self) -> bool:
-        return self._mute.isChecked()
-
     def set_volume_silently(self, value: int) -> None:
         """Apply a persisted volume without re-emitting volumeChanged.
         Used during startup restore so the controller isn't notified of
@@ -147,13 +156,12 @@ class QTransportControls(QWidget):
         self._volume.setValue(max(0, min(100, value)))
         self._volume.blockSignals(False)
 
-    def set_muted_silently(self, muted: bool) -> None:
-        self._mute.blockSignals(True)
-        self._mute.setChecked(bool(muted))
-        self._mute.blockSignals(False)
-
     def set_audio_enabled(self, enabled: bool) -> None:
-        """Enable/disable the mute + volume controls. Called after each
-        new session loads, based on whether the target has an audio track."""
-        self._mute.setEnabled(enabled)
+        """Enable/disable the volume control. Called after each new session
+        loads, based on whether the target has an audio track."""
         self._volume.setEnabled(enabled)
+
+    def set_add_to_batch_enabled(self, enabled: bool) -> None:
+        """Enable the Add-to-batch button. The main window drives this from
+        the source/target picker state (both must be loaded)."""
+        self._add_to_batch.setEnabled(enabled)

@@ -74,3 +74,17 @@ class TestTransportControls:
         with qtbot.assertNotEmitted(widget.seekRequested, wait=100):
             widget.set_frame_count(100)
 
+
+
+class TestAddToBatch:
+    def test_disabled_until_enabled(self, widget):
+        assert widget._add_to_batch.isEnabled() is False  # noqa: SLF001
+        widget.set_add_to_batch_enabled(True)
+        assert widget._add_to_batch.isEnabled() is True  # noqa: SLF001
+        widget.set_add_to_batch_enabled(False)
+        assert widget._add_to_batch.isEnabled() is False  # noqa: SLF001
+
+    def test_click_emits_request(self, widget, qtbot):
+        widget.set_add_to_batch_enabled(True)
+        with qtbot.waitSignal(widget.addToBatchRequested, timeout=1000):
+            widget._add_to_batch.click()  # noqa: SLF001

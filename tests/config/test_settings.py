@@ -167,11 +167,6 @@ class TestExtendedFieldsRoundtrip:
         settings.save(settings.Settings(audio_volume=42))
         assert settings.load().audio_volume == 42
 
-    @pytest.mark.parametrize("value", [True, False])
-    def test_audio_muted(self, value: bool):
-        settings.save(settings.Settings(audio_muted=value))
-        assert settings.load().audio_muted is value
-
     @pytest.mark.parametrize("backend", list(VideoBackend))
     def test_video_backend(self, backend: VideoBackend):
         settings.save(settings.Settings(video_backend=backend))
@@ -302,7 +297,6 @@ class TestExtendedFieldsRoundtrip:
             cache_size_cap_mb=4096,
             audio_backend=AudioBackendName.QT,
             audio_volume=80,
-            audio_muted=True,
             video_backend=VideoBackend.CV2,
             reader_pool_size=8,
             synced_max_lag_frames=120,
@@ -350,7 +344,6 @@ class TestExtendedFieldsRoundtrip:
         assert loaded.cache_size_cap_mb is None
         assert loaded.audio_backend is None
         assert loaded.audio_volume is None
-        assert loaded.audio_muted is None
         assert loaded.video_backend is None
         assert loaded.reader_pool_size is None
         assert loaded.synced_max_lag_frames is None

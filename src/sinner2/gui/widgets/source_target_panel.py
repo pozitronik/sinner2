@@ -52,8 +52,13 @@ class QPathPicker(QWidget):
         self._recent_menu = QMenu(self._load_button)
         self._load_button.setMenu(self._recent_menu)
         self._rebuild_recent_menu()
+        # Match the Load button height to the path edit so the row is even.
+        self._load_button.setFixedHeight(self._display.sizeHint().height())
 
         layout = QHBoxLayout(self)
+        # Zero margins so the row stays tight and its left/right edges line up
+        # with the display above.
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._label)
         layout.addWidget(self._display, stretch=1)
         layout.addWidget(self._load_button)
@@ -166,7 +171,6 @@ class QSourceTargetPanel(QWidget):
     targetChanged = Signal(Path)
     sourceRecentsChanged = Signal(list)  # list[Path]
     targetRecentsChanged = Signal(list)
-    addToBatchRequested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -177,34 +181,14 @@ class QSourceTargetPanel(QWidget):
         self._source.recentsChanged.connect(self.sourceRecentsChanged)
         self._target.recentsChanged.connect(self.targetRecentsChanged)
 
-        # "Add to batch" lives next to the picker row — the natural
-        # spot once the user has loaded a source + target and tuned
-        # settings via the Settings tab. Disabled when source or
-        # target is unset (no point in batching a half-configured task).
-        self._add_to_batch = QToolButton()
-        self._add_to_batch.setText("Add to batch")
-        self._add_to_batch.setToolTip(
-            "Save the current source + target + settings as a batch "
-            "task. Edit / run from the Batch tab."
-        )
-        self._add_to_batch.setEnabled(False)
-        self._add_to_batch.clicked.connect(self.addToBatchRequested)
-        self._source.pathChanged.connect(self._update_add_to_batch_enabled)
-        self._target.pathChanged.connect(self._update_add_to_batch_enabled)
-
         layout = QVBoxLayout(self)
+        # Tight + edge-aligned with the display above: no side inset, minimal
+        # gap between the source and target rows. (Add-to-batch moved to the
+        # transport row.)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
         layout.addWidget(self._source)
         layout.addWidget(self._target)
-        # Right-aligned button row below the pickers.
-        button_row = QHBoxLayout()
-        button_row.addStretch(1)
-        button_row.addWidget(self._add_to_batch)
-        layout.addLayout(button_row)
-
-    def _update_add_to_batch_enabled(self, _path: Path) -> None:
-        # Both must be set for the batch task to have meaning.
-        ok = self.source_path() is not None and self.target_path() is not None
-        self._add_to_batch.setEnabled(ok)
 
     def source_path(self) -> Path | None:
         return self._source.path()
