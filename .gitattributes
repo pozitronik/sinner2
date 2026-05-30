@@ -1,0 +1,7 @@
+# Enforce launcher line endings per platform regardless of local git config.
+# Windows shells (cmd / PowerShell) require CRLF; POSIX shells require LF.
+# Without this, scripts authored on one OS break when checked out on the other.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.sh  text eol=lf
