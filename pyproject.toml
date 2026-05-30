@@ -40,6 +40,7 @@ gui = [
 dev = [
     "pytest>=8",
     "pytest-mock",
+    "pytest-qt",
     "ruff",
     "mypy",
 ]
