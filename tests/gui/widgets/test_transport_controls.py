@@ -77,14 +77,14 @@ class TestTransportControls:
 
 
 class TestAddToBatch:
-    def test_disabled_until_enabled(self, widget):
+    def test_follows_parent_enabled_state(self, widget):
+        # The button rides the transport's enabled state (the main window
+        # disables the whole transport until a source + target are loaded).
+        widget.setEnabled(False)
         assert widget._add_to_batch.isEnabled() is False  # noqa: SLF001
-        widget.set_add_to_batch_enabled(True)
+        widget.setEnabled(True)
         assert widget._add_to_batch.isEnabled() is True  # noqa: SLF001
-        widget.set_add_to_batch_enabled(False)
-        assert widget._add_to_batch.isEnabled() is False  # noqa: SLF001
 
     def test_click_emits_request(self, widget, qtbot):
-        widget.set_add_to_batch_enabled(True)
         with qtbot.waitSignal(widget.addToBatchRequested, timeout=1000):
             widget._add_to_batch.click()  # noqa: SLF001

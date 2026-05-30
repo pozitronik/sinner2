@@ -202,8 +202,8 @@ class SinnerMainWindow(QMainWindow):
         # "Add to batch" now lives in the transport row; enable it only when
         # both a source and target are loaded.
         self._transport.addToBatchRequested.connect(self._on_add_to_batch)
-        self._pickers.sourceChanged.connect(self._update_add_to_batch_enabled)
-        self._pickers.targetChanged.connect(self._update_add_to_batch_enabled)
+        self._pickers.sourceChanged.connect(self._refresh_transport_enabled)
+        self._pickers.targetChanged.connect(self._refresh_transport_enabled)
         # Batch queue → realtime preview coordination. Mutually
         # exclusive: when the queue starts a task, pause the live
         # preview; when the queue empties, drop a status-bar note so
@@ -266,6 +266,9 @@ class SinnerMainWindow(QMainWindow):
         self._restore_stays_on_top()
         self._restore_rotation()
         self._restore_paths_from_settings()
+        # Transport starts disabled and only enables once a source AND target
+        # are present (restore above may have supplied them).
+        self._refresh_transport_enabled()
         # After paths are restored a session may have auto-started.
         # Flag any persisted-but-broken providers (e.g. user previously
         # checked TensorRT on a machine without the libs).
@@ -411,14 +414,15 @@ class SinnerMainWindow(QMainWindow):
     def _persist_audio_volume(self, value: int) -> None:
         self._update_settings(audio_volume=int(value))
 
-    def _update_add_to_batch_enabled(self, *_: object) -> None:
-        # The transport's Add-to-batch button is meaningful only once both a
-        # source and target are loaded.
-        ok = (
+    def _refresh_transport_enabled(self, *_: object) -> None:
+        # The transport (play / seek / volume + add-to-batch) is usable only
+        # once both a source and target are loaded, and never while a batch
+        # render holds the editing surface.
+        ready = (
             self._pickers.source_path() is not None
             and self._pickers.target_path() is not None
         )
-        self._transport.set_add_to_batch_enabled(ok)
+        self._transport.setEnabled(ready and not self._batch_active)
 
     def _update_strategy_mode_label(self, mode: object) -> None:
         text = str(mode) if mode else ""
@@ -972,7 +976,9 @@ class SinnerMainWindow(QMainWindow):
         """Lock/unlock the whole live-editing surface (transport, pickers,
         settings + libraries). The Batch tab stays interactive so the queue
         can still be driven; the display becomes a read-only render preview."""
-        self._transport.setEnabled(not locked)
+        # Transport also depends on source+target presence, so route through
+        # the refresh (which honours both the lock and the picker state).
+        self._refresh_transport_enabled()
         self._pickers.setEnabled(not locked)
         self._side_panel.set_editing_locked(locked)
 

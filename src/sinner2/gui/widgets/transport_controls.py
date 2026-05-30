@@ -59,9 +59,9 @@ class QTransportControls(QWidget):
         self._label.setMinimumWidth(80)
 
         # "Add to batch": capture the current source + target + settings as a
-        # batch task. Disabled (driven by the main window) until a source AND
-        # target are loaded. Sits where the Mute toggle used to — mute is
-        # redundant with dragging the volume slider to zero.
+        # batch task. Sits at the FAR LEFT of the row. The whole transport is
+        # disabled by the main window until a source AND target are loaded, so
+        # this button rides the parent's enabled state (greyed → green).
         self._add_to_batch = QToolButton()
         # A green "+" reads as an add control among the playback widgets. Plain
         # text + stylesheet (not the ➕ emoji) so the green is guaranteed
@@ -76,7 +76,6 @@ class QTransportControls(QWidget):
             "Add to batch: save the current source + target + settings as a "
             "task. Edit / run it from the Batch tab."
         )
-        self._add_to_batch.setEnabled(False)
         self._add_to_batch.clicked.connect(self.addToBatchRequested)
 
         # Audio volume (0 = silent, which replaces the old mute toggle).
@@ -91,10 +90,10 @@ class QTransportControls(QWidget):
         # Zero horizontal margins so the controls line up with the display
         # above; tight vertical margins keep the row short.
         layout.setContentsMargins(0, 2, 0, 2)
+        layout.addWidget(self._add_to_batch)
         layout.addWidget(self._play_button)
         layout.addWidget(self._slider, stretch=1)
         layout.addWidget(self._label)
-        layout.addWidget(self._add_to_batch)
         layout.addWidget(self._volume)
 
     def set_frame_count(self, count: int) -> None:
@@ -168,8 +167,3 @@ class QTransportControls(QWidget):
         """Enable/disable the volume control. Called after each new session
         loads, based on whether the target has an audio track."""
         self._volume.setEnabled(enabled)
-
-    def set_add_to_batch_enabled(self, enabled: bool) -> None:
-        """Enable the Add-to-batch button. The main window drives this from
-        the source/target picker state (both must be loaded)."""
-        self._add_to_batch.setEnabled(enabled)

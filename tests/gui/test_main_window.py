@@ -174,6 +174,28 @@ class TestRotationShortcut:
             assert window._display.rotation() == expected  # noqa: SLF001
 
 
+class TestTransportGating:
+    """The whole transport row is inactive until a source AND target load."""
+
+    def test_disabled_without_source_and_target(self, window):
+        assert window._transport.isEnabled() is False  # noqa: SLF001
+
+    def test_enables_only_when_both_loaded(self, window, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            window._controller,  # noqa: SLF001
+            "set_source_and_target",
+            lambda *a, **k: None,
+        )
+        src = tmp_path / "s.png"
+        src.write_bytes(b"x")
+        window._pickers.set_source(src)  # noqa: SLF001
+        assert window._transport.isEnabled() is False  # noqa: SLF001  # source only
+        tgt = tmp_path / "t.mp4"
+        tgt.write_bytes(b"x")
+        window._pickers.set_target(tgt)  # noqa: SLF001
+        assert window._transport.isEnabled() is True  # noqa: SLF001  # both
+
+
 class TestBatchIntegration:
     def test_add_to_batch_with_no_paths_is_noop(self, window):
         # Pickers empty → addToBatchRequested handler short-circuits.
@@ -210,9 +232,26 @@ class TestBatchIntegration:
         # Row also landed in the view.
         assert window._batch_view._model.rowCount() == 1  # noqa: SLF001
 
-    def test_batch_running_locks_editing_surface(self, window):
+    def test_batch_running_locks_editing_surface(
+        self, window, tmp_path, monkeypatch
+    ):
         # DaVinci-style: a running batch locks transport + pickers + settings
         # + libraries, but the Batch tab stays interactive.
+        # Load a source + target (controller stubbed to skip the heavy session
+        # build) so the transport is live before the lock and re-enables after.
+        monkeypatch.setattr(
+            window._controller,  # noqa: SLF001
+            "set_source_and_target",
+            lambda *a, **k: None,
+        )
+        src = tmp_path / "src.png"
+        src.write_bytes(b"x")
+        tgt = tmp_path / "tgt.mp4"
+        tgt.write_bytes(b"x")
+        window._pickers.set_source(src)  # noqa: SLF001
+        window._pickers.set_target(tgt)  # noqa: SLF001
+        assert window._transport.isEnabled()  # noqa: SLF001  # source+target loaded
+
         window._batch_queue.taskStarted.emit("x")  # noqa: SLF001
         assert not window._transport.isEnabled()  # noqa: SLF001
         assert not window._pickers.isEnabled()  # noqa: SLF001
@@ -221,7 +260,7 @@ class TestBatchIntegration:
         assert not window._side_panel.targets_library().isEnabled()  # noqa: SLF001
         assert window._batch_view.isEnabled()  # noqa: SLF001  queue stays usable
         window._batch_queue.queueIdle.emit()  # noqa: SLF001
-        assert window._transport.isEnabled()  # noqa: SLF001
+        assert window._transport.isEnabled()  # noqa: SLF001  # re-enabled
         assert window._pickers.isEnabled()  # noqa: SLF001
         assert window._processors.isEnabled()  # noqa: SLF001
 
