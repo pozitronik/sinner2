@@ -131,21 +131,24 @@ class SinnerMainWindow(QMainWindow):
         layout.addWidget(self._pickers)
         self.setCentralWidget(central)
 
-        # "Stay on top" toggle parked in the menu bar's top-right corner, so
-        # it sits next to the OS window buttons — the closest we can get to
-        # "near the window controls" without a custom title bar. It mirrors
-        # the F12 shortcut; both route through _set_stays_on_top so the button
-        # state, the window flag, and the persisted setting never drift.
+        # "Stay on top" toggle in the status bar's far-left corner (window
+        # bottom-left). A flat tool button so it sits flush in the bar. It
+        # mirrors the F12 shortcut; both route through _set_stays_on_top so
+        # the button state, the window flag, and the persisted setting never
+        # drift. addWidget() puts it left of the message area; Qt hides left
+        # status widgets only while a TEMPORARY message is showing, so the
+        # startup "ready" is timed (below) and toggling shows no message.
         self._on_top_button = QToolButton()
         self._on_top_button.setText("📌")
         self._on_top_button.setCheckable(True)
+        self._on_top_button.setAutoRaise(True)
         self._on_top_button.setToolTip("Keep window above other windows (F12)")
         self._on_top_button.toggled.connect(self._set_stays_on_top)
-        menu_bar = self.menuBar()
-        menu_bar.setNativeMenuBar(False)  # keep the corner widget in-window
-        menu_bar.setCornerWidget(self._on_top_button, Qt.Corner.TopRightCorner)
+        self.statusBar().addWidget(self._on_top_button)
 
-        self.statusBar().showMessage("ready")
+        # Timed (not persistent) so it clears and reveals the corner toggle —
+        # a permanent temporary-message would keep the left widget hidden.
+        self.statusBar().showMessage("ready", 5000)
         self._scratch_label = QLabel("cache: —")
         self._scratch_label.setToolTip(
             "Persistent processed-frame cache directory for this session "
@@ -589,12 +592,9 @@ class SinnerMainWindow(QMainWindow):
             self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, on)
             self.show()
         self._update_settings(window_stays_on_top=on)
-        # Tiny visual confirmation — the title bar appearance shift from
-        # setWindowFlag is OS-dependent and easy to miss, so surface it in
-        # the status bar momentarily.
-        self.statusBar().showMessage(
-            "Stays on top: ON" if on else "Stays on top: OFF", 2000
-        )
+        # No status message here: it's a temporary message, which would hide
+        # the left-corner toggle the instant you click it. The button's
+        # checked state (and tooltip) is the indicator.
 
     def _restore_stays_on_top(self) -> None:
         on = bool(self._settings.window_stays_on_top)
@@ -660,14 +660,9 @@ class SinnerMainWindow(QMainWindow):
         # Snapshot visibility of every chrome widget so exit_fullscreen
         # can restore exactly what was showing. Status bar is tracked
         # separately because it's a child of QMainWindow, not in our
-        # central layout. The menu bar (which hosts the stay-on-top toggle)
-        # is a QWidget, so it rides along in the dict.
-        chrome: list[QWidget] = [
-            self._side_panel,
-            self._transport,
-            self._pickers,
-            self.menuBar(),
-        ]
+        # central layout — and it carries the stay-on-top toggle, so hiding
+        # it in fullscreen hides that too.
+        chrome: list[QWidget] = [self._side_panel, self._transport, self._pickers]
         self._pre_fullscreen_visibility = {w: w.isVisible() for w in chrome}
         self._pre_fullscreen_status_visible = self.statusBar().isVisible()
         # Capture maximized state BEFORE showFullScreen() clears it, so exit
