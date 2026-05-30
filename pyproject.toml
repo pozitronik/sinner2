@@ -44,6 +44,20 @@ dev = [
     "mypy",
 ]
 
+[tool.uv]
+# The hardware variants are mutually exclusive — pick exactly one at install
+# time (`uv sync --extra cuda` etc.). Declaring the conflict lets uv produce a
+# single universal lockfile instead of failing on the clashing onnxruntime /
+# onnxruntime-gpu pins.
+conflicts = [
+    [
+        { extra = "cpu" },
+        { extra = "cuda" },
+        { extra = "cuda118" },
+        { extra = "mac-arm" },
+    ],
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

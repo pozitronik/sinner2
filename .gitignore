@@ -16,7 +16,6 @@ venv/
 htmlcov/
 .idea/
 .vscode/
-uv.lock
 models/
 gfpgan/
 settings.json
