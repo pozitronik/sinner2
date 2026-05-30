@@ -1,0 +1,36 @@
+[flake8]
+max-line-length = 120
+
+# Kept consistent with the project's Ruff gate (select = E, F, I, UP, B, SIM;
+# line-length = 120).
+#
+# E203 (whitespace before ':') and W503 (line break before binary operator) are
+# Black/Ruff-incompatible and conventionally disabled; E704 likewise.
+#
+# E301/E303/E305/E306 are pycodestyle blank-line rules that Ruff implements but
+# does NOT enable under its stable "E" selector, so the Ruff gate never flags
+# them. They are formatting-only (never bugs), so they are ignored here to keep
+# the two linters in agreement.
+#
+# F-codes (pyflakes: real bugs such as unused imports) are deliberately NOT
+# ignored.
+extend-ignore =
+    E203,
+    W503,
+    E704,
+    E301,
+    E303,
+    E305,
+    E306
+
+exclude =
+    .git,
+    __pycache__,
+    .venv,
+    venv,
+    build,
+    dist,
+    .pytest_cache,
+    .mypy_cache,
+    .ruff_cache,
+    .idea

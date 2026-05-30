@@ -1,6 +1,5 @@
 import threading
 
-import pytest
 
 from sinner2.gui.bridges.observable_bridge import ObservableValueBridge
 from sinner2.observable import ObservableValue

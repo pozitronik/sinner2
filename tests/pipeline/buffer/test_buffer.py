@@ -2,7 +2,6 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import numpy as np
-import pytest
 
 from sinner2.pipeline.buffer.bounded_write_executor import (
     BoundedWriteExecutor,

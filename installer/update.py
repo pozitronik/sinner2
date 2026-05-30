@@ -1,8 +1,8 @@
 """GitHub-releases update check for the installed checkout.
 
 The version logic (parse / compare / read the local version / turn a release
-into an UpdateInfo) is pure and unit-tested; only the release fetch and the
-`git pull` shell out. stdlib-only (urllib + tomllib), matching the rest of
+into an UpdateInfo) is pure and unit-tested; only the release fetch and the git
+calls shell out. stdlib-only (urllib + subprocess), matching the rest of
 installer/.
 
 The update model is git-based: the installer files live inside a clone of
@@ -15,7 +15,6 @@ from __future__ import annotations
 import json
 import re
 import subprocess
-import tomllib
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -58,14 +57,23 @@ def is_newer(latest: str | None, current: str | None) -> bool:
 
 
 def installed_version(project_dir: Path) -> str | None:
-    """The checked-out [project].version from pyproject.toml (source of truth),
-    or None if it can't be read."""
+    """The nearest git tag for the checkout (e.g. 'v0.2.0') — the source of
+    truth now that pyproject carries no static version (hatch-vcs derives it
+    from tags). None when project_dir is not a git checkout, has no tags yet
+    (before the first release), or git is unavailable. Never raises."""
     try:
-        data = tomllib.loads((project_dir / "pyproject.toml").read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError):
+        proc = subprocess.run(
+            ["git", "-C", str(project_dir), "describe", "--tags", "--abbrev=0"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
         return None
-    version = data.get("project", {}).get("version")
-    return version if isinstance(version, str) else None
+    if proc.returncode != 0:
+        # No tags ("fatal: No names found...") or not a git repo -> exit != 0.
+        return None
+    return proc.stdout.strip() or None
 
 
 def release_to_info(release: dict, current: str) -> UpdateInfo | None:

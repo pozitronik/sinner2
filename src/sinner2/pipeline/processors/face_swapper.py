@@ -2,7 +2,6 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-import cv2
 from pydantic import Field
 
 from sinner2.config.base import SinnerBaseModel

@@ -1,5 +1,4 @@
 from installer import doctor
-from installer.doctor import CheckResult
 
 
 class TestParseProbeOutput:

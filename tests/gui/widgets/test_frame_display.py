@@ -56,9 +56,9 @@ class TestQFrameDisplayWidget:
 
     def test_subsequent_frame_replaces_previous(self, widget, qtbot):
         widget.show_frame(_bgr(h=10, w=10))
-        qtbot.waitUntil(lambda: widget._pixmap is not None and widget._pixmap.width() == 10, timeout=1000)  # noqa: SLF001
+        qtbot.waitUntil(lambda: widget._pixmap is not None and widget._pixmap.width() == 10, timeout=1000)  # noqa: SLF001,E501
         widget.show_frame(_bgr(h=40, w=60))
-        qtbot.waitUntil(lambda: widget._pixmap is not None and widget._pixmap.width() == 60, timeout=1000)  # noqa: SLF001
+        qtbot.waitUntil(lambda: widget._pixmap is not None and widget._pixmap.width() == 60, timeout=1000)  # noqa: SLF001,E501
 
     def test_non_contiguous_input_still_works(self, widget, qtbot):
         base = np.zeros((10, 10, 6), dtype=np.uint8)

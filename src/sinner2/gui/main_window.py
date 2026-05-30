@@ -4,7 +4,6 @@ from PySide6.QtCore import QByteArray, Qt
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
     QFileDialog,
-    QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,

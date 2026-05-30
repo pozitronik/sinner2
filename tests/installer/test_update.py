@@ -40,22 +40,33 @@ class TestIsNewer:
 
 
 class TestInstalledVersion:
-    def test_reads_project_version(self, tmp_path):
-        (tmp_path / "pyproject.toml").write_text(
-            '[project]\nname = "x"\nversion = "1.2.3"\n', encoding="utf-8"
+    def test_returns_nearest_tag(self, monkeypatch):
+        monkeypatch.setattr(subprocess, "run", lambda *_a, **_k: _Proc(0, "v0.2.0\n"))
+        assert update.installed_version(Path(".")) == "v0.2.0"
+
+    def test_no_tags_returns_none(self, monkeypatch):
+        # `git describe` exits non-zero with "No names found" when there are no tags
+        monkeypatch.setattr(
+            subprocess, "run", lambda *_a, **_k: _Proc(128, "", "fatal: No names found")
         )
-        assert update.installed_version(tmp_path) == "1.2.3"
+        assert update.installed_version(Path(".")) is None
 
-    def test_missing_file(self, tmp_path):
-        assert update.installed_version(tmp_path) is None
+    def test_not_a_git_checkout_returns_none(self, monkeypatch):
+        monkeypatch.setattr(
+            subprocess, "run", lambda *_a, **_k: _Proc(128, "", "fatal: not a git repository")
+        )
+        assert update.installed_version(Path(".")) is None
 
-    def test_no_version_key(self, tmp_path):
-        (tmp_path / "pyproject.toml").write_text('[project]\nname = "x"\n', encoding="utf-8")
-        assert update.installed_version(tmp_path) is None
+    def test_git_missing_returns_none(self, monkeypatch):
+        def boom(*_a, **_k):
+            raise FileNotFoundError("git")
 
-    def test_malformed_toml(self, tmp_path):
-        (tmp_path / "pyproject.toml").write_text("not = [valid", encoding="utf-8")
-        assert update.installed_version(tmp_path) is None
+        monkeypatch.setattr(subprocess, "run", boom)
+        assert update.installed_version(Path(".")) is None
+
+    def test_empty_stdout_returns_none(self, monkeypatch):
+        monkeypatch.setattr(subprocess, "run", lambda *_a, **_k: _Proc(0, "   \n"))
+        assert update.installed_version(Path(".")) is None
 
 
 class TestReleaseToInfo:
@@ -76,30 +87,31 @@ class TestReleaseToInfo:
 
 
 class TestCheckForUpdate:
-    def _pyproject(self, tmp_path, version):
-        (tmp_path / "pyproject.toml").write_text(
-            f'[project]\nversion = "{version}"\n', encoding="utf-8"
-        )
+    def _git_tag(self, monkeypatch, tag):
+        # installed_version() shells out to `git describe --tags --abbrev=0`
+        monkeypatch.setattr(subprocess, "run", lambda *_a, **_k: _Proc(0, tag + "\n"))
 
-    def test_newer_release(self, tmp_path):
-        self._pyproject(tmp_path, "0.1.0")
+    def test_newer_release(self, monkeypatch):
+        self._git_tag(monkeypatch, "v0.1.0")
         info = update.check_for_update(
-            tmp_path, fetcher=lambda: {"tag_name": "v0.2.0", "html_url": "u", "body": "n"}
+            Path("."), fetcher=lambda: {"tag_name": "v0.2.0", "html_url": "u", "body": "n"}
         )
         assert info is not None
-        assert (info.current, info.latest) == ("0.1.0", "v0.2.0")
+        # current is now the raw tag (with the leading 'v'); comparison strips it
+        assert (info.current, info.latest) == ("v0.1.0", "v0.2.0")
 
-    def test_up_to_date(self, tmp_path):
-        self._pyproject(tmp_path, "0.2.0")
-        assert update.check_for_update(tmp_path, fetcher=lambda: {"tag_name": "v0.2.0"}) is None
+    def test_up_to_date(self, monkeypatch):
+        self._git_tag(monkeypatch, "v0.2.0")
+        assert update.check_for_update(Path("."), fetcher=lambda: {"tag_name": "v0.2.0"}) is None
 
-    def test_offline(self, tmp_path):
-        self._pyproject(tmp_path, "0.1.0")
-        assert update.check_for_update(tmp_path, fetcher=lambda: None) is None
+    def test_offline(self, monkeypatch):
+        self._git_tag(monkeypatch, "v0.1.0")
+        assert update.check_for_update(Path("."), fetcher=lambda: None) is None
 
-    def test_unknown_local_version(self, tmp_path):
-        # no pyproject -> can't compare -> never prompts
-        assert update.check_for_update(tmp_path, fetcher=lambda: {"tag_name": "v9"}) is None
+    def test_unknown_local_version(self, monkeypatch):
+        # no tags yet -> installed_version() is None -> never prompts
+        monkeypatch.setattr(subprocess, "run", lambda *_a, **_k: _Proc(128, "", "No names found"))
+        assert update.check_for_update(Path("."), fetcher=lambda: {"tag_name": "v9"}) is None
 
 
 class _Resp:

@@ -7,7 +7,6 @@ import pytest
 
 from sinner2.batch.queue import BatchQueue
 from sinner2.batch.task import (
-    BatchOutputFormat,
     BatchTask,
     BatchTaskStatus,
 )

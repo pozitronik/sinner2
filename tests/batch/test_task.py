@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 
 from sinner2.batch.task import (
     DEFAULT_ENHANCER_WORKERS,

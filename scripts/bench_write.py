@@ -210,7 +210,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"OUT:    {out_root}")
     print(f"COUNT:  {args.count} frames per scenario")
-    print(f"FMT:    fps | MB/s | encoded-size | encode p50/p95 ms | write p50/p95 ms")
+    print("FMT:    fps | MB/s | encoded-size | encode p50/p95 ms | write p50/p95 ms")
     print()
 
     sizes = [

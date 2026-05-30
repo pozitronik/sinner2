@@ -27,7 +27,6 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QSize, QSortFilterProxyModel, Qt, Signal
 from PySide6.QtGui import QPixmap, QStandardItem, QStandardItemModel
 
-from sinner2.library.thumbnail_cache import ThumbnailMeta
 from sinner2.library.thumbnail_generator import (
     ThumbnailError,
     ThumbnailGenerator,

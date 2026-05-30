@@ -1,6 +1,5 @@
 import threading
 
-import pytest
 
 from sinner2.observable import ObservableValue
 
@@ -77,8 +76,10 @@ class TestObservableValue:
 
         t1 = threading.Thread(target=writer, args=([1, 2, 3, 4, 5],))
         t2 = threading.Thread(target=writer, args=([6, 7, 8, 9, 10],))
-        t1.start(); t2.start()
-        t1.join(); t2.join()
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
         # We don't assert order (interleaved) — just that no notifications were lost
         # to crashes and the final value is one of the writes.
         assert v.get() in {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}

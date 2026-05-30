@@ -19,7 +19,6 @@ from sinner2.pipeline.buffer.store import DiskFrameStore
 from sinner2.pipeline.buffer.timeline import Timeline
 from sinner2.pipeline.realtime.executor import RealtimeExecutor
 from sinner2.pipeline.skip_strategy import BestEffortStrategy, SyncedStrategy
-from sinner2.types import Frame
 
 
 class _StaticReader:

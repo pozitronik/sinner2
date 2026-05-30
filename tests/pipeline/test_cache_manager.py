@@ -2,7 +2,6 @@ import json
 import time
 from pathlib import Path
 
-import pytest
 
 from sinner2.pipeline.cache_manager import (
     CacheManager,

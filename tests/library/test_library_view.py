@@ -15,7 +15,7 @@ from PySide6.QtCore import QMimeData, QPointF, Qt, QUrl
 from PySide6.QtGui import QDropEvent
 
 from sinner2.gui.widgets.library_view import QLibraryView
-from sinner2.library.media_kind import is_image, is_media
+from sinner2.library.media_kind import is_image
 from sinner2.library.thumbnail_cache import ThumbnailCache
 from sinner2.library.thumbnail_generator import ThumbnailGenerator
 
@@ -258,7 +258,7 @@ class TestDisplayDim:
         # Send a Wheel event with the Ctrl modifier directly to the
         # event filter. Cheaper than driving the actual input system,
         # and verifies the wiring we care about.
-        from PySide6.QtCore import QPoint, QPointF, QEvent
+        from PySide6.QtCore import QPoint, QPointF
         from PySide6.QtGui import QWheelEvent
 
         starting = view.display_dim()

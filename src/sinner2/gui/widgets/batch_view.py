@@ -14,7 +14,6 @@ the underlying BatchTask from any row.
 """
 from __future__ import annotations
 
-import os
 import time
 from collections import deque
 from collections.abc import Callable

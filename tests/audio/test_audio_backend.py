@@ -11,7 +11,6 @@ import pytest
 
 from sinner2.audio.audio_backend import (
     AudioBackend,
-    AudioBackendName,
     build_audio_backend,
 )
 

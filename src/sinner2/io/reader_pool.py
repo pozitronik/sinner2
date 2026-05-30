@@ -47,7 +47,7 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable
-from concurrent.futures import CancelledError, Future
+from concurrent.futures import Future
 from queue import Empty, Queue
 
 from sinner2.io.target_reader import TargetReader
