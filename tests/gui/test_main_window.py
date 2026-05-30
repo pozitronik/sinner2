@@ -43,7 +43,7 @@ class TestSinnerMainWindow:
         assert window.centralWidget() is not None
 
     def test_status_bar_has_ready_message(self, window):
-        assert "ready" in window.statusBar().currentMessage()
+        assert "ready" in window._status_bar.current_message()  # noqa: SLF001
 
     def test_no_executor_until_source_and_target_set(self, window):
         assert window._controller.executor() is None  # noqa: SLF001
@@ -75,23 +75,23 @@ class TestStaysOnTop:
     def test_corner_button_sets_flag(self, window):
         from PySide6.QtCore import Qt
 
-        window._on_top_button.setChecked(True)  # noqa: SLF001
+        window._status_bar.on_top_button.setChecked(True)  # noqa: SLF001
         assert window.windowFlags() & Qt.WindowType.WindowStaysOnTopHint
-        window._on_top_button.setChecked(False)  # noqa: SLF001
+        window._status_bar.on_top_button.setChecked(False)  # noqa: SLF001
         assert not (window.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
 
     def test_f12_keeps_corner_button_in_sync(self, window):
         from PySide6.QtCore import QEvent, Qt
         from PySide6.QtGui import QKeyEvent
 
-        assert window._on_top_button.isChecked() is False  # noqa: SLF001
+        assert window._status_bar.on_top_button.isChecked() is False  # noqa: SLF001
         evt = QKeyEvent(
             QEvent.Type.KeyPress, Qt.Key.Key_F12, Qt.KeyboardModifier.NoModifier
         )
         window.keyPressEvent(evt)
-        assert window._on_top_button.isChecked() is True  # noqa: SLF001
+        assert window._status_bar.on_top_button.isChecked() is True  # noqa: SLF001
         window.keyPressEvent(evt)
-        assert window._on_top_button.isChecked() is False  # noqa: SLF001
+        assert window._status_bar.on_top_button.isChecked() is False  # noqa: SLF001
 
 
 class TestFullscreenRestore:
@@ -110,8 +110,8 @@ class TestFullscreenRestore:
         self, window, monkeypatch
     ):
         calls = self._spy_show_methods(window, monkeypatch, maximized=True)
-        window._toggle_fullscreen()  # noqa: SLF001  # enter
-        window._toggle_fullscreen()  # noqa: SLF001  # exit
+        window._status_bar.fullscreen_button.toggle()  # noqa: SLF001  # enter
+        window._status_bar.fullscreen_button.toggle()  # noqa: SLF001  # exit
         assert "max" in calls
         assert "normal" not in calls
 
@@ -119,10 +119,40 @@ class TestFullscreenRestore:
         self, window, monkeypatch
     ):
         calls = self._spy_show_methods(window, monkeypatch, maximized=False)
-        window._toggle_fullscreen()  # noqa: SLF001  # enter
-        window._toggle_fullscreen()  # noqa: SLF001  # exit
+        window._status_bar.fullscreen_button.toggle()  # noqa: SLF001  # enter
+        window._status_bar.fullscreen_button.toggle()  # noqa: SLF001  # exit
         assert "normal" in calls
         assert "max" not in calls
+
+
+class TestStatusActionButtons:
+    """The bottom-bar buttons drive the same actions as the shortcuts and stay
+    in sync with them."""
+
+    def test_stats_button_toggles_overlay(self, window):
+        initial = window._metrics_overlay.isHidden()  # noqa: SLF001
+        window._status_bar.stats_button.toggle()  # noqa: SLF001
+        assert window._metrics_overlay.isHidden() is not initial  # noqa: SLF001
+
+    def test_f4_keeps_stats_button_in_sync(self, window):
+        from PySide6.QtCore import QEvent, Qt
+        from PySide6.QtGui import QKeyEvent
+
+        evt = QKeyEvent(
+            QEvent.Type.KeyPress, Qt.Key.Key_F4, Qt.KeyboardModifier.NoModifier
+        )
+        window.keyPressEvent(evt)
+        assert window._status_bar.stats_button.isChecked() is True  # noqa: SLF001
+
+    def test_side_panel_button_hides_panel(self, window):
+        assert window._side_panel.isHidden() is False  # noqa: SLF001  # default shown
+        window._status_bar.side_panel_button.toggle()  # noqa: SLF001
+        assert window._side_panel.isHidden() is True  # noqa: SLF001
+
+    def test_rotate_button_cycles_rotation(self, window):
+        assert window._display.rotation() == 0  # noqa: SLF001
+        window._status_bar.rotate_button.click()  # noqa: SLF001
+        assert window._display.rotation() == 90  # noqa: SLF001
 
 
 class TestRotationShortcut:
@@ -231,7 +261,7 @@ class TestSaveCurrentFrame:
         )
         window._save_current_frame()  # noqa: SLF001
         assert prompted == []
-        assert "No frame" in window.statusBar().currentMessage()
+        assert "No frame" in window._status_bar.current_message()  # noqa: SLF001
 
     def test_save_writes_pixmap_to_disk(
         self, window, qtbot, tmp_path, monkeypatch
@@ -255,4 +285,4 @@ class TestSaveCurrentFrame:
         window._save_current_frame()  # noqa: SLF001
         assert out.is_file()
         assert out.stat().st_size > 0
-        assert "Saved" in window.statusBar().currentMessage()
+        assert "Saved" in window._status_bar.current_message()  # noqa: SLF001

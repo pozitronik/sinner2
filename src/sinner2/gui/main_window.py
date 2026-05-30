@@ -9,7 +9,6 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QSplitter,
-    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -37,6 +36,7 @@ from sinner2.gui.widgets.metrics_overlay import (
 from sinner2.gui.widgets.processor_controls import QProcessorControls
 from sinner2.gui.widgets.side_panel import QSidePanel
 from sinner2.gui.widgets.source_target_panel import QSourceTargetPanel
+from sinner2.gui.widgets.status_action_bar import QStatusActionBar
 from sinner2.gui.widgets.transport_controls import QTransportControls
 
 
@@ -126,47 +126,50 @@ class SinnerMainWindow(QMainWindow):
         self._top_splitter.setChildrenCollapsible(False)
         self._side_panel.setMinimumWidth(280)
         layout = QVBoxLayout(central)
+        # Tight gaps between display / transport / pickers / status bar.
+        layout.setSpacing(2)
         layout.addWidget(self._top_splitter, stretch=1)
         layout.addWidget(self._transport)
         layout.addWidget(self._pickers)
+
+        # Custom bottom status bar: view/window action buttons (left), status
+        # message (middle), persistent indicators (right). Replaces
+        # QMainWindow's QStatusBar, which hides left widgets behind temporary
+        # messages. Each button mirrors a keyboard shortcut and routes through
+        # the matching handler, so button state / action / persisted setting
+        # never drift.
+        self._status_bar = QStatusActionBar()
+        layout.addWidget(self._status_bar)
         self.setCentralWidget(central)
 
-        # "Stay on top" toggle in the status bar's far-left corner (window
-        # bottom-left). A flat tool button so it sits flush in the bar. It
-        # mirrors the F12 shortcut; both route through _set_stays_on_top so
-        # the button state, the window flag, and the persisted setting never
-        # drift. addWidget() puts it left of the message area; Qt hides left
-        # status widgets only while a TEMPORARY message is showing, so the
-        # startup "ready" is timed (below) and toggling shows no message.
-        self._on_top_button = QToolButton()
-        self._on_top_button.setText("📌")
-        self._on_top_button.setCheckable(True)
-        self._on_top_button.setAutoRaise(True)
-        self._on_top_button.setToolTip("Keep window above other windows (F12)")
-        self._on_top_button.toggled.connect(self._set_stays_on_top)
-        self.statusBar().addWidget(self._on_top_button)
+        self._status_bar.on_top_button.toggled.connect(self._set_stays_on_top)
+        self._status_bar.stats_button.toggled.connect(self._set_stats_visible)
+        self._status_bar.rotate_button.clicked.connect(self._cycle_rotation)
+        self._status_bar.fullscreen_button.toggled.connect(self._set_fullscreen)
+        self._status_bar.side_panel_button.toggled.connect(
+            self._set_side_panel_visible
+        )
+        self._status_bar.save_button.clicked.connect(self._save_current_frame)
 
-        # Timed (not persistent) so it clears and reveals the corner toggle —
-        # a permanent temporary-message would keep the left widget hidden.
-        self.statusBar().showMessage("ready", 5000)
+        self._status_bar.show_message("ready")
         self._scratch_label = QLabel("cache: —")
         self._scratch_label.setToolTip(
             "Persistent processed-frame cache directory for this session "
             "(survives between runs; keyed by source+target+chain config)"
         )
-        self.statusBar().addPermanentWidget(self._scratch_label)
+        self._status_bar.add_permanent_widget(self._scratch_label)
         self._fps_label = QLabel("--- fps")
         self._fps_label.setToolTip(
             "Real cross-worker throughput — frames completed per wall-clock "
             "second across all workers (3-second rolling window)."
         )
-        self.statusBar().addPermanentWidget(self._fps_label)
+        self._status_bar.add_permanent_widget(self._fps_label)
         self._metrics_label = QLabel("")
         self._metrics_label.setToolTip(
             "cache: hit-ratio / memory used. "
             "writes: outstanding/cap, total dropped (cap-hit skips), p50/p95 ms latency."
         )
-        self.statusBar().addPermanentWidget(self._metrics_label)
+        self._status_bar.add_permanent_widget(self._metrics_label)
         self._strategy_mode_label = QLabel("")
         self._strategy_mode_label.setToolTip(
             "Current frame-skip strategy mode. 'synced (lagging)' means\n"
@@ -174,14 +177,14 @@ class SinnerMainWindow(QMainWindow):
             "because processing can't keep up — display will trail the\n"
             "timeline but throughput stays at the pipeline's max rate."
         )
-        self.statusBar().addPermanentWidget(self._strategy_mode_label)
+        self._status_bar.add_permanent_widget(self._strategy_mode_label)
         self._providers_label = QLabel("")
         self._providers_label.setToolTip(
             "ONNX execution providers currently in use, in ORT's try-order.\n"
             "Differs from the checkbox column when the user has unchecked\n"
             "everything (system falls back to defaults so inference still works)."
         )
-        self.statusBar().addPermanentWidget(self._providers_label)
+        self._status_bar.add_permanent_widget(self._providers_label)
 
         self._controller = PlayerController(self._display, self._transport, parent=self)
         self._controller.errorOccurred.connect(self._show_error)
@@ -272,9 +275,6 @@ class SinnerMainWindow(QMainWindow):
         self._is_fullscreen = False
         # Saved widget visibility for restoration when leaving fullscreen.
         self._pre_fullscreen_visibility: dict[QWidget, bool] = {}
-        # Cached visibility of the status bar (QStatusBar isn't a QWidget
-        # field we can put in the dict cleanly; track separately).
-        self._pre_fullscreen_status_visible = True
         # Whether the window was maximized before going fullscreen, so exit
         # restores THAT rather than dropping to a smaller "normal" geometry.
         self._pre_fullscreen_maximized = False
@@ -456,7 +456,7 @@ class SinnerMainWindow(QMainWindow):
                 p.removesuffix("ExecutionProvider")
                 for p in self._controller.effective_onnx_providers()
             )
-            self.statusBar().showMessage(
+            self._status_bar.show_message(
                 f"ONNX provider(s) failed to load: {short_failed}. "
                 f"ORT is using: {short_actual}",
                 7000,
@@ -517,38 +517,40 @@ class SinnerMainWindow(QMainWindow):
         self._highlight_failed_providers()
 
     def _show_error(self, message: str) -> None:
-        self.statusBar().showMessage(message, 5000)
+        self._status_bar.show_message(message, 5000)
         QMessageBox.critical(self, "sinner2", message)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         key = event.key()
         # View toggles don't need an executor — handle them before the
         # early-return so the user can adjust window state pre-load too.
+        # Each shortcut drives the matching status-bar action button, so the
+        # button's pressed state and the action stay in lock-step.
         if key == Qt.Key.Key_F9:
-            self._toggle_side_panel()
+            self._status_bar.side_panel_button.toggle()
             return
         if key == Qt.Key.Key_F4:
-            self._toggle_metrics_overlay()
+            self._status_bar.stats_button.toggle()
             return
         if key == Qt.Key.Key_F11:
-            self._toggle_fullscreen()
+            self._status_bar.fullscreen_button.toggle()
             return
         if key == Qt.Key.Key_F12:
-            self._toggle_stays_on_top()
+            self._status_bar.on_top_button.toggle()
             return
         if key == Qt.Key.Key_R:
-            self._cycle_rotation()
+            self._status_bar.rotate_button.click()
             return
         if (
             key == Qt.Key.Key_S
             and event.modifiers() & Qt.KeyboardModifier.ControlModifier
         ):
-            self._save_current_frame()
+            self._status_bar.save_button.click()
             return
         if key == Qt.Key.Key_Escape and self._is_fullscreen:
             # Escape only consumed when fullscreen is active so it doesn't
             # eat the dialog-cancel keypress in normal use.
-            self._toggle_fullscreen()
+            self._status_bar.fullscreen_button.toggle()
             return
         executor = self._controller.executor()
         if executor is None:
@@ -568,13 +570,20 @@ class SinnerMainWindow(QMainWindow):
             return
         super().keyPressEvent(event)
 
-    # ---- View toggles ----
+    # ---- View toggles (driven by the status-bar action buttons) ----
 
-    def _toggle_side_panel(self) -> None:
-        visible = self._side_panel.isVisible()
-        self._side_panel.setVisible(not visible)
+    @staticmethod
+    def _set_button_checked(button: object, on: bool) -> None:
+        """Reflect state on a toggle button WITHOUT re-emitting toggled
+        (which would re-run its handler and re-persist)."""
+        button.blockSignals(True)  # type: ignore[attr-defined]
+        button.setChecked(bool(on))  # type: ignore[attr-defined]
+        button.blockSignals(False)  # type: ignore[attr-defined]
+
+    def _set_side_panel_visible(self, on: bool) -> None:
+        self._side_panel.setVisible(on)
         # Persist immediately so the next launch matches the last user choice.
-        self._update_settings(side_panel_visible=not visible)
+        self._update_settings(side_panel_visible=on)
 
     def _restore_side_panel_state(self) -> None:
         # Default True (panel shown) if the setting is missing.
@@ -584,10 +593,7 @@ class SinnerMainWindow(QMainWindow):
             else bool(self._settings.side_panel_visible)
         )
         self._side_panel.setVisible(visible)
-
-    def _toggle_stays_on_top(self) -> None:
-        # F12: flip the corner-widget toggle; its toggled signal applies it.
-        self._on_top_button.toggle()
+        self._set_button_checked(self._status_bar.side_panel_button, visible)
 
     def _set_stays_on_top(self, on: bool) -> None:
         # Flip the WindowStaysOnTopHint and re-show — Qt requires the widget
@@ -600,25 +606,18 @@ class SinnerMainWindow(QMainWindow):
             self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, on)
             self.show()
         self._update_settings(window_stays_on_top=on)
-        # No status message here: it's a temporary message, which would hide
-        # the left-corner toggle the instant you click it. The button's
-        # checked state (and tooltip) is the indicator.
 
     def _restore_stays_on_top(self) -> None:
         on = bool(self._settings.window_stays_on_top)
         if on:
             self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
             # show() called by the caller chain; no need here.
-        # Reflect the restored state in the corner toggle WITHOUT re-emitting
-        # toggled (which would re-apply the flag and re-persist redundantly).
-        self._on_top_button.blockSignals(True)
-        self._on_top_button.setChecked(on)
-        self._on_top_button.blockSignals(False)
+        self._set_button_checked(self._status_bar.on_top_button, on)
 
     def _cycle_rotation(self) -> None:
         new_rot = self._display.cycle_rotation()
         self._update_settings(display_rotation=new_rot)
-        self.statusBar().showMessage(f"Rotation: {new_rot}°", 2000)
+        self._status_bar.show_message(f"Rotation: {new_rot}°", 2000)
 
     def _restore_rotation(self) -> None:
         if self._settings.display_rotation:
@@ -630,7 +629,7 @@ class SinnerMainWindow(QMainWindow):
         the file extension. No-op when nothing's on screen."""
         pix = self._display.current_pixmap()
         if pix is None:
-            self.statusBar().showMessage("No frame to save", 2000)
+            self._status_bar.show_message("No frame to save", 2000)
             return
         # Default filename embeds the timeline frame index so the user
         # can save many frames in succession without overwriting.
@@ -652,40 +651,45 @@ class SinnerMainWindow(QMainWindow):
         # cv2_unicode wrapper here).
         ok = pix.save(path_str)
         if ok:
-            self.statusBar().showMessage(f"Saved {path_str}", 3000)
+            self._status_bar.show_message(f"Saved {path_str}", 3000)
         else:
             QMessageBox.warning(
                 self, "Save failed", f"Could not write image to:\n{path_str}"
             )
 
-    def _toggle_fullscreen(self) -> None:
-        if self._is_fullscreen:
-            self._exit_fullscreen()
-        else:
+    def _set_fullscreen(self, on: bool) -> None:
+        # Driven by the fullscreen action button (and F11 / Esc, which toggle
+        # it). Guard against redundant calls so the button-toggled signal
+        # can't double-enter/exit.
+        if on == self._is_fullscreen:
+            return
+        if on:
             self._enter_fullscreen()
+        else:
+            self._exit_fullscreen()
 
     def _enter_fullscreen(self) -> None:
-        # Snapshot visibility of every chrome widget so exit_fullscreen
-        # can restore exactly what was showing. Status bar is tracked
-        # separately because it's a child of QMainWindow, not in our
-        # central layout — and it carries the stay-on-top toggle, so hiding
-        # it in fullscreen hides that too.
-        chrome: list[QWidget] = [self._side_panel, self._transport, self._pickers]
+        # Snapshot visibility of every chrome widget — the custom status bar
+        # included (it's a normal widget in the central layout now) — so
+        # exit_fullscreen can restore exactly what was showing.
+        chrome: list[QWidget] = [
+            self._side_panel,
+            self._transport,
+            self._pickers,
+            self._status_bar,
+        ]
         self._pre_fullscreen_visibility = {w: w.isVisible() for w in chrome}
-        self._pre_fullscreen_status_visible = self.statusBar().isVisible()
         # Capture maximized state BEFORE showFullScreen() clears it, so exit
         # can return to maximized rather than a smaller restored geometry.
         self._pre_fullscreen_maximized = self.isMaximized()
         for w in chrome:
             w.setVisible(False)
-        self.statusBar().setVisible(False)
         self._is_fullscreen = True
         self.showFullScreen()
 
     def _exit_fullscreen(self) -> None:
         for w, was_visible in self._pre_fullscreen_visibility.items():
             w.setVisible(was_visible)
-        self.statusBar().setVisible(self._pre_fullscreen_status_visible)
         self._pre_fullscreen_visibility = {}
         self._is_fullscreen = False
         # Restore the pre-fullscreen window state. showNormal() alone would
@@ -697,18 +701,18 @@ class SinnerMainWindow(QMainWindow):
 
     # ---- Metrics overlay ----
 
-    def _toggle_metrics_overlay(self) -> None:
-        visible = self._metrics_overlay.isVisible()
-        self._metrics_overlay.setVisible(not visible)
-        if not visible:
+    def _set_stats_visible(self, on: bool) -> None:
+        self._metrics_overlay.setVisible(on)
+        if on:
             self._reposition_metrics_overlay()
-        self._update_settings(metrics_overlay_visible=not visible)
+        self._update_settings(metrics_overlay_visible=on)
 
     def _restore_metrics_overlay_state(self) -> None:
         visible = bool(self._settings.metrics_overlay_visible)
         if visible:
             self._reposition_metrics_overlay()
         self._metrics_overlay.setVisible(visible)
+        self._set_button_checked(self._status_bar.stats_button, visible)
 
     def _reposition_metrics_overlay(self) -> None:
         # Anchor top-left of the frame display with an 8 px margin.
@@ -960,7 +964,7 @@ class SinnerMainWindow(QMainWindow):
         )
         self._batch_store.save(task)
         self._batch_view.append_task(task)
-        self.statusBar().showMessage(
+        self._status_bar.show_message(
             f"Added to batch: {source.name} → {target.name}", 3000
         )
 
@@ -981,19 +985,19 @@ class SinnerMainWindow(QMainWindow):
         if self._controller.executor() is not None:
             self._controller.executor().pause()
         self._set_editing_locked(True)
-        self.statusBar().showMessage("Batch running — editing locked", 5000)
+        self._status_bar.show_message("Batch running — editing locked", 5000)
 
     def _on_batch_queue_idle(self) -> None:
         self._batch_active = False
         self._set_editing_locked(False)
-        self.statusBar().showMessage(
+        self._status_bar.show_message(
             "Batch queue idle — editing unlocked", 3000
         )
 
     def _on_batch_task_failed(self, _task_id: str, message: str) -> None:
         # Failures are otherwise quiet (Status cell + its hover tooltip); a
         # status-bar notice makes sure the user notices something stopped.
-        self.statusBar().showMessage(f"Batch task failed: {message}", 12000)
+        self._status_bar.show_message(f"Batch task failed: {message}", 12000)
 
     def _on_batch_preview(self, _task_id: str, frame: object) -> None:
         # Show what the batch is producing on the (idle) preview surface.
