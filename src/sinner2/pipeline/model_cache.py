@@ -205,7 +205,9 @@ def download_model(
 
     request = urllib.request.Request(url, headers={"User-Agent": "sinner2"})
     try:
-        with urllib.request.urlopen(request) as response:  # noqa: S310
+        # timeout bounds a stalled connection so read() can't block forever —
+        # lets a cancel (checked between chunks) take effect within ~timeout.
+        with urllib.request.urlopen(request, timeout=30) as response:  # noqa: S310
             total = int(response.headers.get("Content-Length", 0))
             done = 0
             if on_progress is not None:

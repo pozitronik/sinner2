@@ -6,8 +6,14 @@ from pathlib import Path
 import pytest
 from PySide6.QtWidgets import QMessageBox, QWidget
 
+from PySide6.QtWidgets import QProgressDialog
+
 from sinner2.gui import model_download
-from sinner2.gui.model_download import _DownloadWorker, ensure_models_present
+from sinner2.gui.model_download import (
+    _DownloadController,
+    _DownloadWorker,
+    ensure_models_present,
+)
 
 
 @pytest.fixture
@@ -88,3 +94,27 @@ class TestDownloadWorker:
         with qtbot.waitSignal(worker.finished, timeout=1000) as blocker:
             worker.run()
         assert blocker.args == [False, "cancelled"]
+
+
+class TestDownloadController:
+    """The controller lives on the GUI thread and is the only thing that
+    touches the dialog (worker signals are delivered here, not to closures
+    running on the worker thread)."""
+
+    def test_on_progress_updates_dialog(self, qtbot):
+        dialog = QProgressDialog("", "Cancel", 0, 100)
+        qtbot.addWidget(dialog)
+        ctrl = _DownloadController(dialog)
+        mb = 1024 * 1024
+        ctrl.on_progress("model.bin", 50 * mb, 100 * mb)
+        assert dialog.value() == 50
+        assert "model.bin" in dialog.labelText()
+        assert "50 / 100 MB" in dialog.labelText()
+
+    def test_on_finished_records_result(self, qtbot):
+        dialog = QProgressDialog("", "Cancel", 0, 100)
+        qtbot.addWidget(dialog)
+        ctrl = _DownloadController(dialog)
+        ctrl.on_finished(False, "boom")
+        assert ctrl.ok is False
+        assert ctrl.error == "boom"

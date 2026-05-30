@@ -62,7 +62,7 @@ class TestDownloadModel:
     def test_writes_file_and_reports_progress(self, models_dir, monkeypatch):
         data = b"x" * 1000
         monkeypatch.setattr(
-            "urllib.request.urlopen", lambda _req: _FakeResponse(data, len(data))
+            "urllib.request.urlopen", lambda *_a, **_k: _FakeResponse(data, len(data))
         )
         seen: list[tuple[int, int]] = []
         model_cache.download_model(
@@ -81,7 +81,7 @@ class TestDownloadModel:
 
     def test_cancel_midstream_leaves_no_files(self, models_dir, monkeypatch):
         monkeypatch.setattr(
-            "urllib.request.urlopen", lambda _req: _FakeResponse(b"x" * 9999, 9999)
+            "urllib.request.urlopen", lambda *_a, **_k: _FakeResponse(b"x" * 9999, 9999)
         )
         model_cache.download_model("inswapper_128.onnx", should_cancel=lambda: True)
         assert not (models_dir / "inswapper_128.onnx").exists()
@@ -102,7 +102,7 @@ class TestDownloadModel:
                 return b"x" * 1000
 
         monkeypatch.setattr(
-            "urllib.request.urlopen", lambda _req: _FailingResponse()
+            "urllib.request.urlopen", lambda *_a, **_k: _FailingResponse()
         )
         with pytest.raises(OSError, match="connection reset"):
             model_cache.download_model("inswapper_128.onnx")
@@ -112,7 +112,7 @@ class TestDownloadModel:
     def test_no_content_length_still_downloads(self, models_dir, monkeypatch):
         data = b"y" * 500
         monkeypatch.setattr(
-            "urllib.request.urlopen", lambda _req: _FakeResponse(data, total=None)
+            "urllib.request.urlopen", lambda *_a, **_k: _FakeResponse(data, total=None)
         )
         model_cache.download_model("GFPGANv1.4.pth")
         assert (models_dir / "GFPGANv1.4.pth").read_bytes() == data
