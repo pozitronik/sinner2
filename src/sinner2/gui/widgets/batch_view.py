@@ -15,6 +15,8 @@ the underlying BatchTask from any row.
 from __future__ import annotations
 
 import os
+import time
+from collections import deque
 from collections.abc import Callable
 from pathlib import Path
 
@@ -38,6 +40,46 @@ from sinner2.batch.task_store import BatchTaskStore
 
 
 _ROLE_TASK_ID = Qt.ItemDataRole.UserRole + 1
+
+
+def _fmt_eta(seconds: float) -> str:
+    total = int(seconds)
+    hours, rem = divmod(total, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
+
+class _ThroughputTracker:
+    """Per-task frames/sec over a short wall-clock window, plus an ETA.
+
+    A short window (not since-start) so the rate reflects the CURRENT stage —
+    the enhancer stage is slower than the swap stage, and a resume burns
+    through cached frames instantly; both would skew an average-since-start.
+    overall_completed advances monotonically across stage boundaries, so the
+    window rate is continuous and the ETA grows when a slower stage begins.
+    """
+
+    _WINDOW_S = 3.0
+
+    def __init__(self) -> None:
+        self._samples: deque[tuple[float, int]] = deque()
+
+    def update(self, completed: int, total: int) -> tuple[float, float | None]:
+        now = time.monotonic()
+        self._samples.append((now, completed))
+        cutoff = now - self._WINDOW_S
+        while len(self._samples) > 2 and self._samples[0][0] < cutoff:
+            self._samples.popleft()
+        fps = 0.0
+        if len(self._samples) >= 2:
+            t0, c0 = self._samples[0]
+            span = now - t0
+            if span > 0:
+                fps = (completed - c0) / span
+        eta = (total - completed) / fps if fps > 0 and total > completed else None
+        return fps, eta
 
 _COL_SOURCE = 0
 _COL_TARGET = 1
@@ -135,6 +177,9 @@ class QBatchView(QWidget):
         layout.addLayout(toolbar)
         layout.addWidget(self._table, stretch=1)
 
+        # Per-running-task throughput/ETA trackers, keyed by task id.
+        self._throughput: dict[str, _ThroughputTracker] = {}
+
         # Wire queue signals → row updates.
         self._queue.taskStarted.connect(self._on_task_started)
         self._queue.taskProgress.connect(self._on_task_progress)
@@ -230,6 +275,7 @@ class QBatchView(QWidget):
     # ---- Queue signal handlers ----
 
     def _on_task_started(self, task_id: str) -> None:
+        self._throughput[task_id] = _ThroughputTracker()
         self._refresh_row(task_id)
 
     def _on_task_progress(self, task_id: str, progress) -> None:
@@ -237,19 +283,30 @@ class QBatchView(QWidget):
         if row is None:
             return
         # Update the cell directly (cheaper than _refresh_row, which re-loads
-        # the task from disk on every tick). Shows overall % plus which stage
-        # is running and its frame count.
+        # the task from disk on every tick). Shows overall % + which stage is
+        # running + a recent-window throughput and ETA.
         pct = round(progress.overall_fraction * 100)
-        text = (
-            f"{pct}% · {progress.stage_name} "
-            f"{progress.stage_completed}/{progress.stage_total}"
+        tracker = self._throughput.setdefault(task_id, _ThroughputTracker())
+        fps, eta = tracker.update(
+            progress.overall_completed, progress.overall_total
         )
-        self._model.item(row, _COL_PROGRESS).setText(text)
+        parts = [
+            f"{pct}%",
+            f"{progress.stage_name} "
+            f"{progress.stage_completed}/{progress.stage_total}",
+        ]
+        if fps > 0:
+            parts.append(f"{fps:.0f} fps")
+        if eta is not None:
+            parts.append(f"ETA {_fmt_eta(eta)}")
+        self._model.item(row, _COL_PROGRESS).setText(" · ".join(parts))
 
     def _on_task_completed(self, task_id: str) -> None:
+        self._throughput.pop(task_id, None)
         self._refresh_row(task_id)
 
     def _on_task_failed(self, task_id: str, message: str) -> None:
+        self._throughput.pop(task_id, None)
         self._refresh_row(task_id)
         # No modal — failures are common (missing model, codec) and
         # spamming a popup per failure would be annoying. The Status

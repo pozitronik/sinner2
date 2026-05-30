@@ -135,6 +135,38 @@ class TestQueueSignalUpdates:
         assert "faceenhancer" in text
         assert "5/10" in text
 
+    def test_progress_shows_fps_and_eta(
+        self, view, tmp_path, store, queue, monkeypatch
+    ):
+        from sinner2.batch.task import BatchProgress
+        from sinner2.gui.widgets import batch_view
+
+        clock = [0.0]
+        monkeypatch.setattr(batch_view.time, "monotonic", lambda: clock[0])
+        t = _task(tmp_path)
+        store.save(t)
+        view.reload_from_store()
+        queue.taskStarted.emit(t.id)  # resets the throughput tracker
+        progress = dict(
+            stage_index=0,
+            stage_count=2,
+            stage_name="faceswapper",
+            stage_total=10,
+        )
+        clock[0] = 0.0
+        queue.taskProgress.emit(
+            t.id,
+            BatchProgress(stage_completed=0, overall_completed=0, overall_total=20, **progress),
+        )
+        clock[0] = 2.0  # 10 frames in 2s → 5 fps, ETA (20-10)/5 = 2s
+        queue.taskProgress.emit(
+            t.id,
+            BatchProgress(stage_completed=10, overall_completed=10, overall_total=20, **progress),
+        )
+        text = view._model.item(0, _COL_PROGRESS).text()  # noqa: SLF001
+        assert "5 fps" in text
+        assert "ETA 0:02" in text
+
     def test_progress_text_derives_overall_for_reloaded_task(
         self, view, tmp_path, store
     ):
@@ -266,3 +298,37 @@ class TestResumeAction:
         )
         view._resume_task(t.id)  # noqa: SLF001
         assert called == [t.id]
+
+
+class TestThroughputTracker:
+    def test_fmt_eta_formats(self):
+        from sinner2.gui.widgets.batch_view import _fmt_eta
+
+        assert _fmt_eta(30) == "0:30"
+        assert _fmt_eta(65) == "1:05"
+        assert _fmt_eta(3661) == "1:01:01"
+
+    def test_window_fps_and_eta(self, monkeypatch):
+        from sinner2.gui.widgets import batch_view
+
+        clock = [0.0]
+        monkeypatch.setattr(batch_view.time, "monotonic", lambda: clock[0])
+        tracker = batch_view._ThroughputTracker()
+        fps, eta = tracker.update(0, 100)
+        assert fps == 0.0 and eta is None  # one sample → no rate yet
+        clock[0] = 1.0
+        fps, eta = tracker.update(10, 100)
+        assert fps == pytest.approx(10.0)  # 10 frames in 1s
+        assert eta == pytest.approx(9.0)  # (100 - 10) / 10
+
+    def test_no_eta_when_idle(self, monkeypatch):
+        from sinner2.gui.widgets import batch_view
+
+        clock = [0.0]
+        monkeypatch.setattr(batch_view.time, "monotonic", lambda: clock[0])
+        tracker = batch_view._ThroughputTracker()
+        tracker.update(50, 100)
+        clock[0] = 1.0
+        fps, eta = tracker.update(50, 100)  # no progress → fps 0, no ETA
+        assert fps == 0.0
+        assert eta is None
