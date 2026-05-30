@@ -67,7 +67,9 @@ packages = ["src/sinner2"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+# "." so the stdlib-only installer/ package (a standalone tool, not part of the
+# app) is importable by tests.
+pythonpath = ["src", "."]
 # Slow end-to-end tests (real models + real video) are deselected by default;
 # run them explicitly with `pytest -m slow`.
 addopts = "-m 'not slow'"
