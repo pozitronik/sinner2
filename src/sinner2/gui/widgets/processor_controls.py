@@ -33,6 +33,13 @@ from sinner2.pipeline.skip_strategy import (
     SyncedStrategy,
 )
 
+# Responsive settings forms: every caption|control group shares ONE caption-
+# column width. When the panel is narrower than (that shared width + room for a
+# comfortable control + margins), all groups flip to stacking the control UNDER
+# its caption so it gets the full row. _apply_form_density() drives the switch.
+_COMFORTABLE_CONTROL_PX = 160
+_FORM_OVERHEAD_PX = 40
+
 _STRATEGIES: dict[str, type[FrameSkipStrategy]] = {
     "Best effort (process every frame, may lag)": BestEffortStrategy,
     "Synced (skip to match wall-clock)": SyncedStrategy,
@@ -462,7 +469,10 @@ class QProcessorControls(QWidget):
         # Inner container holds every group; the outer layout is just a
         # QScrollArea wrapper so all groups remain reachable on small windows.
         inner = QWidget()
-        inner.setMinimumWidth(320)
+        # Low minimum so the panel can be dragged genuinely narrow; the
+        # responsive form layout (_apply_form_density) keeps controls usable
+        # at small widths by stacking captions above them.
+        inner.setMinimumWidth(240)
         inner_layout = QVBoxLayout(inner)
         inner_layout.setContentsMargins(0, 0, 0, 0)
         inner_layout.addWidget(swapper_box)
@@ -481,6 +491,51 @@ class QProcessorControls(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(scroll)
+
+        # All caption|control groups share one responsive layout: a common
+        # caption-column width, and a single width breakpoint that flips them
+        # ALL between side-by-side and stacked together (no per-row jank).
+        self._forms = [swapper_form, enhancer_form, execution_form, cache_form]
+        self._uniform_label_width = self._compute_uniform_label_width()
+        self._apply_form_density()
+
+    # ---- Responsive form density (consistent + adaptive caption columns) ----
+
+    def _compute_uniform_label_width(self) -> int:
+        """Widest caption across ALL groups, so every group's caption column
+        lines up at the same width in side-by-side mode."""
+        width = 0
+        for form in self._forms:
+            for row in range(form.rowCount()):
+                item = form.itemAt(row, QFormLayout.ItemRole.LabelRole)
+                if item is not None and item.widget() is not None:
+                    width = max(width, item.widget().sizeHint().width())
+        return width
+
+    def _apply_form_density(self) -> None:
+        """Switch ALL groups between side-by-side and stacked at once, by the
+        panel width. Wide: caption | control with the shared caption column.
+        Narrow: caption above control, so the control gets the full row."""
+        breakpoint_px = (
+            self._uniform_label_width + _COMFORTABLE_CONTROL_PX + _FORM_OVERHEAD_PX
+        )
+        stacked = self.width() < breakpoint_px
+        policy = (
+            QFormLayout.RowWrapPolicy.WrapAllRows
+            if stacked
+            else QFormLayout.RowWrapPolicy.DontWrapRows
+        )
+        label_width = 0 if stacked else self._uniform_label_width
+        for form in self._forms:
+            form.setRowWrapPolicy(policy)
+            for row in range(form.rowCount()):
+                item = form.itemAt(row, QFormLayout.ItemRole.LabelRole)
+                if item is not None and item.widget() is not None:
+                    item.widget().setMinimumWidth(label_width)
+
+    def resizeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        super().resizeEvent(event)
+        self._apply_form_density()
 
     def _update_quality_visibility(self) -> None:
         # Quality control is JPEG-only; disable when PNG is selected so

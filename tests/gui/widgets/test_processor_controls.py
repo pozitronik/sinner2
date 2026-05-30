@@ -484,3 +484,45 @@ class TestSettingsEndToEnd:
         assert second.synced_max_lag_frames() == first.synced_max_lag_frames()
         assert second.swapper_providers() == first.swapper_providers()
         assert second.enhancer_device() == first.enhancer_device()
+
+
+class TestResponsiveFormDensity:
+    """The settings groups share ONE caption-column width and flip together
+    between side-by-side (wide) and stacked (narrow)."""
+
+    def _labels(self, widget):
+        from PySide6.QtWidgets import QFormLayout
+
+        out = []
+        for form in widget._forms:  # noqa: SLF001
+            for row in range(form.rowCount()):
+                item = form.itemAt(row, QFormLayout.ItemRole.LabelRole)
+                if item is not None and item.widget() is not None:
+                    out.append(item.widget())
+        return out
+
+    def test_wide_is_side_by_side_with_uniform_caption_column(self, widget):
+        from PySide6.QtWidgets import QFormLayout
+
+        widget.resize(700, 900)
+        widget._apply_form_density()  # noqa: SLF001
+        for form in widget._forms:  # noqa: SLF001
+            assert (
+                form.rowWrapPolicy() == QFormLayout.RowWrapPolicy.DontWrapRows
+            )
+        # Every caption across every group shares one non-zero column width.
+        widths = {lbl.minimumWidth() for lbl in self._labels(widget)}
+        assert len(widths) == 1
+        assert widths.pop() > 0
+
+    def test_narrow_stacks_caption_above_control(self, widget):
+        from PySide6.QtWidgets import QFormLayout
+
+        widget.resize(220, 900)
+        widget._apply_form_density()  # noqa: SLF001
+        for form in widget._forms:  # noqa: SLF001
+            assert (
+                form.rowWrapPolicy() == QFormLayout.RowWrapPolicy.WrapAllRows
+            )
+        # Stacked → no forced caption width (the control gets the full row).
+        assert all(lbl.minimumWidth() == 0 for lbl in self._labels(widget))
