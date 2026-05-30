@@ -37,6 +37,7 @@ from sinner2.gui.widgets.side_panel import QSidePanel
 from sinner2.gui.widgets.source_target_panel import QSourceTargetPanel
 from sinner2.gui.widgets.status_action_bar import QStatusActionBar
 from sinner2.gui.widgets.transport_controls import QTransportControls
+from sinner2.types import Frame
 
 
 def _fmt_size(b: int) -> str:
@@ -1025,7 +1026,7 @@ class SinnerMainWindow(QMainWindow):
         # status-bar notice makes sure the user notices something stopped.
         self._status_bar.show_message(f"Batch task failed: {message}", 12000)
 
-    def _on_batch_preview(self, _task_id: str, frame: object) -> None:
+    def _on_batch_preview(self, _task_id: str, frame: Frame) -> None:
         # Show what the batch is producing on the (idle) preview surface.
         self._display.show_frame(frame)
 
@@ -1073,8 +1074,8 @@ class SinnerMainWindow(QMainWindow):
 
     def _persist_geometry_to_settings(self) -> None:
         try:
-            geom_hex = bytes(self.saveGeometry().toHex()).decode()
-            splitter_hex = bytes(self._top_splitter.saveState().toHex()).decode()
+            geom_hex = self.saveGeometry().toHex().data().decode()
+            splitter_hex = self._top_splitter.saveState().toHex().data().decode()
             self._update_settings(
                 window_geometry_hex=geom_hex,
                 top_splitter_state_hex=splitter_hex,

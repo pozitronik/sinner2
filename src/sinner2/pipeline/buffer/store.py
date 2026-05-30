@@ -21,6 +21,9 @@ class FrameStore(Protocol):
     def read(self, index: FrameIndex) -> Frame | None: ...
     def has(self, index: FrameIndex) -> bool: ...
     def clear_from(self, index: FrameIndex) -> None: ...
+    def close(self) -> None:
+        """Release resources the store owns (temp dirs, handles). Idempotent;
+        a store writing to a caller-owned directory implements it as a no-op."""
 
 
 class DiskFrameStore:
@@ -59,6 +62,12 @@ class DiskFrameStore:
                     f.unlink()
             except (ValueError, OSError):
                 continue
+
+    def close(self) -> None:
+        # Writes to a caller-owned directory — nothing to clean up (like
+        # PersistentFrameStore). Present so DiskFrameStore satisfies the
+        # FrameStore lifecycle contract.
+        pass
 
 
 class PersistentFrameStore:

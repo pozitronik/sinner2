@@ -8,6 +8,7 @@ from pathlib import Path
 from sinner2.config.source import Source
 from sinner2.config.target import Target
 from sinner2.io.cv2_unicode import imwrite_unicode
+from sinner2.io.reader_pool import ReaderPool
 from sinner2.io.target_reader import ImageTargetReader
 from sinner2.pipeline.buffer.bounded_write_executor import BoundedWriteExecutor
 from sinner2.pipeline.buffer.buffer import FrameBuffer
@@ -61,7 +62,7 @@ def main() -> int:
     cache = MemoryFrameCache(max_bytes=128 * 1024 * 1024)
     write_executor = BoundedWriteExecutor(max_workers=2, max_outstanding=8)
     buffer = FrameBuffer(store, cache, timeline, write_executor)
-    reader = ImageTargetReader(target)
+    reader_pool = ReaderPool(lambda: ImageTargetReader(target), args.workers)
 
     output_lock = threading.Lock()
     output_frame: list[Frame | None] = [None]
@@ -73,7 +74,7 @@ def main() -> int:
         delivered.set()
 
     executor = RealtimeExecutor(
-        target_reader=reader,
+        reader_pool=reader_pool,
         buffer=buffer,
         timeline=timeline,
         chain=chain,
