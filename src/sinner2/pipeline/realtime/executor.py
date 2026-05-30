@@ -425,6 +425,10 @@ class RealtimeExecutor:
         direct access to the pool."""
         return self._reader_pool.reads_per_second()
 
+    def frame_count(self) -> int:
+        """Total frames in the target — for jump-to-end seeks etc."""
+        return self._reader_pool.frame_count
+
     def last_completed_frame(self) -> int:
         """Highest frame index a worker has finished. -1 before any
         completion — useful as a 'loading' signal for the metrics

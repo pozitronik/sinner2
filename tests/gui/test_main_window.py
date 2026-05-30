@@ -155,6 +155,63 @@ class TestStatusActionButtons:
         assert window._display.rotation() == 90  # noqa: SLF001
 
 
+class TestSeekAndQueueShortcuts:
+    @staticmethod
+    def _press(window, key, ctrl=False):
+        from PySide6.QtCore import QEvent, Qt
+        from PySide6.QtGui import QKeyEvent
+
+        mod = (
+            Qt.KeyboardModifier.ControlModifier
+            if ctrl
+            else Qt.KeyboardModifier.NoModifier
+        )
+        window.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, key, mod))
+
+    def _stub_executor(self, window, monkeypatch):
+        from unittest.mock import MagicMock
+
+        ex = MagicMock()
+        ex.frame_count.return_value = 100
+        ex.current_frame.get.return_value = 50
+        monkeypatch.setattr(
+            window._controller, "executor", lambda: ex  # noqa: SLF001
+        )
+        return ex
+
+    def test_home_seeks_to_start(self, window, monkeypatch):
+        from PySide6.QtCore import Qt
+
+        ex = self._stub_executor(window, monkeypatch)
+        self._press(window, Qt.Key.Key_Home)
+        ex.seek.assert_called_once_with(0)
+
+    def test_end_seeks_to_last_frame(self, window, monkeypatch):
+        from PySide6.QtCore import Qt
+
+        ex = self._stub_executor(window, monkeypatch)
+        self._press(window, Qt.Key.Key_End)
+        ex.seek.assert_called_once_with(99)
+
+    def test_ctrl_enter_sends_to_batch(self, window, tmp_path, monkeypatch):
+        from PySide6.QtCore import Qt
+
+        monkeypatch.setattr(
+            window._controller,  # noqa: SLF001
+            "set_source_and_target",
+            lambda *a, **k: None,
+        )
+        src = tmp_path / "s.png"
+        src.write_bytes(b"x")
+        tgt = tmp_path / "t.mp4"
+        tgt.write_bytes(b"x")
+        window._pickers.set_source(src)  # noqa: SLF001
+        window._pickers.set_target(tgt)  # noqa: SLF001
+        before = len(window._batch_store.list())  # noqa: SLF001
+        self._press(window, Qt.Key.Key_Return, ctrl=True)
+        assert len(window._batch_store.list()) == before + 1  # noqa: SLF001
+
+
 class TestRotationShortcut:
     def test_r_key_cycles_rotation(self, window):
         from PySide6.QtCore import Qt

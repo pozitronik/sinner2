@@ -551,6 +551,15 @@ class SinnerMainWindow(QMainWindow):
         ):
             self._status_bar.save_button.click()
             return
+        if (
+            key in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+            and event.modifiers() & Qt.KeyboardModifier.ControlModifier
+        ):
+            # Send current source + target + settings to the batch queue
+            # (same as the transport's + button; the handler no-ops if a
+            # source/target isn't loaded).
+            self._on_add_to_batch()
+            return
         if key == Qt.Key.Key_Escape and self._is_fullscreen:
             # Escape only consumed when fullscreen is active so it doesn't
             # eat the dialog-cancel keypress in normal use.
@@ -571,6 +580,12 @@ class SinnerMainWindow(QMainWindow):
             return
         if key == Qt.Key.Key_Right:
             executor.seek(executor.current_frame.get() + 1)
+            return
+        if key == Qt.Key.Key_Home:
+            executor.seek(0)
+            return
+        if key == Qt.Key.Key_End:
+            executor.seek(max(0, executor.frame_count() - 1))
             return
         super().keyPressEvent(event)
 
