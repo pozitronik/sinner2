@@ -12,6 +12,19 @@ if TYPE_CHECKING:
 ProgressCallback = Callable[[int, int], None]
 """bytes_done, bytes_total — invoked during lazy model download."""
 
+# The two model files the app needs, with their download URLs (same sources
+# sinner1 used). Keyed by the exact filename the processors look up.
+MODEL_SOURCES: dict[str, str] = {
+    "inswapper_128.onnx": (
+        "https://github.com/pozitronik/sinner/releases/download/v200823/"
+        "inswapper_128.onnx"
+    ),
+    "GFPGANv1.4.pth": (
+        "https://github.com/TencentARC/GFPGAN/releases/download/v1.3.4/"
+        "GFPGANv1.4.pth"
+    ),
+}
+
 _DEFAULT_PROVIDERS: tuple[str, ...] = ("CUDAExecutionProvider", "CPUExecutionProvider")
 
 _session_cache: dict[Path, "ort.InferenceSession"] = {}
@@ -137,9 +150,10 @@ def get_models_dir() -> Path:
 def get_model_path(name: str, on_progress: ProgressCallback | None = None) -> Path:
     """Return a local path to the named model file.
 
-    Raises FileNotFoundError if the file is not present. on_progress is
-    reserved for lazy-download integration; currently unused — bring your own
-    weights via the models dir.
+    Raises FileNotFoundError if the file is not present. Downloading is handled
+    up front by the GUI (see gui/model_download.py + download_model below), not
+    lazily here, so processing never blocks mid-setup on a multi-hundred-MB
+    fetch.
     """
     path = get_models_dir() / name
     if not path.is_file():
@@ -148,6 +162,71 @@ def get_model_path(name: str, on_progress: ProgressCallback | None = None) -> Pa
             f"hint: set SINNER2_MODELS_DIR or place the file at {get_models_dir()}/{name}"
         )
     return path
+
+
+def _model_present(name: str) -> bool:
+    # Present AND non-empty — a zero-byte leftover (e.g. an aborted manual
+    # copy) shouldn't count as installed.
+    path = get_models_dir() / name
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
+
+
+def missing_models() -> list[str]:
+    """Which of the required model files aren't present in the models dir."""
+    return [name for name in MODEL_SOURCES if not _model_present(name)]
+
+
+def download_model(
+    name: str,
+    on_progress: ProgressCallback | None = None,
+    should_cancel: Callable[[], bool] | None = None,
+) -> None:
+    """Stream the named model from its URL into the models dir.
+
+    Writes to a ``.part`` file and renames on completion, so a partial or
+    cancelled download never leaves a fake-complete model file behind.
+    ``on_progress(bytes_done, bytes_total)`` is called as data arrives
+    (bytes_total is 0 if the server doesn't send Content-Length). Returns
+    early (cleaning up) if ``should_cancel()`` becomes true; raises on any
+    network / filesystem error.
+    """
+    import urllib.request
+
+    url = MODEL_SOURCES.get(name)
+    if url is None:
+        raise ValueError(f"no download URL registered for model {name!r}")
+    models_dir = get_models_dir()
+    models_dir.mkdir(parents=True, exist_ok=True)
+    dest = models_dir / name
+    part = dest.with_name(dest.name + ".part")
+
+    request = urllib.request.Request(url, headers={"User-Agent": "sinner2"})
+    try:
+        with urllib.request.urlopen(request) as response:  # noqa: S310
+            total = int(response.headers.get("Content-Length", 0))
+            done = 0
+            if on_progress is not None:
+                on_progress(0, total)
+            with open(part, "wb") as out:
+                while True:
+                    if should_cancel is not None and should_cancel():
+                        out.close()
+                        part.unlink(missing_ok=True)
+                        return
+                    chunk = response.read(256 * 1024)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+                    done += len(chunk)
+                    if on_progress is not None:
+                        on_progress(done, total)
+        part.replace(dest)  # atomic: final name appears only on full success
+    except BaseException:
+        part.unlink(missing_ok=True)
+        raise
 
 
 def get_onnx_session(

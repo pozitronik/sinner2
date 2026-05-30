@@ -36,6 +36,11 @@ def main() -> int:
     app.setOrganizationName("sinner2")
     window = SinnerMainWindow()
     window.show()
+    # First-run: if the model files are missing, offer to download them before
+    # the user tries to process anything (modal; no-op when they're present).
+    from sinner2.gui.model_download import ensure_models_present
+
+    ensure_models_present(window)
     return app.exec()
 
 
