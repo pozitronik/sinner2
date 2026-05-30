@@ -107,3 +107,80 @@ class TestDriverGate:
         w = Wizard(_ctx(), ask=lambda _p: "c", say=lambda _m: None)
         info = SystemInfo("linux", "x86_64", (), is_wsl=False)  # GPU variant but no GPU
         assert w._driver_gate("cuda", info) == "cpu"
+
+
+class TestUpdateFlow:
+    def test_manage_menu_lists_update_first(self):
+        assert Wizard._MANAGE[0] == ("Check for updates", "update")
+
+    def test_dispatch_routes_update(self, monkeypatch):
+        w = Wizard(_ctx(), ask=lambda _p: "", say=lambda _m: None)
+        monkeypatch.setattr(w, "_guess_variant", lambda: "cpu")
+        called = []
+        w._update = lambda: called.append(True) or 0
+        assert w._dispatch("update") == 0
+        assert called == [True]
+
+    def test_no_update_available(self, monkeypatch):
+        monkeypatch.setattr(wizard.update, "check_for_update", lambda *a, **k: None)
+        out = []
+        w = Wizard(_ctx(), ask=lambda _p: "", say=out.append)
+        assert w._update() == 0
+        assert any("latest" in m for m in out)
+
+    def test_update_non_git_just_points_at_page(self, monkeypatch):
+        info = wizard.update.UpdateInfo("0.1.0", "v0.2.0", "http://x", "stuff")
+        monkeypatch.setattr(wizard.update, "check_for_update", lambda *a, **k: info)
+        monkeypatch.setattr(wizard.update, "is_git_checkout", lambda _p: False)
+        out = []
+        w = Wizard(_ctx(), ask=lambda _p: "y", say=out.append)
+        assert w._update() == 0
+        assert any("git checkout" in m for m in out)
+
+    def test_update_git_confirm_pulls_and_repairs(self, monkeypatch):
+        info = wizard.update.UpdateInfo("0.1.0", "v0.2.0", "http://x", "")
+        monkeypatch.setattr(wizard.update, "check_for_update", lambda *a, **k: info)
+        monkeypatch.setattr(wizard.update, "is_git_checkout", lambda _p: True)
+        monkeypatch.setattr(wizard.update, "git_pull", lambda _p: (True, "Updating files"))
+        w = Wizard(_ctx(), ask=lambda _p: "y", say=lambda _m: None)
+        monkeypatch.setattr(w, "_guess_variant", lambda: "cpu")
+        repaired = []
+        w._install = lambda variant=None: repaired.append(variant) or 0
+        assert w._update() == 0
+        assert repaired == ["cpu"]
+
+    def test_update_git_pull_failure_stops(self, monkeypatch):
+        info = wizard.update.UpdateInfo("0.1.0", "v0.2.0", "http://x", "")
+        monkeypatch.setattr(wizard.update, "check_for_update", lambda *a, **k: info)
+        monkeypatch.setattr(wizard.update, "is_git_checkout", lambda _p: True)
+        monkeypatch.setattr(wizard.update, "git_pull", lambda _p: (False, "merge conflict"))
+        w = Wizard(_ctx(), ask=lambda _p: "y", say=lambda _m: None)
+        installed = []
+        w._install = lambda variant=None: installed.append(variant) or 0
+        assert w._update() == 1
+        assert installed == []  # no repair after a failed pull
+
+    def test_update_decline_skips(self, monkeypatch):
+        info = wizard.update.UpdateInfo("0.1.0", "v0.2.0", "http://x", "")
+        monkeypatch.setattr(wizard.update, "check_for_update", lambda *a, **k: info)
+        monkeypatch.setattr(wizard.update, "is_git_checkout", lambda _p: True)
+        pulled = []
+        monkeypatch.setattr(wizard.update, "git_pull", lambda _p: pulled.append(True) or (True, ""))
+        w = Wizard(_ctx(), ask=lambda _p: "n", say=lambda _m: None)
+        assert w._update() == 0
+        assert pulled == []  # declining means no pull
+
+    def test_announce_update_emits_line(self, monkeypatch):
+        info = wizard.update.UpdateInfo("0.1.0", "v0.2.0", "u", "n")
+        monkeypatch.setattr(wizard.update, "check_for_update", lambda *a, **k: info)
+        out = []
+        w = Wizard(_ctx(), say=out.append)
+        w._maybe_announce_update()
+        assert any("Update available" in m for m in out)
+
+    def test_announce_silent_when_up_to_date(self, monkeypatch):
+        monkeypatch.setattr(wizard.update, "check_for_update", lambda *a, **k: None)
+        out = []
+        w = Wizard(_ctx(), say=out.append)
+        w._maybe_announce_update()
+        assert out == []

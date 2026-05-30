@@ -13,7 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from installer import detect, doctor, plan, steps
+from installer import detect, doctor, plan, steps, update
 
 _VARIANT_LABELS = {
     "cuda": "CUDA 12.8 — NVIDIA GPU, fastest",
@@ -120,7 +120,9 @@ class Wizard:
         self.ask = ask
         self.say = say
 
-    def run(self, doctor_only: bool = False) -> int:
+    def run(self, doctor_only: bool = False, update_only: bool = False) -> int:
+        if update_only:
+            return self._update()
         if self.ctx.uv is None:
             self.say("uv was not found on PATH. Re-run the install launcher.")
             return 1
@@ -222,6 +224,7 @@ class Wizard:
     # -- manage (re-run menu) --
 
     _MANAGE = [
+        ("Check for updates", "update"),
         ("Repair / re-sync", "repair"),
         ("Switch hardware variant", "switch"),
         ("Run doctor", "doctor"),
@@ -231,7 +234,9 @@ class Wizard:
     ]
 
     def _manage(self) -> int:
-        self.say("\nsinner2 is already installed. What would you like to do?")
+        self.say("\nsinner2 is already installed.")
+        self._maybe_announce_update()
+        self.say("What would you like to do?")
         for i, (label, _key) in enumerate(self._MANAGE, 1):
             self.say(f"  {i}) {label}")
         raw = self.ask("Choice: ").strip()
@@ -244,6 +249,8 @@ class Wizard:
         variant = self._guess_variant()
         if action == "quit":
             return 0
+        if action == "update":
+            return self._update()
         if action == "doctor":
             return 0 if self._doctor(variant) else 1
         if action == "repair":
@@ -263,6 +270,57 @@ class Wizard:
         # Best-effort: re-derive the recommendation for the doctor/repair path.
         return plan.recommend(detect.detect()).variant
 
+    # -- updates --
+
+    def _maybe_announce_update(self) -> None:
+        """Best-effort one-liner on the manage screen; silent if offline, up to
+        date, or anything goes wrong — it must never block the menu."""
+        try:
+            info = update.check_for_update(
+                self.ctx.project_dir,
+                fetcher=lambda: update.fetch_latest_release(timeout=4.0),
+            )
+        except Exception:
+            return
+        if info:
+            self.say(
+                f"  ✨ Update available: {info.current} → {info.latest} "
+                "(choose 'Check for updates')"
+            )
+
+    def _update(self) -> int:
+        self.say("\nChecking for updates…")
+        info = update.check_for_update(self.ctx.project_dir)
+        if info is None:
+            self.say("  You're on the latest version (or no release is published yet).")
+            return 0
+        self.say(f"  Update available: {info.current} → {info.latest}")
+        if info.notes:
+            for line in info.notes.splitlines()[:8]:
+                self.say(f"    {line}")
+        self.say(f"  Release notes: {info.url}")
+        if not update.is_git_checkout(self.ctx.project_dir):
+            self.say("  This isn't a git checkout — download the new version from the page above.")
+            return 0
+        if not self._confirm("\n  Update now (git pull + repair)?"):
+            self.say("  Skipped.")
+            return 0
+        ok, output = update.git_pull(self.ctx.project_dir)
+        if output:
+            for line in output.splitlines():
+                self.say(f"  {line}")
+        if not ok:
+            self.say("  Update failed — resolve the git state above, then retry.")
+            return 1
+        if self.ctx.uv is None:
+            self.say("  Code updated. Re-run the installer to re-sync dependencies.")
+            return 0
+        self.say("\nRe-syncing dependencies for the new version:")
+        return self._install(variant=self._guess_variant())
+
+    def _confirm(self, prompt: str) -> bool:
+        return self.ask(f"{prompt} [Y/n] ").strip().lower() in ("", "y", "yes")
+
 
 def _build_context() -> Context:
     project_dir = Path(__file__).resolve().parent.parent
@@ -277,7 +335,10 @@ def _build_context() -> Context:
 
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
-    return Wizard(_build_context()).run(doctor_only="--doctor" in argv)
+    return Wizard(_build_context()).run(
+        doctor_only="--doctor" in argv,
+        update_only="--update" in argv,
+    )
 
 
 if __name__ == "__main__":
