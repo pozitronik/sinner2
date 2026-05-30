@@ -73,6 +73,16 @@ class SetPlaybackModeMsg:
     mode: PlaybackMode
 
 
+@dataclass(frozen=True)
+class RerenderMsg:
+    """Re-render from the current playhead forward: drop cached frames at and
+    after the current frame so they reprocess through the (possibly newly
+    tuned) chain, then resubmit from the playhead. Cached frames BEFORE the
+    playhead are left intact."""
+
+    pass
+
+
 type Message = (
     PlayMsg
     | PauseMsg
@@ -83,4 +93,5 @@ type Message = (
     | SetSkipStrategyMsg
     | SetWorkerCountMsg
     | SetPlaybackModeMsg
+    | RerenderMsg
 )

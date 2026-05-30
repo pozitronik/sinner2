@@ -121,6 +121,7 @@ class QProcessorControls(QWidget):
     browseRootRequested = Signal()
     resetRootRequested = Signal()
     invalidateRequested = Signal()
+    rerenderRequested = Signal()
     clearAllRequested = Signal()
     sizeCapChanged = Signal(object)  # int bytes (object to avoid C int overflow at 2 GB+); 0 = uncapped
     rootChanged = Signal(object)  # Path | None
@@ -457,6 +458,15 @@ class QProcessorControls(QWidget):
         self._invalidate_btn.setEnabled(False)
         self._invalidate_btn.clicked.connect(self.invalidateRequested)
         button_row.addWidget(self._invalidate_btn)
+        self._rerender_btn = QPushButton("Re-render from here")
+        self._rerender_btn.setToolTip(
+            "Reprocess from the current frame forward through the chain, so a\n"
+            "parameter change you just made applies to frames you've already\n"
+            "passed. Frames before the playhead keep their cached pixels."
+        )
+        self._rerender_btn.setEnabled(False)
+        self._rerender_btn.clicked.connect(self.rerenderRequested)
+        button_row.addWidget(self._rerender_btn)
         self._clear_all_btn = QPushButton("Clear all caches")
         self._clear_all_btn.setToolTip(
             "Delete every cache entry under the cache root, sparing the\n"
@@ -584,7 +594,9 @@ class QProcessorControls(QWidget):
         self._cache_stats_label.setText(text)
 
     def set_invalidate_enabled(self, enabled: bool) -> None:
+        # Both session-scoped actions share the "a session is active" gate.
         self._invalidate_btn.setEnabled(enabled)
+        self._rerender_btn.setEnabled(enabled)
 
     def cache_size_cap_bytes(self) -> int:
         if not self._size_cap_enabled.isChecked():

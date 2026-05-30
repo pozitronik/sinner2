@@ -526,3 +526,18 @@ class TestResponsiveFormDensity:
             )
         # Stacked → no forced caption width (the control gets the full row).
         assert all(lbl.minimumWidth() == 0 for lbl in self._labels(widget))
+
+
+class TestRerenderButton:
+    def test_disabled_until_session_active(self, widget):
+        assert widget._rerender_btn.isEnabled() is False  # noqa: SLF001
+        widget.set_invalidate_enabled(True)
+        assert widget._rerender_btn.isEnabled() is True  # noqa: SLF001
+        assert widget._invalidate_btn.isEnabled() is True  # noqa: SLF001
+        widget.set_invalidate_enabled(False)
+        assert widget._rerender_btn.isEnabled() is False  # noqa: SLF001
+
+    def test_click_emits_signal(self, widget, qtbot):
+        widget.set_invalidate_enabled(True)
+        with qtbot.waitSignal(widget.rerenderRequested, timeout=1000):
+            widget._rerender_btn.click()  # noqa: SLF001

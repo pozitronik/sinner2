@@ -155,6 +155,18 @@ class TestStatusActionButtons:
         assert window._display.rotation() == 90  # noqa: SLF001
 
 
+class TestRerenderFromCurrent:
+    def test_request_delegates_to_controller(self, window, monkeypatch):
+        called: list = []
+        monkeypatch.setattr(
+            window._controller,  # noqa: SLF001
+            "rerender_from_current",
+            lambda: called.append(1),
+        )
+        window._processors.rerenderRequested.emit()  # noqa: SLF001
+        assert called == [1]
+
+
 class TestSeekAndQueueShortcuts:
     @staticmethod
     def _press(window, key, ctrl=False):

@@ -220,6 +220,7 @@ class SinnerMainWindow(QMainWindow):
         self._processors.browseRootRequested.connect(self._on_browse_cache_root)
         self._processors.resetRootRequested.connect(self._on_reset_cache_root)
         self._processors.invalidateRequested.connect(self._on_invalidate_session)
+        self._processors.rerenderRequested.connect(self._on_rerender_from_current)
         self._processors.clearAllRequested.connect(self._on_clear_all_caches)
         self._processors.sizeCapChanged.connect(self._on_size_cap_changed)
         # Audio: transport emits, main_window persists. The controller's
@@ -368,6 +369,11 @@ class SinnerMainWindow(QMainWindow):
         if confirmed != QMessageBox.StandardButton.Yes:
             return
         self._controller.invalidate_current_session()
+
+    def _on_rerender_from_current(self) -> None:
+        # No confirmation: it only reprocesses from the playhead forward and is
+        # the natural "apply my param change retroactively" gesture.
+        self._controller.rerender_from_current()
 
     def _on_clear_all_caches(self) -> None:
         manager = self._controller.cache_manager()

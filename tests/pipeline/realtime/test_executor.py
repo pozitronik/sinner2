@@ -1240,3 +1240,42 @@ class TestRealtimeExecutorReaderPool:
         ex.stop()
         assert reader.release_calls == 1
 
+
+
+class TestRerenderFromCurrent:
+    def test_command_posts_message(self):
+        from queue import Queue
+
+        from sinner2.pipeline.messages import RerenderMsg
+
+        ex = object.__new__(RealtimeExecutor)
+        ex._command_queue = Queue()  # noqa: SLF001
+        ex.rerender_from_current()
+        assert isinstance(ex._command_queue.get_nowait(), RerenderMsg)  # noqa: SLF001
+
+    def test_handle_rerender_invalidates_forward_and_resubmits(self):
+        from queue import Queue
+        from unittest.mock import MagicMock
+
+        ex = object.__new__(RealtimeExecutor)
+        ex._state_lock = threading.RLock()  # noqa: SLF001
+        ex._work_queue = Queue()  # noqa: SLF001
+        ex._playback_wake = threading.Event()  # noqa: SLF001
+        ex._last_submitted = 80  # noqa: SLF001
+        ex._last_completed = 75  # noqa: SLF001
+        ex._last_shown_frame_index = 50  # noqa: SLF001
+        ex._timeline = MagicMock()  # noqa: SLF001
+        ex._timeline.current_frame.return_value = 50  # noqa: SLF001
+        ex._buffer = MagicMock()  # noqa: SLF001
+        ex._reader_pool = MagicMock()  # noqa: SLF001
+        ex._reader_pool.frame_count = 100  # noqa: SLF001
+
+        ex._handle_rerender()  # noqa: SLF001
+
+        # Cache/store dropped FROM the playhead forward (not the whole session).
+        ex._buffer.invalidate_from.assert_called_once_with(50)  # noqa: SLF001
+        # Completed marker can't claim invalidated frames are done.
+        assert ex._last_completed == 49  # noqa: SLF001  # min(75, 49)
+        # Current frame resubmitted so a paused display updates immediately.
+        ex._reader_pool.read_async.assert_called_once_with(50)  # noqa: SLF001
+        assert ex._last_submitted == 50  # noqa: SLF001  # set by _submit_specific_frame

@@ -17,6 +17,7 @@ from sinner2.pipeline.messages import (
     Message,
     PauseMsg,
     PlayMsg,
+    RerenderMsg,
     SeekMsg,
     SetChainMsg,
     SetParamsMsg,
@@ -395,6 +396,12 @@ class RealtimeExecutor:
     def seek(self, frame: FrameIndex) -> None:
         self._command_queue.put(SeekMsg(target_frame=frame))
 
+    def rerender_from_current(self) -> None:
+        """Reprocess from the playhead forward through the current chain
+        (e.g. after a param change). Frames before the playhead keep their
+        cached pixels."""
+        self._command_queue.put(RerenderMsg())
+
     def set_params(self, processor_name: str, params: Mapping[str, Any]) -> None:
         self._command_queue.put(SetParamsMsg(processor_name=processor_name, params=params))
 
@@ -465,6 +472,8 @@ class RealtimeExecutor:
                 self._stop_event.set()
             case SeekMsg(target_frame=target):
                 self._handle_seek(target)
+            case RerenderMsg():
+                self._handle_rerender()
             case SetChainMsg(chain=chain):
                 self._handle_set_chain(chain)
             case SetSkipStrategyMsg(strategy=strategy):
@@ -536,6 +545,23 @@ class RealtimeExecutor:
         self._submit_specific_frame(target)
         # Wake playback so a seek-while-paused tick processes the new
         # target immediately rather than waiting on an indefinite block.
+        self._playback_wake.set()
+
+    def _handle_rerender(self) -> None:
+        # Reprocess from the playhead forward through the current chain. Same
+        # shape as a seek-in-place, except we drop the cache/store FROM the
+        # playhead onward (invalidate_from) so frames already processed ahead
+        # with stale params are redone; frames before the playhead are kept.
+        self._drain_work_queue()
+        with self._state_lock:
+            current = self._timeline.current_frame()
+            self._last_submitted = current - 1
+            self._last_completed = min(self._last_completed, current - 1)
+        self._buffer.invalidate_from(current)
+        self._last_shown_frame_index = None
+        # Resubmit the current frame now so a paused display updates at once;
+        # when playing, the dispatcher resubmits the rest as the playhead moves.
+        self._submit_specific_frame(current)
         self._playback_wake.set()
 
     def _submit_specific_frame(self, frame_index: FrameIndex) -> None:

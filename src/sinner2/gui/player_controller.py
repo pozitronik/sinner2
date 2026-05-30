@@ -584,6 +584,13 @@ class PlayerController(QObject):
             self._executor.play()
         self.cacheStorageStatsChanged.emit()
 
+    def rerender_from_current(self) -> None:
+        """Reprocess from the playhead forward through the current chain — the
+        retroactive 'apply the new params to frames I've already passed'
+        action. Frames before the playhead keep their cached pixels."""
+        if self._executor is not None:
+            self._executor.rerender_from_current()
+
     def clear_all_caches(self) -> tuple[int, int]:
         """Wipe every cache entry under the current root. Spares the
         currently-active session's directory. Returns (entries_deleted,
