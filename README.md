@@ -22,7 +22,7 @@ Read [Responsible use](#responsible-use) before you start.
   by frame while the target plays, so parameter changes are visible at once.
 - **Batch queue.** Capture the current source, target, and settings as a job,
   queue several jobs, and run them one at a time. Jobs can be paused, resumed,
-  and cancelled; per-job progress and throughput are shown.
+  and canceled; per-job progress and throughput are shown.
 - **Resumable batch runs.** Rendered frames are cached to disk, so a paused or
   interrupted job continues from where it stopped instead of restarting.
 - **Two execution strategies, one set of processors.** Realtime mode is
@@ -61,12 +61,12 @@ isolated environment, and writes a launcher. It uses
 
 It offers these builds and recommends one based on your GPU and driver:
 
-| Build | When to use it |
-| --- | --- |
-| `cuda` | NVIDIA GPU, driver 525 or newer (CUDA 12.8) |
-| `cuda118` | Older NVIDIA GPU or driver (CUDA 11.8) |
-| `cpu` | No GPU, or as a fallback |
-| `mac-arm` | Apple Silicon |
+| Build     | When to use it                              |
+|-----------|---------------------------------------------|
+| `cuda`    | NVIDIA GPU, driver 525 or newer (CUDA 12.8) |
+| `cuda118` | Older NVIDIA GPU or driver (CUDA 11.8)      |
+| `cpu`     | No GPU, or as a fallback                    |
+| `mac-arm` | Apple Silicon                               |
 
 If a GPU build is selected but the driver is missing or too old, the installer
 explains what to install and lets you recheck, switch to the CPU build, or stop.
@@ -101,9 +101,14 @@ breaks with current torchvision: if you see an `ImportError` for
 
 ## Running
 
+The installer writes a launcher on the machine where it runs; these are not
+committed to the repository:
+
 - Linux: `./run.sh`
 - Windows: `run.bat`
-- From an activated environment: `python -m sinner2.gui`
+
+With the package installed, `python -m sinner2.gui` starts the application from
+any environment.
 
 ## Usage
 
@@ -134,11 +139,11 @@ directory; otherwise a default location is used.
 Settings are stored in a JSON file and kept between runs. These environment
 variables override the default locations:
 
-| Variable | Purpose |
-| --- | --- |
-| `SINNER2_SETTINGS_PATH` | Path to the settings file |
-| `SINNER2_MODELS_DIR` | Directory holding the model files |
-| `SINNER2_CACHE_DIR` | Directory for the processed-frame cache |
+| Variable                | Purpose                                 |
+|-------------------------|-----------------------------------------|
+| `SINNER2_SETTINGS_PATH` | Path to the settings file               |
+| `SINNER2_MODELS_DIR`    | Directory holding the model files       |
+| `SINNER2_CACHE_DIR`     | Directory for the processed-frame cache |
 
 ## Updating
 

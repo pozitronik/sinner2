@@ -21,3 +21,8 @@ gfpgan/
 settings.json
 temp/
 /batch/
+
+# Per-machine launchers written by the installer (installer/wizard.py)
+/run.sh
+/run.bat
+/run.command
