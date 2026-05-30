@@ -13,7 +13,14 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from installer import detect, doctor, plan, steps, update
+try:
+    from installer import detect, doctor, plan, steps, update
+except ModuleNotFoundError:
+    # Launched as a script (`python installer/wizard.py`) rather than
+    # `-m installer.wizard`: the script's own directory is on sys.path, not the
+    # repo root, so the `installer` package can't be found. Add the repo root.
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from installer import detect, doctor, plan, steps, update
 
 _VARIANT_LABELS = {
     "cuda": "CUDA 12.8 — NVIDIA GPU, fastest",
