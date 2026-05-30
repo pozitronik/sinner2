@@ -63,10 +63,12 @@ class QTransportControls(QWidget):
         # target are loaded. Sits where the Mute toggle used to — mute is
         # redundant with dragging the volume slider to zero.
         self._add_to_batch = QToolButton()
-        self._add_to_batch.setText("Add to batch")
+        # Emoji caption: reads as a control among the playback widgets (a wide
+        # text label looked out of place) and the green glyph is noticeable.
+        self._add_to_batch.setText("➕")
         self._add_to_batch.setToolTip(
-            "Save the current source + target + settings as a batch task. "
-            "Edit / run it from the Batch tab."
+            "Add to batch: save the current source + target + settings as a "
+            "task. Edit / run it from the Batch tab."
         )
         self._add_to_batch.setEnabled(False)
         self._add_to_batch.clicked.connect(self.addToBatchRequested)
