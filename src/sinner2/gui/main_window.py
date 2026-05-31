@@ -175,6 +175,7 @@ class SinnerMainWindow(QMainWindow):
 
         self._status_bar.on_top_button.toggled.connect(self._set_stays_on_top)
         self._status_bar.stats_button.toggled.connect(self._set_stats_visible)
+        self._status_bar.face_button.toggled.connect(self._set_face_overlay_visible)
         self._status_bar.rotate_button.clicked.connect(self._cycle_rotation)
         self._status_bar.fullscreen_button.toggled.connect(self._set_fullscreen)
         self._status_bar.side_panel_button.toggled.connect(
@@ -588,7 +589,7 @@ class SinnerMainWindow(QMainWindow):
             self._status_bar.on_top_button.toggle()
             return
         if key == Qt.Key.Key_F8:
-            self._toggle_face_overlay()
+            self._status_bar.face_button.toggle()
             return
         if key == Qt.Key.Key_R:
             self._status_bar.rotate_button.click()
@@ -838,25 +839,29 @@ class SinnerMainWindow(QMainWindow):
 
     _PROBE_INTERVAL_S = 0.15  # ~6 Hz: enough to track, cheap enough to stay smooth
 
-    def _toggle_face_overlay(self) -> None:
-        self._set_face_overlay_visible(not self._face_overlay_on)
-
-    def _set_face_overlay_visible(self, on: bool) -> None:
+    def _apply_face_overlay_visible(self, on: bool) -> None:
         self._face_overlay_on = on
         if on:
             self._face_overlay.setGeometry(self._display.rect())
             self._face_overlay.show()
+        else:
+            self._face_overlay.hide()
+            self._face_overlay.clear()
+
+    def _set_face_overlay_visible(self, on: bool) -> None:
+        """Toggle handler for the face button (and F8). Applies + persists."""
+        self._apply_face_overlay_visible(on)
+        if on:
             self._status_bar.show_message(
                 "Face-detection overlay on (F8) — disable the swapper to "
                 "inspect target faces", 4000
             )
-        else:
-            self._face_overlay.hide()
-            self._face_overlay.clear()
         self._update_settings(face_overlay_visible=on)
 
     def _restore_face_overlay_state(self) -> None:
-        self._set_face_overlay_visible(bool(self._settings.face_overlay_visible))
+        visible = bool(self._settings.face_overlay_visible)
+        self._apply_face_overlay_visible(visible)
+        self._set_button_checked(self._status_bar.face_button, visible)
 
     def _feed_detection_probe(self, frame: Frame) -> None:
         # Tap each displayed frame; forward a throttled, decoupled copy to the

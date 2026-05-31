@@ -144,6 +144,24 @@ class TestStatusActionButtons:
         window.keyPressEvent(evt)
         assert window._status_bar.stats_button.isChecked() is True  # noqa: SLF001
 
+    def test_face_button_toggles_overlay(self, window):
+        initial_hidden = window._face_overlay.isHidden()  # noqa: SLF001
+        initial_on = window._face_overlay_on  # noqa: SLF001
+        window._status_bar.face_button.toggle()  # noqa: SLF001
+        assert window._face_overlay.isHidden() is not initial_hidden  # noqa: SLF001
+        assert window._face_overlay_on is not initial_on  # noqa: SLF001
+
+    def test_f8_keeps_face_button_in_sync(self, window):
+        from PySide6.QtCore import QEvent, Qt
+        from PySide6.QtGui import QKeyEvent
+
+        evt = QKeyEvent(
+            QEvent.Type.KeyPress, Qt.Key.Key_F8, Qt.KeyboardModifier.NoModifier
+        )
+        window.keyPressEvent(evt)
+        assert window._status_bar.face_button.isChecked() is True  # noqa: SLF001
+        assert window._face_overlay_on is True  # noqa: SLF001
+
     def test_side_panel_button_hides_panel(self, window):
         assert window._side_panel.isHidden() is False  # noqa: SLF001  # default shown
         window._status_bar.side_panel_button.toggle()  # noqa: SLF001

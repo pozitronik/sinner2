@@ -24,6 +24,7 @@ class QStatusActionBar(QWidget):
         # keyboard shortcut so the buttons double as shortcut discovery.
         self.on_top_button = self._toggle("📌", "Keep window on top (F12)")
         self.stats_button = self._toggle("📊", "Show stats overlay (F4)")
+        self.face_button = self._toggle("👤", "Show face-detection overlay (F8)")
         self.rotate_button = self._action("🔄", "Rotate display (R)")
         self.fullscreen_button = self._toggle("⛶", "Fullscreen (F11)")
         self.side_panel_button = self._toggle("◧", "Toggle side panel (F9)")
@@ -37,6 +38,7 @@ class QStatusActionBar(QWidget):
         for button in (
             self.on_top_button,
             self.stats_button,
+            self.face_button,
             self.rotate_button,
             self.fullscreen_button,
             self.side_panel_button,
