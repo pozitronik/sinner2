@@ -84,6 +84,34 @@ class TestQProcessorControls:
             widget._enhancer_box.setChecked(False)  # noqa: SLF001
         assert widget.enhancer_enabled() is False
 
+    def test_enhancer_model_flows_to_params(self, widget):
+        from sinner2.pipeline.processors.face_enhancer import EnhancerModel
+
+        widget.set_enhancer_model(EnhancerModel.CODEFORMER.value)
+        widget._enhancer_fidelity.setValue(0.4)  # noqa: SLF001
+        params = widget.enhancer_params()
+        assert params.model is EnhancerModel.CODEFORMER
+        assert params.codeformer_fidelity == 0.4
+
+    def test_codeformer_disables_upscale_enables_fidelity(self, widget):
+        from sinner2.pipeline.processors.face_enhancer import EnhancerModel
+
+        widget.set_enhancer_model(EnhancerModel.CODEFORMER.value)
+        assert widget._upscale.isEnabled() is False  # noqa: SLF001
+        assert widget._enhancer_fidelity.isEnabled() is True  # noqa: SLF001
+        widget.set_enhancer_model(EnhancerModel.GFPGAN.value)
+        assert widget._upscale.isEnabled() is True  # noqa: SLF001
+        assert widget._enhancer_fidelity.isEnabled() is False  # noqa: SLF001
+
+    def test_set_enhancer_model_does_not_emit_config_changed(self, widget, qtbot):
+        # Revert path (declined download) must not re-trigger a chain rebuild.
+        from sinner2.pipeline.processors.face_enhancer import EnhancerModel
+
+        spy = []
+        widget.configChanged.connect(lambda: spy.append(1))
+        widget.set_enhancer_model(EnhancerModel.CODEFORMER.value)
+        assert spy == []
+
     def test_default_strategy_is_best_effort(self, widget):
         from sinner2.pipeline.skip_strategy import BestEffortStrategy
 
@@ -118,8 +146,10 @@ _FULL_RESTORE_KWARGS = dict(
     swapper_rotation_threshold_deg=25,
     swapper_rotation_redetect=False,
     swapper_rotation_angle_source="pose",
+    enhancer_model="codeformer",
     enhancer_upscale=4,
     enhancer_only_center_face=True,
+    enhancer_codeformer_fidelity=0.3,
     playback_mode=PlaybackMode.UNLIMITED,
     cache_mode=CacheMode.READ_ONLY,
     image_format=ImageFormat.PNG,
@@ -148,8 +178,10 @@ _NONE_RESTORE_KWARGS = dict(
     swapper_rotation_threshold_deg=None,
     swapper_rotation_redetect=None,
     swapper_rotation_angle_source=None,
+    enhancer_model=None,
     enhancer_upscale=None,
     enhancer_only_center_face=None,
+    enhancer_codeformer_fidelity=None,
     playback_mode=None,
     cache_mode=None,
     image_format=None,
@@ -443,8 +475,10 @@ class TestSettingsEndToEnd:
                 swapper_rotation_threshold_deg=swapper.rotation_threshold_deg,
                 swapper_rotation_redetect=swapper.rotation_redetect,
                 swapper_rotation_angle_source=swapper.rotation_angle_source.value,
+                enhancer_model=enhancer.model.value,
                 enhancer_upscale=enhancer.upscale,
                 enhancer_only_center_face=enhancer.only_center_face,
+                enhancer_codeformer_fidelity=enhancer.codeformer_fidelity,
                 playback_mode=first.playback_mode(),
                 cache_mode=first.cache_mode(),
                 image_format=first.image_format(),
@@ -478,8 +512,10 @@ class TestSettingsEndToEnd:
             swapper_rotation_threshold_deg=reloaded.swapper_rotation_threshold_deg,
             swapper_rotation_redetect=reloaded.swapper_rotation_redetect,
             swapper_rotation_angle_source=reloaded.swapper_rotation_angle_source,
+            enhancer_model=reloaded.enhancer_model,
             enhancer_upscale=reloaded.enhancer_upscale,
             enhancer_only_center_face=reloaded.enhancer_only_center_face,
+            enhancer_codeformer_fidelity=reloaded.enhancer_codeformer_fidelity,
             playback_mode=reloaded.playback_mode,
             cache_mode=reloaded.cache_mode,
             image_format=reloaded.image_format,

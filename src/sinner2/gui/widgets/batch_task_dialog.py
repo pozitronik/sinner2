@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
+    QDoubleSpinBox,
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
@@ -208,15 +209,39 @@ class QBatchTaskDialog(QDialog):
         swap_form.addRow("ONNX providers:", providers_box)
 
         # ---- FaceEnhancer group ----
-        enh_box = QGroupBox("FaceEnhancer (GFPGAN)")
+        enh_box = QGroupBox("FaceEnhancer")
         enh_box.setCheckable(True)
         enh_box.setChecked(task.enhancer_enabled)
         self._enhancer_box = enh_box
         enh_form = QFormLayout(enh_box)
+        self._enhancer_model = QComboBox()
+        for value, label in (
+            ("gfpgan", "GFPGAN (whole-frame, Upscale knob)"),
+            ("codeformer", "CodeFormer (ONNX, fidelity knob)"),
+        ):
+            self._enhancer_model.addItem(label, value)
+            if value == task.enhancer_model:
+                self._enhancer_model.setCurrentIndex(self._enhancer_model.count() - 1)
+        self._enhancer_model.setToolTip(
+            "Restoration model. GFPGAN upscales the whole frame; CodeFormer "
+            "(ONNX) restores each face with a fidelity knob."
+        )
+        self._enhancer_model.currentIndexChanged.connect(self._update_enhancer_rows)
+        enh_form.addRow("Model:", self._enhancer_model)
         self._upscale = QSpinBox()
         self._upscale.setRange(1, 4)
         self._upscale.setValue(task.enhancer_upscale)
         enh_form.addRow("Upscale:", self._upscale)
+        self._enhancer_fidelity = QDoubleSpinBox()
+        self._enhancer_fidelity.setRange(0.0, 1.0)
+        self._enhancer_fidelity.setSingleStep(0.1)
+        self._enhancer_fidelity.setDecimals(2)
+        self._enhancer_fidelity.setValue(task.enhancer_codeformer_fidelity)
+        self._enhancer_fidelity.setToolTip(
+            "CodeFormer fidelity w: 0 = max restoration, 1 = max fidelity to "
+            "the input. Ignored by GFPGAN."
+        )
+        enh_form.addRow("Fidelity (w):", self._enhancer_fidelity)
         self._only_center_face = QCheckBox()
         self._only_center_face.setChecked(task.enhancer_only_center_face)
         enh_form.addRow("Only center face:", self._only_center_face)
@@ -383,6 +408,14 @@ class QBatchTaskDialog(QDialog):
         # Re-probe the scale readout's dimensions whenever the target changes.
         self._target_edit.textChanged.connect(self._refresh_scale_dims)
         self._refresh_scale_dims()  # initial probe for the task's target
+        self._update_enhancer_rows()  # gray out the inactive model's knob
+
+    def _update_enhancer_rows(self) -> None:
+        """Enable only the knob the selected enhancer model uses — Upscale for
+        GFPGAN, Fidelity for CodeFormer."""
+        is_codeformer = self._enhancer_model.currentData() == "codeformer"
+        self._upscale.setEnabled(not is_codeformer)
+        self._enhancer_fidelity.setEnabled(is_codeformer)
 
     @classmethod
     def from_task(
@@ -424,8 +457,10 @@ class QBatchTaskDialog(QDialog):
                 "swapper_occlusion_mask": self._occlusion_mask.isChecked(),
                 "swapper_occlusion_parser": self._occlusion_parser.currentData(),
                 "enhancer_enabled": self._enhancer_box.isChecked(),
+                "enhancer_model": self._enhancer_model.currentData(),
                 "enhancer_upscale": self._upscale.value(),
                 "enhancer_only_center_face": self._only_center_face.isChecked(),
+                "enhancer_codeformer_fidelity": self._enhancer_fidelity.value(),
                 "swapper_execution": self._task.swapper_execution.model_copy(
                     update={
                         "workers": self._swapper_workers.value(),

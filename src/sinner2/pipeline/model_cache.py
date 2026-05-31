@@ -50,6 +50,12 @@ MODEL_SOURCES: dict[str, str] = {
         "https://github.com/xinntao/facexlib/releases/download/v0.2.2/"
         "parsing_parsenet.pth"
     ),
+    # CodeFormer face-restorer (ONNX, facefusion-assets). The `w` fidelity is a
+    # scalar model input. ~377 MB.
+    "codeformer.onnx": (
+        "https://github.com/facefusion/facefusion-assets/releases/download/"
+        "models-3.0.0/codeformer.onnx"
+    ),
 }
 
 # Downloaded up front by the first-run GUI flow. Optional models (the upscaler

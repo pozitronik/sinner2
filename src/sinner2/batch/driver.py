@@ -57,6 +57,7 @@ from sinner2.io.video_encoder import FfmpegMissingError, encode_frames_to_mp4
 from sinner2.pipeline.image_writer import build_image_writer
 from sinner2.pipeline.processor import Processor
 from sinner2.pipeline.processors.face_enhancer import (
+    EnhancerModel,
     FaceEnhancer,
     FaceEnhancerParams,
 )
@@ -354,8 +355,10 @@ class BatchDriver:
             ))
         if task.enhancer_enabled:
             enhancer_params = FaceEnhancerParams(
+                model=EnhancerModel(task.enhancer_model),
                 upscale=task.enhancer_upscale,
                 only_center_face=task.enhancer_only_center_face,
+                codeformer_fidelity=task.enhancer_codeformer_fidelity,
                 # Rotation compensation is shared config (same task fields as
                 # the swapper) — the enhancer needs it too, GFPGAN has none.
                 rotation_compensation=task.swapper_rotation_compensation,

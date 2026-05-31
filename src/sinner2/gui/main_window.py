@@ -28,6 +28,10 @@ from sinner2.config import settings as user_settings
 from sinner2.config.execution import OnnxExecution, TorchExecution
 from sinner2.gui.face_detection_probe import FaceDetectionProbe, FaceDetectionSink
 from sinner2.gui.model_download import ensure_models
+from sinner2.pipeline.processors.codeformer import (
+    MODEL_FILE as CODEFORMER_MODEL_FILE,
+)
+from sinner2.pipeline.processors.face_enhancer import EnhancerModel
 from sinner2.pipeline.processors.occlusion import parser_model_file
 from sinner2.pipeline.processors.upscaler import model_filename
 from sinner2.gui.player_controller import PlayerController, default_cache_root
@@ -576,6 +580,15 @@ class SinnerMainWindow(QMainWindow):
             self, [parser_model_file(swapper_cfg.occlusion_parser)]
         ):
             self._processors.set_occlusion_checked(False)
+        # CodeFormer enhancer is ONNX with its own ~377 MB weight — confirm the
+        # download when it's selected (and the enhancer's on); decline reverts
+        # to GFPGAN so the chain isn't rebuilt against a missing model.
+        if (
+            self._processors.enhancer_enabled()
+            and self._processors.enhancer_model() == EnhancerModel.CODEFORMER.value
+            and not ensure_models(self, [CODEFORMER_MODEL_FILE])
+        ):
+            self._processors.set_enhancer_model(EnhancerModel.GFPGAN.value)
 
         self._controller.apply_session_config(
             swapper_params=self._processors.swapper_params(),
@@ -1045,8 +1058,10 @@ class SinnerMainWindow(QMainWindow):
             swapper_rotation_angle_source=self._settings.swapper_rotation_angle_source,
             swapper_occlusion_mask=self._settings.swapper_occlusion_mask,
             swapper_occlusion_parser=self._settings.swapper_occlusion_parser,
+            enhancer_model=self._settings.enhancer_model,
             enhancer_upscale=self._settings.enhancer_upscale,
             enhancer_only_center_face=self._settings.enhancer_only_center_face,
+            enhancer_codeformer_fidelity=self._settings.enhancer_codeformer_fidelity,
             playback_mode=self._settings.playback_mode,
             cache_mode=self._settings.cache_mode,
             image_format=self._settings.image_format,
@@ -1086,8 +1101,10 @@ class SinnerMainWindow(QMainWindow):
             swapper_rotation_angle_source=swapper.rotation_angle_source.value,
             swapper_occlusion_mask=swapper.occlusion_mask,
             swapper_occlusion_parser=swapper.occlusion_parser.value,
+            enhancer_model=enhancer.model.value,
             enhancer_upscale=enhancer.upscale,
             enhancer_only_center_face=enhancer.only_center_face,
+            enhancer_codeformer_fidelity=enhancer.codeformer_fidelity,
             playback_mode=self._processors.playback_mode(),
             cache_mode=self._processors.cache_mode(),
             image_format=self._processors.image_format(),
@@ -1254,8 +1271,10 @@ class SinnerMainWindow(QMainWindow):
             swapper_occlusion_mask=swapper.occlusion_mask,
             swapper_occlusion_parser=swapper.occlusion_parser.value,
             enhancer_enabled=self._processors.enhancer_enabled(),
+            enhancer_model=enhancer.model.value,
             enhancer_upscale=enhancer.upscale,
             enhancer_only_center_face=enhancer.only_center_face,
+            enhancer_codeformer_fidelity=enhancer.codeformer_fidelity,
             upscaler_enabled=self._processors.upscaler_enabled(),
             upscaler_model=up_params.model.value,
             upscaler_tile=up_params.tile,

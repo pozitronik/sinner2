@@ -4,6 +4,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -27,7 +28,10 @@ from sinner2.pipeline.cache_mode import CacheMode
 from sinner2.pipeline.model_cache import available_onnx_providers
 from sinner2.pipeline.image_writer import ImageFormat
 from sinner2.pipeline.playback_mode import PlaybackMode
-from sinner2.pipeline.processors.face_enhancer import FaceEnhancerParams
+from sinner2.pipeline.processors.face_enhancer import (
+    EnhancerModel,
+    FaceEnhancerParams,
+)
 from sinner2.pipeline.processors.occlusion import FaceParser
 from sinner2.pipeline.processors.upscaler import UpscalerModel, UpscalerParams
 from sinner2.pipeline.processors.face_swapper import (
@@ -79,6 +83,11 @@ _VIDEO_BACKENDS: dict[str, VideoBackend] = {
 _ROTATION_SOURCES: list[tuple[str, str]] = [
     ("Eye keypoints", RotationAngleSource.KEYPOINTS.value),
     ("3D pose estimate", RotationAngleSource.POSE.value),
+]
+
+_ENHANCER_MODELS: list[tuple[str, str]] = [
+    (EnhancerModel.GFPGAN.value, "GFPGAN (whole-frame, Upscale knob)"),
+    (EnhancerModel.CODEFORMER.value, "CodeFormer (ONNX, fidelity knob)"),
 ]
 
 _UPSCALER_MODELS: list[tuple[str, str]] = [
@@ -257,16 +266,48 @@ class QProcessorControls(QWidget):
             self._provider_checkboxes[prov] = cb
         swapper_form.addRow("ONNX providers", providers_box)
 
-        enhancer_box = QGroupBox("FaceEnhancer (GFPGAN)")
+        enhancer_box = QGroupBox("FaceEnhancer")
         enhancer_box.setCheckable(True)
         enhancer_box.setChecked(True)
         enhancer_box.toggled.connect(self.configChanged)
         enhancer_form = QFormLayout(enhancer_box)
+        # Restoration backend: GFPGAN (PyTorch, whole-frame, Upscale knob) or
+        # CodeFormer (ONNX, per-face, fidelity knob). The model-specific rows
+        # (Upscale vs Fidelity) enable/disable to match the selection.
+        self._enhancer_model = QComboBox()
+        for value, label in _ENHANCER_MODELS:
+            self._enhancer_model.addItem(label, value)
+            if value == enhancer_defaults.model.value:
+                self._enhancer_model.setCurrentIndex(
+                    self._enhancer_model.count() - 1
+                )
+        self._enhancer_model.setToolTip(
+            "Face-restoration model. GFPGAN restores the whole frame and can\n"
+            "upscale; CodeFormer (ONNX) restores each detected face with a\n"
+            "fidelity knob. CodeFormer's weights download on first enable."
+        )
+        self._enhancer_model.currentIndexChanged.connect(self.configChanged)
+        self._enhancer_model.currentIndexChanged.connect(
+            self._update_enhancer_model_rows
+        )
+        enhancer_form.addRow("Model", self._enhancer_model)
         self._upscale = QSpinBox()
         self._upscale.setRange(1, 4)
         self._upscale.setValue(enhancer_defaults.upscale)
         self._upscale.valueChanged.connect(self.configChanged)
         enhancer_form.addRow("Upscale", self._upscale)
+        self._enhancer_fidelity = QDoubleSpinBox()
+        self._enhancer_fidelity.setRange(0.0, 1.0)
+        self._enhancer_fidelity.setSingleStep(0.1)
+        self._enhancer_fidelity.setDecimals(2)
+        self._enhancer_fidelity.setValue(enhancer_defaults.codeformer_fidelity)
+        self._enhancer_fidelity.setToolTip(
+            "CodeFormer fidelity w: 0 = max restoration (smoother, may drift\n"
+            "from the input), 1 = max fidelity to the input (preserves detail\n"
+            "but less cleanup). Ignored by GFPGAN."
+        )
+        self._enhancer_fidelity.valueChanged.connect(self.configChanged)
+        enhancer_form.addRow("Fidelity (w)", self._enhancer_fidelity)
         self._only_center_face = QCheckBox()
         self._only_center_face.setChecked(enhancer_defaults.only_center_face)
         self._only_center_face.toggled.connect(self.configChanged)
@@ -285,6 +326,7 @@ class QProcessorControls(QWidget):
         self._enhancer_device.currentIndexChanged.connect(self.configChanged)
         enhancer_form.addRow("Device", self._enhancer_device)
         self._enhancer_box = enhancer_box
+        self._update_enhancer_model_rows()  # gray out the inactive model's knob
 
         # ---- Upscaler (Real-ESRGAN) — whole-frame super-resolution ----
         upscaler_defaults = UpscalerParams()
@@ -828,12 +870,37 @@ class QProcessorControls(QWidget):
         self._occlusion_mask.setChecked(bool(on))
         self._occlusion_mask.blockSignals(False)
 
+    def _update_enhancer_model_rows(self) -> None:
+        """Enable only the knob that applies to the selected enhancer model —
+        Upscale for GFPGAN, Fidelity for CodeFormer."""
+        is_codeformer = (
+            self._enhancer_model.currentData() == EnhancerModel.CODEFORMER.value
+        )
+        self._upscale.setEnabled(not is_codeformer)
+        self._enhancer_fidelity.setEnabled(is_codeformer)
+
+    def enhancer_model(self) -> str:
+        return self._enhancer_model.currentData()
+
+    def set_enhancer_model(self, value: str) -> None:
+        """Set the enhancer model WITHOUT firing configChanged — used to revert
+        the selection when the user declines the CodeFormer model download."""
+        self._enhancer_model.blockSignals(True)
+        for i in range(self._enhancer_model.count()):
+            if self._enhancer_model.itemData(i) == value:
+                self._enhancer_model.setCurrentIndex(i)
+                break
+        self._enhancer_model.blockSignals(False)
+        self._update_enhancer_model_rows()
+
     def enhancer_params(self) -> FaceEnhancerParams:
         # Rotation compensation is shared config — the Face-detector group's
         # controls drive both the swapper and the enhancer.
         return FaceEnhancerParams(
+            model=EnhancerModel(self._enhancer_model.currentData()),
             upscale=self._upscale.value(),
             only_center_face=self._only_center_face.isChecked(),
+            codeformer_fidelity=self._enhancer_fidelity.value(),
             rotation_compensation=self._rotation_enabled.isChecked(),
             rotation_threshold_deg=self._rotation_threshold.value(),
             rotation_redetect=self._rotation_redetect.isChecked(),
@@ -1013,8 +1080,10 @@ class QProcessorControls(QWidget):
         swapper_rotation_threshold_deg: int | None,
         swapper_rotation_redetect: bool | None,
         swapper_rotation_angle_source: str | None,
+        enhancer_model: str | None = None,
         enhancer_upscale: int | None,
         enhancer_only_center_face: bool | None,
+        enhancer_codeformer_fidelity: float | None = None,
         playback_mode: PlaybackMode | None,
         cache_mode: CacheMode | None,
         image_format: ImageFormat | None,
@@ -1057,7 +1126,9 @@ class QProcessorControls(QWidget):
             self._upscaler_tile,
             self._upscaler_fp16,
             self._upscaler_device,
+            self._enhancer_model,
             self._upscale,
+            self._enhancer_fidelity,
             self._only_center_face,
             self._enhancer_device,
             self._strategy_combo,
@@ -1111,8 +1182,15 @@ class QProcessorControls(QWidget):
                 self._swapper_box.setChecked(swapper_enabled)
             if enhancer_enabled is not None:
                 self._enhancer_box.setChecked(enhancer_enabled)
+            if enhancer_model is not None:
+                for i in range(self._enhancer_model.count()):
+                    if self._enhancer_model.itemData(i) == enhancer_model:
+                        self._enhancer_model.setCurrentIndex(i)
+                        break
             if enhancer_upscale is not None:
                 self._upscale.setValue(enhancer_upscale)
+            if enhancer_codeformer_fidelity is not None:
+                self._enhancer_fidelity.setValue(enhancer_codeformer_fidelity)
             if enhancer_only_center_face is not None:
                 self._only_center_face.setChecked(enhancer_only_center_face)
             if enhancer_device is not None:
@@ -1191,4 +1269,5 @@ class QProcessorControls(QWidget):
         self._update_quality_visibility()
         self._update_synced_threshold_enabled()
         self._update_scale_label()  # reflect a restored scale (set under blockSignals)
+        self._update_enhancer_model_rows()  # reflect a restored enhancer model
         self.configChanged.emit()

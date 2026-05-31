@@ -124,8 +124,10 @@ class BatchTask(SinnerBaseModel):
     swapper_occlusion_mask: bool = False
     swapper_occlusion_parser: str = "bisenet"  # bisenet | parsenet
     enhancer_enabled: bool = True
+    enhancer_model: str = "gfpgan"  # gfpgan | codeformer
     enhancer_upscale: int = 1
     enhancer_only_center_face: bool = False
+    enhancer_codeformer_fidelity: float = 0.7  # CodeFormer w knob
     # Upscaler (Real-ESRGAN) — whole-frame super-resolution stage
     upscaler_enabled: bool = False
     upscaler_model: str = "general-x4v3"  # general-x4v3 | x4plus | x2plus

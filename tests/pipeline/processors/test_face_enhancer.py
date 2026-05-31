@@ -7,7 +7,11 @@ import pytest
 from sinner2.pipeline import face_analyser
 from sinner2.pipeline.processor import Processor
 from sinner2.pipeline.processors import face_enhancer
-from sinner2.pipeline.processors.face_enhancer import FaceEnhancer, FaceEnhancerParams
+from sinner2.pipeline.processors.face_enhancer import (
+    EnhancerModel,
+    FaceEnhancer,
+    FaceEnhancerParams,
+)
 from sinner2.types import Frame
 
 
@@ -248,3 +252,34 @@ class TestRotationCompensation:
         assert fe._analyser is None  # noqa: SLF001 — not built when disabled
         fe.process(_blank())
         stub_face_detection.get.assert_not_called()
+
+
+class TestCodeFormerBackend:
+    def test_codeformer_model_uses_onnx_backend(
+        self, models_dir, stub_face_detection, monkeypatch
+    ):
+        class _StubBackend:
+            def __init__(self, *a, **k):
+                pass
+
+            def setup(self):
+                pass
+
+            def enhance(self, img):
+                return img
+
+        monkeypatch.setattr(face_enhancer, "CodeFormerBackend", _StubBackend)
+        fe = FaceEnhancer(
+            params=FaceEnhancerParams(
+                model=EnhancerModel.CODEFORMER, rotation_compensation=False
+            )
+        )
+        fe.setup()
+        assert fe._codeformer is not None  # noqa: SLF001
+        out = fe.process(_blank())
+        assert out.shape == _blank().shape
+
+    def test_gfpgan_is_default(self, models_dir, stub_restorer):
+        fe = FaceEnhancer()
+        fe.setup()
+        assert fe._codeformer is None  # noqa: SLF001 — GFPGAN path
