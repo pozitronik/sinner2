@@ -161,6 +161,21 @@ class QBatchTaskDialog(QDialog):
             if value == task.swapper_rotation_angle_source:
                 self._rotation_source.setCurrentIndex(self._rotation_source.count() - 1)
         swap_form.addRow("Angle source:", self._rotation_source)
+        self._occlusion_mask = QCheckBox()
+        self._occlusion_mask.setChecked(task.swapper_occlusion_mask)
+        self._occlusion_mask.setToolTip(
+            "Mask the swap to the real face region (hair/glasses/boundary keep "
+            "the original). Parser model downloads on first batch run."
+        )
+        swap_form.addRow("Occlusion mask:", self._occlusion_mask)
+        self._occlusion_parser = QComboBox()
+        for value, label in (("bisenet", "BiSeNet (sharper)"), ("parsenet", "ParseNet (GFPGAN default)")):
+            self._occlusion_parser.addItem(label, value)
+            if value == task.swapper_occlusion_parser:
+                self._occlusion_parser.setCurrentIndex(
+                    self._occlusion_parser.count() - 1
+                )
+        swap_form.addRow("Mask parser:", self._occlusion_parser)
         self._swapper_workers = QSpinBox()
         self._swapper_workers.setRange(1, 16)
         self._swapper_workers.setValue(task.swapper_execution.workers)
@@ -406,6 +421,8 @@ class QBatchTaskDialog(QDialog):
                 "swapper_rotation_threshold_deg": self._rotation_threshold.value(),
                 "swapper_rotation_redetect": self._rotation_redetect.isChecked(),
                 "swapper_rotation_angle_source": self._rotation_source.currentData(),
+                "swapper_occlusion_mask": self._occlusion_mask.isChecked(),
+                "swapper_occlusion_parser": self._occlusion_parser.currentData(),
                 "enhancer_enabled": self._enhancer_box.isChecked(),
                 "enhancer_upscale": self._upscale.value(),
                 "enhancer_only_center_face": self._only_center_face.isChecked(),

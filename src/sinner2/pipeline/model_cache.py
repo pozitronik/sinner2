@@ -37,6 +37,19 @@ MODEL_SOURCES: dict[str, str] = {
         "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/"
         "RealESRGAN_x2plus.pth"
     ),
+    # BiSeNet face-parser for occlusion-aware masking. URL taken verbatim from
+    # facexlib's parsing/__init__.py (the bisenet weight is on the v0.2.0 tag —
+    # NOT v0.2.2, which hosts the parsenet variant).
+    "parsing_bisenet.pth": (
+        "https://github.com/xinntao/facexlib/releases/download/v0.2.0/"
+        "parsing_bisenet.pth"
+    ),
+    # ParseNet variant — lighter/faster (GFPGAN's default parser). Note the
+    # release tag differs from bisenet's (v0.2.2 vs v0.2.0).
+    "parsing_parsenet.pth": (
+        "https://github.com/xinntao/facexlib/releases/download/v0.2.2/"
+        "parsing_parsenet.pth"
+    ),
 }
 
 # Downloaded up front by the first-run GUI flow. Optional models (the upscaler
@@ -254,8 +267,13 @@ def download_model(
                     if on_progress is not None:
                         on_progress(done, total)
         part.replace(dest)  # atomic: final name appears only on full success
-    except BaseException:
+    except Exception as exc:
         part.unlink(missing_ok=True)
+        # Surface the URL — the raw HTTPError ("404: Not Found") doesn't name
+        # what it hit, so the GUI's failure message was undebuggable.
+        raise RuntimeError(f"failed to download {name} from {url}: {exc}") from exc
+    except BaseException:
+        part.unlink(missing_ok=True)  # KeyboardInterrupt / SystemExit — clean up + propagate
         raise
 
 

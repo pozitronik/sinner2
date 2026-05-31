@@ -28,6 +28,7 @@ from sinner2.pipeline.model_cache import available_onnx_providers
 from sinner2.pipeline.image_writer import ImageFormat
 from sinner2.pipeline.playback_mode import PlaybackMode
 from sinner2.pipeline.processors.face_enhancer import FaceEnhancerParams
+from sinner2.pipeline.processors.occlusion import FaceParser
 from sinner2.pipeline.processors.upscaler import UpscalerModel, UpscalerParams
 from sinner2.pipeline.processors.face_swapper import (
     FaceSwapperParams,
@@ -84,6 +85,11 @@ _UPSCALER_MODELS: list[tuple[str, str]] = [
     (UpscalerModel.GENERAL_X4V3.value, "General x4 v3 (fast, small)"),
     (UpscalerModel.X4PLUS.value, "x4plus (higher quality, heavy)"),
     (UpscalerModel.X2PLUS.value, "x2plus"),
+]
+
+_OCCLUSION_PARSERS: list[tuple[str, str]] = [
+    (FaceParser.BISENET.value, "BiSeNet (sharper)"),
+    (FaceParser.PARSENET.value, "ParseNet (GFPGAN default)"),
 ]
 
 
@@ -190,6 +196,29 @@ class QProcessorControls(QWidget):
         )
         self._target_sex.currentIndexChanged.connect(self.configChanged)
         swapper_form.addRow("Swap which", self._target_sex)
+        self._occlusion_mask = QCheckBox()
+        self._occlusion_mask.setChecked(swapper_defaults.occlusion_mask)
+        self._occlusion_mask.setToolTip(
+            "Mask the swap to the real facial region (BiSeNet parse) so hair,\n"
+            "glasses, hats and the neck/boundary keep the original. Affects\n"
+            "output; the parser model downloads on first enable."
+        )
+        self._occlusion_mask.toggled.connect(self.configChanged)
+        swapper_form.addRow("Occlusion mask", self._occlusion_mask)
+        self._occlusion_parser = QComboBox()
+        for value, label in _OCCLUSION_PARSERS:
+            self._occlusion_parser.addItem(label, value)
+            if value == swapper_defaults.occlusion_parser.value:
+                self._occlusion_parser.setCurrentIndex(
+                    self._occlusion_parser.count() - 1
+                )
+        self._occlusion_parser.setToolTip(
+            "Face parser for the occlusion mask. BiSeNet (the academic\n"
+            "face-parser) tends to give sharper boundaries; ParseNet is the\n"
+            "one GFPGAN/CodeFormer use. Try both. Each downloads on first use."
+        )
+        self._occlusion_parser.currentIndexChanged.connect(self.configChanged)
+        swapper_form.addRow("Mask parser", self._occlusion_parser)
 
         # ONNX execution providers — multi-select for the swapper + analyser
         # (both ONNX). Order matters: ORT tries providers in the order listed,
@@ -788,7 +817,16 @@ class QProcessorControls(QWidget):
             rotation_threshold_deg=self._rotation_threshold.value(),
             rotation_redetect=self._rotation_redetect.isChecked(),
             rotation_angle_source=self._rotation_source.currentData(),
+            occlusion_mask=self._occlusion_mask.isChecked(),
+            occlusion_parser=self._occlusion_parser.currentData(),
         )
+
+    def set_occlusion_checked(self, on: bool) -> None:
+        """Reflect occlusion-on without firing configChanged — used to revert
+        the toggle when the user declines the parser-model download."""
+        self._occlusion_mask.blockSignals(True)
+        self._occlusion_mask.setChecked(bool(on))
+        self._occlusion_mask.blockSignals(False)
 
     def enhancer_params(self) -> FaceEnhancerParams:
         # Rotation compensation is shared config — the Face-detector group's
@@ -969,6 +1007,8 @@ class QProcessorControls(QWidget):
         swapper_detection_interval: int | None,
         swapper_many_faces: bool | None,
         swapper_target_sex: str | None,
+        swapper_occlusion_mask: bool | None,
+        swapper_occlusion_parser: str | None,
         swapper_rotation_compensation: bool | None,
         swapper_rotation_threshold_deg: int | None,
         swapper_rotation_redetect: bool | None,
@@ -1005,6 +1045,8 @@ class QProcessorControls(QWidget):
             self._detection_interval,
             self._many_faces,
             self._target_sex,
+            self._occlusion_mask,
+            self._occlusion_parser,
             self._rotation_enabled,
             self._rotation_threshold,
             self._rotation_redetect,
@@ -1046,6 +1088,13 @@ class QProcessorControls(QWidget):
                 for i in range(self._target_sex.count()):
                     if self._target_sex.itemData(i) == swapper_target_sex:
                         self._target_sex.setCurrentIndex(i)
+                        break
+            if swapper_occlusion_mask is not None:
+                self._occlusion_mask.setChecked(swapper_occlusion_mask)
+            if swapper_occlusion_parser is not None:
+                for i in range(self._occlusion_parser.count()):
+                    if self._occlusion_parser.itemData(i) == swapper_occlusion_parser:
+                        self._occlusion_parser.setCurrentIndex(i)
                         break
             if swapper_rotation_compensation is not None:
                 self._rotation_enabled.setChecked(swapper_rotation_compensation)

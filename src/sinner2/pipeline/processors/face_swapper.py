@@ -1,3 +1,4 @@
+import threading
 from pathlib import Path
 from typing import Any, cast
 
@@ -13,6 +14,11 @@ from sinner2.pipeline.model_cache import get_model_path, record_actual_providers
 from sinner2.pipeline.processors.face_swapper_types import (
     RotationAngleSource,
     TargetSex,
+)
+from sinner2.pipeline.processors.occlusion import (
+    FaceParser,
+    OcclusionMasker,
+    apply_occlusion,
 )
 from sinner2.pipeline.processors.rotation_compensation import (
     compute_roll,
@@ -58,6 +64,16 @@ class FaceSwapperParams(SinnerBaseModel):
     rotation_angle_source: RotationAngleSource = Field(
         default=RotationAngleSource.POSE,
         description="Measure roll from eye keypoints or the 3D pose estimate",
+    )
+    # ---- Occlusion-aware masking ----
+    # Mask the swap to the facial-skin region (BiSeNet parse) so hair, glasses,
+    # hats, and the neck/boundary keep the original. Output-affecting.
+    occlusion_mask: bool = Field(
+        default=False, description="Mask the swap to the real face region"
+    )
+    occlusion_parser: FaceParser = Field(
+        default=FaceParser.BISENET,
+        description="Face parser for the mask: bisenet (accurate) or parsenet (fast)",
     )
 
 
@@ -152,6 +168,10 @@ class FaceSwapper:
         self._analyser: FaceAnalyser | None = None
         self._swapper: Any = None
         self._source_face: Any = None
+        # Occlusion masker (torch BiSeNet) — built only when enabled. Not
+        # thread-safe, so the shared swapper serializes its calls.
+        self._masker: OcclusionMasker | None = None
+        self._mask_lock = threading.Lock()
 
     def setup(self) -> None:
         providers = self._providers or list(DEFAULT_ONNX_PROVIDERS)
@@ -167,6 +187,9 @@ class FaceSwapper:
         if not faces:
             raise ValueError(f"no face detected in source: {self._source.path}")
         self._source_face = faces[0]
+        if self._params.occlusion_mask:
+            self._masker = OcclusionMasker(parser=self._params.occlusion_parser)
+            self._masker.setup()
 
     def process(self, frame: Frame) -> Frame:
         if self._analyser is None or self._swapper is None or self._source_face is None:
@@ -186,7 +209,13 @@ class FaceSwapper:
         for face in faces:
             if not _face_matches(face, target_sex):
                 continue
-            result = self._swap_one(result, face)
+            before = result
+            result = self._swap_one(before, face)
+            if self._params.occlusion_mask and self._masker is not None:
+                # Revert non-facial pixels (hair/glasses/boundary) to the
+                # pre-swap frame. Torch parser → serialize across workers.
+                with self._mask_lock:
+                    result = apply_occlusion(before, result, face, self._masker)
             swapped_faces.append(face)
             if not self._params.many_faces:
                 break
@@ -253,3 +282,4 @@ class FaceSwapper:
         self._analyser = None
         self._swapper = None
         self._source_face = None
+        self._masker = None

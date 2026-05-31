@@ -121,6 +121,8 @@ class BatchTask(SinnerBaseModel):
     swapper_rotation_threshold_deg: int = 15
     swapper_rotation_redetect: bool = True
     swapper_rotation_angle_source: str = "pose"  # keypoints | pose
+    swapper_occlusion_mask: bool = False
+    swapper_occlusion_parser: str = "bisenet"  # bisenet | parsenet
     enhancer_enabled: bool = True
     enhancer_upscale: int = 1
     enhancer_only_center_face: bool = False

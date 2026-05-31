@@ -66,6 +66,7 @@ from sinner2.pipeline.processors.face_swapper import (
     RotationAngleSource,
     TargetSex,
 )
+from sinner2.pipeline.processors.occlusion import FaceParser
 from sinner2.pipeline.processors.upscaler import (
     Upscaler,
     UpscalerModel,
@@ -339,6 +340,8 @@ class BatchDriver:
                 rotation_angle_source=RotationAngleSource(
                     task.swapper_rotation_angle_source
                 ),
+                occlusion_mask=task.swapper_occlusion_mask,
+                occlusion_parser=FaceParser(task.swapper_occlusion_parser),
             )
             providers = list(task.swapper_execution.providers)
             stages.append(StageSpec(

@@ -199,6 +199,56 @@ class TestFaceSwapper:
         fs.process(np.full((10, 10, 3), 50, np.uint8))
         sink.publish_crops.assert_not_called()
 
+    def test_occlusion_mask_applied_when_enabled(
+        self,
+        source_image: Path,
+        models_dir: Path,
+        stub_insightface_app: MagicMock,
+        stub_inswapper: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        class _StubMasker:
+            def __init__(self, *a, **k):
+                pass
+
+            def setup(self):
+                pass
+
+            def face_mask(self, _a):
+                return None
+
+        monkeypatch.setattr(face_swapper, "OcclusionMasker", _StubMasker)
+        called: list = []
+        monkeypatch.setattr(
+            face_swapper, "apply_occlusion",
+            lambda before, swapped, face, masker: called.append(True) or swapped,
+        )
+        face = MagicMock(name="t1")
+        face.bbox = np.array([10, 10, 30, 30], float)
+        face.sex = "M"
+        stub_insightface_app.get.side_effect = [[MagicMock(name="src")], [face]]
+        fs = FaceSwapper(
+            source=Source(path=source_image),
+            params=FaceSwapperParams(occlusion_mask=True, rotation_compensation=False),
+        )
+        fs.setup()
+        fs.process(_blank())
+        assert called == [True]
+
+    def test_occlusion_mask_not_built_when_disabled(
+        self,
+        source_image: Path,
+        models_dir: Path,
+        stub_insightface_app: MagicMock,
+        stub_inswapper: MagicMock,
+    ):
+        fs = FaceSwapper(
+            source=Source(path=source_image),
+            params=FaceSwapperParams(occlusion_mask=False),
+        )
+        fs.setup()
+        assert fs._masker is None  # noqa: SLF001 — not built when off
+
     def test_rotation_compensation_uprights_tilted_face(
         self,
         source_image: Path,

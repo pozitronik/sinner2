@@ -28,6 +28,7 @@ from sinner2.config import settings as user_settings
 from sinner2.config.execution import OnnxExecution, TorchExecution
 from sinner2.gui.face_detection_probe import FaceDetectionProbe, FaceDetectionSink
 from sinner2.gui.model_download import ensure_models
+from sinner2.pipeline.processors.occlusion import parser_model_file
 from sinner2.pipeline.processors.upscaler import model_filename
 from sinner2.gui.player_controller import PlayerController, default_cache_root
 from sinner2.gui.widgets.batch_task_dialog import QBatchTaskDialog
@@ -565,11 +566,16 @@ class SinnerMainWindow(QMainWindow):
             return  # editing is locked while a batch renders
         from sinner2.gui.player_controller import CacheSettings
 
-        # If the upscaler was just enabled and its weights aren't present, ask
-        # to download them (never silently). Decline → revert the toggle so the
-        # chain isn't rebuilt with a model that can't load.
+        # If the upscaler / occlusion mask was just enabled and its weights
+        # aren't present, ask to download them (never silently). Decline →
+        # revert the toggle so the chain isn't rebuilt with a missing model.
         if self._processors.upscaler_enabled() and not self._ensure_upscaler_model():
             self._processors.set_upscaler_checked(False)
+        swapper_cfg = self._processors.swapper_params()
+        if swapper_cfg.occlusion_mask and not ensure_models(
+            self, [parser_model_file(swapper_cfg.occlusion_parser)]
+        ):
+            self._processors.set_occlusion_checked(False)
 
         self._controller.apply_session_config(
             swapper_params=self._processors.swapper_params(),
@@ -1037,6 +1043,8 @@ class SinnerMainWindow(QMainWindow):
             swapper_rotation_threshold_deg=self._settings.swapper_rotation_threshold_deg,
             swapper_rotation_redetect=self._settings.swapper_rotation_redetect,
             swapper_rotation_angle_source=self._settings.swapper_rotation_angle_source,
+            swapper_occlusion_mask=self._settings.swapper_occlusion_mask,
+            swapper_occlusion_parser=self._settings.swapper_occlusion_parser,
             enhancer_upscale=self._settings.enhancer_upscale,
             enhancer_only_center_face=self._settings.enhancer_only_center_face,
             playback_mode=self._settings.playback_mode,
@@ -1076,6 +1084,8 @@ class SinnerMainWindow(QMainWindow):
             swapper_rotation_threshold_deg=swapper.rotation_threshold_deg,
             swapper_rotation_redetect=swapper.rotation_redetect,
             swapper_rotation_angle_source=swapper.rotation_angle_source.value,
+            swapper_occlusion_mask=swapper.occlusion_mask,
+            swapper_occlusion_parser=swapper.occlusion_parser.value,
             enhancer_upscale=enhancer.upscale,
             enhancer_only_center_face=enhancer.only_center_face,
             playback_mode=self._processors.playback_mode(),
@@ -1241,6 +1251,8 @@ class SinnerMainWindow(QMainWindow):
             swapper_rotation_threshold_deg=swapper.rotation_threshold_deg,
             swapper_rotation_redetect=swapper.rotation_redetect,
             swapper_rotation_angle_source=swapper.rotation_angle_source.value,
+            swapper_occlusion_mask=swapper.occlusion_mask,
+            swapper_occlusion_parser=swapper.occlusion_parser.value,
             enhancer_enabled=self._processors.enhancer_enabled(),
             enhancer_upscale=enhancer.upscale,
             enhancer_only_center_face=enhancer.only_center_face,

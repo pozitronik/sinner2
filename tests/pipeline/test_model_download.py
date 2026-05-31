@@ -114,8 +114,10 @@ class TestDownloadModel:
         monkeypatch.setattr(
             "urllib.request.urlopen", lambda *_a, **_k: _FailingResponse()
         )
-        with pytest.raises(OSError, match="connection reset"):
+        with pytest.raises(RuntimeError, match="connection reset") as exc:
             model_cache.download_model("inswapper_128.onnx")
+        # The URL is surfaced so a download failure is debuggable.
+        assert "https://" in str(exc.value)
         assert not (models_dir / "inswapper_128.onnx").exists()
         assert not (models_dir / "inswapper_128.onnx.part").exists()
 

@@ -67,6 +67,8 @@ class Settings(SinnerBaseModel):
     swapper_rotation_threshold_deg: int | None = None
     swapper_rotation_redetect: bool | None = None
     swapper_rotation_angle_source: str | None = None
+    swapper_occlusion_mask: bool | None = None
+    swapper_occlusion_parser: str | None = None  # bisenet | parsenet
     swapper_providers: list[str] | None = None  # realtime ONNX EPs (swapper + analyser)
     enhancer_device: str | None = None  # realtime torch device for GFPGAN
     # Upscaler (Real-ESRGAN) — whole-frame super-resolution
