@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, Qt
+from PySide6.QtCore import QByteArray, Qt, QThread, Signal
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -24,9 +24,11 @@ from sinner2.batch.task import (
 from sinner2.batch.task_store import BatchTaskStore
 from sinner2.config import settings as user_settings
 from sinner2.config.execution import OnnxExecution, TorchExecution
+from sinner2.gui.face_detection_probe import FaceDetectionProbe
 from sinner2.gui.player_controller import PlayerController, default_cache_root
 from sinner2.gui.widgets.batch_task_dialog import QBatchTaskDialog
 from sinner2.gui.widgets.batch_view import QBatchView
+from sinner2.gui.widgets.face_detection_overlay import QFaceDetectionOverlay
 from sinner2.gui.widgets.frame_display import QFrameDisplayWidget
 from sinner2.gui.widgets.metrics_overlay import (
     CumulativeRateTracker,
@@ -61,6 +63,9 @@ class SinnerMainWindow(QMainWindow):
     All real work lives on PlayerController; this class is layout, keyboard
     shortcuts, and error dialogs. Closing the window tears down the player.
     """
+
+    # Cross-thread request to the detection probe (runs on its own QThread).
+    _requestDetection = Signal(object, int, int)  # frame, width, height
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -117,6 +122,26 @@ class SinnerMainWindow(QMainWindow):
             snapshot_fn=self._sample_metrics,
             parent=self._display,
         )
+        # Face-detection debug overlay: a transparent full-cover child of the
+        # display, fed by a detection probe running on its own thread (so the
+        # live preview never stalls). Off by default; toggled with F8.
+        self._face_overlay_on = False
+        self._last_probe_feed = 0.0
+        self._face_overlay = QFaceDetectionOverlay(parent=self._display)
+        self._display.set_face_overlay(self._face_overlay)
+        self._detection_probe = FaceDetectionProbe(
+            providers=self._settings.swapper_providers
+        )
+        self._detection_thread = QThread(self)
+        self._detection_probe.moveToThread(self._detection_thread)
+        self._detection_thread.start()
+        self._requestDetection.connect(
+            self._detection_probe.analyze, Qt.ConnectionType.QueuedConnection
+        )
+        self._detection_probe.detectionsReady.connect(
+            self._on_detections, Qt.ConnectionType.QueuedConnection
+        )
+        self._display.frameDisplayed.connect(self._feed_detection_probe)
 
         central = QWidget()
         # Resizable divider between the frame display and the side panel
@@ -274,6 +299,7 @@ class SinnerMainWindow(QMainWindow):
         self._restore_side_panel_state()
         self._restore_top_splitter_from_settings()
         self._restore_metrics_overlay_state()
+        self._restore_face_overlay_state()
         self._restore_stays_on_top()
         self._restore_rotation()
         self._restore_paths_from_settings()
@@ -561,6 +587,9 @@ class SinnerMainWindow(QMainWindow):
         if key == Qt.Key.Key_F12:
             self._status_bar.on_top_button.toggle()
             return
+        if key == Qt.Key.Key_F8:
+            self._toggle_face_overlay()
+            return
         if key == Qt.Key.Key_R:
             self._status_bar.rotate_button.click()
             return
@@ -805,6 +834,49 @@ class SinnerMainWindow(QMainWindow):
         if self._metrics_overlay.isVisible():
             self._reposition_metrics_overlay()
 
+    # ---- Face-detection overlay ----
+
+    _PROBE_INTERVAL_S = 0.15  # ~6 Hz: enough to track, cheap enough to stay smooth
+
+    def _toggle_face_overlay(self) -> None:
+        self._set_face_overlay_visible(not self._face_overlay_on)
+
+    def _set_face_overlay_visible(self, on: bool) -> None:
+        self._face_overlay_on = on
+        if on:
+            self._face_overlay.setGeometry(self._display.rect())
+            self._face_overlay.show()
+            self._status_bar.show_message(
+                "Face-detection overlay on (F8) — disable the swapper to "
+                "inspect target faces", 4000
+            )
+        else:
+            self._face_overlay.hide()
+            self._face_overlay.clear()
+        self._update_settings(face_overlay_visible=on)
+
+    def _restore_face_overlay_state(self) -> None:
+        self._set_face_overlay_visible(bool(self._settings.face_overlay_visible))
+
+    def _feed_detection_probe(self, frame: Frame) -> None:
+        # Tap each displayed frame; forward a throttled, decoupled copy to the
+        # probe thread. Zero cost when the overlay is off.
+        if not self._face_overlay_on:
+            return
+        import time as _time
+
+        now = _time.monotonic()
+        if now - self._last_probe_feed < self._PROBE_INTERVAL_S:
+            return
+        self._last_probe_feed = now
+        h, w = frame.shape[:2]
+        # Copy so the producer can't mutate the buffer under the probe thread.
+        self._requestDetection.emit(frame.copy(), w, h)
+
+    def _on_detections(self, detections: object, width: int, height: int) -> None:
+        if self._face_overlay_on:
+            self._face_overlay.set_detections(detections, width, height)  # type: ignore[arg-type]
+
     def closeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         self._persist_geometry_to_settings()
         # Stop the batch queue FIRST so its runner thread joins
@@ -812,6 +884,10 @@ class SinnerMainWindow(QMainWindow):
         # shared resources (models, etc.).
         self._batch_queue.stop()
         self._controller.shutdown()
+        # Stop the detection probe thread (debug overlay) so it doesn't
+        # outlive Qt during shutdown.
+        self._detection_thread.quit()
+        self._detection_thread.wait(2000)
         # Stop the thumbnail thread pool; without this the daemon
         # workers occasionally outlive Qt and emit GUI-warning noise
         # during interpreter shutdown.

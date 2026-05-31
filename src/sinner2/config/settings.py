@@ -60,6 +60,7 @@ class Settings(SinnerBaseModel):
     synced_max_lag_frames: int | None = None
     side_panel_visible: bool | None = None
     metrics_overlay_visible: bool | None = None
+    face_overlay_visible: bool | None = None  # face-detection debug overlay
     swapper_providers: list[str] | None = None  # realtime ONNX EPs (swapper + analyser)
     enhancer_device: str | None = None  # realtime torch device for GFPGAN
     recent_sources: list[str] | None = None

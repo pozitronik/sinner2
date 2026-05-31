@@ -1,5 +1,5 @@
 import numpy as np
-from PySide6.QtCore import Qt, Signal, Slot
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal, Slot
 from PySide6.QtGui import QImage, QPainter, QPaintEvent, QPixmap, QTransform
 from PySide6.QtWidgets import QWidget
 
@@ -25,11 +25,17 @@ class QFrameDisplayWidget(QWidget):
     """
 
     _frameReady = Signal(object, int)
+    # Emitted on the GUI thread each time a frame lands, carrying the frame.
+    # The face-detection overlay feeder taps this to run detection.
+    frameDisplayed = Signal(object)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._pixmap: QPixmap | None = None
         self._rotation: int = 0
+        # A full-cover child overlay (face-detection debug) kept stretched to
+        # the display's rect; None when no overlay is attached.
+        self._face_overlay: QWidget | None = None
         self._frameReady.connect(self._on_frame_ready, type=Qt.ConnectionType.QueuedConnection)
         self.setMinimumSize(160, 90)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
@@ -85,6 +91,50 @@ class QFrameDisplayWidget(QWidget):
         ).copy()
         self._pixmap = QPixmap.fromImage(image)
         self.update()
+        self.frameDisplayed.emit(frame)
+
+    # ---- Overlay support (coordinate mapping + full-cover child) ----
+
+    def current_frame_size(self) -> tuple[int, int] | None:
+        """Native (w, h) of the frame currently shown, or None if none yet."""
+        if self._pixmap is None or self._pixmap.isNull():
+            return None
+        return self._pixmap.width(), self._pixmap.height()
+
+    def map_from_frame(self, fx: float, fy: float) -> QPointF | None:
+        """Map a point in the displayed frame's pixel space to widget
+        coordinates, accounting for the display rotation and the
+        fit-scale-and-center used by paintEvent. None if no frame is shown."""
+        if self._pixmap is None or self._pixmap.isNull():
+            return None
+        pw, ph = self._pixmap.width(), self._pixmap.height()
+        if self._rotation == 0:
+            rx, ry, rw, rh = fx, fy, float(pw), float(ph)
+        else:
+            # Rotate the point exactly as paintEvent rotates the pixmap, then
+            # shift into the rotated pixmap's (0,0)-origin coordinate space.
+            transform = QTransform().rotate(self._rotation)
+            bound = transform.mapRect(QRectF(0, 0, pw, ph))
+            p = transform.map(QPointF(fx, fy))
+            rx, ry = p.x() - bound.left(), p.y() - bound.top()
+            rw, rh = bound.width(), bound.height()
+        if rw <= 0 or rh <= 0:
+            return None
+        scale = min(self.width() / rw, self.height() / rh)
+        ox = (self.width() - rw * scale) / 2
+        oy = (self.height() - rh * scale) / 2
+        return QPointF(ox + rx * scale, oy + ry * scale)
+
+    def set_face_overlay(self, widget: QWidget | None) -> None:
+        """Attach a child overlay kept stretched to cover the display."""
+        self._face_overlay = widget
+        if widget is not None:
+            widget.setGeometry(self.rect())
+
+    def resizeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        super().resizeEvent(event)
+        if self._face_overlay is not None:
+            self._face_overlay.setGeometry(self.rect())
 
     def paintEvent(self, event: QPaintEvent) -> None:
         painter = QPainter(self)
