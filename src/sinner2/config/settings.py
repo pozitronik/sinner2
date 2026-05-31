@@ -61,6 +61,7 @@ class Settings(SinnerBaseModel):
     side_panel_visible: bool | None = None
     metrics_overlay_visible: bool | None = None
     face_overlay_visible: bool | None = None  # face-detection debug overlay
+    face_comparison_visible: bool | None = None  # orig/swapped comparison thumbs
     # Rotation compensation (swapper, experimental)
     swapper_rotation_compensation: bool | None = None
     swapper_rotation_threshold_deg: int | None = None

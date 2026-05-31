@@ -44,6 +44,29 @@ class TestFaceDetectionSink:
         sink.clear()
         assert sink.latest_detections() is None
 
+    def test_wants_crops_toggle(self):
+        sink = FaceDetectionSink()
+        assert sink.wants_crops() is False
+        sink.set_wants_crops(True)
+        assert sink.wants_crops() is True
+
+    def test_publish_and_latest_crops(self):
+        sink = FaceDetectionSink()
+        assert sink.latest_crops() is None
+        pair = ((0, 0, 4, 4), np.zeros((4, 4, 3), np.uint8), np.ones((4, 4, 3), np.uint8))
+        sink.publish_crops([pair], 20, 10)
+        crops = sink.latest_crops()
+        assert crops is not None
+        pairs, w, h = crops
+        assert (w, h) == (20, 10) and len(pairs) == 1
+
+    def test_clear_drops_crops(self):
+        sink = FaceDetectionSink()
+        sink.publish_crops([((0, 0, 1, 1), np.zeros((2, 2, 3), np.uint8),
+                             np.zeros((2, 2, 3), np.uint8))], 10, 10)
+        sink.clear()
+        assert sink.latest_crops() is None
+
 
 def test_emits_detections_from_detect_fn(qtbot):
     face = SimpleNamespace(

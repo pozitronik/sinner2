@@ -18,8 +18,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+import numpy as np
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QWidget
 
 _BOX_COLOR = QColor(90, 220, 120)     # green box
@@ -72,6 +73,14 @@ def face_from_insightface(face: Any) -> FaceDetection:
     )
 
 
+def _bgr_to_pixmap(crop: np.ndarray) -> QPixmap:
+    """A BGR ndarray crop → QPixmap (copy detaches from the buffer)."""
+    crop = np.ascontiguousarray(crop)
+    h, w = crop.shape[:2]
+    image = QImage(crop.data, w, h, w * 3, QImage.Format.Format_BGR888).copy()
+    return QPixmap.fromImage(image)
+
+
 class QFaceDetectionOverlay(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -82,6 +91,10 @@ class QFaceDetectionOverlay(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
         self._detections: list[FaceDetection] = []
         self._frame_size: tuple[int, int] | None = None
+        # Comparison mode: [orig | swapped] thumbnail pairs next to each box.
+        self._comparison_on = False
+        self._crop_pairs: list[tuple[tuple, QPixmap, QPixmap]] = []
+        self._crop_frame_size: tuple[int, int] | None = None
         self.hide()
 
     def set_detections(
@@ -91,28 +104,48 @@ class QFaceDetectionOverlay(QWidget):
         self._frame_size = (frame_w, frame_h)
         self.update()
 
+    def set_comparison(self, on: bool) -> None:
+        self._comparison_on = on
+        if not on:
+            self._crop_pairs = []
+            self._crop_frame_size = None
+        self.update()
+
+    def set_crop_pairs(self, pairs: list, frame_w: int, frame_h: int) -> None:
+        """`pairs`: list of (bbox, original_bgr, swapped_bgr). Converts the BGR
+        crops to pixmaps once, here, rather than on every paint."""
+        self._crop_pairs = [
+            (bbox, _bgr_to_pixmap(orig), _bgr_to_pixmap(swap))
+            for bbox, orig, swap in pairs
+        ]
+        self._crop_frame_size = (frame_w, frame_h)
+        self.update()
+
     def clear(self) -> None:
         self._detections = []
         self._frame_size = None
+        self._crop_pairs = []
+        self._crop_frame_size = None
         self.update()
 
     def paintEvent(self, event) -> None:  # type: ignore[no-untyped-def]
-        if not self._detections or self._frame_size is None:
-            return
         parent = self.parent()
         mapper = getattr(parent, "map_from_frame", None)
         cur_size_fn = getattr(parent, "current_frame_size", None)
         cur = cur_size_fn() if cur_size_fn is not None else None
-        # Only draw when these detections were computed on the frame the
-        # display is currently showing — otherwise the boxes would land on
-        # stale coordinates after a resolution change.
-        if mapper is None or cur is None or cur != self._frame_size:
+        if mapper is None or cur is None:
             return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setFont(QFont("Sans", 8))
-        for det in self._detections:
-            self._draw_face(painter, mapper, det)
+        # Each layer is drawn only when it was computed on the frame currently
+        # shown — so stale boxes/crops never land on the wrong frame.
+        if self._detections and self._frame_size == cur:
+            for det in self._detections:
+                self._draw_face(painter, mapper, det)
+        if self._comparison_on and self._crop_pairs and self._crop_frame_size == cur:
+            for bbox, pm_orig, pm_swap in self._crop_pairs:
+                self._draw_crop_pair(painter, mapper, bbox, pm_orig, pm_swap)
 
     def _draw_face(self, painter: QPainter, mapper, det: FaceDetection) -> None:
         x1, y1, x2, y2 = det.bbox
@@ -162,3 +195,27 @@ class QFaceDetectionOverlay(QWidget):
         for s in lines:
             painter.drawText(QPointF(bx + 4, ty), s)
             ty += line_h
+
+    def _draw_crop_pair(
+        self,
+        painter: QPainter,
+        mapper,
+        bbox: tuple,
+        pm_orig: QPixmap,
+        pm_swap: QPixmap,
+    ) -> None:
+        x1, y1, x2, y2 = bbox
+        anchor = mapper(x2, y1)  # top-right corner of the face box
+        if anchor is None:
+            return
+        label_h = painter.fontMetrics().height()
+        x = anchor.x() + 6
+        y = anchor.y()
+        for label, pm in (("orig", pm_orig), ("swap", pm_swap)):
+            painter.fillRect(QRectF(x, y, pm.width(), label_h), _TEXT_BG)
+            painter.setPen(QPen(_TEXT_COLOR))
+            painter.drawText(QPointF(x + 2, y + label_h - 3), label)
+            painter.drawPixmap(int(x), int(y + label_h), pm)
+            painter.setPen(QPen(_BOX_COLOR))
+            painter.drawRect(QRectF(x, y + label_h, pm.width(), pm.height()))
+            x += pm.width() + 3

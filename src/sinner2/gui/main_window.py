@@ -126,6 +126,7 @@ class SinnerMainWindow(QMainWindow):
         # display, fed by a detection probe running on its own thread (so the
         # live preview never stalls). Off by default; toggled with F8.
         self._face_overlay_on = False
+        self._comparison_on = False
         self._last_probe_feed = 0.0
         # Last frame handed to the display, kept so enabling the overlay can
         # detect the current frame immediately (e.g. while paused) instead of
@@ -265,6 +266,7 @@ class SinnerMainWindow(QMainWindow):
         self._batch_view.editRequested.connect(self._on_edit_batch_task)
         self._processors.configChanged.connect(self._on_processor_config_changed)
         self._processors.configChanged.connect(self._persist_processor_settings)
+        self._processors.faceComparisonToggled.connect(self._set_comparison_visible)
         # Cache-management actions (own signals so they don't go through
         # configChanged, which is for runtime tuning of the chain).
         self._processors.browseRootRequested.connect(self._on_browse_cache_root)
@@ -315,6 +317,7 @@ class SinnerMainWindow(QMainWindow):
         self._restore_top_splitter_from_settings()
         self._restore_metrics_overlay_state()
         self._restore_face_overlay_state()
+        self._restore_comparison_state()
         self._restore_stays_on_top()
         self._restore_rotation()
         self._restore_paths_from_settings()
@@ -855,6 +858,7 @@ class SinnerMainWindow(QMainWindow):
 
     def _apply_face_overlay_visible(self, on: bool) -> None:
         self._face_overlay_on = on
+        self._refresh_overlay_modes()
         if on:
             self._face_overlay.setGeometry(self._display.rect())
             self._face_overlay.show()
@@ -875,15 +879,29 @@ class SinnerMainWindow(QMainWindow):
             # paused) can display the current frame's boxes at once instead of
             # waiting for the next rendered frame.
 
+    def _refresh_overlay_modes(self) -> None:
+        """Comparison crops are only wanted (and drawn) when BOTH the face
+        overlay and the comparison toggle are on — so the swapper extracts
+        them only then (zero cost otherwise)."""
+        comparison = self._face_overlay_on and self._comparison_on
+        self._detection_sink.set_wants_crops(comparison)
+        self._face_overlay.set_comparison(comparison)
+
     def _overlay_tick(self) -> None:
-        # Swapper-on path: poll the swapper's published PRE-swap detections.
-        # (Swapper-off path runs through the probe, fed by displayed frames.)
+        # Swapper-on path: poll the swapper's published PRE-swap detections
+        # (and, in comparison mode, its orig/swapped crops). The swapper-off
+        # path runs through the probe, fed by displayed frames.
         if not self._face_overlay_on or not self._processors.swapper_enabled():
             return
         latest = self._detection_sink.latest_detections()
         if latest is not None:
             detections, w, h = latest
             self._face_overlay.set_detections(detections, w, h)
+        if self._comparison_on:
+            crops = self._detection_sink.latest_crops()
+            if crops is not None:
+                pairs, w, h = crops
+                self._face_overlay.set_crop_pairs(pairs, w, h)
 
     def _set_face_overlay_visible(self, on: bool) -> None:
         """Toggle handler for the face button (and F8). Applies + persists."""
@@ -902,6 +920,31 @@ class SinnerMainWindow(QMainWindow):
         visible = bool(self._settings.face_overlay_visible)
         self._apply_face_overlay_visible(visible)
         self._set_button_checked(self._status_bar.face_button, visible)
+
+    def _set_comparison_visible(self, on: bool) -> None:
+        """Toggle handler for the comparison checkbox. Persists + applies."""
+        self._comparison_on = on
+        self._refresh_overlay_modes()
+        if on:
+            # Force one reprocess so the current (possibly paused) frame's crops
+            # publish now, instead of only after the next rendered frame.
+            executor = self._controller.executor()
+            if executor is not None:
+                current = executor.current_frame.get()
+                if current >= 0:
+                    executor.seek(current)
+            if not (self._face_overlay_on and self._processors.swapper_enabled()):
+                self._status_bar.show_message(
+                    "Comparison needs the face overlay (F8) and the swapper on",
+                    4000,
+                )
+        self._update_settings(face_comparison_visible=on)
+
+    def _restore_comparison_state(self) -> None:
+        on = bool(self._settings.face_comparison_visible)
+        self._comparison_on = on
+        self._processors.set_comparison_checked(on)
+        self._refresh_overlay_modes()
 
     def _feed_detection_probe(self, frame: Frame) -> None:
         # Tap each displayed frame. Always remember the latest (so enabling the

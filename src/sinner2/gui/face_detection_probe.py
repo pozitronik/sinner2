@@ -40,6 +40,10 @@ class FaceDetectionSink:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._latest: tuple[list, int, int] | None = None  # faces, width, height
+        # Original/swapped crop pairs for the comparison overlay, and whether
+        # the swapper should bother extracting them (false → zero cost).
+        self._wants_crops = False
+        self._latest_crops: tuple[list, int, int] | None = None
 
     def publish(self, faces: list, width: int, height: int) -> None:
         with self._lock:
@@ -53,9 +57,29 @@ class FaceDetectionSink:
         faces, w, h = latest
         return [face_from_insightface(f) for f in faces], w, h
 
+    # ---- Comparison crops ----
+
+    def set_wants_crops(self, on: bool) -> None:
+        with self._lock:
+            self._wants_crops = bool(on)
+
+    def wants_crops(self) -> bool:
+        with self._lock:
+            return self._wants_crops
+
+    def publish_crops(self, pairs: list, width: int, height: int) -> None:
+        """`pairs`: list of (bbox, original_bgr, swapped_bgr) for swapped faces."""
+        with self._lock:
+            self._latest_crops = (list(pairs), width, height)
+
+    def latest_crops(self) -> tuple[list, int, int] | None:
+        with self._lock:
+            return self._latest_crops
+
     def clear(self) -> None:
         with self._lock:
             self._latest = None
+            self._latest_crops = None
 
 
 class FaceDetectionProbe(QObject):

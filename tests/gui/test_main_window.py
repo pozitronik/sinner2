@@ -210,6 +210,20 @@ class TestStatusActionButtons:
         window._set_face_overlay_visible(False)  # noqa: SLF001
         assert window._detection_sink.latest_detections() is not None  # noqa: SLF001
 
+    def test_comparison_checkbox_drives_wants_crops(self, window):
+        window._status_bar.face_button.toggle()  # noqa: SLF001  # overlay on
+        window._processors._comparison_enabled.toggle()  # noqa: SLF001  # comparison on
+        assert window._detection_sink.wants_crops() is True  # noqa: SLF001
+        assert window._face_overlay._comparison_on is True  # noqa: SLF001
+        window._processors._comparison_enabled.toggle()  # noqa: SLF001  # off
+        assert window._detection_sink.wants_crops() is False  # noqa: SLF001
+
+    def test_comparison_wants_crops_requires_overlay_on(self, window):
+        # Comparison checked but the overlay is OFF → no crop extraction wanted.
+        window._processors._comparison_enabled.toggle()  # noqa: SLF001
+        assert window._comparison_on is True  # noqa: SLF001
+        assert window._detection_sink.wants_crops() is False  # noqa: SLF001
+
     def test_hint_reflects_swapper_state(self, window, monkeypatch):
         monkeypatch.setattr(window._processors, "swapper_enabled", lambda: True)
         window._set_face_overlay_visible(True)  # noqa: SLF001

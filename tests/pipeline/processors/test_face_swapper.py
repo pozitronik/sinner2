@@ -153,6 +153,52 @@ class TestFaceSwapper:
         assert args[0] == [t1, t2]
         assert args[1:] == (10, 10)  # width, height
 
+    def test_publishes_comparison_crops_when_wanted(
+        self,
+        source_image: Path,
+        models_dir: Path,
+        stub_insightface_app: MagicMock,
+        stub_inswapper: MagicMock,
+    ):
+        face = MagicMock(name="t1")
+        face.bbox = np.array([2, 2, 8, 8], float)
+        face.sex = "M"
+        stub_insightface_app.get.side_effect = [[MagicMock(name="src")], [face]]
+        sink = MagicMock()
+        sink.wants_crops.return_value = True
+        fs = FaceSwapper(
+            source=Source(path=source_image),
+            params=FaceSwapperParams(rotation_compensation=False),
+            detection_sink=sink,
+        )
+        fs.setup()
+        fs.process(np.full((10, 10, 3), 50, np.uint8))
+        sink.publish_crops.assert_called_once()
+        pairs = sink.publish_crops.call_args.args[0]
+        assert len(pairs) == 1  # one swapped face → one (bbox, orig, swap) pair
+
+    def test_no_comparison_crops_when_not_wanted(
+        self,
+        source_image: Path,
+        models_dir: Path,
+        stub_insightface_app: MagicMock,
+        stub_inswapper: MagicMock,
+    ):
+        face = MagicMock(name="t1")
+        face.bbox = np.array([2, 2, 8, 8], float)
+        face.sex = "M"
+        stub_insightface_app.get.side_effect = [[MagicMock(name="src")], [face]]
+        sink = MagicMock()
+        sink.wants_crops.return_value = False
+        fs = FaceSwapper(
+            source=Source(path=source_image),
+            params=FaceSwapperParams(rotation_compensation=False),
+            detection_sink=sink,
+        )
+        fs.setup()
+        fs.process(np.full((10, 10, 3), 50, np.uint8))
+        sink.publish_crops.assert_not_called()
+
     def test_rotation_compensation_uprights_tilted_face(
         self,
         source_image: Path,

@@ -129,6 +129,8 @@ class QProcessorControls(QWidget):
     """
 
     configChanged = Signal()
+    # View toggle (does NOT rebuild the session, unlike configChanged).
+    faceComparisonToggled = Signal(bool)
     browseRootRequested = Signal()
     resetRootRequested = Signal()
     invalidateRequested = Signal()
@@ -296,6 +298,18 @@ class QProcessorControls(QWidget):
             lambda _: self.configChanged.emit()
         )
         face_form.addRow("Angle source", self._rotation_source)
+
+        # Comparison overlay (a view toggle, NOT a chain param → its own signal,
+        # never configChanged). Shows [orig | swapped] thumbnails next to each
+        # face; effective only with the swapper + face overlay (F8) both on.
+        self._comparison_enabled = QCheckBox()
+        self._comparison_enabled.setToolTip(
+            "Show original vs swapped face thumbnails next to each detected\n"
+            "face on the preview. Needs the face-detection overlay (F8) and\n"
+            "the swapper both on."
+        )
+        self._comparison_enabled.toggled.connect(self.faceComparisonToggled)
+        face_form.addRow("Show orig/swapped", self._comparison_enabled)
         self._face_box = face_box
 
         execution_box = QGroupBox("Execution")
@@ -727,6 +741,15 @@ class QProcessorControls(QWidget):
 
     def swapper_enabled(self) -> bool:
         return self._swapper_box.isChecked()
+
+    def face_comparison_enabled(self) -> bool:
+        return self._comparison_enabled.isChecked()
+
+    def set_comparison_checked(self, on: bool) -> None:
+        """Reflect persisted comparison state without firing the toggle."""
+        self._comparison_enabled.blockSignals(True)
+        self._comparison_enabled.setChecked(bool(on))
+        self._comparison_enabled.blockSignals(False)
 
     def skip_strategy(self) -> FrameSkipStrategy:
         cls = _STRATEGIES[self._strategy_combo.currentText()]

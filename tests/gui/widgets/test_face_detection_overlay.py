@@ -88,6 +88,39 @@ class TestPainting:
         overlay.show()
         overlay.grab()  # forces paintEvent; must not raise
 
+    def test_comparison_pairs_paint_without_crashing(self, qtbot):
+        d = QFrameDisplayWidget()
+        qtbot.addWidget(d)
+        d.resize(400, 400)
+        d._on_frame_ready(np.zeros((100, 200, 3), dtype=np.uint8), 0)  # noqa: SLF001
+        overlay = QFaceDetectionOverlay(parent=d)
+        overlay.setGeometry(d.rect())
+        overlay.set_comparison(True)
+        overlay.set_crop_pairs(
+            [
+                (
+                    (10, 10, 60, 80),
+                    np.full((20, 20, 3), 100, np.uint8),
+                    np.full((20, 20, 3), 200, np.uint8),
+                )
+            ],
+            200,
+            100,
+        )
+        overlay.show()
+        overlay.grab()  # forces paintEvent over the crop pairs; must not raise
+
+    def test_comparison_off_clears_pairs(self, qtbot):
+        overlay = QFaceDetectionOverlay()
+        qtbot.addWidget(overlay)
+        overlay.set_crop_pairs(
+            [((0, 0, 4, 4), np.zeros((4, 4, 3), np.uint8), np.zeros((4, 4, 3), np.uint8))],
+            200,
+            100,
+        )
+        overlay.set_comparison(False)
+        assert overlay._crop_pairs == []  # noqa: SLF001
+
     def test_skips_draw_on_frame_size_mismatch(self, qtbot):
         # Detections computed on a 999x999 frame must not draw over a 200x100
         # one — the size guard prevents stale boxes on the wrong frame.

@@ -1,6 +1,7 @@
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
+import cv2
 from pydantic import Field
 
 from sinner2.config.base import SinnerBaseModel
@@ -61,6 +62,33 @@ class FaceSwapperParams(SinnerBaseModel):
 
 
 _MODEL_FILE = "inswapper_128.onnx"
+
+
+_CROP_THUMB_MAX = 96  # longest side of a comparison thumbnail, px
+
+
+def _crop_thumb(img: Frame, bbox: Any) -> Frame | None:
+    """The face's bbox region from `img`, downsized to a small thumbnail.
+    None when the bbox is empty or off-frame."""
+    h, w = img.shape[:2]
+    x1 = max(0, int(bbox[0]))
+    y1 = max(0, int(bbox[1]))
+    x2 = min(w, int(bbox[2]))
+    y2 = min(h, int(bbox[3]))
+    if x2 <= x1 or y2 <= y1:
+        return None
+    crop = img[y1:y2, x1:x2]
+    ch, cw = crop.shape[:2]
+    scale = _CROP_THUMB_MAX / max(ch, cw)
+    if scale < 1.0:
+        crop = cast(
+            Frame,
+            cv2.resize(
+                crop, (max(1, int(cw * scale)), max(1, int(ch * scale))),
+                interpolation=cv2.INTER_AREA,
+            ),
+        )
+    return crop.copy()
 
 
 def _face_matches(face: Any, target_sex: TargetSex) -> bool:
@@ -154,13 +182,39 @@ class FaceSwapper:
                 pass
         target_sex = self._resolved_target_sex()
         result = frame
+        swapped_faces: list[Any] = []
         for face in faces:
             if not _face_matches(face, target_sex):
                 continue
             result = self._swap_one(result, face)
+            swapped_faces.append(face)
             if not self._params.many_faces:
                 break
+        self._maybe_publish_crops(frame, result, swapped_faces)
         return result
+
+    def _maybe_publish_crops(
+        self, original: Frame, result: Frame, swapped_faces: list[Any]
+    ) -> None:
+        """Publish (bbox, original-crop, swapped-crop) thumbnails for the
+        comparison overlay — only when the sink asks for them (zero cost
+        otherwise). Best-effort; never affects the swap."""
+        sink = self._detection_sink
+        if sink is None:
+            return
+        try:
+            if not sink.wants_crops():
+                return
+            pairs = []
+            for face in swapped_faces:
+                orig = _crop_thumb(original, face.bbox)
+                swap = _crop_thumb(result, face.bbox)
+                if orig is not None and swap is not None:
+                    bbox = tuple(float(v) for v in face.bbox[:4])
+                    pairs.append((bbox, orig, swap))
+            sink.publish_crops(pairs, original.shape[1], original.shape[0])
+        except Exception:
+            pass
 
     def _swap_one(self, result: Frame, face: Any) -> Frame:
         """Swap a single face — uprighting it first when rotation
