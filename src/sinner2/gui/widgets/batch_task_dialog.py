@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -20,8 +21,10 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QPushButton,
+    QSlider,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -37,6 +40,10 @@ from sinner2.config.execution import (
     DEFAULT_ONNX_PROVIDERS,
     available_torch_devices,
 )
+from sinner2.config.target import Target, TargetKind
+from sinner2.io.cv2_video_target_reader import CV2VideoTargetReader
+from sinner2.io.frame_resize import scaled_dims
+from sinner2.io.target_reader import ImageTargetReader
 from sinner2.io.video_backend import VideoBackend
 from sinner2.pipeline.image_writer import ImageFormat
 from sinner2.pipeline.model_cache import available_onnx_providers
@@ -214,15 +221,26 @@ class QBatchTaskDialog(QDialog):
         self._reader_pool_size.setRange(1, 16)
         self._reader_pool_size.setValue(task.reader_pool_size)
         exec_form.addRow("Reader pool size:", self._reader_pool_size)
-        self._processing_scale = QSpinBox()
-        self._processing_scale.setRange(10, 100)
-        self._processing_scale.setSuffix("%")
-        self._processing_scale.setValue(round(task.processing_scale * 100))
-        self._processing_scale.setToolTip(
+        # Processing scale: slider drives the percent, the label shows the
+        # resulting WxH for this task's target (probed below). Same control as
+        # the realtime panel; here the dimensions are exact for the task.
+        self._target_native_size: tuple[int, int] | None = None
+        self._scale_slider = QSlider(Qt.Orientation.Horizontal)
+        self._scale_slider.setRange(10, 100)
+        self._scale_slider.setValue(round(task.processing_scale * 100))
+        self._scale_slider.setToolTip(
             "Downscale frames before processing for speed (output is the "
             "reduced resolution). 100% = full resolution."
         )
-        exec_form.addRow("Processing scale:", self._processing_scale)
+        self._scale_label = QLabel()
+        self._scale_label.setMinimumWidth(110)
+        self._scale_slider.valueChanged.connect(self._update_scale_label)
+        scale_row = QWidget()
+        scale_row_layout = QHBoxLayout(scale_row)
+        scale_row_layout.setContentsMargins(0, 0, 0, 0)
+        scale_row_layout.addWidget(self._scale_slider, stretch=1)
+        scale_row_layout.addWidget(self._scale_label)
+        exec_form.addRow("Processing scale:", scale_row)
         self._cleanup_combo = QComboBox()
         for label, value in _CLEANUP_OPTIONS:
             self._cleanup_combo.addItem(label, value)
@@ -285,6 +303,9 @@ class QBatchTaskDialog(QDialog):
         self._format_combo.currentIndexChanged.connect(
             self._refresh_default_output
         )
+        # Re-probe the scale readout's dimensions whenever the target changes.
+        self._target_edit.textChanged.connect(self._refresh_scale_dims)
+        self._refresh_scale_dims()  # initial probe for the task's target
 
     @classmethod
     def from_task(
@@ -336,7 +357,7 @@ class QBatchTaskDialog(QDialog):
                 ),
                 "video_backend": VideoBackend(self._video_backend.currentData()),
                 "reader_pool_size": self._reader_pool_size.value(),
-                "processing_scale": self._processing_scale.value() / 100.0,
+                "processing_scale": self._scale_slider.value() / 100.0,
                 "cleanup_mode": BatchCleanupMode(
                     self._cleanup_combo.currentData()
                 ),
@@ -368,6 +389,42 @@ class QBatchTaskDialog(QDialog):
             }
         )
         return resolve_output_path(probe, self._global_output_dir)
+
+    def _probe_native_size(self) -> tuple[int, int] | None:
+        """Read the current target's native (width, height), or None if it
+        can't be determined (empty/missing/unreadable path, unsupported kind).
+
+        Uses cv2 for video so a dimensions readout never depends on ffmpeg
+        being installed; native size is backend-independent anyway."""
+        try:
+            target = Target(path=Path(self._target_edit.text()))
+            if target.kind is TargetKind.IMAGE:
+                reader: ImageTargetReader | CV2VideoTargetReader = (
+                    ImageTargetReader(target)
+                )
+            elif target.kind is TargetKind.VIDEO:
+                reader = CV2VideoTargetReader(target)
+            else:
+                return None
+        except Exception:
+            return None
+        try:
+            return reader.native_width, reader.native_height
+        finally:
+            reader.release()
+
+    def _refresh_scale_dims(self) -> None:
+        self._target_native_size = self._probe_native_size()
+        self._update_scale_label()
+
+    def _update_scale_label(self) -> None:
+        pct = self._scale_slider.value()
+        if self._target_native_size is None:
+            self._scale_label.setText(f"{pct}%")
+            return
+        nw, nh = self._target_native_size
+        w, h = scaled_dims(nw, nh, pct / 100.0)
+        self._scale_label.setText(f"{pct}% [{w}x{h}]")
 
     def _refresh_default_output(self) -> None:
         """Re-derive the default; if the field is still showing the old

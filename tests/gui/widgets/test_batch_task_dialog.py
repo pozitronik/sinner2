@@ -219,6 +219,39 @@ class TestWritebackToTask:
         assert edited.output_path is None
 
 
+class TestProcessingScale:
+    def test_prefills_slider_from_task(self, qtbot, tmp_path):
+        t = _task(tmp_path, processing_scale=0.5)
+        dlg = QBatchTaskDialog.from_task(t)
+        qtbot.addWidget(dlg)
+        assert dlg._scale_slider.value() == 50  # noqa: SLF001
+
+    def test_writeback_scale(self, qtbot, tmp_path):
+        t = _task(tmp_path)
+        dlg = QBatchTaskDialog.from_task(t)
+        qtbot.addWidget(dlg)
+        dlg._scale_slider.setValue(25)  # noqa: SLF001
+        assert dlg.to_task().processing_scale == 0.25
+
+    def test_label_percent_only_when_target_unreadable(self, qtbot, tmp_path):
+        # The fixture target (tgt.mp4) doesn't exist → probe fails → percent only.
+        t = _task(tmp_path, processing_scale=0.5)
+        dlg = QBatchTaskDialog.from_task(t)
+        qtbot.addWidget(dlg)
+        assert dlg._scale_label.text() == "50%"  # noqa: SLF001
+
+    def test_label_shows_dims_for_real_image_target(self, qtbot, tmp_path):
+        import cv2
+        import numpy as np
+
+        img = tmp_path / "face.png"
+        cv2.imwrite(str(img), np.full((100, 80, 3), 128, dtype=np.uint8))  # 80x100
+        t = _task(tmp_path, target_path=img, processing_scale=0.5)
+        dlg = QBatchTaskDialog.from_task(t)
+        qtbot.addWidget(dlg)
+        assert dlg._scale_label.text() == "50% [40x50]"  # noqa: SLF001
+
+
 class TestCleanupMode:
     def test_prefills_from_task(self, qtbot, tmp_path):
         from sinner2.batch.task import BatchCleanupMode
