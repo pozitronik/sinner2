@@ -26,11 +26,15 @@ from sinner2.pipeline.processors.face_swapper_types import RotationAngleSource
 from sinner2.types import Frame
 
 # Crop side as a multiple of the face's larger bbox dimension — generous so the
-# rotated face never clips, with a floor so re-detect/swap has enough pixels.
-_CROP_SCALE = 1.6
+# rotated face never clips and stays well clear of the crop border (where the
+# rotate-back warp samples black), with a floor so re-detect/swap/enhance has
+# enough pixels.
+_CROP_SCALE = 2.0
 _CROP_MIN = 128
-# Pixel-difference threshold for the "what did the swap change" mask.
+# Pixel-difference threshold for the "what did the operation change" mask.
 _DIFF_THRESHOLD = 8
+# Feather (px) on the composite mask — softens the blend back into the frame.
+_FEATHER_SIGMA = 3.0
 
 
 def compute_roll(face: Any, source: RotationAngleSource) -> float:
@@ -81,6 +85,44 @@ def _central_face(faces: list, size: int) -> Any | None:
     return min(faces, key=dist)
 
 
+def _crop_geometry(face: Any, angle_deg: float) -> tuple[np.ndarray, int]:
+    """Upright affine + crop side for a face's bbox."""
+    x1, y1, x2, y2 = (float(v) for v in face.bbox[:4])
+    cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+    size = max(_CROP_MIN, int(_CROP_SCALE * max(x2 - x1, y2 - y1)))
+    return _upright_matrix(cx, cy, angle_deg, size), size
+
+
+def _composite_back(
+    target: Frame, upright: np.ndarray, processed: np.ndarray, m: np.ndarray
+) -> Frame | None:
+    """Blend `processed` (an upright crop after swap/enhance) back into `target`
+    at the original angle, over only the pixels the operation changed.
+
+    Returns None when nothing changed. The alpha is clamped to the warp's valid
+    region (eroded) so the rotate-back never blends in the black border the
+    inverse warp samples outside the crop — the source of the square halos."""
+    h, w = target.shape[:2]
+    diff = cv2.absdiff(processed, upright).max(axis=2)
+    mask = (diff > _DIFF_THRESHOLD).astype(np.float32)
+    if mask.max() <= 0:
+        return None
+    mask = cv2.GaussianBlur(mask, (0, 0), sigmaX=_FEATHER_SIGMA)
+
+    m_inv = cv2.invertAffineTransform(m)
+    back = cv2.warpAffine(processed, m_inv, (w, h)).astype(np.float32)
+    alpha = cv2.warpAffine(mask, m_inv, (w, h))
+    # Only composite where the inverse warp had real source pixels (inside the
+    # crop). Erode to drop the 1-px interpolation fringe at the crop edge.
+    valid = cv2.warpAffine(
+        np.ones(upright.shape[:2], np.float32), m_inv, (w, h)
+    )
+    valid = cv2.erode(valid, np.ones((3, 3), np.uint8))
+    alpha = (alpha * valid)[..., None]
+    blended = target.astype(np.float32) * (1.0 - alpha) + back * alpha
+    return blended.astype(np.uint8)
+
+
 def swap_with_uprighting(
     result: Frame,
     face: Any,
@@ -97,12 +139,7 @@ def swap_with_uprighting(
     it); returns a new frame with this face swapped. Falls back to a plain
     in-place swap on any error."""
     try:
-        h, w = result.shape[:2]
-        x1, y1, x2, y2 = (float(v) for v in face.bbox[:4])
-        cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
-        size = max(_CROP_MIN, int(_CROP_SCALE * max(x2 - x1, y2 - y1)))
-
-        m = _upright_matrix(cx, cy, angle_deg, size)
+        m, size = _crop_geometry(face, angle_deg)
         upright = cv2.warpAffine(result, m, (size, size))
 
         target = None
@@ -112,21 +149,33 @@ def swap_with_uprighting(
             target = _rotated_face(face, m)
 
         swapped = swapper.get(upright, target, source_face, paste_back=True)
-
-        # Mask only what the swap changed (inswapper pastes the new face and
-        # leaves the rest of the crop equal to `upright`), feather it, then warp
-        # both the swapped crop and the mask back to frame space and alpha-blend
-        # — so only the swapped-face pixels are composited, at the right angle.
-        diff = cv2.absdiff(swapped, upright).max(axis=2)
-        mask = (diff > _DIFF_THRESHOLD).astype(np.float32)
-        if mask.max() <= 0:
+        out = _composite_back(result, upright, swapped, m)
+        if out is None:
             return swapper.get(result, face, source_face, paste_back=True)
-        mask = cv2.GaussianBlur(mask, (0, 0), sigmaX=2.0)
-
-        m_inv = cv2.invertAffineTransform(m)
-        back = cv2.warpAffine(swapped, m_inv, (w, h)).astype(np.float32)
-        alpha = cv2.warpAffine(mask, m_inv, (w, h))[..., None]
-        blended = result.astype(np.float32) * (1.0 - alpha) + back * alpha
-        return blended.astype(np.uint8)
+        return out
     except Exception:
         return swapper.get(result, face, source_face, paste_back=True)
+
+
+def enhance_with_uprighting(
+    result: Frame,
+    original: Frame,
+    face: Any,
+    enhance_crop: Any,
+    *,
+    angle_deg: float,
+) -> Frame:
+    """Re-enhance one tilted face uprighted, compositing over `result`.
+
+    The crop is taken from `original` (pre-enhance pixels) so the enhancer sees
+    the raw face, not the cursed whole-frame enhancement already in `result`;
+    `enhance_crop(upright_crop)` returns the enhanced crop. Leaves `result`
+    untouched for this face on any error (it keeps the whole-frame enhance)."""
+    try:
+        m, size = _crop_geometry(face, angle_deg)
+        upright = cv2.warpAffine(original, m, (size, size))
+        enhanced = enhance_crop(upright)
+        out = _composite_back(result, upright, enhanced, m)
+        return result if out is None else out
+    except Exception:
+        return result

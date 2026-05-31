@@ -4,10 +4,25 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
+from sinner2.pipeline import face_analyser
 from sinner2.pipeline.processor import Processor
 from sinner2.pipeline.processors import face_enhancer
 from sinner2.pipeline.processors.face_enhancer import FaceEnhancer, FaceEnhancerParams
 from sinner2.types import Frame
+
+
+@pytest.fixture(autouse=True)
+def stub_face_detection(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    """Rotation compensation (on by default) makes the enhancer detect faces;
+    stub the shared insightface model so tests never load/download it. Detects
+    nothing by default — rotation tests override `.get`."""
+    app = MagicMock()
+    app.get = MagicMock(return_value=[])
+    monkeypatch.setattr(
+        face_analyser, "_get_shared_face_analysis", lambda *a, **k: app
+    )
+    face_analyser.reset_shared_face_analysis()
+    return app
 
 
 @pytest.fixture
@@ -182,3 +197,54 @@ class TestFaceEnhancer:
         fe.setup()
         fe.release()
         assert empties == []
+
+
+class TestRotationCompensation:
+    def test_uprights_tilted_face(
+        self, models_dir, stub_restorer, stub_face_detection, monkeypatch
+    ):
+        called: list = []
+        monkeypatch.setattr(
+            face_enhancer,
+            "enhance_with_uprighting",
+            lambda result, *a, **k: called.append(True) or result,
+        )
+        tilted = MagicMock()
+        tilted.bbox = np.array([2, 2, 8, 8], float)
+        tilted.kps = np.array([[3, 3], [7, 7]], float)  # 45° roll
+        stub_face_detection.get.return_value = [tilted]
+        fe = FaceEnhancer(
+            params=FaceEnhancerParams(
+                rotation_compensation=True, rotation_threshold_deg=15
+            )
+        )
+        fe.setup()
+        fe.process(_blank())
+        assert called == [True]
+
+    def test_skips_upright_face(
+        self, models_dir, stub_restorer, stub_face_detection, monkeypatch
+    ):
+        called: list = []
+        monkeypatch.setattr(
+            face_enhancer,
+            "enhance_with_uprighting",
+            lambda result, *a, **k: called.append(True) or result,
+        )
+        upright = MagicMock()
+        upright.bbox = np.array([2, 2, 8, 8], float)
+        upright.kps = np.array([[3, 5], [7, 5]], float)  # level eyes → 0°
+        stub_face_detection.get.return_value = [upright]
+        fe = FaceEnhancer(params=FaceEnhancerParams())  # rotation on by default
+        fe.setup()
+        fe.process(_blank())
+        assert called == []
+
+    def test_disabled_skips_detection(
+        self, models_dir, stub_restorer, stub_face_detection
+    ):
+        fe = FaceEnhancer(params=FaceEnhancerParams(rotation_compensation=False))
+        fe.setup()
+        assert fe._analyser is None  # noqa: SLF001 — not built when disabled
+        fe.process(_blank())
+        stub_face_detection.get.assert_not_called()

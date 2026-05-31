@@ -78,6 +78,22 @@ class TestSwapWithUprighting:
         # A far corner is untouched.
         assert out[5, 5, 0] == frame[5, 5, 0]
 
+    def test_no_black_halo_near_frame_edge(self):
+        # A face near the corner makes the upright crop extend off-frame, so the
+        # rotate-back warp samples black there. The validity clamp must keep
+        # those border zeros out of the composite — no pixel should go black.
+        frame = np.full((100, 100, 3), 60, np.uint8)
+        face = SimpleNamespace(
+            bbox=np.array([4, 4, 44, 44], float),
+            kps=np.array([[14, 18], [34, 18], [24, 28], [16, 36], [32, 36]], float),
+        )
+        analyser = SimpleNamespace(analyse_uncached=lambda img: [])
+        out = rc.swap_with_uprighting(
+            frame, face, object(), _MarkSwapper(), analyser,
+            angle_deg=25.0, redetect=False,
+        )
+        assert out.min() > 0  # no black halo bled in from the warp border
+
     def test_falls_back_to_direct_swap_on_error(self):
         frame = np.full((100, 100, 3), 50, np.uint8)
         seen_shapes: list = []

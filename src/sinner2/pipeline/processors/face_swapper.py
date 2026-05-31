@@ -44,7 +44,7 @@ class FaceSwapperParams(SinnerBaseModel):
     # detector's keypoints degrade at high in-plane roll; does nothing for
     # out-of-plane yaw. Output-affecting → part of the cache key.
     rotation_compensation: bool = Field(
-        default=False, description="Upright tilted faces before swapping"
+        default=True, description="Upright tilted faces before swapping"
     )
     rotation_threshold_deg: int = Field(
         default=15, ge=0, le=90,
@@ -55,7 +55,7 @@ class FaceSwapperParams(SinnerBaseModel):
         description="Re-detect on the uprighted crop for clean keypoints",
     )
     rotation_angle_source: RotationAngleSource = Field(
-        default=RotationAngleSource.KEYPOINTS,
+        default=RotationAngleSource.POSE,
         description="Measure roll from eye keypoints or the 3D pose estimate",
     )
 

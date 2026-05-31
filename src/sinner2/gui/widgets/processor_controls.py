@@ -711,9 +711,15 @@ class QProcessorControls(QWidget):
         )
 
     def enhancer_params(self) -> FaceEnhancerParams:
+        # Rotation compensation is shared config — the Face-detector group's
+        # controls drive both the swapper and the enhancer.
         return FaceEnhancerParams(
             upscale=self._upscale.value(),
             only_center_face=self._only_center_face.isChecked(),
+            rotation_compensation=self._rotation_enabled.isChecked(),
+            rotation_threshold_deg=self._rotation_threshold.value(),
+            rotation_redetect=self._rotation_redetect.isChecked(),
+            rotation_angle_source=self._rotation_source.currentData(),
         )
 
     def enhancer_enabled(self) -> bool:

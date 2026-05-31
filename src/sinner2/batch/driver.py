@@ -348,6 +348,14 @@ class BatchDriver:
             enhancer_params = FaceEnhancerParams(
                 upscale=task.enhancer_upscale,
                 only_center_face=task.enhancer_only_center_face,
+                # Rotation compensation is shared config (same task fields as
+                # the swapper) — the enhancer needs it too, GFPGAN has none.
+                rotation_compensation=task.swapper_rotation_compensation,
+                rotation_threshold_deg=task.swapper_rotation_threshold_deg,
+                rotation_redetect=task.swapper_rotation_redetect,
+                rotation_angle_source=RotationAngleSource(
+                    task.swapper_rotation_angle_source
+                ),
             )
             device = task.enhancer_execution.device
             stages.append(StageSpec(
