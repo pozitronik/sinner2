@@ -117,7 +117,7 @@ def _composite_back(
     valid = cv2.warpAffine(
         np.ones(upright.shape[:2], np.float32), m_inv, (w, h)
     )
-    valid = cv2.erode(valid, np.ones((3, 3), np.uint8))
+    valid = cv2.erode(valid, np.ones((3, 3), np.uint8), iterations=2)
     alpha = (alpha * valid)[..., None]
     blended = target.astype(np.float32) * (1.0 - alpha) + back * alpha
     return blended.astype(np.uint8)
@@ -140,7 +140,13 @@ def swap_with_uprighting(
     in-place swap on any error."""
     try:
         m, size = _crop_geometry(face, angle_deg)
-        upright = cv2.warpAffine(result, m, (size, size))
+        # Replicate edge pixels for off-frame areas instead of filling black —
+        # otherwise inswapper blends the swapped face against that black and
+        # leaves a dark halo on the face (which the valid-region clamp, being
+        # outside the crop, can't catch).
+        upright = cv2.warpAffine(
+            result, m, (size, size), borderMode=cv2.BORDER_REPLICATE
+        )
 
         target = None
         if redetect:
@@ -173,7 +179,9 @@ def enhance_with_uprighting(
     untouched for this face on any error (it keeps the whole-frame enhance)."""
     try:
         m, size = _crop_geometry(face, angle_deg)
-        upright = cv2.warpAffine(original, m, (size, size))
+        upright = cv2.warpAffine(
+            original, m, (size, size), borderMode=cv2.BORDER_REPLICATE
+        )
         enhanced = enhance_crop(upright)
         out = _composite_back(result, upright, enhanced, m)
         return result if out is None else out
