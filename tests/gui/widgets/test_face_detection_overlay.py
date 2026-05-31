@@ -63,6 +63,38 @@ class TestCoordinateMapping:
         assert d.current_frame_size() is None
 
 
+class TestScaledMapper:
+    def test_scales_coords_when_display_larger(self):
+        # Detections in a 100x50 frame, display showing a 400x200 (upscaled)
+        # frame → coords scale x4 before mapping.
+        seen: list = []
+        mapper = lambda fx, fy: seen.append((fx, fy))  # noqa: E731
+        m = QFaceDetectionOverlay._scaled_mapper(mapper, (400, 200), (100, 50))  # noqa: SLF001
+        assert m is not None
+        m(10, 20)
+        assert seen[-1] == (40.0, 80.0)
+
+    def test_identity_when_same_size(self):
+        seen: list = []
+        mapper = lambda fx, fy: seen.append((fx, fy))  # noqa: E731
+        m = QFaceDetectionOverlay._scaled_mapper(mapper, (200, 100), (200, 100))  # noqa: SLF001
+        m(5, 5)
+        assert seen[-1] == (5.0, 5.0)
+
+    def test_skips_on_aspect_mismatch(self):
+        # 2:1 display vs 1:1 detection frame → stale/different content → skip.
+        m = QFaceDetectionOverlay._scaled_mapper(  # noqa: SLF001
+            lambda fx, fy: None, (200, 100), (100, 100)
+        )
+        assert m is None
+
+    def test_none_without_detection_frame(self):
+        m = QFaceDetectionOverlay._scaled_mapper(  # noqa: SLF001
+            lambda fx, fy: None, (200, 100), None
+        )
+        assert m is None
+
+
 class TestPainting:
     def test_paints_without_crashing(self, qtbot):
         d = QFrameDisplayWidget()

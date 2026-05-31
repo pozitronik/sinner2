@@ -144,14 +144,26 @@ class TestStatusActionButtons:
         window.keyPressEvent(evt)
         assert window._status_bar.stats_button.isChecked() is True  # noqa: SLF001
 
-    def test_face_button_toggles_overlay(self, window):
+    def test_overlay_checkbox_toggles_overlay(self, window):
         initial_hidden = window._face_overlay.isHidden()  # noqa: SLF001
         initial_on = window._face_overlay_on  # noqa: SLF001
-        window._status_bar.face_button.toggle()  # noqa: SLF001
+        window._processors._overlay_enabled.toggle()  # noqa: SLF001
         assert window._face_overlay.isHidden() is not initial_hidden  # noqa: SLF001
         assert window._face_overlay_on is not initial_on  # noqa: SLF001
 
-    def test_f8_keeps_face_button_in_sync(self, window):
+    def test_declining_upscaler_download_reverts_toggle(self, window, monkeypatch):
+        # Enabling the upscaler when its model is missing must NOT silently
+        # download — declining reverts the toggle.
+        monkeypatch.setattr(window, "_ensure_upscaler_model", lambda: False)
+        window._processors._upscaler_box.setChecked(True)  # noqa: SLF001
+        assert window._processors.upscaler_enabled() is False  # reverted
+
+    def test_accepting_upscaler_download_keeps_toggle(self, window, monkeypatch):
+        monkeypatch.setattr(window, "_ensure_upscaler_model", lambda: True)
+        window._processors._upscaler_box.setChecked(True)  # noqa: SLF001
+        assert window._processors.upscaler_enabled() is True
+
+    def test_f8_keeps_overlay_checkbox_in_sync(self, window):
         from PySide6.QtCore import QEvent, Qt
         from PySide6.QtGui import QKeyEvent
 
@@ -159,7 +171,7 @@ class TestStatusActionButtons:
             QEvent.Type.KeyPress, Qt.Key.Key_F8, Qt.KeyboardModifier.NoModifier
         )
         window.keyPressEvent(evt)
-        assert window._status_bar.face_button.isChecked() is True  # noqa: SLF001
+        assert window._processors.face_overlay_enabled() is True  # noqa: SLF001
         assert window._face_overlay_on is True  # noqa: SLF001
 
     def test_enabling_overlay_probes_current_frame_when_swapper_off(
@@ -177,7 +189,7 @@ class TestStatusActionButtons:
         window._requestDetection.connect(  # noqa: SLF001
             lambda _f, w, h: seen.append((w, h))
         )
-        window._status_bar.face_button.toggle()  # noqa: SLF001  # enable
+        window._processors._overlay_enabled.toggle()  # noqa: SLF001  # enable
         assert seen == [(20, 10)]  # (w, h) of the stored frame
 
     def test_enabling_overlay_uses_swapper_detections_when_swapper_on(
@@ -192,7 +204,7 @@ class TestStatusActionButtons:
             "latest_detections",
             lambda: ([det], 20, 10),
         )
-        window._status_bar.face_button.toggle()  # noqa: SLF001  # enable
+        window._processors._overlay_enabled.toggle()  # noqa: SLF001  # enable
         assert window._face_overlay._detections == [det]  # noqa: SLF001
         assert window._face_overlay._frame_size == (20, 10)  # noqa: SLF001
 
@@ -211,7 +223,7 @@ class TestStatusActionButtons:
         assert window._detection_sink.latest_detections() is not None  # noqa: SLF001
 
     def test_comparison_checkbox_drives_wants_crops(self, window):
-        window._status_bar.face_button.toggle()  # noqa: SLF001  # overlay on
+        window._processors._overlay_enabled.toggle()  # noqa: SLF001  # overlay on
         window._processors._comparison_enabled.toggle()  # noqa: SLF001  # comparison on
         assert window._detection_sink.wants_crops() is True  # noqa: SLF001
         assert window._face_overlay._comparison_on is True  # noqa: SLF001

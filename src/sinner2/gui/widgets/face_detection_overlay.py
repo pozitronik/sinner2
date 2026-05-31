@@ -138,14 +138,32 @@ class QFaceDetectionOverlay(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setFont(QFont("Sans", 8))
-        # Each layer is drawn only when it was computed on the frame currently
-        # shown — so stale boxes/crops never land on the wrong frame.
-        if self._detections and self._frame_size == cur:
+        # Detections/crops are in the space of the frame the SWAPPER saw, which
+        # may be smaller than the displayed frame (a later upscaler stage scales
+        # it up). Scale the coords to the displayed frame — but skip if the
+        # aspect ratios disagree (a genuinely stale frame), so boxes never land
+        # distorted on the wrong content.
+        det_mapper = self._scaled_mapper(mapper, cur, self._frame_size)
+        if self._detections and det_mapper is not None:
             for det in self._detections:
-                self._draw_face(painter, mapper, det)
-        if self._comparison_on and self._crop_pairs and self._crop_frame_size == cur:
+                self._draw_face(painter, det_mapper, det)
+        crop_mapper = self._scaled_mapper(mapper, cur, self._crop_frame_size)
+        if self._comparison_on and self._crop_pairs and crop_mapper is not None:
             for bbox, pm_orig, pm_swap in self._crop_pairs:
-                self._draw_crop_pair(painter, mapper, bbox, pm_orig, pm_swap)
+                self._draw_crop_pair(painter, crop_mapper, bbox, pm_orig, pm_swap)
+
+    @staticmethod
+    def _scaled_mapper(mapper, displayed: tuple[int, int], det: tuple | None):
+        """A mapper that first scales a point from the detection's frame space
+        to the displayed frame, then maps to widget coords. None when there's
+        no detection frame or the aspect ratios disagree (stale frame)."""
+        if det is None or det[0] <= 0 or det[1] <= 0:
+            return None
+        sx = displayed[0] / det[0]
+        sy = displayed[1] / det[1]
+        if max(sx, sy) > 0 and abs(sx - sy) > 0.02 * max(sx, sy):
+            return None  # aspect mismatch → different content, don't draw
+        return lambda fx, fy: mapper(fx * sx, fy * sy)
 
     def _draw_face(self, painter: QPainter, mapper, det: FaceDetection) -> None:
         x1, y1, x2, y2 = det.bbox

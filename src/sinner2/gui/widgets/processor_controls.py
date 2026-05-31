@@ -136,7 +136,8 @@ class QProcessorControls(QWidget):
     """
 
     configChanged = Signal()
-    # View toggle (does NOT rebuild the session, unlike configChanged).
+    # View toggles (do NOT rebuild the session, unlike configChanged).
+    faceOverlayToggled = Signal(bool)
     faceComparisonToggled = Signal(bool)
     browseRootRequested = Signal()
     resetRootRequested = Signal()
@@ -352,9 +353,19 @@ class QProcessorControls(QWidget):
         )
         face_form.addRow("Angle source", self._rotation_source)
 
+        # Detection overlay toggle (view-only → its own signal, never
+        # configChanged). Boxes + sex/age/score/pose on the preview.
+        self._overlay_enabled = QCheckBox()
+        self._overlay_enabled.setToolTip(
+            "Draw detected faces (box + keypoints + sex/age/score/pose) on the\n"
+            "preview. Also toggles with F8."
+        )
+        self._overlay_enabled.toggled.connect(self.faceOverlayToggled)
+        face_form.addRow("Show detection overlay", self._overlay_enabled)
+
         # Comparison overlay (a view toggle, NOT a chain param → its own signal,
         # never configChanged). Shows [orig | swapped] thumbnails next to each
-        # face; effective only with the swapper + face overlay (F8) both on.
+        # face; effective only with the swapper + the overlay both on.
         self._comparison_enabled = QCheckBox()
         self._comparison_enabled.setToolTip(
             "Show original vs swapped face thumbnails next to each detected\n"
@@ -797,6 +808,13 @@ class QProcessorControls(QWidget):
     def upscaler_enabled(self) -> bool:
         return self._upscaler_box.isChecked()
 
+    def set_upscaler_checked(self, on: bool) -> None:
+        """Reflect upscaler-enabled WITHOUT firing configChanged — used to
+        revert the toggle when the user declines the model download."""
+        self._upscaler_box.blockSignals(True)
+        self._upscaler_box.setChecked(bool(on))
+        self._upscaler_box.blockSignals(False)
+
     def upscaler_params(self) -> UpscalerParams:
         return UpscalerParams(
             model=self._upscaler_model.currentData(),
@@ -809,6 +827,20 @@ class QProcessorControls(QWidget):
 
     def swapper_enabled(self) -> bool:
         return self._swapper_box.isChecked()
+
+    def face_overlay_enabled(self) -> bool:
+        return self._overlay_enabled.isChecked()
+
+    def set_overlay_checked(self, on: bool) -> None:
+        """Reflect overlay-on without firing faceOverlayToggled (restore)."""
+        self._overlay_enabled.blockSignals(True)
+        self._overlay_enabled.setChecked(bool(on))
+        self._overlay_enabled.blockSignals(False)
+
+    def toggle_face_overlay(self) -> None:
+        """Flip the overlay checkbox (fires faceOverlayToggled) — for the F8
+        shortcut, keeping the checkbox and overlay in lock-step."""
+        self._overlay_enabled.toggle()
 
     def face_comparison_enabled(self) -> bool:
         return self._comparison_enabled.isChecked()

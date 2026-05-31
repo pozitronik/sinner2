@@ -16,7 +16,6 @@ class TestStatusActionBar:
         for button in (
             bar.on_top_button,
             bar.stats_button,
-            bar.face_button,
             bar.fullscreen_button,
             bar.side_panel_button,
         ):
@@ -30,7 +29,6 @@ class TestStatusActionBar:
         for button in (
             bar.on_top_button,
             bar.stats_button,
-            bar.face_button,
             bar.rotate_button,
             bar.fullscreen_button,
             bar.side_panel_button,

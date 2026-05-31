@@ -196,6 +196,11 @@ def _model_present(name: str) -> bool:
         return False
 
 
+def model_present(name: str) -> bool:
+    """Whether the named model file is present (and non-empty)."""
+    return _model_present(name)
+
+
 def missing_models() -> list[str]:
     """Which of the REQUIRED model files aren't present in the models dir.
     Optional models (upscaler weights) are excluded — they download lazily."""

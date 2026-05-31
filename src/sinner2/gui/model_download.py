@@ -83,18 +83,26 @@ class _DownloadController(QObject):
 
 
 def ensure_models_present(parent: QWidget) -> None:
-    """If model files are missing, offer to download them. Blocks (modal)
-    until the download completes, is cancelled, or the user declines."""
-    missing = model_cache.missing_models()
+    """Startup flow: offer to download any missing REQUIRED models."""
+    ensure_models(parent, model_cache.missing_models())
+
+
+def ensure_models(parent: QWidget, names: list[str]) -> bool:
+    """Ensure the named models are present, confirming + downloading any that
+    aren't. Blocks (modal) until done. Returns True if all are present after
+    (or none were missing), False if the user declined or a download failed.
+
+    The confirmation means models are NEVER downloaded silently."""
+    missing = [n for n in names if not model_cache.model_present(n)]
     if not missing:
-        return
+        return True
 
     models_dir = model_cache.get_models_dir()
-    names = ", ".join(missing)
+    listed = ", ".join(missing)
     answer = QMessageBox.question(
         parent,
         "Download models?",
-        f"Required model file(s) are missing:\n\n    {names}\n\n"
+        f"Model file(s) are missing:\n\n    {listed}\n\n"
         "Download them now from the official sources?",
         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         QMessageBox.StandardButton.Yes,
@@ -103,10 +111,10 @@ def ensure_models_present(parent: QWidget) -> None:
         QMessageBox.information(
             parent,
             "Models needed",
-            "Processing won't work until the model files are present.\n\n"
+            "This feature won't work until the model file(s) are present.\n\n"
             f"Place them in:\n{models_dir}",
         )
-        return
+        return False
 
     dialog = QProgressDialog("Preparing download…", "Cancel", 0, 100, parent)
     dialog.setWindowTitle("Downloading models")
@@ -145,3 +153,4 @@ def ensure_models_present(parent: QWidget) -> None:
             f"Could not download the models:\n{controller.error}\n\n"
             f"You can place them manually in:\n{models_dir}",
         )
+    return bool(controller.ok)

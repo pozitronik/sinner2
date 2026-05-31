@@ -27,6 +27,8 @@ from sinner2.config import media_extensions
 from sinner2.config import settings as user_settings
 from sinner2.config.execution import OnnxExecution, TorchExecution
 from sinner2.gui.face_detection_probe import FaceDetectionProbe, FaceDetectionSink
+from sinner2.gui.model_download import ensure_models
+from sinner2.pipeline.processors.upscaler import model_filename
 from sinner2.gui.player_controller import PlayerController, default_cache_root
 from sinner2.gui.widgets.batch_task_dialog import QBatchTaskDialog
 from sinner2.gui.widgets.batch_view import QBatchView
@@ -199,7 +201,6 @@ class SinnerMainWindow(QMainWindow):
 
         self._status_bar.on_top_button.toggled.connect(self._set_stays_on_top)
         self._status_bar.stats_button.toggled.connect(self._set_stats_visible)
-        self._status_bar.face_button.toggled.connect(self._set_face_overlay_visible)
         self._status_bar.rotate_button.clicked.connect(self._cycle_rotation)
         self._status_bar.fullscreen_button.toggled.connect(self._set_fullscreen)
         self._status_bar.side_panel_button.toggled.connect(
@@ -278,6 +279,7 @@ class SinnerMainWindow(QMainWindow):
         self._batch_view.editRequested.connect(self._on_edit_batch_task)
         self._processors.configChanged.connect(self._on_processor_config_changed)
         self._processors.configChanged.connect(self._persist_processor_settings)
+        self._processors.faceOverlayToggled.connect(self._set_face_overlay_visible)
         self._processors.faceComparisonToggled.connect(self._set_comparison_visible)
         # Cache-management actions (own signals so they don't go through
         # configChanged, which is for runtime tuning of the chain).
@@ -563,6 +565,12 @@ class SinnerMainWindow(QMainWindow):
             return  # editing is locked while a batch renders
         from sinner2.gui.player_controller import CacheSettings
 
+        # If the upscaler was just enabled and its weights aren't present, ask
+        # to download them (never silently). Decline → revert the toggle so the
+        # chain isn't rebuilt with a model that can't load.
+        if self._processors.upscaler_enabled() and not self._ensure_upscaler_model():
+            self._processors.set_upscaler_checked(False)
+
         self._controller.apply_session_config(
             swapper_params=self._processors.swapper_params(),
             enhancer_params=self._processors.enhancer_params(),
@@ -602,6 +610,12 @@ class SinnerMainWindow(QMainWindow):
         self._refresh_providers_label()
         self._highlight_failed_providers()
 
+    def _ensure_upscaler_model(self) -> bool:
+        """Confirm + download the selected upscaler's weights if missing.
+        Returns True if present (or downloaded), False if declined/failed."""
+        name = model_filename(self._processors.upscaler_params().model)
+        return ensure_models(self, [name])
+
     def _show_error(self, message: str) -> None:
         self._status_bar.show_message(message, 5000)
         QMessageBox.critical(self, "sinner2", message)
@@ -625,7 +639,7 @@ class SinnerMainWindow(QMainWindow):
             self._status_bar.on_top_button.toggle()
             return
         if key == Qt.Key.Key_F8:
-            self._status_bar.face_button.toggle()
+            self._processors.toggle_face_overlay()
             return
         if key == Qt.Key.Key_R:
             self._status_bar.rotate_button.click()
@@ -938,7 +952,7 @@ class SinnerMainWindow(QMainWindow):
     def _restore_face_overlay_state(self) -> None:
         visible = bool(self._settings.face_overlay_visible)
         self._apply_face_overlay_visible(visible)
-        self._set_button_checked(self._status_bar.face_button, visible)
+        self._processors.set_overlay_checked(visible)
 
     def _set_comparison_visible(self, on: bool) -> None:
         """Toggle handler for the comparison checkbox. Persists + applies."""

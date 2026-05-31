@@ -22,7 +22,7 @@ import numpy as np
 from pydantic import Field
 
 from sinner2.config.base import SinnerBaseModel
-from sinner2.pipeline.model_cache import download_model, get_model_path
+from sinner2.pipeline.model_cache import get_model_path
 from sinner2.types import Frame
 
 
@@ -81,13 +81,10 @@ class UpscalerParams(SinnerBaseModel):
     fp16: bool = Field(default=True, description="Half precision (faster, less VRAM)")
 
 
-def _ensure_model(filename: str) -> Any:
-    """Local path to the model, downloading it lazily on first use."""
-    try:
-        return get_model_path(filename)
-    except FileNotFoundError:
-        download_model(filename)
-        return get_model_path(filename)
+def model_filename(model: UpscalerModel) -> str:
+    """The weights filename for a model (so the GUI can ensure it's present
+    — with a download confirmation — before the processor needs it)."""
+    return _MODEL_SPECS[model].filename
 
 
 def _load_state_dict(path: Any, device: Any) -> dict:
@@ -108,7 +105,11 @@ def _load_model(spec: _ModelSpec, device: Any, fp16: bool) -> Any:
     """Build the network, load weights, move to device. Indirected so tests can
     stub it cheaply (no basicsr / weights needed)."""
     net = spec.build()
-    net.load_state_dict(_load_state_dict(_ensure_model(spec.filename), device), strict=True)
+    # get_model_path raises if missing — the GUI ensures the model is present
+    # (with a download confirmation) before enabling the upscaler.
+    net.load_state_dict(
+        _load_state_dict(get_model_path(spec.filename), device), strict=True
+    )
     net.eval()
     if fp16 and device.type == "cuda":
         net = net.half()
