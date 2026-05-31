@@ -136,6 +136,31 @@ class QBatchTaskDialog(QDialog):
             if value == task.swapper_target_sex:
                 self._target_sex.setCurrentIndex(self._target_sex.count() - 1)
         swap_form.addRow("Swap which:", self._target_sex)
+        # Rotation compensation (experimental) — see the realtime panel tooltip.
+        self._rotation_enabled = QCheckBox()
+        self._rotation_enabled.setChecked(task.swapper_rotation_compensation)
+        self._rotation_enabled.setToolTip(
+            "Experimental: upright faces tilted past the threshold before "
+            "swapping, then composite back. Affects output."
+        )
+        swap_form.addRow("Rotation comp.:", self._rotation_enabled)
+        self._rotation_threshold = QSpinBox()
+        self._rotation_threshold.setRange(0, 90)
+        self._rotation_threshold.setSuffix("°")
+        self._rotation_threshold.setValue(task.swapper_rotation_threshold_deg)
+        swap_form.addRow("Roll threshold:", self._rotation_threshold)
+        self._rotation_redetect = QCheckBox()
+        self._rotation_redetect.setChecked(task.swapper_rotation_redetect)
+        self._rotation_redetect.setToolTip(
+            "Re-detect on the uprighted crop for clean keypoints."
+        )
+        swap_form.addRow("Re-detect uprighted:", self._rotation_redetect)
+        self._rotation_source = QComboBox()
+        for label, value in (("Eye keypoints", "keypoints"), ("3D pose estimate", "pose")):
+            self._rotation_source.addItem(label, value)
+            if value == task.swapper_rotation_angle_source:
+                self._rotation_source.setCurrentIndex(self._rotation_source.count() - 1)
+        swap_form.addRow("Angle source:", self._rotation_source)
         self._swapper_workers = QSpinBox()
         self._swapper_workers.setRange(1, 16)
         self._swapper_workers.setValue(task.swapper_execution.workers)
@@ -340,6 +365,10 @@ class QBatchTaskDialog(QDialog):
                 "swapper_detection_interval": self._detection_interval.value(),
                 "swapper_many_faces": self._many_faces.isChecked(),
                 "swapper_target_sex": self._target_sex.currentData(),
+                "swapper_rotation_compensation": self._rotation_enabled.isChecked(),
+                "swapper_rotation_threshold_deg": self._rotation_threshold.value(),
+                "swapper_rotation_redetect": self._rotation_redetect.isChecked(),
+                "swapper_rotation_angle_source": self._rotation_source.currentData(),
                 "enhancer_enabled": self._enhancer_box.isChecked(),
                 "enhancer_upscale": self._upscale.value(),
                 "enhancer_only_center_face": self._only_center_face.isChecked(),

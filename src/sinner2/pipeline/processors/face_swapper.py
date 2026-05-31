@@ -1,4 +1,3 @@
-from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -10,18 +9,22 @@ from sinner2.config.source import Source
 from sinner2.io.cv2_unicode import imread_unicode
 from sinner2.pipeline.face_analyser import FaceAnalyser
 from sinner2.pipeline.model_cache import get_model_path, record_actual_providers
+from sinner2.pipeline.processors.face_swapper_types import (
+    RotationAngleSource,
+    TargetSex,
+)
+from sinner2.pipeline.processors.rotation_compensation import (
+    compute_roll,
+    swap_with_uprighting,
+)
 from sinner2.types import Frame
 
-
-class TargetSex(str, Enum):
-    """Which detected faces to swap based on insightface's sex
-    classification. Single-letter values match sinner1's CLI tokens
-    so settings files round-trip between versions."""
-
-    BOTH = "B"          # Swap every detected face regardless of sex.
-    MALE = "M"          # Only swap faces classified male.
-    FEMALE = "F"        # Only swap faces classified female.
-    AS_SOURCE = "I"     # Match the source face's sex ("as input").
+__all__ = [
+    "FaceSwapper",
+    "FaceSwapperParams",
+    "RotationAngleSource",
+    "TargetSex",
+]
 
 
 class FaceSwapperParams(SinnerBaseModel):
@@ -34,6 +37,26 @@ class FaceSwapperParams(SinnerBaseModel):
     target_sex: TargetSex = Field(
         default=TargetSex.BOTH,
         description="Which detected faces to swap (M/F/B/I — match insightface .sex)",
+    )
+    # ---- Rotation compensation (experimental) ----
+    # For faces tilted past the threshold, upright a crop, (re-)detect clean
+    # keypoints, swap there, and composite the result back. Helps when the
+    # detector's keypoints degrade at high in-plane roll; does nothing for
+    # out-of-plane yaw. Output-affecting → part of the cache key.
+    rotation_compensation: bool = Field(
+        default=False, description="Upright tilted faces before swapping"
+    )
+    rotation_threshold_deg: int = Field(
+        default=15, ge=0, le=90,
+        description="Only compensate faces rolled at least this many degrees",
+    )
+    rotation_redetect: bool = Field(
+        default=True,
+        description="Re-detect on the uprighted crop for clean keypoints",
+    )
+    rotation_angle_source: RotationAngleSource = Field(
+        default=RotationAngleSource.KEYPOINTS,
+        description="Measure roll from eye keypoints or the 3D pose estimate",
     )
 
 
@@ -134,10 +157,28 @@ class FaceSwapper:
         for face in faces:
             if not _face_matches(face, target_sex):
                 continue
-            result = self._swapper.get(result, face, self._source_face, paste_back=True)
+            result = self._swap_one(result, face)
             if not self._params.many_faces:
                 break
         return result
+
+    def _swap_one(self, result: Frame, face: Any) -> Frame:
+        """Swap a single face — uprighting it first when rotation
+        compensation is on and the face is tilted past the threshold,
+        otherwise a plain in-place swap."""
+        if self._params.rotation_compensation:
+            roll = compute_roll(face, self._params.rotation_angle_source)
+            if abs(roll) >= self._params.rotation_threshold_deg:
+                return swap_with_uprighting(
+                    result,
+                    face,
+                    self._source_face,
+                    self._swapper,
+                    self._analyser,
+                    angle_deg=roll,
+                    redetect=self._params.rotation_redetect,
+                )
+        return self._swapper.get(result, face, self._source_face, paste_back=True)
 
     def _resolved_target_sex(self) -> TargetSex:
         """Resolve AS_SOURCE to the source face's actual sex. BOTH/M/F

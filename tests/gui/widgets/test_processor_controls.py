@@ -112,6 +112,10 @@ _FULL_RESTORE_KWARGS = dict(
     swapper_detection_interval=3,
     swapper_many_faces=False,
     swapper_target_sex="F",
+    swapper_rotation_compensation=True,
+    swapper_rotation_threshold_deg=25,
+    swapper_rotation_redetect=False,
+    swapper_rotation_angle_source="pose",
     enhancer_upscale=4,
     enhancer_only_center_face=True,
     playback_mode=PlaybackMode.UNLIMITED,
@@ -136,6 +140,10 @@ _NONE_RESTORE_KWARGS = dict(
     swapper_detection_interval=None,
     swapper_many_faces=None,
     swapper_target_sex=None,
+    swapper_rotation_compensation=None,
+    swapper_rotation_threshold_deg=None,
+    swapper_rotation_redetect=None,
+    swapper_rotation_angle_source=None,
     enhancer_upscale=None,
     enhancer_only_center_face=None,
     playback_mode=None,
@@ -425,6 +433,10 @@ class TestSettingsEndToEnd:
                 swapper_detection_interval=swapper.detection_interval,
                 swapper_many_faces=swapper.many_faces,
                 swapper_target_sex=swapper.target_sex.value,
+                swapper_rotation_compensation=swapper.rotation_compensation,
+                swapper_rotation_threshold_deg=swapper.rotation_threshold_deg,
+                swapper_rotation_redetect=swapper.rotation_redetect,
+                swapper_rotation_angle_source=swapper.rotation_angle_source.value,
                 enhancer_upscale=enhancer.upscale,
                 enhancer_only_center_face=enhancer.only_center_face,
                 playback_mode=first.playback_mode(),
@@ -454,6 +466,10 @@ class TestSettingsEndToEnd:
             swapper_detection_interval=reloaded.swapper_detection_interval,
             swapper_many_faces=reloaded.swapper_many_faces,
             swapper_target_sex=reloaded.swapper_target_sex,
+            swapper_rotation_compensation=reloaded.swapper_rotation_compensation,
+            swapper_rotation_threshold_deg=reloaded.swapper_rotation_threshold_deg,
+            swapper_rotation_redetect=reloaded.swapper_rotation_redetect,
+            swapper_rotation_angle_source=reloaded.swapper_rotation_angle_source,
             enhancer_upscale=reloaded.enhancer_upscale,
             enhancer_only_center_face=reloaded.enhancer_only_center_face,
             playback_mode=reloaded.playback_mode,
@@ -489,6 +505,17 @@ class TestSettingsEndToEnd:
         assert second.synced_max_lag_frames() == first.synced_max_lag_frames()
         assert second.swapper_providers() == first.swapper_providers()
         assert second.enhancer_device() == first.enhancer_device()
+
+
+class TestFaceDetectorGroup:
+    def test_rotation_fields_flow_to_swapper_params(self, widget):
+        widget._rotation_enabled.setChecked(True)  # noqa: SLF001
+        widget._rotation_threshold.setValue(30)  # noqa: SLF001
+        widget._rotation_redetect.setChecked(False)  # noqa: SLF001
+        p = widget.swapper_params()
+        assert p.rotation_compensation is True
+        assert p.rotation_threshold_deg == 30
+        assert p.rotation_redetect is False
 
 
 class TestProcessingScaleReadout:

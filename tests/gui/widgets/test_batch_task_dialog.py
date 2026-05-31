@@ -252,6 +252,33 @@ class TestProcessingScale:
         assert dlg._scale_label.text() == "50% [40x50]"  # noqa: SLF001
 
 
+class TestRotationCompensation:
+    def test_prefills_from_task(self, qtbot, tmp_path):
+        t = _task(
+            tmp_path,
+            swapper_rotation_compensation=True,
+            swapper_rotation_threshold_deg=25,
+            swapper_rotation_redetect=False,
+            swapper_rotation_angle_source="pose",
+        )
+        dlg = QBatchTaskDialog.from_task(t)
+        qtbot.addWidget(dlg)
+        assert dlg._rotation_enabled.isChecked() is True  # noqa: SLF001
+        assert dlg._rotation_threshold.value() == 25  # noqa: SLF001
+        assert dlg._rotation_redetect.isChecked() is False  # noqa: SLF001
+        assert dlg._rotation_source.currentData() == "pose"  # noqa: SLF001
+
+    def test_writeback(self, qtbot, tmp_path):
+        t = _task(tmp_path)
+        dlg = QBatchTaskDialog.from_task(t)
+        qtbot.addWidget(dlg)
+        dlg._rotation_enabled.setChecked(True)  # noqa: SLF001
+        dlg._rotation_threshold.setValue(40)  # noqa: SLF001
+        edited = dlg.to_task()
+        assert edited.swapper_rotation_compensation is True
+        assert edited.swapper_rotation_threshold_deg == 40
+
+
 class TestCleanupMode:
     def test_prefills_from_task(self, qtbot, tmp_path):
         from sinner2.batch.task import BatchCleanupMode

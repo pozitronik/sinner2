@@ -28,7 +28,11 @@ from sinner2.pipeline.model_cache import available_onnx_providers
 from sinner2.pipeline.image_writer import ImageFormat
 from sinner2.pipeline.playback_mode import PlaybackMode
 from sinner2.pipeline.processors.face_enhancer import FaceEnhancerParams
-from sinner2.pipeline.processors.face_swapper import FaceSwapperParams, TargetSex
+from sinner2.pipeline.processors.face_swapper import (
+    FaceSwapperParams,
+    RotationAngleSource,
+    TargetSex,
+)
 from sinner2.pipeline.skip_strategy import (
     BestEffortStrategy,
     FrameSkipStrategy,
@@ -69,6 +73,11 @@ _VIDEO_BACKENDS: dict[str, VideoBackend] = {
     "ffmpeg (subprocess pipe)": VideoBackend.FFMPEG,
     "cv2 (in-place seek; better on slow / network sources)": VideoBackend.CV2,
 }
+
+_ROTATION_SOURCES: list[tuple[str, str]] = [
+    ("Eye keypoints", RotationAngleSource.KEYPOINTS.value),
+    ("3D pose estimate", RotationAngleSource.POSE.value),
+]
 
 
 def _label_for_playback_mode(mode: PlaybackMode) -> str | None:
@@ -237,6 +246,57 @@ class QProcessorControls(QWidget):
         self._enhancer_device.currentIndexChanged.connect(self.configChanged)
         enhancer_form.addRow("Device", self._enhancer_device)
         self._enhancer_box = enhancer_box
+
+        # ---- Face detector group (rotation compensation, experimental) ----
+        face_box = QGroupBox("Face detector")
+        face_form = QFormLayout(face_box)
+        self._rotation_enabled = QCheckBox()
+        self._rotation_enabled.setChecked(swapper_defaults.rotation_compensation)
+        self._rotation_enabled.setToolTip(
+            "Experimental: for faces tilted past the threshold, upright a crop,\n"
+            "re-detect clean keypoints, swap, then composite back. Helps when\n"
+            "the detector's keypoints degrade at high in-plane roll; does\n"
+            "nothing for out-of-plane (profile) turns. Affects output."
+        )
+        self._rotation_enabled.toggled.connect(self.configChanged)
+        face_form.addRow("Rotation compensation", self._rotation_enabled)
+
+        self._rotation_threshold = QSpinBox()
+        self._rotation_threshold.setRange(0, 90)
+        self._rotation_threshold.setSuffix("°")
+        self._rotation_threshold.setValue(swapper_defaults.rotation_threshold_deg)
+        self._rotation_threshold.setToolTip(
+            "Only compensate faces rolled at least this many degrees; below it, "
+            "a plain swap."
+        )
+        self._rotation_threshold.valueChanged.connect(self.configChanged)
+        face_form.addRow("Roll threshold", self._rotation_threshold)
+
+        self._rotation_redetect = QCheckBox()
+        self._rotation_redetect.setChecked(swapper_defaults.rotation_redetect)
+        self._rotation_redetect.setToolTip(
+            "Re-run detection on the uprighted crop for clean keypoints (vs.\n"
+            "rotating the existing ones in). The main quality lever."
+        )
+        self._rotation_redetect.toggled.connect(self.configChanged)
+        face_form.addRow("Re-detect uprighted", self._rotation_redetect)
+
+        self._rotation_source = QComboBox()
+        for label, value in _ROTATION_SOURCES:
+            self._rotation_source.addItem(label, value)
+            if value == swapper_defaults.rotation_angle_source.value:
+                self._rotation_source.setCurrentIndex(
+                    self._rotation_source.count() - 1
+                )
+        self._rotation_source.setToolTip(
+            "How to measure in-plane roll: the eye keypoints (robust) or "
+            "insightface's 3D pose estimate."
+        )
+        self._rotation_source.currentTextChanged.connect(
+            lambda _: self.configChanged.emit()
+        )
+        face_form.addRow("Angle source", self._rotation_source)
+        self._face_box = face_box
 
         execution_box = QGroupBox("Execution")
         execution_form = QFormLayout(execution_box)
@@ -517,6 +577,7 @@ class QProcessorControls(QWidget):
         inner_layout.setContentsMargins(0, 0, 0, 0)
         inner_layout.addWidget(swapper_box)
         inner_layout.addWidget(enhancer_box)
+        inner_layout.addWidget(face_box)
         inner_layout.addWidget(execution_box)
         inner_layout.addWidget(cache_box)
         inner_layout.addWidget(cache_storage_box)
@@ -535,7 +596,9 @@ class QProcessorControls(QWidget):
         # All caption|control groups share one responsive layout: a common
         # caption-column width, and a single width breakpoint that flips them
         # ALL between side-by-side and stacked together (no per-row jank).
-        self._forms = [swapper_form, enhancer_form, execution_form, cache_form]
+        self._forms = [
+            swapper_form, enhancer_form, face_form, execution_form, cache_form
+        ]
         self._uniform_label_width = self._compute_uniform_label_width()
         self._apply_form_density()
 
@@ -641,6 +704,10 @@ class QProcessorControls(QWidget):
             detection_interval=self._detection_interval.value(),
             many_faces=self._many_faces.isChecked(),
             target_sex=self._target_sex.currentData(),
+            rotation_compensation=self._rotation_enabled.isChecked(),
+            rotation_threshold_deg=self._rotation_threshold.value(),
+            rotation_redetect=self._rotation_redetect.isChecked(),
+            rotation_angle_source=self._rotation_source.currentData(),
         )
 
     def enhancer_params(self) -> FaceEnhancerParams:
@@ -773,6 +840,10 @@ class QProcessorControls(QWidget):
         swapper_detection_interval: int | None,
         swapper_many_faces: bool | None,
         swapper_target_sex: str | None,
+        swapper_rotation_compensation: bool | None,
+        swapper_rotation_threshold_deg: int | None,
+        swapper_rotation_redetect: bool | None,
+        swapper_rotation_angle_source: str | None,
         enhancer_upscale: int | None,
         enhancer_only_center_face: bool | None,
         playback_mode: PlaybackMode | None,
@@ -800,6 +871,10 @@ class QProcessorControls(QWidget):
             self._detection_interval,
             self._many_faces,
             self._target_sex,
+            self._rotation_enabled,
+            self._rotation_threshold,
+            self._rotation_redetect,
+            self._rotation_source,
             self._enhancer_box,
             self._upscale,
             self._only_center_face,
@@ -832,6 +907,17 @@ class QProcessorControls(QWidget):
                 for i in range(self._target_sex.count()):
                     if self._target_sex.itemData(i) == swapper_target_sex:
                         self._target_sex.setCurrentIndex(i)
+                        break
+            if swapper_rotation_compensation is not None:
+                self._rotation_enabled.setChecked(swapper_rotation_compensation)
+            if swapper_rotation_threshold_deg is not None:
+                self._rotation_threshold.setValue(swapper_rotation_threshold_deg)
+            if swapper_rotation_redetect is not None:
+                self._rotation_redetect.setChecked(swapper_rotation_redetect)
+            if swapper_rotation_angle_source is not None:
+                for i in range(self._rotation_source.count()):
+                    if self._rotation_source.itemData(i) == swapper_rotation_angle_source:
+                        self._rotation_source.setCurrentIndex(i)
                         break
             if swapper_enabled is not None:
                 self._swapper_box.setChecked(swapper_enabled)

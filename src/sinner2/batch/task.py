@@ -115,6 +115,10 @@ class BatchTask(SinnerBaseModel):
     swapper_detection_interval: int = 1
     swapper_many_faces: bool = True
     swapper_target_sex: str = "B"  # M/F/B/I (matches FaceSwapperParams)
+    swapper_rotation_compensation: bool = False
+    swapper_rotation_threshold_deg: int = 15
+    swapper_rotation_redetect: bool = True
+    swapper_rotation_angle_source: str = "keypoints"  # keypoints | pose
     enhancer_enabled: bool = True
     enhancer_upscale: int = 1
     enhancer_only_center_face: bool = False

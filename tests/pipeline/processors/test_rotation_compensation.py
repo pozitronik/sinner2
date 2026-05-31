@@ -1,0 +1,99 @@
+"""Tests for the rotation-compensation helper: roll measurement, the upright
+transform, and the swap-and-composite path (with stubs)."""
+from __future__ import annotations
+
+import math
+from types import SimpleNamespace
+
+import cv2
+import numpy as np
+import pytest
+
+from sinner2.pipeline.processors import rotation_compensation as rc
+from sinner2.pipeline.processors.face_swapper_types import RotationAngleSource
+
+
+class TestComputeRoll:
+    def test_keypoints_level_eyes_is_zero(self):
+        face = SimpleNamespace(
+            kps=np.array([[40, 50], [60, 50], [50, 60], [42, 65], [58, 65]], float)
+        )
+        assert rc.compute_roll(face, RotationAngleSource.KEYPOINTS) == pytest.approx(0.0)
+
+    def test_keypoints_diagonal_is_45(self):
+        face = SimpleNamespace(kps=np.array([[40, 50], [60, 70]], float))  # dx=dy=20
+        assert rc.compute_roll(face, RotationAngleSource.KEYPOINTS) == pytest.approx(45.0)
+
+    def test_pose_reads_roll_component(self):
+        face = SimpleNamespace(pose=np.array([5.0, -3.0, 30.0]))
+        assert rc.compute_roll(face, RotationAngleSource.POSE) == pytest.approx(30.0)
+
+    def test_pose_falls_back_to_keypoints_when_absent(self):
+        face = SimpleNamespace(kps=np.array([[0, 0], [10, 10]], float))
+        assert rc.compute_roll(face, RotationAngleSource.POSE) == pytest.approx(45.0)
+
+    def test_no_data_returns_zero(self):
+        assert rc.compute_roll(SimpleNamespace(), RotationAngleSource.KEYPOINTS) == 0.0
+
+
+class TestUprightMatrix:
+    def test_levels_a_tilted_eye_line(self):
+        roll, cx, cy, half = 30.0, 50.0, 50.0, 20.0
+        rad = math.radians(roll)
+        eye_l = (cx - half * math.cos(rad), cy - half * math.sin(rad))
+        eye_r = (cx + half * math.cos(rad), cy + half * math.sin(rad))
+        m = rc._upright_matrix(cx, cy, roll, 128)
+        out = cv2.transform(np.array([[eye_l, eye_r]], np.float32), m)[0]
+        # After uprighting, the two eyes share a y-coordinate (horizontal).
+        assert out[0][1] == pytest.approx(out[1][1], abs=1e-3)
+
+
+class _MarkSwapper:
+    """Stub inswapper: paints a marker in the centre of whatever it's given."""
+
+    def get(self, img, target, source, paste_back=True):
+        out = img.copy()
+        h, w = out.shape[:2]
+        cv2.rectangle(out, (w // 2 - 4, h // 2 - 4), (w // 2 + 4, h // 2 + 4), (255, 255, 255), -1)
+        return out
+
+
+class TestSwapWithUprighting:
+    def _face(self):
+        return SimpleNamespace(
+            bbox=np.array([30, 30, 70, 70], float),
+            kps=np.array([[40, 45], [60, 45], [50, 55], [42, 62], [58, 62]], float),
+        )
+
+    def test_composites_change_near_face_centre(self):
+        frame = np.full((100, 100, 3), 50, np.uint8)
+        analyser = SimpleNamespace(analyse_uncached=lambda img: [])  # → fallback kps
+        out = rc.swap_with_uprighting(
+            frame, self._face(), object(), _MarkSwapper(), analyser,
+            angle_deg=20.0, redetect=False,
+        )
+        assert out.shape == frame.shape
+        # The marker (crop centre) maps back to the face centre (50, 50).
+        assert out[50, 50, 0] != frame[50, 50, 0]
+        # A far corner is untouched.
+        assert out[5, 5, 0] == frame[5, 5, 0]
+
+    def test_falls_back_to_direct_swap_on_error(self):
+        frame = np.full((100, 100, 3), 50, np.uint8)
+        seen_shapes: list = []
+
+        class _Recorder:
+            def get(self, img, target, source, paste_back=True):
+                seen_shapes.append(img.shape[0])
+                return img
+
+        class _BoomAnalyser:
+            def analyse_uncached(self, img):
+                raise RuntimeError("detector down")
+
+        out = rc.swap_with_uprighting(
+            frame, self._face(), object(), _Recorder(), _BoomAnalyser(),
+            angle_deg=30.0, redetect=True,
+        )
+        assert out.shape == frame.shape
+        assert seen_shapes == [100]  # only the full-frame fallback swap ran

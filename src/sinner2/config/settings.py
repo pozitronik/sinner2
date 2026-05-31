@@ -61,6 +61,11 @@ class Settings(SinnerBaseModel):
     side_panel_visible: bool | None = None
     metrics_overlay_visible: bool | None = None
     face_overlay_visible: bool | None = None  # face-detection debug overlay
+    # Rotation compensation (swapper, experimental)
+    swapper_rotation_compensation: bool | None = None
+    swapper_rotation_threshold_deg: int | None = None
+    swapper_rotation_redetect: bool | None = None
+    swapper_rotation_angle_source: str | None = None
     swapper_providers: list[str] | None = None  # realtime ONNX EPs (swapper + analyser)
     enhancer_device: str | None = None  # realtime torch device for GFPGAN
     recent_sources: list[str] | None = None

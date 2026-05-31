@@ -63,6 +63,7 @@ from sinner2.pipeline.processors.face_enhancer import (
 from sinner2.pipeline.processors.face_swapper import (
     FaceSwapper,
     FaceSwapperParams,
+    RotationAngleSource,
     TargetSex,
 )
 from sinner2.types import Frame
@@ -327,6 +328,12 @@ class BatchDriver:
                 detection_interval=task.swapper_detection_interval,
                 many_faces=task.swapper_many_faces,
                 target_sex=TargetSex(task.swapper_target_sex),
+                rotation_compensation=task.swapper_rotation_compensation,
+                rotation_threshold_deg=task.swapper_rotation_threshold_deg,
+                rotation_redetect=task.swapper_rotation_redetect,
+                rotation_angle_source=RotationAngleSource(
+                    task.swapper_rotation_angle_source
+                ),
             )
             providers = list(task.swapper_execution.providers)
             stages.append(StageSpec(

@@ -153,6 +153,66 @@ class TestFaceSwapper:
         assert args[0] == [t1, t2]
         assert args[1:] == (10, 10)  # width, height
 
+    def test_rotation_compensation_uprights_tilted_face(
+        self,
+        source_image: Path,
+        models_dir: Path,
+        stub_insightface_app: MagicMock,
+        stub_inswapper: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        called: list = []
+        monkeypatch.setattr(
+            face_swapper,
+            "swap_with_uprighting",
+            lambda result, *a, **k: called.append(True) or result,
+        )
+        tilted = MagicMock(name="tilted")
+        tilted.bbox = np.array([10, 10, 30, 30], float)
+        tilted.kps = np.array([[12, 12], [28, 28]], float)  # 45° roll
+        tilted.sex = "M"
+        stub_insightface_app.get.side_effect = [[MagicMock(name="src")], [tilted]]
+        fs = FaceSwapper(
+            source=Source(path=source_image),
+            params=FaceSwapperParams(
+                rotation_compensation=True, rotation_threshold_deg=15
+            ),
+        )
+        fs.setup()
+        fs.process(_blank())
+        assert called == [True]  # uprighting path used
+        assert stub_inswapper.get.call_count == 0  # not the direct path
+
+    def test_rotation_compensation_skips_near_upright_face(
+        self,
+        source_image: Path,
+        models_dir: Path,
+        stub_insightface_app: MagicMock,
+        stub_inswapper: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        called: list = []
+        monkeypatch.setattr(
+            face_swapper,
+            "swap_with_uprighting",
+            lambda result, *a, **k: called.append(True) or result,
+        )
+        upright = MagicMock(name="upright")
+        upright.bbox = np.array([10, 10, 30, 30], float)
+        upright.kps = np.array([[12, 20], [28, 20]], float)  # level eyes → 0°
+        upright.sex = "M"
+        stub_insightface_app.get.side_effect = [[MagicMock(name="src")], [upright]]
+        fs = FaceSwapper(
+            source=Source(path=source_image),
+            params=FaceSwapperParams(
+                rotation_compensation=True, rotation_threshold_deg=15
+            ),
+        )
+        fs.setup()
+        fs.process(_blank())
+        assert called == []  # below threshold → no uprighting
+        assert stub_inswapper.get.call_count == 1  # plain direct swap
+
     def test_sink_failure_does_not_break_swap(
         self,
         source_image: Path,
