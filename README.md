@@ -8,7 +8,8 @@ A face-swapping tool with a realtime preview GUI and a batch processing queue.
 sinner2 is a ground-up rewrite of [sinner](https://github.com/pozitronik/sinner),
 which itself began as a rework of [s0md3v/roop](https://github.com/s0md3v/roop).
 It takes a face from a single source image, places it onto an image or video
-target, and can optionally restore facial detail with a face enhancer. The
+target, and can optionally restore facial detail with a face enhancer and
+upscale the result. Several swap and enhancer models are selectable. The
 interface is built around a video-player surface: you load a source and a
 target, watch the result update as the target plays, and adjust the processing
 parameters while it runs.
@@ -18,8 +19,26 @@ Read [Responsible use](#responsible-use) before you start.
 
 ## Features
 
-- **Realtime preview.** The chain (face swap, then optional enhance) runs frame
-  by frame while the target plays, so parameter changes are visible at once.
+- **Realtime preview.** The chain (face swap → optional enhance → optional
+  upscale) runs frame by frame while the target plays, so parameter changes are
+  visible at once.
+- **Selectable models per stage.** The face swapper offers `inswapper_128`
+  (default) plus alternatives (ReSwapper, Ghost, SimSwap, UniFace); the enhancer
+  offers GFPGAN or CodeFormer (with a fidelity control). Non-default weights
+  download on demand, with confirmation.
+- **Whole-frame upscaler.** An optional Real-ESRGAN super-resolution stage after
+  the face work, with tile-size and half-precision controls.
+- **Rotation compensation.** For faces tilted in-plane past a threshold, the
+  swapper and enhancer upright a crop, re-detect, process, then composite it
+  back — fixing the smearing detectors produce on rolled faces.
+- **Occlusion-aware masking.** Restricts the swap to the facial-skin region (via
+  a face-parsing model) so hair, glasses, hats, and the jaw boundary keep their
+  original pixels.
+- **Detection overlays.** A toggle draws detected faces (box, keypoints,
+  sex/age/score/pose) on the preview; a linked overlay shows original-vs-swapped
+  thumbnails for each face.
+- **Processing scale.** Optionally downscale frames before the chain for speed;
+  the output is the reduced resolution.
 - **Batch queue.** Capture the current source, target, and settings as a job,
   queue several jobs, and run them one at a time. Jobs can be paused, resumed,
   and canceled; per-job progress and throughput are shown.
@@ -28,14 +47,17 @@ Read [Responsible use](#responsible-use) before you start.
 - **Two execution strategies, one set of processors.** Realtime mode is
   frame-major (low latency). Batch mode is processor-major: each stage runs over
   all frames before the next, which keeps the model resident and the GPU busy.
-- **Per-processor execution settings.** The face swapper and the face enhancer
-  each have their own ONNX Runtime providers / Torch device and worker count, so
-  you can tune their parallelism or place them on different hardware.
-- **Source and target libraries.** Thumbnail browsers with drag-and-drop for
-  picking faces and targets.
+- **Per-processor execution settings.** The swapper, enhancer, and upscaler each
+  have their own ONNX Runtime providers / Torch device and worker count, so you
+  can tune their parallelism or place them on different hardware.
+- **Responsive session switching.** Changing the source or target rebuilds the
+  session on a background thread, so the UI stays responsive while the old models
+  unload and the new ones load. Disabling a stage frees its model from memory.
+- **Source and target libraries.** Thumbnail browsers with drag-and-drop, a
+  configurable set of accepted file types, and per-panel zoom and sort.
 - **Audio playback** for video targets during preview.
-- **First-run model download.** Missing model files are fetched on first launch,
-  or can be placed by hand.
+- **On-demand model download.** Required models are fetched on first launch;
+  optional ones download the first time you enable the feature that needs them.
 
 ## Requirements
 
@@ -48,7 +70,9 @@ Read [Responsible use](#responsible-use) before you start.
 - `ffmpeg` on `PATH` for encoded video output in batch mode. Without it, video
   jobs fall back to writing an image sequence.
 
-The two model files are downloaded on first run and total under 1 GB.
+The two required model files are downloaded on first run (under 1 GB total).
+Optional models download later, on demand, when you first enable the feature
+that uses them.
 
 ## Installation
 
@@ -125,14 +149,27 @@ settings.
 
 ## Models
 
-sinner2 uses two fixed models:
+Two models are required and downloaded on first launch if missing:
 
-- `inswapper_128.onnx` for the face swap.
-- `GFPGANv1.4.pth` for the face enhancer.
+- `inswapper_128.onnx` — the default face swap.
+- `GFPGANv1.4.pth` — the default face enhancer.
 
-They are downloaded on first launch if missing. To install them by hand, put the
-files in the models directory. Set `SINNER2_MODELS_DIR` to choose that
-directory; otherwise a default location is used.
+Other models are optional and download the first time you enable the feature
+that uses them (with a confirmation prompt):
+
+- Alternative swappers: ReSwapper, Ghost, SimSwap, UniFace (and the crossface
+  embedding converters some of them need).
+- CodeFormer, a second face enhancer.
+- Real-ESRGAN upscaler weights.
+- Face-parsing models for occlusion masking (BiSeNet / ParseNet).
+
+Disabling a stage unloads its model from GPU memory. To install any model by
+hand, put the file in the models directory. Set `SINNER2_MODELS_DIR` to choose
+that directory; otherwise a default location is used.
+
+The optional models are third-party and carry their own licenses — for example,
+SimSwap is released for non-commercial use only. Check the upstream terms before
+relying on one.
 
 ## Configuration
 
@@ -187,6 +224,12 @@ GPLv3 that it incorporates.
 
 - [s0md3v/roop](https://github.com/s0md3v/roop), where this line of work started.
 - [InsightFace](https://github.com/deepinsight/insightface) for the inswapper model.
-- [GFPGAN](https://github.com/TencentARC/GFPGAN) for the face enhancer.
+- [GFPGAN](https://github.com/TencentARC/GFPGAN) and
+  [CodeFormer](https://github.com/sczhou/CodeFormer) for face enhancement.
+- [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) for upscaling and
+  [facexlib](https://github.com/xinntao/facexlib) for face parsing.
+- [ReSwapper](https://github.com/somanchiu/ReSwapper) and the
+  [FaceFusion assets](https://github.com/facefusion/facefusion-assets) that host
+  several of the optional ONNX swap and restoration models.
 - [ONNX Runtime](https://onnxruntime.ai/), [PySide6](https://doc.qt.io/qtforpython/),
   and [uv](https://docs.astral.sh/uv/).
