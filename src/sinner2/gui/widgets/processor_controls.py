@@ -28,6 +28,7 @@ from sinner2.pipeline.model_cache import available_onnx_providers
 from sinner2.pipeline.image_writer import ImageFormat
 from sinner2.pipeline.playback_mode import PlaybackMode
 from sinner2.pipeline.processors.face_enhancer import FaceEnhancerParams
+from sinner2.pipeline.processors.upscaler import UpscalerModel, UpscalerParams
 from sinner2.pipeline.processors.face_swapper import (
     FaceSwapperParams,
     RotationAngleSource,
@@ -77,6 +78,12 @@ _VIDEO_BACKENDS: dict[str, VideoBackend] = {
 _ROTATION_SOURCES: list[tuple[str, str]] = [
     ("Eye keypoints", RotationAngleSource.KEYPOINTS.value),
     ("3D pose estimate", RotationAngleSource.POSE.value),
+]
+
+_UPSCALER_MODELS: list[tuple[str, str]] = [
+    (UpscalerModel.GENERAL_X4V3.value, "General x4 v3 (fast, small)"),
+    (UpscalerModel.X4PLUS.value, "x4plus (higher quality, heavy)"),
+    (UpscalerModel.X2PLUS.value, "x2plus"),
 ]
 
 
@@ -248,6 +255,52 @@ class QProcessorControls(QWidget):
         self._enhancer_device.currentIndexChanged.connect(self.configChanged)
         enhancer_form.addRow("Device", self._enhancer_device)
         self._enhancer_box = enhancer_box
+
+        # ---- Upscaler (Real-ESRGAN) — whole-frame super-resolution ----
+        upscaler_defaults = UpscalerParams()
+        upscaler_box = QGroupBox("Upscaler (Real-ESRGAN)")
+        upscaler_box.setCheckable(True)
+        upscaler_box.setChecked(False)  # opt-in (heavy; weights download on enable)
+        upscaler_box.setToolTip(
+            "Whole-frame super-resolution after the face stages. Heavy — at x4\n"
+            "it quadruples the frame; best for batch / final output. Weights\n"
+            "download on first enable."
+        )
+        upscaler_box.toggled.connect(self.configChanged)
+        upscaler_form = QFormLayout(upscaler_box)
+        self._upscaler_model = QComboBox()
+        for value, label in _UPSCALER_MODELS:
+            self._upscaler_model.addItem(label, value)
+            if value == upscaler_defaults.model.value:
+                self._upscaler_model.setCurrentIndex(
+                    self._upscaler_model.count() - 1
+                )
+        self._upscaler_model.currentIndexChanged.connect(self.configChanged)
+        upscaler_form.addRow("Model", self._upscaler_model)
+        self._upscaler_tile = QSpinBox()
+        self._upscaler_tile.setRange(0, 2048)
+        self._upscaler_tile.setSingleStep(64)
+        self._upscaler_tile.setValue(upscaler_defaults.tile)
+        self._upscaler_tile.setToolTip(
+            "Tile size (px) to bound VRAM on large frames. 0 = whole frame at\n"
+            "once. Raise (e.g. 256–512) if you hit out-of-memory."
+        )
+        self._upscaler_tile.valueChanged.connect(self.configChanged)
+        upscaler_form.addRow("Tile size", self._upscaler_tile)
+        self._upscaler_fp16 = QCheckBox()
+        self._upscaler_fp16.setChecked(upscaler_defaults.fp16)
+        self._upscaler_fp16.setToolTip("Half precision (faster, less VRAM, CUDA only).")
+        self._upscaler_fp16.toggled.connect(self.configChanged)
+        upscaler_form.addRow("Half precision", self._upscaler_fp16)
+        self._upscaler_device = QComboBox()
+        for value, label in available_torch_devices():
+            self._upscaler_device.addItem(label, value)
+        self._upscaler_device.setToolTip(
+            "Torch device for the upscaler (independent of the enhancer's)."
+        )
+        self._upscaler_device.currentIndexChanged.connect(self.configChanged)
+        upscaler_form.addRow("Device", self._upscaler_device)
+        self._upscaler_box = upscaler_box
 
         # ---- Face detector group (rotation compensation, experimental) ----
         face_box = QGroupBox("Face detector")
@@ -591,6 +644,7 @@ class QProcessorControls(QWidget):
         inner_layout.setContentsMargins(0, 0, 0, 0)
         inner_layout.addWidget(swapper_box)
         inner_layout.addWidget(enhancer_box)
+        inner_layout.addWidget(upscaler_box)
         inner_layout.addWidget(face_box)
         inner_layout.addWidget(execution_box)
         inner_layout.addWidget(cache_box)
@@ -611,7 +665,8 @@ class QProcessorControls(QWidget):
         # caption-column width, and a single width breakpoint that flips them
         # ALL between side-by-side and stacked together (no per-row jank).
         self._forms = [
-            swapper_form, enhancer_form, face_form, execution_form, cache_form
+            swapper_form, enhancer_form, upscaler_form, face_form,
+            execution_form, cache_form,
         ]
         self._uniform_label_width = self._compute_uniform_label_width()
         self._apply_form_density()
@@ -738,6 +793,19 @@ class QProcessorControls(QWidget):
 
     def enhancer_enabled(self) -> bool:
         return self._enhancer_box.isChecked()
+
+    def upscaler_enabled(self) -> bool:
+        return self._upscaler_box.isChecked()
+
+    def upscaler_params(self) -> UpscalerParams:
+        return UpscalerParams(
+            model=self._upscaler_model.currentData(),
+            tile=self._upscaler_tile.value(),
+            fp16=self._upscaler_fp16.isChecked(),
+        )
+
+    def upscaler_device(self) -> str:
+        return self._upscaler_device.currentData()
 
     def swapper_enabled(self) -> bool:
         return self._swapper_box.isChecked()
@@ -888,6 +956,11 @@ class QProcessorControls(QWidget):
         synced_max_lag_frames: int | None,
         swapper_providers: list[str] | None,
         enhancer_device: str | None,
+        upscaler_enabled: bool | None = None,
+        upscaler_model: str | None = None,
+        upscaler_tile: int | None = None,
+        upscaler_fp16: bool | None = None,
+        upscaler_device: str | None = None,
     ) -> None:
         """Apply persisted values without firing configChanged per field.
 
@@ -905,6 +978,11 @@ class QProcessorControls(QWidget):
             self._rotation_redetect,
             self._rotation_source,
             self._enhancer_box,
+            self._upscaler_box,
+            self._upscaler_model,
+            self._upscaler_tile,
+            self._upscaler_fp16,
+            self._upscaler_device,
             self._upscale,
             self._only_center_face,
             self._enhancer_device,
@@ -962,6 +1040,22 @@ class QProcessorControls(QWidget):
                 for i in range(self._enhancer_device.count()):
                     if self._enhancer_device.itemData(i) == enhancer_device:
                         self._enhancer_device.setCurrentIndex(i)
+                        break
+            if upscaler_enabled is not None:
+                self._upscaler_box.setChecked(upscaler_enabled)
+            if upscaler_model is not None:
+                for i in range(self._upscaler_model.count()):
+                    if self._upscaler_model.itemData(i) == upscaler_model:
+                        self._upscaler_model.setCurrentIndex(i)
+                        break
+            if upscaler_tile is not None:
+                self._upscaler_tile.setValue(upscaler_tile)
+            if upscaler_fp16 is not None:
+                self._upscaler_fp16.setChecked(upscaler_fp16)
+            if upscaler_device is not None:
+                for i in range(self._upscaler_device.count()):
+                    if self._upscaler_device.itemData(i) == upscaler_device:
+                        self._upscaler_device.setCurrentIndex(i)
                         break
             if strategy_name is not None:
                 label = _label_for_strategy_name(strategy_name)

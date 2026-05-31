@@ -36,6 +36,7 @@ from sinner2.pipeline.playback_mode import PlaybackMode
 from sinner2.pipeline.processor import Processor
 from sinner2.pipeline.processors.face_enhancer import FaceEnhancer, FaceEnhancerParams
 from sinner2.pipeline.processors.face_swapper import FaceSwapper, FaceSwapperParams
+from sinner2.pipeline.processors.upscaler import Upscaler, UpscalerParams
 from sinner2.pipeline.realtime.executor import RealtimeExecutor
 from sinner2.pipeline.realtime.per_worker import PerWorkerProcessor
 from sinner2.pipeline.skip_strategy import (
@@ -240,6 +241,9 @@ class PlayerController(QObject):
         self._swapper_params = FaceSwapperParams()
         self._enhancer_params = FaceEnhancerParams()
         self._enhancer_enabled = True
+        self._upscaler_params = UpscalerParams()
+        self._upscaler_enabled = False
+        self._upscaler_device: str = "auto"
         self._swapper_enabled = True
         self._strategy: FrameSkipStrategy = BestEffortStrategy()
         self._worker_count = 1
@@ -434,6 +438,9 @@ class PlayerController(QObject):
         swapper_enabled: bool = True,
         swapper_providers: tuple[str, ...] = (),
         enhancer_device: str = "auto",
+        upscaler_params: UpscalerParams | None = None,
+        upscaler_enabled: bool = False,
+        upscaler_device: str = "auto",
     ) -> None:
         """Update stored params and propagate any changes to the live session.
 
@@ -452,6 +459,7 @@ class PlayerController(QObject):
         they were built with.
         """
         swapper_providers = tuple(swapper_providers)
+        upscaler_params = upscaler_params or UpscalerParams()
         providers_changed = swapper_providers != self._swapper_providers
         chain_changed = (
             swapper_params != self._swapper_params
@@ -460,6 +468,9 @@ class PlayerController(QObject):
             or swapper_enabled != self._swapper_enabled
             or providers_changed
             or enhancer_device != self._enhancer_device
+            or upscaler_params != self._upscaler_params
+            or upscaler_enabled != self._upscaler_enabled
+            or upscaler_device != self._upscaler_device
         )
         strategy_changed = type(strategy) is not type(self._strategy)
         # Synced threshold changes don't change the type, but still need
@@ -485,6 +496,9 @@ class PlayerController(QObject):
         self._cache_settings = cache_settings
         self._swapper_providers = swapper_providers
         self._enhancer_device = enhancer_device
+        self._upscaler_params = upscaler_params
+        self._upscaler_enabled = upscaler_enabled
+        self._upscaler_device = upscaler_device
 
         if self._executor is None or self._current_source is None:
             return
@@ -544,6 +558,15 @@ class PlayerController(QObject):
             chain.append(PerWorkerProcessor(
                 factory=lambda p=params, d=device: FaceEnhancer(params=p, device=d),
                 name=FaceEnhancer.name,
+            ))
+        if self._upscaler_enabled:
+            # Whole-frame super-resolution, last in the chain. Torch model →
+            # per-worker like the enhancer.
+            up_params = self._upscaler_params
+            up_device = self._upscaler_device
+            chain.append(PerWorkerProcessor(
+                factory=lambda p=up_params, d=up_device: Upscaler(params=p, device=d),
+                name=Upscaler.name,
             ))
         return chain
 

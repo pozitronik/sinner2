@@ -69,6 +69,12 @@ class Settings(SinnerBaseModel):
     swapper_rotation_angle_source: str | None = None
     swapper_providers: list[str] | None = None  # realtime ONNX EPs (swapper + analyser)
     enhancer_device: str | None = None  # realtime torch device for GFPGAN
+    # Upscaler (Real-ESRGAN) — whole-frame super-resolution
+    upscaler_enabled: bool | None = None
+    upscaler_model: str | None = None  # general-x4v3 | x4plus | x2plus
+    upscaler_tile: int | None = None
+    upscaler_fp16: bool | None = None
+    upscaler_device: str | None = None
     recent_sources: list[str] | None = None
     recent_targets: list[str] | None = None
     library_sources: list[str] | None = None

@@ -34,18 +34,28 @@ class _FakeResponse:
 
 
 class TestModelSources:
-    def test_registers_both_required_models(self):
-        assert set(model_cache.MODEL_SOURCES) == {
+    def test_required_models_registered_with_urls(self):
+        # The required pair drives the first-run download.
+        assert set(model_cache.REQUIRED_MODELS) == {
             "inswapper_128.onnx",
             "GFPGANv1.4.pth",
         }
+        # Every registered model (required + optional upscaler) has a URL.
+        for name in model_cache.REQUIRED_MODELS:
+            assert name in model_cache.MODEL_SOURCES
         for url in model_cache.MODEL_SOURCES.values():
             assert url.startswith("https://")
 
+    def test_optional_upscaler_models_registered_but_not_required(self):
+        assert "RealESRGAN_x4plus.pth" in model_cache.MODEL_SOURCES
+        assert "RealESRGAN_x4plus.pth" not in model_cache.REQUIRED_MODELS
+
 
 class TestMissingModels:
-    def test_all_missing_in_empty_dir(self, models_dir):
-        assert set(model_cache.missing_models()) == set(model_cache.MODEL_SOURCES)
+    def test_all_required_missing_in_empty_dir(self, models_dir):
+        # Only the required models are reported missing — optional upscaler
+        # weights download lazily, so they don't gate first-run setup.
+        assert set(model_cache.missing_models()) == set(model_cache.REQUIRED_MODELS)
 
     def test_present_models_drop_out(self, models_dir):
         (models_dir / "inswapper_128.onnx").write_bytes(b"weights")

@@ -231,6 +231,42 @@ class QBatchTaskDialog(QDialog):
         )
         enh_form.addRow("Device:", self._enhancer_device)
 
+        # ---- Upscaler group (Real-ESRGAN whole-frame super-resolution) ----
+        up_box = QGroupBox("Upscaler (Real-ESRGAN)")
+        up_box.setCheckable(True)
+        up_box.setChecked(task.upscaler_enabled)
+        self._upscaler_box = up_box
+        up_form = QFormLayout(up_box)
+        self._upscaler_model = QComboBox()
+        for value, label in (
+            ("general-x4v3", "General x4 v3 (fast)"),
+            ("x4plus", "x4plus (higher quality)"),
+            ("x2plus", "x2plus"),
+        ):
+            self._upscaler_model.addItem(label, value)
+            if value == task.upscaler_model:
+                self._upscaler_model.setCurrentIndex(self._upscaler_model.count() - 1)
+        up_form.addRow("Model:", self._upscaler_model)
+        self._upscaler_tile = QSpinBox()
+        self._upscaler_tile.setRange(0, 2048)
+        self._upscaler_tile.setSingleStep(64)
+        self._upscaler_tile.setValue(task.upscaler_tile)
+        self._upscaler_tile.setToolTip("Tile size (px) to bound VRAM; 0 = whole frame.")
+        up_form.addRow("Tile size:", self._upscaler_tile)
+        self._upscaler_fp16 = QCheckBox()
+        self._upscaler_fp16.setChecked(task.upscaler_fp16)
+        up_form.addRow("Half precision:", self._upscaler_fp16)
+        self._upscaler_device = QComboBox()
+        for value, label in available_torch_devices():
+            self._upscaler_device.addItem(label, value)
+        up_current_device = task.upscaler_execution.device
+        if self._upscaler_device.findData(up_current_device) < 0:
+            self._upscaler_device.addItem(up_current_device, up_current_device)
+        self._upscaler_device.setCurrentIndex(
+            self._upscaler_device.findData(up_current_device)
+        )
+        up_form.addRow("Device:", self._upscaler_device)
+
         # ---- Execution group ----
         exec_box = QGroupBox("Execution")
         exec_form = QFormLayout(exec_box)
@@ -308,6 +344,7 @@ class QBatchTaskDialog(QDialog):
         layout.addWidget(paths_box)
         layout.addWidget(swap_box)
         layout.addWidget(enh_box)
+        layout.addWidget(up_box)
         layout.addWidget(exec_box)
         layout.addWidget(out_box)
         layout.addWidget(button_box)
@@ -383,6 +420,13 @@ class QBatchTaskDialog(QDialog):
                         "workers": self._enhancer_workers.value(),
                         "device": self._enhancer_device.currentData(),
                     }
+                ),
+                "upscaler_enabled": self._upscaler_box.isChecked(),
+                "upscaler_model": self._upscaler_model.currentData(),
+                "upscaler_tile": self._upscaler_tile.value(),
+                "upscaler_fp16": self._upscaler_fp16.isChecked(),
+                "upscaler_execution": self._task.upscaler_execution.model_copy(
+                    update={"device": self._upscaler_device.currentData()}
                 ),
                 "video_backend": VideoBackend(self._video_backend.currentData()),
                 "reader_pool_size": self._reader_pool_size.value(),

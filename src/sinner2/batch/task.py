@@ -39,6 +39,7 @@ from sinner2.pipeline.image_writer import ImageFormat
 # defaults and the GUI's "Add to batch" capture.
 DEFAULT_SWAPPER_WORKERS = 4
 DEFAULT_ENHANCER_WORKERS = 2
+DEFAULT_UPSCALER_WORKERS = 1  # heavy (per-worker model + large activations)
 
 
 class BatchTaskStatus(str, Enum):
@@ -123,6 +124,11 @@ class BatchTask(SinnerBaseModel):
     enhancer_enabled: bool = True
     enhancer_upscale: int = 1
     enhancer_only_center_face: bool = False
+    # Upscaler (Real-ESRGAN) — whole-frame super-resolution stage
+    upscaler_enabled: bool = False
+    upscaler_model: str = "general-x4v3"  # general-x4v3 | x4plus | x2plus
+    upscaler_tile: int = 0
+    upscaler_fp16: bool = True
 
     # ---- Execution config (throughput-affecting) ----
     # Per-processor profiles: the swapper is ONNX (providers), the enhancer is
@@ -133,6 +139,9 @@ class BatchTask(SinnerBaseModel):
     )
     enhancer_execution: TorchExecution = Field(
         default_factory=lambda: TorchExecution(workers=DEFAULT_ENHANCER_WORKERS)
+    )
+    upscaler_execution: TorchExecution = Field(
+        default_factory=lambda: TorchExecution(workers=DEFAULT_UPSCALER_WORKERS)
     )
     video_backend: VideoBackend = VideoBackend.FFMPEG
     reader_pool_size: int = 1

@@ -16,6 +16,7 @@ from sinner2.batch.queue import BatchQueue
 from sinner2.batch.task import (
     DEFAULT_ENHANCER_WORKERS,
     DEFAULT_SWAPPER_WORKERS,
+    DEFAULT_UPSCALER_WORKERS,
     BatchCleanupMode,
     BatchOutputFormat,
     BatchProgress,
@@ -580,6 +581,9 @@ class SinnerMainWindow(QMainWindow):
             ),
             swapper_providers=tuple(self._processors.swapper_providers()),
             enhancer_device=self._processors.enhancer_device(),
+            upscaler_params=self._processors.upscaler_params(),
+            upscaler_enabled=self._processors.upscaler_enabled(),
+            upscaler_device=self._processors.upscaler_device(),
         )
         # Video backend isn't part of the session-config bundle because
         # it's used by set_source_and_target rather than the executor;
@@ -1034,6 +1038,11 @@ class SinnerMainWindow(QMainWindow):
             synced_max_lag_frames=self._settings.synced_max_lag_frames,
             swapper_providers=self._settings.swapper_providers,
             enhancer_device=self._settings.enhancer_device,
+            upscaler_enabled=self._settings.upscaler_enabled,
+            upscaler_model=self._settings.upscaler_model,
+            upscaler_tile=self._settings.upscaler_tile,
+            upscaler_fp16=self._settings.upscaler_fp16,
+            upscaler_device=self._settings.upscaler_device,
         )
 
     def _persist_processor_settings(self) -> None:
@@ -1068,6 +1077,11 @@ class SinnerMainWindow(QMainWindow):
             synced_max_lag_frames=self._processors.synced_max_lag_frames(),
             swapper_providers=self._processors.swapper_providers(),
             enhancer_device=self._processors.enhancer_device(),
+            upscaler_enabled=self._processors.upscaler_enabled(),
+            upscaler_model=self._processors.upscaler_params().model.value,
+            upscaler_tile=self._processors.upscaler_params().tile,
+            upscaler_fp16=self._processors.upscaler_params().fp16,
+            upscaler_device=self._processors.upscaler_device(),
         )
 
     def _restore_paths_from_settings(self) -> None:
@@ -1195,6 +1209,11 @@ class SinnerMainWindow(QMainWindow):
             workers=DEFAULT_ENHANCER_WORKERS,
             device=self._processors.enhancer_device(),
         )
+        up_params = self._processors.upscaler_params()
+        upscaler_execution = TorchExecution(
+            workers=DEFAULT_UPSCALER_WORKERS,
+            device=self._processors.upscaler_device(),
+        )
         task = BatchTask(
             source_path=source,
             target_path=target,
@@ -1211,8 +1230,13 @@ class SinnerMainWindow(QMainWindow):
             enhancer_enabled=self._processors.enhancer_enabled(),
             enhancer_upscale=enhancer.upscale,
             enhancer_only_center_face=enhancer.only_center_face,
+            upscaler_enabled=self._processors.upscaler_enabled(),
+            upscaler_model=up_params.model.value,
+            upscaler_tile=up_params.tile,
+            upscaler_fp16=up_params.fp16,
             swapper_execution=swapper_execution,
             enhancer_execution=enhancer_execution,
+            upscaler_execution=upscaler_execution,
             video_backend=self._processors.video_backend(),
             reader_pool_size=self._processors.reader_pool_size(),
             processing_scale=self._processors.processing_scale(),

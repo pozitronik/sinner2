@@ -66,6 +66,11 @@ from sinner2.pipeline.processors.face_swapper import (
     RotationAngleSource,
     TargetSex,
 )
+from sinner2.pipeline.processors.upscaler import (
+    Upscaler,
+    UpscalerModel,
+    UpscalerParams,
+)
 from sinner2.types import Frame
 
 
@@ -365,6 +370,21 @@ class BatchDriver:
                 ),
                 thread_safe=FaceEnhancer.thread_safe,
                 workers=task.enhancer_execution.workers,
+            ))
+        if task.upscaler_enabled:
+            upscaler_params = UpscalerParams(
+                model=UpscalerModel(task.upscaler_model),
+                tile=task.upscaler_tile,
+                fp16=task.upscaler_fp16,
+            )
+            up_device = task.upscaler_execution.device
+            stages.append(StageSpec(
+                name="upscaler",
+                factory=lambda p=upscaler_params, d=up_device: Upscaler(
+                    params=p, device=d
+                ),
+                thread_safe=Upscaler.thread_safe,
+                workers=task.upscaler_execution.workers,
             ))
         if not stages:
             stages.append(StageSpec(

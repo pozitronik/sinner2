@@ -12,8 +12,10 @@ if TYPE_CHECKING:
 ProgressCallback = Callable[[int, int], None]
 """bytes_done, bytes_total — invoked during lazy model download."""
 
-# The two model files the app needs, with their download URLs (same sources
-# sinner1 used). Keyed by the exact filename the processors look up.
+# Model files with their download URLs, keyed by the exact filename the
+# processors look up. The first two are REQUIRED (downloaded up front); the
+# Real-ESRGAN upscaler models are OPTIONAL — registered here only so the
+# upscaler can fetch them lazily on first enable (see REQUIRED_MODELS below).
 MODEL_SOURCES: dict[str, str] = {
     "inswapper_128.onnx": (
         "https://github.com/pozitronik/sinner/releases/download/v200823/"
@@ -23,7 +25,27 @@ MODEL_SOURCES: dict[str, str] = {
         "https://github.com/TencentARC/GFPGAN/releases/download/v1.3.4/"
         "GFPGANv1.4.pth"
     ),
+    "realesr-general-x4v3.pth": (
+        "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/"
+        "realesr-general-x4v3.pth"
+    ),
+    "RealESRGAN_x4plus.pth": (
+        "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/"
+        "RealESRGAN_x4plus.pth"
+    ),
+    "RealESRGAN_x2plus.pth": (
+        "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/"
+        "RealESRGAN_x2plus.pth"
+    ),
 }
+
+# Downloaded up front by the first-run GUI flow. Optional models (the upscaler
+# weights) are fetched lazily by their processor, so users who never upscale
+# don't pay the download.
+REQUIRED_MODELS: tuple[str, ...] = (
+    "inswapper_128.onnx",
+    "GFPGANv1.4.pth",
+)
 
 _DEFAULT_PROVIDERS: tuple[str, ...] = ("CUDAExecutionProvider", "CPUExecutionProvider")
 
@@ -175,8 +197,9 @@ def _model_present(name: str) -> bool:
 
 
 def missing_models() -> list[str]:
-    """Which of the required model files aren't present in the models dir."""
-    return [name for name in MODEL_SOURCES if not _model_present(name)]
+    """Which of the REQUIRED model files aren't present in the models dir.
+    Optional models (upscaler weights) are excluded — they download lazily."""
+    return [name for name in REQUIRED_MODELS if not _model_present(name)]
 
 
 def download_model(
