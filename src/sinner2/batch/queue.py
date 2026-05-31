@@ -19,6 +19,7 @@ thread. Driver progress callbacks marshal back via queued signals.
 from __future__ import annotations
 
 import shutil
+import time
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QThread, Qt, Signal
@@ -92,6 +93,12 @@ class BatchQueue(QObject):
         self._worker: _DriverWorker | None = None
         self._current_task_id: str | None = None
         self._paused = False  # queue-level pause
+        # Throttle progress persistence: _on_progress fires per-frame, but the
+        # full task JSON only needs to hit disk occasionally (resume reads the
+        # frame cache, not this counter). Saving every tick churns the file and
+        # widens the Windows AV/indexer collision window on os.replace.
+        self._last_progress_save = 0.0  # time.monotonic() of last persisted tick
+        self._last_saved_stage = -1     # force a save when the stage advances
 
     # ---- Queue state ----
 
@@ -240,12 +247,20 @@ class BatchQueue(QObject):
         # shows sensible progress. completed_stages = stage_index (fully-done
         # prior stages); last_completed_frame tracks the current stage. The
         # final resume marker is written by _on_completed at terminal state.
-        if self._store.exists(task_id):
+        #
+        # Throttled: persist at most ~once/second, but always on a stage
+        # advance (a meaningful resume boundary). The per-tick UI update is
+        # emitted unconditionally below.
+        now = time.monotonic()
+        stage_advanced = progress.stage_index != self._last_saved_stage
+        if (stage_advanced or now - self._last_progress_save >= 1.0) and self._store.exists(task_id):
             task = self._store.load(task_id)
             task.completed_stages = progress.stage_index
             task.last_completed_frame = progress.stage_completed - 1
             task.total_frames = progress.stage_total
             self._store.save(task)
+            self._last_progress_save = now
+            self._last_saved_stage = progress.stage_index
         self.taskProgress.emit(task_id, progress)
 
     def _on_preview(self, task_id: str, frame: object) -> None:

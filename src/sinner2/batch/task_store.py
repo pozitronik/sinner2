@@ -18,9 +18,15 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
+import time
 from pathlib import Path
 
 from sinner2.batch.task import BatchTask
+
+# Windows: a transient AV/indexer handle on tmp or dest can fail os.replace
+# with PermissionError. Retry a handful of times (~1.1s total worst case).
+_REPLACE_RETRIES = 10
 
 
 class BatchTaskStore:
@@ -50,13 +56,36 @@ class BatchTaskStore:
 
     def save(self, task: BatchTask) -> None:
         path = self._path_for(task.id)
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(task.model_dump_json(indent=2), encoding="utf-8")
-        # os.replace is atomic on POSIX and on Windows when source +
-        # dest are on the same filesystem (always true here — same
-        # store root). Beats two-step delete+rename which could lose
-        # the file on crash.
-        os.replace(tmp, path)
+        # Unique tmp per write (mkstemp) so two writes can never share a
+        # staging file, and a retry always re-stages cleanly. Same dir as
+        # the target, so os.replace stays a same-filesystem atomic rename.
+        fd, tmp_name = tempfile.mkstemp(
+            dir=self._root, prefix=f"{task.id}.", suffix=".json.tmp"
+        )
+        tmp = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(task.model_dump_json(indent=2))
+            # os.replace is atomic, but on Windows Defender's real-time
+            # scan / the search indexer can briefly hold a handle on the
+            # freshly-written tmp or the destination, making the rename
+            # fail with PermissionError (WinError 5). It clears in a few
+            # ms — retry with backoff before giving up.
+            for attempt in range(_REPLACE_RETRIES):
+                try:
+                    os.replace(tmp, path)
+                    return
+                except PermissionError:
+                    if attempt == _REPLACE_RETRIES - 1:
+                        raise
+                    time.sleep(0.02 * (attempt + 1))
+        finally:
+            # Clean up the staging file if we raised before the replace
+            # consumed it (replace removes tmp on success).
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
 
     def delete(self, task_id: str) -> bool:
         path = self._path_for(task_id)
