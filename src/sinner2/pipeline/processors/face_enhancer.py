@@ -9,9 +9,6 @@ from pydantic import Field
 from sinner2.config.base import SinnerBaseModel
 from sinner2.pipeline.face_analyser import FaceAnalyser
 from sinner2.pipeline.model_cache import get_model_path
-from sinner2.pipeline.processors.codeformer import (
-    MODEL_FILE as CODEFORMER_MODEL_FILE,
-)
 from sinner2.pipeline.processors.codeformer import CodeFormerBackend
 from sinner2.pipeline.processors.face_swapper_types import RotationAngleSource
 from sinner2.pipeline.processors.rotation_compensation import (

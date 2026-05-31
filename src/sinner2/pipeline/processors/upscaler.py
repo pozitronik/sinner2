@@ -18,7 +18,6 @@ from enum import Enum
 from typing import Any, Callable
 
 import cv2
-import numpy as np
 from pydantic import Field
 
 from sinner2.config.base import SinnerBaseModel
