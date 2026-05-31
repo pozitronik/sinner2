@@ -870,7 +870,10 @@ class SinnerMainWindow(QMainWindow):
             self._overlay_timer.stop()
             self._face_overlay.hide()
             self._face_overlay.clear()
-            self._detection_sink.clear()
+            # Keep the sink's latest detection: the swapper keeps publishing
+            # whether or not the overlay is shown, so re-enabling (even while
+            # paused) can display the current frame's boxes at once instead of
+            # waiting for the next rendered frame.
 
     def _overlay_tick(self) -> None:
         # Swapper-on path: poll the swapper's published PRE-swap detections.

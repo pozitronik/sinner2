@@ -196,6 +196,20 @@ class TestStatusActionButtons:
         assert window._face_overlay._detections == [det]  # noqa: SLF001
         assert window._face_overlay._frame_size == (20, 10)  # noqa: SLF001
 
+    def test_disabling_overlay_keeps_sink_for_immediate_reenable(self, window):
+        # The swapper publishes continuously; turning the overlay off must NOT
+        # wipe the sink, so re-enabling while paused shows boxes at once.
+        from types import SimpleNamespace
+
+        import numpy as np
+
+        window._detection_sink.publish(  # noqa: SLF001
+            [SimpleNamespace(bbox=np.array([0.0, 0.0, 10.0, 10.0]))], 20, 10
+        )
+        window._set_face_overlay_visible(True)  # noqa: SLF001
+        window._set_face_overlay_visible(False)  # noqa: SLF001
+        assert window._detection_sink.latest_detections() is not None  # noqa: SLF001
+
     def test_hint_reflects_swapper_state(self, window, monkeypatch):
         monkeypatch.setattr(window._processors, "swapper_enabled", lambda: True)
         window._set_face_overlay_visible(True)  # noqa: SLF001
