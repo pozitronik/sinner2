@@ -264,6 +264,7 @@ class SinnerMainWindow(QMainWindow):
         )
         self._controller.bufferMetricsChanged.connect(self._update_metrics_label)
         self._controller.strategyModeChanged.connect(self._update_strategy_mode_label)
+        self._controller.sessionSwitching.connect(self._on_session_switching)
 
         self._pickers.sourceChanged.connect(self._on_source_changed)
         self._pickers.targetChanged.connect(self._on_target_changed)
@@ -647,6 +648,16 @@ class SinnerMainWindow(QMainWindow):
         Returns True if present (or downloaded), False if declined/failed."""
         name = model_filename(self._processors.upscaler_params().model)
         return ensure_models(self, [name])
+
+    def _on_session_switching(self, switching: bool) -> None:
+        """Disable transport + show a notice while an async source/target swap
+        drains the old session and builds the new one, so the user can't drive a
+        half-torn-down session. Re-enabled when the new session is ready."""
+        self._transport.setEnabled(not switching)
+        if switching:
+            self._status_bar.show_message("Switching session…")
+        else:
+            self._status_bar.show_message("ready", 2000)
 
     def _show_error(self, message: str) -> None:
         self._status_bar.show_message(message, 5000)

@@ -1,5 +1,6 @@
 import hashlib
 import os
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -196,6 +197,40 @@ def _default_session_factory(
     return executor, write_executor
 
 
+def _spawn_daemon(fn: Callable[[], None]) -> threading.Thread:
+    """Default swap runner: fire the job on a daemon thread. Swapped out in
+    tests for an inline runner so the async flow executes deterministically."""
+    thread = threading.Thread(target=fn, name="sinner2-session-swap", daemon=True)
+    thread.start()
+    return thread
+
+
+@dataclass
+class _SessionBundle:
+    """A fully built (but not yet installed) session — the non-Qt product of
+    _build_session, ready to be handed to _install_session on the GUI thread."""
+
+    executor: RealtimeExecutor
+    write_executor: BoundedWriteExecutor
+    session_store: FrameStore
+    cache_dir: Path
+    source: Source
+    source_path: Path
+    target_path: Path
+    target_fps: float
+    frame_count: int
+    native_size: tuple[int, int]
+
+
+@dataclass
+class _SwapOutcome:
+    """Result of a background session swap, marshaled back to the GUI thread.
+    Exactly one of bundle/error is set."""
+
+    bundle: _SessionBundle | None = None
+    error: str | None = None
+
+
 class PlayerController(QObject):
     """Owns the realtime executor lifecycle and wires widgets to it.
 
@@ -214,6 +249,10 @@ class PlayerController(QObject):
     strategyModeChanged = Signal(object)  # carries str; routes to status bar mode label
     cacheStorageStatsChanged = Signal()  # fired on session start/teardown/clear so the cache panel can refresh
     targetNativeSizeChanged = Signal(object)  # (width, height) on session start, None on teardown
+    sessionSwitching = Signal(bool)  # True while an async source/target swap is draining+rebuilding
+    # Private: a background swap finished; carries a _SwapOutcome. Emitted from
+    # the swap worker thread, so the connection is queued onto the GUI thread.
+    _sessionSwapReady = Signal(object)
 
     def __init__(
         self,
@@ -282,28 +321,64 @@ class PlayerController(QObject):
         # rebuilt chain picks it up via _build_chain.
         self._detection_sink: object | None = None
 
+        # Async session-swap state. A source/target change on a running session
+        # tears down + rebuilds on a background thread so the slow worker drain
+        # (uninterruptible in-flight inference) never blocks the GUI. Only one
+        # swap runs at a time; a request arriving mid-swap is coalesced (latest
+        # wins) into _swap_pending and run when the current one finishes.
+        self._swapping = False
+        self._swap_pending: tuple[Path, Path] | None = None
+        self._swap_thread: threading.Thread | None = None
+        # Desired post-swap position/play state. Held as controller state (not a
+        # per-call callback) so coalesced changes during a swap carry forward
+        # the latest intent. Applied to the new executor once it's installed.
+        self._restore_frame = 0
+        self._restore_play = False
+        # Indirection so tests can run the swap inline instead of on a thread.
+        self._spawn_swap: Callable[[Callable[[], None]], threading.Thread | None] = (
+            _spawn_daemon
+        )
+        self._sessionSwapReady.connect(self._on_session_swap_ready)
+
         transport.playRequested.connect(self._on_play)
         transport.pauseRequested.connect(self._on_pause)
         transport.seekRequested.connect(self._on_seek)
         transport.volumeChanged.connect(self._on_audio_volume_changed)
 
     def set_source_and_target(self, source_path: Path | None, target_path: Path | None) -> None:
+        """Synchronous session (re)build. Used for first-load (no running
+        session to drain, so no GUI freeze) and at shutdown. Source/target
+        CHANGES on a running session go through the async path (change_source /
+        change_target) so the slow teardown doesn't block the UI."""
         if source_path is None or target_path is None:
             return
         self._teardown_session()
         try:
-            source = Source(path=source_path)
-            target = Target(path=target_path)
-            # Build the reader factory + pool first. The pool's eager
-            # probe reader surfaces open errors here, so a bad source
-            # fails session setup just like the old single-reader path.
+            bundle = self._build_session(source_path, target_path)
+        except Exception as exc:
+            self.errorOccurred.emit(f"session setup failed: {exc}")
+            return
+        self._install_session(bundle)
+
+    def _build_session(self, source_path: Path, target_path: Path) -> _SessionBundle:
+        """Build all session resources (reader pool, chain, executor) WITHOUT
+        touching Qt — safe to run on a background thread. Heavy model loading
+        does NOT happen here (the executor loads models asynchronously in its
+        own setup thread at start()); the slow part avoided up front is the
+        reader-pool probe. Raises on failure after cleaning up a half-built
+        pool. The few warning emits here (cache unavailable) are Qt-signal
+        emits, which are thread-safe (delivered queued to the GUI thread)."""
+        source = Source(path=source_path)
+        target = Target(path=target_path)
+        reader_pool: ReaderPool | None = None
+        try:
+            # The pool's eager probe reader surfaces open errors here, so a bad
+            # source fails session setup just like the old single-reader path.
             reader_factory = _make_reader_factory(
                 target, self._video_backend, self._processing_scale
             )
             reader_pool = ReaderPool(
-                reader_factory,
-                size=self._reader_pool_size,
-                name="target",
+                reader_factory, size=self._reader_pool_size, name="target",
             )
             chain = self._build_chain(source)
             writer = build_image_writer(
@@ -314,8 +389,7 @@ class PlayerController(QObject):
                 source, target, chain, writer, self._processing_scale
             )
             # Cache root reachable? If not, fall back to OFF for this session
-            # so the user sees something rather than a crash. They can change
-            # the cache root in the management panel without restarting.
+            # so the user sees something rather than a crash.
             cache_settings = self._cache_settings
             manager = CacheManager(self._cache_root)
             if not manager.is_available():
@@ -331,70 +405,172 @@ class PlayerController(QObject):
                     write_queue_size=cache_settings.write_queue_size,
                 )
             elif self._cache_size_cap_bytes > 0:
-                # Evict old entries before adding a new one. The current
-                # session's dir doesn't exist yet so no need to protect it.
                 manager.enforce_size_cap(self._cache_size_cap_bytes)
             session_store = PersistentFrameStore(cache_dir, writer=writer)
             if manager.is_available():
                 self._write_session_metadata(
-                    manager,
-                    cache_dir,
-                    source,
-                    target,
-                    reader_pool.frame_count,
-                    chain,
-                    writer,
+                    manager, cache_dir, source, target,
+                    reader_pool.frame_count, chain, writer,
                 )
             executor, write_executor = self._session_factory(
-                reader_pool,
-                chain,
-                self._strategy,
-                self._worker_count,
-                self._playback_mode,
-                cache_settings,
-                session_store,
+                reader_pool, chain, self._strategy, self._worker_count,
+                self._playback_mode, cache_settings, session_store,
             )
-        except Exception as exc:
-            # Pool may have been partially built; tear it down so its
-            # threads + reader handles don't leak.
-            try:
-                reader_pool.shutdown()  # type: ignore[possibly-undefined]
-            except (NameError, Exception):
-                pass
-            self.errorOccurred.emit(f"session setup failed: {exc}")
-            return
+        except Exception:
+            # Pool may have been partially built; tear it down so its threads +
+            # reader handles don't leak, then propagate to the caller.
+            if reader_pool is not None:
+                try:
+                    reader_pool.shutdown()
+                except Exception:
+                    pass
+            raise
+        return _SessionBundle(
+            executor=executor,
+            write_executor=write_executor,
+            session_store=session_store,
+            cache_dir=cache_dir,
+            source=source,
+            source_path=source_path,
+            target_path=target_path,
+            target_fps=float(reader_pool.fps) if reader_pool.fps > 0 else 0.0,
+            frame_count=reader_pool.frame_count,
+            native_size=(reader_pool.native_width, reader_pool.native_height),
+        )
 
+    def _install_session(self, bundle: _SessionBundle) -> None:
+        """Wire a freshly built session into the controller + widgets and start
+        it. Qt-touching — MUST run on the GUI thread (it creates observable
+        bridges, hooks the display, emits signals, loads audio)."""
+        executor = bundle.executor
         executor.on_frame_ready(self._display.show_frame)
         self._bind_observables(executor)
-        self._current_source = source
-        self._current_source_path = source_path
-        self._current_target_path = target_path
+        self._current_source = bundle.source
+        self._current_source_path = bundle.source_path
+        self._current_target_path = bundle.target_path
         self._executor = executor
-        self._write_executor = write_executor
-        self._session_store = session_store
-        self._session_cache_dir = cache_dir
-        self._target_fps = float(reader_pool.fps) if reader_pool.fps > 0 else 0.0
-        self._transport.set_frame_count(reader_pool.frame_count)
-        self.sessionScratchDirChanged.emit(cache_dir)
+        self._write_executor = bundle.write_executor
+        self._session_store = bundle.session_store
+        self._session_cache_dir = bundle.cache_dir
+        self._target_fps = bundle.target_fps
+        self._transport.set_frame_count(bundle.frame_count)
+        self.sessionScratchDirChanged.emit(bundle.cache_dir)
         self.cacheStorageStatsChanged.emit()
         # Native source size for the scale readout ("50% [960x540]").
-        self.targetNativeSizeChanged.emit(
-            (reader_pool.native_width, reader_pool.native_height)
-        )
-        # Load the target into the audio backend. Done after the executor
-        # is built so a backend-init failure doesn't prevent silent playback.
+        self.targetNativeSizeChanged.emit(bundle.native_size)
+        # Load the target into the audio backend. Done after the executor is
+        # built so a backend-init failure doesn't prevent silent playback.
         backend = self.audio_backend()
         if backend is not None:
             try:
-                backend.load(target_path)
+                backend.load(bundle.target_path)
             except Exception as exc:
                 self.errorOccurred.emit(f"audio load failed: {exc}")
-
         try:
             executor.start()
         except Exception as exc:
             self.errorOccurred.emit(f"executor.start failed: {exc}")
             self._teardown_session()
+
+    # ---- async session swap (source/target change on a running session) ----
+
+    def _change_session_async(self, source_path: Path, target_path: Path) -> None:
+        """Swap the running session to a new source/target WITHOUT blocking the
+        GUI. The slow teardown (draining uninterruptible in-flight inference)
+        and the rebuild run on a worker thread; the desired position/play state
+        (self._restore_frame/_play) is applied once the new executor is
+        installed. A request arriving while a swap is already running is
+        coalesced (latest wins) — callers update _restore_* + _current_*_path
+        before calling so the coalesced build targets the latest selection."""
+        if self._swapping:
+            self._swap_pending = (source_path, target_path)
+            return
+        self._begin_swap(source_path, target_path)
+
+    def _begin_swap(self, source_path: Path, target_path: Path) -> None:
+        self._swapping = True
+        self.sessionSwitching.emit(True)
+        # Detach the old session on the GUI thread (Qt cleanup: bridges, audio,
+        # signals) and hand its heavy resources to the worker for stop().
+        old = self._detach_for_swap()
+
+        def job() -> None:
+            try:
+                self._stop_old_resources(*old)
+                bundle = self._build_session(source_path, target_path)
+            except Exception as exc:  # noqa: BLE001 — surfaced on the GUI thread
+                self._sessionSwapReady.emit(_SwapOutcome(error=str(exc)))
+                return
+            self._sessionSwapReady.emit(_SwapOutcome(bundle=bundle))
+
+        self._swap_thread = self._spawn_swap(job)
+
+    def _detach_for_swap(
+        self,
+    ) -> tuple[
+        RealtimeExecutor | None, BoundedWriteExecutor | None, FrameStore | None
+    ]:
+        """GUI-thread half of teardown: unbind observables, pause audio, emit
+        the session-ending signals, and clear the ACTIVE-executor references —
+        but DON'T do the slow stop() here, and DON'T clear _current_*_path (they
+        track the logical selection so a change arriving mid-swap can coalesce).
+        Returns the old executor / write executor / store for the worker to stop
+        off the GUI thread."""
+        for bridge in self._bridges:
+            bridge.shutdown()
+        self._bridges = []
+        if self._audio_backend is not None and self._audio_backend.is_loaded():
+            self._audio_backend.pause()
+        executor, write_executor, store = (
+            self._executor, self._write_executor, self._session_store
+        )
+        self._executor = None
+        self._write_executor = None
+        self._session_store = None
+        self._session_cache_dir = None
+        self._current_source = None
+        self.sessionScratchDirChanged.emit(None)
+        self.targetNativeSizeChanged.emit(None)
+        self.cacheStorageStatsChanged.emit()
+        return executor, write_executor, store
+
+    @staticmethod
+    def _stop_old_resources(
+        executor: RealtimeExecutor | None,
+        write_executor: BoundedWriteExecutor | None,
+        store: FrameStore | None,
+    ) -> None:
+        """The slow part of teardown, safe to run off the GUI thread: stop the
+        executor (joins workers finishing their in-flight inference), drain the
+        write executor, and close the store. No Qt here."""
+        if executor is not None:
+            executor.stop()
+        if write_executor is not None:
+            write_executor.shutdown(wait=True)
+        if store is not None:
+            store.close()
+
+    def _on_session_swap_ready(self, outcome: _SwapOutcome) -> None:
+        """GUI thread: a background swap finished. Install the new session (or
+        report the error), restore position/play state, then run any swap that
+        was requested while this one was in flight (coalesced, latest wins)."""
+        self._swapping = False
+        self._swap_thread = None
+        if outcome.error is not None:
+            self.errorOccurred.emit(f"session switch failed: {outcome.error}")
+        elif outcome.bundle is not None:
+            self._install_session(outcome.bundle)
+            if self._executor is not None:
+                # Seek even to 0 — it forces the worker to process the frame so
+                # the display reflects the new source/target immediately.
+                self._executor.seek(self._restore_frame)
+                if self._restore_play:
+                    self._executor.play()
+        self.sessionSwitching.emit(False)
+        if self._swap_pending is not None:
+            source_path, target_path = self._swap_pending
+            self._swap_pending = None
+            self._begin_swap(source_path, target_path)
 
     @staticmethod
     def _write_session_metadata(
@@ -571,6 +747,12 @@ class PlayerController(QObject):
         return chain
 
     def shutdown(self) -> None:
+        # A swap may be mid-flight on a worker thread; wait for it so we don't
+        # tear down (or exit) while it's still building/stopping a session.
+        self._swap_pending = None
+        swap_thread = self._swap_thread
+        if swap_thread is not None and swap_thread.is_alive():
+            swap_thread.join(timeout=30.0)
         self._teardown_session()
         if self._audio_backend is not None:
             self._audio_backend.shutdown()
@@ -898,46 +1080,39 @@ class PlayerController(QObject):
     def change_source(self, source_path: Path) -> None:
         """Replace the source while preserving frame position + play state.
 
-        The chain holds a reference to the source, so a source swap
-        requires a full session rebuild. We capture frame + play state,
-        rebuild with the new source against the same target, then seek
-        back to the captured frame (which also triggers processing so
-        the display updates immediately) and resume play if it was on.
-        No-op if no session is active or no target is loaded yet —
-        first-load is the responsibility of set_source_and_target.
+        The chain holds a reference to the source, so a source swap requires a
+        full session rebuild. That teardown can block on uninterruptible
+        in-flight inference (e.g. CodeFormer), so it runs ASYNCHRONOUSLY off the
+        GUI thread; we capture frame + play state now and re-apply them (seek +
+        resume) once the new session is installed. No-op if no session is active
+        or no target is loaded yet — first-load is set_source_and_target's job.
         """
-        if self._executor is None or self._current_target_path is None:
+        if self._current_target_path is None:
             return
-        was_playing = self._executor.is_playing.get()
-        last_frame = self._executor.current_frame.get()
-        target_path = self._current_target_path
-        self.set_source_and_target(source_path, target_path)
-        if self._executor is None:
-            return
-        # Seek to the captured frame regardless of whether it's > 0 — a
-        # seek to 0 also forces the worker to process frame 0 so the
-        # display reflects the new source immediately.
-        self._executor.seek(max(0, last_frame))
-        if was_playing:
-            self._executor.play()
+        if self._executor is None and not self._swapping:
+            return  # no active or in-flight session
+        if self._executor is not None:
+            # Capture position + play state from the live session. Mid-swap
+            # (executor detached) we carry forward the last-captured intent.
+            self._restore_frame = max(0, self._executor.current_frame.get())
+            self._restore_play = self._executor.is_playing.get()
+        self._current_source_path = source_path
+        self._change_session_async(source_path, self._current_target_path)
 
     def change_target(self, target_path: Path) -> None:
-        """Replace the target. Position resets to frame 0 and the first
-        frame is submitted for processing immediately so the display
-        reflects the new target. Play state is preserved so a swap
-        mid-playback keeps playing the new file from its start."""
-        if self._executor is None or self._current_source_path is None:
+        """Replace the target. Position resets to frame 0 and the first frame is
+        submitted for processing immediately so the display reflects the new
+        target. Play state is preserved. Runs asynchronously (see change_source)
+        so the teardown never freezes the UI."""
+        if self._current_source_path is None:
             return
-        was_playing = self._executor.is_playing.get()
-        source_path = self._current_source_path
-        self.set_source_and_target(source_path, target_path)
-        if self._executor is None:
-            return
-        # seek(0) submits frame 0 for processing so the new target's
-        # first frame appears without waiting for the user to press play.
-        self._executor.seek(0)
-        if was_playing:
-            self._executor.play()
+        if self._executor is None and not self._swapping:
+            return  # no active or in-flight session
+        if self._executor is not None:
+            self._restore_play = self._executor.is_playing.get()
+        self._restore_frame = 0  # new timeline → start at frame 0
+        self._current_target_path = target_path
+        self._change_session_async(self._current_source_path, target_path)
 
     def apply_initial_audio_state(self, volume: int) -> None:
         """Push persisted audio volume into the controller + (lazy) backend

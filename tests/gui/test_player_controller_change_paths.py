@@ -1,9 +1,12 @@
 """Tests for PlayerController.change_source / change_target.
 
-The QOL flow: when only the source path changes, the session rebuilds
-under the hood but the current frame and play state are preserved.
-When the target changes, position resets to 0 but the first frame is
-submitted for processing so the display refreshes immediately."""
+The QOL flow: when only the source path changes, the session rebuilds under the
+hood but the current frame and play state are preserved; a target change resets
+to frame 0 but submits it for processing immediately. The rebuild is now
+ASYNCHRONOUS (the teardown can block on uninterruptible in-flight inference, so
+it runs off the GUI thread) — these tests drive the swap inline via the
+`_spawn_swap` injection point and stub the build/install so they exercise the
+path-routing + state-restore logic without real sessions."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -25,9 +28,12 @@ def widgets(qtbot):
     return display, transport
 
 
-def _make_controller(widgets):
+def _make_controller(widgets) -> PlayerController:
     display, transport = widgets
-    return PlayerController(frame_display=display, transport=transport)
+    ctrl = PlayerController(frame_display=display, transport=transport)
+    # Run the swap job inline so the async flow completes synchronously.
+    ctrl._spawn_swap = lambda job: (job(), None)[1]  # noqa: SLF001
+    return ctrl
 
 
 def _attach_fake_session(
@@ -42,25 +48,42 @@ def _attach_fake_session(
     return fake_executor
 
 
+def _stub_build(ctrl: PlayerController, monkeypatch) -> tuple[list, MagicMock]:
+    """Stub _build_session to record (source, target) and return a bundle around
+    a fresh fake executor; stub _install_session to just install it. Returns the
+    build-call log and the new fake executor (restore targets this one)."""
+    builds: list[tuple[Path, Path]] = []
+    new_executor = MagicMock()
+
+    def fake_build(source_path, target_path):
+        builds.append((source_path, target_path))
+        bundle = MagicMock()
+        bundle.executor = new_executor
+        return bundle
+
+    monkeypatch.setattr(ctrl, "_build_session", fake_build)
+    monkeypatch.setattr(
+        ctrl, "_install_session",
+        lambda bundle: setattr(ctrl, "_executor", bundle.executor),
+    )
+    return builds, new_executor
+
+
 class TestChangeSourceNoOp:
     def test_no_op_without_session(self, widgets, monkeypatch):
         ctrl = _make_controller(widgets)
-        called: list[object] = []
-        monkeypatch.setattr(ctrl, "set_source_and_target", lambda *a: called.append(a))
+        builds, _ = _stub_build(ctrl, monkeypatch)
         ctrl.change_source(Path("/new/source.png"))
-        assert called == []
+        assert builds == []
         ctrl.shutdown()
 
     def test_no_op_without_target_loaded(self, widgets, monkeypatch):
         ctrl = _make_controller(widgets)
-        # Executor present but no target path stored — unusual but
-        # belt-and-suspenders against bad state.
         ctrl._executor = MagicMock()  # noqa: SLF001
         ctrl._current_target_path = None  # noqa: SLF001
-        called: list[object] = []
-        monkeypatch.setattr(ctrl, "set_source_and_target", lambda *a: called.append(a))
+        builds, _ = _stub_build(ctrl, monkeypatch)
         ctrl.change_source(Path("/new/source.png"))
-        assert called == []
+        assert builds == []
         ctrl.shutdown()
 
 
@@ -70,68 +93,53 @@ class TestChangeSourceWithSession:
     ):
         ctrl = _make_controller(widgets)
         _attach_fake_session(ctrl, current_frame=42)
-        rebuild_calls: list[tuple[Path | None, Path | None]] = []
-        monkeypatch.setattr(
-            ctrl,
-            "set_source_and_target",
-            lambda s, t: rebuild_calls.append((s, t)),
-        )
+        builds, _ = _stub_build(ctrl, monkeypatch)
         ctrl.change_source(Path("/new/source.png"))
-        # Rebuild with the new source but the same target.
-        assert rebuild_calls == [(Path("/new/source.png"), Path("/dummy/target.mp4"))]
+        assert builds == [(Path("/new/source.png"), Path("/dummy/target.mp4"))]
         ctrl.shutdown()
 
     def test_preserves_play_state_when_was_playing(self, widgets, monkeypatch):
         ctrl = _make_controller(widgets)
-        fake = _attach_fake_session(ctrl, playing=True, current_frame=42)
-        # Stub the rebuild so _executor reference survives — play/seek
-        # calls land on our fake instead of a replacement instance.
-        monkeypatch.setattr(ctrl, "set_source_and_target", lambda *a: None)
+        _attach_fake_session(ctrl, playing=True, current_frame=42)
+        _, new_ex = _stub_build(ctrl, monkeypatch)
         ctrl.change_source(Path("/new/source.png"))
-        fake.seek.assert_called_once_with(42)
-        fake.play.assert_called_once_with()
+        new_ex.seek.assert_called_once_with(42)
+        new_ex.play.assert_called_once_with()
         ctrl.shutdown()
 
     def test_paused_session_seeks_but_does_not_play(self, widgets, monkeypatch):
         ctrl = _make_controller(widgets)
-        fake = _attach_fake_session(ctrl, playing=False, current_frame=10)
-        monkeypatch.setattr(ctrl, "set_source_and_target", lambda *a: None)
+        _attach_fake_session(ctrl, playing=False, current_frame=10)
+        _, new_ex = _stub_build(ctrl, monkeypatch)
         ctrl.change_source(Path("/new/source.png"))
-        # Seek triggers processing so display updates without resuming.
-        fake.seek.assert_called_once_with(10)
-        fake.play.assert_not_called()
+        new_ex.seek.assert_called_once_with(10)
+        new_ex.play.assert_not_called()
         ctrl.shutdown()
 
     def test_seeks_to_zero_when_current_frame_is_zero(self, widgets, monkeypatch):
-        # Even at frame 0 we seek explicitly — the seek handler submits
-        # the frame for processing so the display refreshes after the
-        # source change. Without the seek, the user would see the OLD
-        # frame from the cache (or blank).
         ctrl = _make_controller(widgets)
-        fake = _attach_fake_session(ctrl, playing=False, current_frame=0)
-        monkeypatch.setattr(ctrl, "set_source_and_target", lambda *a: None)
+        _attach_fake_session(ctrl, playing=False, current_frame=0)
+        _, new_ex = _stub_build(ctrl, monkeypatch)
         ctrl.change_source(Path("/new/source.png"))
-        fake.seek.assert_called_once_with(0)
+        new_ex.seek.assert_called_once_with(0)
         ctrl.shutdown()
 
 
 class TestChangeTargetNoOp:
     def test_no_op_without_session(self, widgets, monkeypatch):
         ctrl = _make_controller(widgets)
-        called: list[object] = []
-        monkeypatch.setattr(ctrl, "set_source_and_target", lambda *a: called.append(a))
+        builds, _ = _stub_build(ctrl, monkeypatch)
         ctrl.change_target(Path("/new/target.mp4"))
-        assert called == []
+        assert builds == []
         ctrl.shutdown()
 
     def test_no_op_without_source_loaded(self, widgets, monkeypatch):
         ctrl = _make_controller(widgets)
         ctrl._executor = MagicMock()  # noqa: SLF001
         ctrl._current_source_path = None  # noqa: SLF001
-        called: list[object] = []
-        monkeypatch.setattr(ctrl, "set_source_and_target", lambda *a: called.append(a))
+        builds, _ = _stub_build(ctrl, monkeypatch)
         ctrl.change_target(Path("/new/target.mp4"))
-        assert called == []
+        assert builds == []
         ctrl.shutdown()
 
 
@@ -141,31 +149,71 @@ class TestChangeTargetWithSession:
     ):
         ctrl = _make_controller(widgets)
         _attach_fake_session(ctrl, current_frame=42)
-        rebuild_calls: list[tuple[Path | None, Path | None]] = []
-        monkeypatch.setattr(
-            ctrl,
-            "set_source_and_target",
-            lambda s, t: rebuild_calls.append((s, t)),
-        )
+        builds, _ = _stub_build(ctrl, monkeypatch)
         ctrl.change_target(Path("/new/target.mp4"))
-        assert rebuild_calls == [(Path("/dummy/source.jpg"), Path("/new/target.mp4"))]
+        assert builds == [(Path("/dummy/source.jpg"), Path("/new/target.mp4"))]
         ctrl.shutdown()
 
     def test_always_seeks_to_zero(self, widgets, monkeypatch):
-        # New target = new timeline. Frame 0 of the new target is the
-        # right thing to display, regardless of where the old timeline was.
         ctrl = _make_controller(widgets)
-        fake = _attach_fake_session(ctrl, playing=False, current_frame=999)
-        monkeypatch.setattr(ctrl, "set_source_and_target", lambda *a: None)
+        _attach_fake_session(ctrl, playing=False, current_frame=999)
+        _, new_ex = _stub_build(ctrl, monkeypatch)
         ctrl.change_target(Path("/new/target.mp4"))
-        fake.seek.assert_called_once_with(0)
+        new_ex.seek.assert_called_once_with(0)
         ctrl.shutdown()
 
     def test_preserves_play_state(self, widgets, monkeypatch):
         ctrl = _make_controller(widgets)
-        fake = _attach_fake_session(ctrl, playing=True, current_frame=999)
-        monkeypatch.setattr(ctrl, "set_source_and_target", lambda *a: None)
+        _attach_fake_session(ctrl, playing=True, current_frame=999)
+        _, new_ex = _stub_build(ctrl, monkeypatch)
         ctrl.change_target(Path("/new/target.mp4"))
-        fake.seek.assert_called_once_with(0)
-        fake.play.assert_called_once_with()
+        new_ex.seek.assert_called_once_with(0)
+        new_ex.play.assert_called_once_with()
+        ctrl.shutdown()
+
+
+class TestAsyncSwapBehavior:
+    def test_emits_session_switching_around_swap(self, widgets, monkeypatch):
+        ctrl = _make_controller(widgets)
+        _attach_fake_session(ctrl)
+        _stub_build(ctrl, monkeypatch)
+        states: list[bool] = []
+        ctrl.sessionSwitching.connect(states.append)
+        ctrl.change_source(Path("/new/source.png"))
+        assert states == [True, False]  # switching on, then off when ready
+        assert ctrl._swapping is False  # noqa: SLF001
+        ctrl.shutdown()
+
+    def test_does_not_stop_executor_on_gui_thread(self, widgets, monkeypatch):
+        # The whole point: the slow stop() must run in the swap job, not on the
+        # calling (GUI) thread before the job is spawned.
+        ctrl = _make_controller(widgets)
+        old = _attach_fake_session(ctrl)
+        _stub_build(ctrl, monkeypatch)
+        spawned: list = []
+        # Defer the job instead of running inline so we can observe ordering.
+        ctrl._spawn_swap = lambda job: spawned.append(job) or None  # noqa: SLF001
+        ctrl.change_source(Path("/new/source.png"))
+        old.stop.assert_not_called()  # not stopped before the job runs
+        assert len(spawned) == 1
+        spawned[0]()  # run the deferred job → now the old executor is stopped
+        old.stop.assert_called_once_with()
+        ctrl.shutdown()
+
+    def test_coalesces_rapid_swaps_latest_wins(self, widgets, monkeypatch):
+        ctrl = _make_controller(widgets)
+        _attach_fake_session(ctrl)
+        builds, _ = _stub_build(ctrl, monkeypatch)
+        jobs: list = []
+        ctrl._spawn_swap = lambda job: jobs.append(job) or None  # noqa: SLF001
+        ctrl.change_source(Path("/a.png"))   # swap 1 starts (job deferred)
+        assert ctrl._swapping is True  # noqa: SLF001
+        ctrl.change_source(Path("/b.png"))   # arrives mid-swap → coalesced
+        assert ctrl._swap_pending is not None  # noqa: SLF001
+        assert len(jobs) == 1                 # second didn't spawn its own job
+        jobs[0]()                             # finish swap 1 → dispatches pending
+        assert len(jobs) == 2                 # pending (b) now running
+        jobs[1]()
+        assert builds[0][0] == Path("/a.png")
+        assert builds[1][0] == Path("/b.png")
         ctrl.shutdown()
