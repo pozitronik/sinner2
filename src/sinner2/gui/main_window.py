@@ -22,6 +22,7 @@ from sinner2.batch.task import (
     BatchTask,
 )
 from sinner2.batch.task_store import BatchTaskStore
+from sinner2.config import media_extensions
 from sinner2.config import settings as user_settings
 from sinner2.config.execution import OnnxExecution, TorchExecution
 from sinner2.gui.face_detection_probe import FaceDetectionProbe, FaceDetectionSink
@@ -71,6 +72,13 @@ class SinnerMainWindow(QMainWindow):
         super().__init__(parent)
         self.setWindowTitle("sinner2")
         self._settings = user_settings.load()
+        # Apply configurable accepted file extensions app-wide (library accept
+        # filters, file-dialog filters, Target.kind) BEFORE building the side
+        # panel, which reads them to build its libraries + dialog filters.
+        media_extensions.configure(
+            self._settings.library_image_extensions,
+            self._settings.library_video_extensions,
+        )
         # True while a batch task renders — locks the live-editing surface so
         # the display acts purely as a render preview (DaVinci-style).
         self._batch_active = False
@@ -106,11 +114,14 @@ class SinnerMainWindow(QMainWindow):
             queue=self._batch_queue,
             global_output_dir_resolver=self._global_output_dir,
         )
+        # Per-panel zoom: fall back to the legacy shared value, then 128.
+        _legacy_dim = self._settings.library_display_dim or 128
         self._side_panel = QSidePanel(
             thumbnail_cache_dir=default_cache_root() / "thumbnails",
             processors=self._processors,
             batch_view=self._batch_view,
-            thumb_display_dim=self._settings.library_display_dim or 128,
+            sources_display_dim=self._settings.library_sources_display_dim or _legacy_dim,
+            targets_display_dim=self._settings.library_targets_display_dim or _legacy_dim,
         )
         # Metrics overlay: child of the frame display so it floats on top
         # of the rendered frame and inherits its z-order. Position is
@@ -295,15 +306,19 @@ class SinnerMainWindow(QMainWindow):
         self._side_panel.targets_library().rootsChanged.connect(
             self._persist_library_targets
         )
-        # Thumbnail size is shared between source and target libraries
-        # so resizing one updates the other. Persist + mirror via the
-        # side panel's helper to avoid a feedback loop (set_display_dim
-        # short-circuits when the value hasn't changed).
+        # Zoom + sort are kept PER PANEL (source and target independent), so
+        # each persists only its own value.
         self._side_panel.sources_library().displayDimChanged.connect(
-            self._on_library_display_dim_changed
+            lambda d: self._update_settings(library_sources_display_dim=int(d))
         )
         self._side_panel.targets_library().displayDimChanged.connect(
-            self._on_library_display_dim_changed
+            lambda d: self._update_settings(library_targets_display_dim=int(d))
+        )
+        self._side_panel.sources_library().sortChanged.connect(
+            self._persist_sources_sort
+        )
+        self._side_panel.targets_library().sortChanged.connect(
+            self._persist_targets_sort
         )
         # Apply persisted processor settings before the first session starts —
         # apply_restored_settings emits configChanged once at the end, which
@@ -1091,6 +1106,15 @@ class SinnerMainWindow(QMainWindow):
             self._side_panel.targets_library().set_roots(
                 [Path(p) for p in self._settings.library_targets]
             )
+        # Per-panel sort (silent — set_sort doesn't emit sortChanged).
+        self._side_panel.sources_library().set_sort(
+            self._settings.library_sources_sort_field,
+            self._settings.library_sources_sort_order,
+        )
+        self._side_panel.targets_library().set_sort(
+            self._settings.library_targets_sort_field,
+            self._settings.library_targets_sort_order,
+        )
 
     def _persist_source_path(self, path: Path) -> None:
         self._update_settings(source_path=str(path))
@@ -1110,12 +1134,19 @@ class SinnerMainWindow(QMainWindow):
     def _persist_library_targets(self, paths: list) -> None:
         self._update_settings(library_targets=[str(p) for p in paths])
 
-    def _on_library_display_dim_changed(self, dim: int) -> None:
-        # Mirror to both libraries so they stay in sync, then persist.
-        # set_display_dim no-ops when the value is unchanged, so the
-        # sister widget's emit is suppressed and we don't loop.
-        self._side_panel.set_display_dim(dim)
-        self._update_settings(library_display_dim=int(dim))
+    def _persist_sources_sort(self) -> None:
+        lib = self._side_panel.sources_library()
+        self._update_settings(
+            library_sources_sort_field=lib.sort_field(),
+            library_sources_sort_order=lib.sort_order(),
+        )
+
+    def _persist_targets_sort(self) -> None:
+        lib = self._side_panel.targets_library()
+        self._update_settings(
+            library_targets_sort_field=lib.sort_field(),
+            library_targets_sort_order=lib.sort_order(),
+        )
 
     # ---- Batch ----
 

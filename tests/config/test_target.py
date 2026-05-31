@@ -24,6 +24,13 @@ class TestTarget:
         t = Target(path=p)
         assert t.kind == TargetKind.VIDEO
 
+    def test_wmv_kind_is_video(self, tmp_path: Path):
+        # Extension-based detection recognizes wmv even where the OS mimetypes
+        # registry doesn't (the bug this replaced).
+        p = tmp_path / "clip.wmv"
+        p.write_bytes(b"")
+        assert Target(path=p).kind == TargetKind.VIDEO
+
     def test_unknown_mime_rejected_on_kind_access(self, tmp_path: Path):
         p = tmp_path / "thing.xyz"
         p.write_bytes(b"")

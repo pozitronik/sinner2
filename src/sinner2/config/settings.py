@@ -74,7 +74,18 @@ class Settings(SinnerBaseModel):
     library_sources: list[str] | None = None
     library_targets: list[str] | None = None
     top_splitter_state_hex: str | None = None
-    library_display_dim: int | None = None
+    library_display_dim: int | None = None  # legacy shared zoom (fallback)
+    # Configurable accepted file extensions (no UI — edit the file). None = the
+    # comprehensive defaults in config.media_extensions.
+    library_image_extensions: list[str] | None = None
+    library_video_extensions: list[str] | None = None
+    # Per-panel zoom + sort (source vs target kept independent).
+    library_sources_display_dim: int | None = None
+    library_targets_display_dim: int | None = None
+    library_sources_sort_field: str | None = None
+    library_sources_sort_order: str | None = None  # asc | desc
+    library_targets_sort_field: str | None = None
+    library_targets_sort_order: str | None = None
     window_stays_on_top: bool | None = None
     display_rotation: int | None = None  # 0 / 90 / 180 / 270
     batch_store_path: str | None = None  # default <install>/batch

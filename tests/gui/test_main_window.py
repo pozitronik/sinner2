@@ -224,6 +224,21 @@ class TestStatusActionButtons:
         assert window._comparison_on is True  # noqa: SLF001
         assert window._detection_sink.wants_crops() is False  # noqa: SLF001
 
+    def test_library_zoom_is_independent_per_panel(self, window):
+        src = window._side_panel.sources_library()  # noqa: SLF001
+        tgt = window._side_panel.targets_library()  # noqa: SLF001
+        tgt_before = tgt.display_dim()
+        src.set_display_dim(src.display_dim() + 32)  # change source only
+        assert tgt.display_dim() == tgt_before  # target NOT synced
+        assert window._settings.library_sources_display_dim == src.display_dim()  # noqa: SLF001
+
+    def test_library_sort_persists_per_panel(self, window):
+        tgt = window._side_panel.targets_library()  # noqa: SLF001
+        tgt.set_sort("date", "asc")  # silent restore
+        tgt._toggle_sort_direction()  # noqa: SLF001  # asc → desc, fires sortChanged
+        assert window._settings.library_targets_sort_field == "date"  # noqa: SLF001
+        assert window._settings.library_targets_sort_order == "desc"  # noqa: SLF001
+
     def test_hint_reflects_swapper_state(self, window, monkeypatch):
         monkeypatch.setattr(window._processors, "swapper_enabled", lambda: True)
         window._set_face_overlay_visible(True)  # noqa: SLF001

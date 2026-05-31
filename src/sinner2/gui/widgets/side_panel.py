@@ -16,23 +16,13 @@ from pathlib import Path
 
 from PySide6.QtWidgets import QTabWidget, QWidget
 
+from sinner2.config.media_extensions import images_filter, media_filter
 from sinner2.gui.widgets.batch_view import QBatchView
 from sinner2.gui.widgets.library_view import QLibraryView
 from sinner2.gui.widgets.processor_controls import QProcessorControls
 from sinner2.library.media_kind import is_image, is_media
 from sinner2.library.thumbnail_cache import ThumbnailCache
 from sinner2.library.thumbnail_generator import ThumbnailGenerator
-
-
-_SOURCES_FILTER = (
-    "Images (*.png *.jpg *.jpeg *.bmp *.tiff *.webp);;All files (*)"
-)
-_TARGETS_FILTER = (
-    "Media (*.png *.jpg *.jpeg *.mp4 *.avi *.mov *.mkv *.webm *.gif);;"
-    "Images (*.png *.jpg *.jpeg *.bmp *.tiff *.webp);;"
-    "Videos (*.mp4 *.avi *.mov *.mkv *.webm);;"
-    "All files (*)"
-)
 
 
 class QSidePanel(QTabWidget):
@@ -46,6 +36,8 @@ class QSidePanel(QTabWidget):
         batch_view: QBatchView | None = None,
         thumb_extract_dim: int = 384,
         thumb_display_dim: int = 128,
+        sources_display_dim: int | None = None,
+        targets_display_dim: int | None = None,
         thumb_workers: int | None = None,
         parent: QWidget | None = None,
     ) -> None:
@@ -62,17 +54,20 @@ class QSidePanel(QTabWidget):
             max_workers=thumb_workers,
         )
         self._processors = processors or QProcessorControls()
+        # File-dialog filters are derived from the active (configurable)
+        # extension sets so the picker shows the same files the libraries
+        # accept on drag-drop / folder scan. Zoom is per-panel.
         self._sources_library = QLibraryView(
             self._generator,
             accept=is_image,
-            file_dialog_filter=_SOURCES_FILTER,
-            display_dim=thumb_display_dim,
+            file_dialog_filter=images_filter(),
+            display_dim=sources_display_dim or thumb_display_dim,
         )
         self._targets_library = QLibraryView(
             self._generator,
             accept=is_media,
-            file_dialog_filter=_TARGETS_FILTER,
-            display_dim=thumb_display_dim,
+            file_dialog_filter=media_filter(),
+            display_dim=targets_display_dim or thumb_display_dim,
         )
         self._batch_view = batch_view
 

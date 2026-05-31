@@ -142,6 +142,7 @@ class QLibraryView(QWidget):
     pathsChanged = Signal(list)  # list[Path] — emitted on any expanded-grid mutation
     rootsChanged = Signal(list)  # list[Path] — emitted when user-added roots change (persist this)
     displayDimChanged = Signal(int)  # emitted when user resizes thumbnails
+    sortChanged = Signal()  # emitted when the sort field or direction changes
 
     def __init__(
         self,
@@ -327,6 +328,44 @@ class QLibraryView(QWidget):
         return list(self._roots)
 
     # ---- Display dim ----
+
+    def sort_field(self) -> str:
+        """Current sort field as its str token (for persistence)."""
+        data = self._sort_combo.currentData()
+        return data.value if isinstance(data, SortField) else str(data)
+
+    def sort_order(self) -> str:
+        """'asc' or 'desc'."""
+        return (
+            "desc"
+            if self._proxy.sortOrder() == Qt.SortOrder.DescendingOrder
+            else "asc"
+        )
+
+    def set_sort(self, field: str | None, order: str | None) -> None:
+        """Silent restore of the sort field + direction (no sortChanged)."""
+        if field is not None:
+            try:
+                sort_field = SortField(field)
+            except ValueError:
+                sort_field = None
+            if sort_field is not None:
+                self._sort_combo.blockSignals(True)
+                for i in range(self._sort_combo.count()):
+                    if self._sort_combo.itemData(i) == sort_field:
+                        self._sort_combo.setCurrentIndex(i)
+                        break
+                self._sort_combo.blockSignals(False)
+                self._proxy.set_sort_field(sort_field)
+        sort_order = (
+            Qt.SortOrder.DescendingOrder
+            if order == "desc"
+            else Qt.SortOrder.AscendingOrder
+        )
+        self._proxy.sort(0, sort_order)
+        self._sort_dir_button.setText(
+            "▲" if sort_order == Qt.SortOrder.AscendingOrder else "▼"
+        )
 
     def display_dim(self) -> int:
         return self._display_dim
@@ -598,6 +637,7 @@ class QLibraryView(QWidget):
         except ValueError:
             return
         self._proxy.set_sort_field(field)
+        self.sortChanged.emit()
 
     def _toggle_sort_direction(self) -> None:
         new_order = (
@@ -609,6 +649,7 @@ class QLibraryView(QWidget):
         self._sort_dir_button.setText(
             "▲" if new_order == Qt.SortOrder.AscendingOrder else "▼"
         )
+        self.sortChanged.emit()
 
     def _on_activated(self, proxy_index) -> None:
         path_str = self._proxy.data(proxy_index, ROLE_PATH)

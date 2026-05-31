@@ -28,6 +28,27 @@ def generator(tmp_path: Path):
     g.shutdown(wait=True)
 
 
+class TestSort:
+    def test_default_sort_getters(self, view):
+        assert view.sort_field() == "name"
+        assert view.sort_order() == "asc"
+
+    def test_set_sort_restores_field_and_order(self, view):
+        view.set_sort("date", "desc")
+        assert view.sort_field() == "date"
+        assert view.sort_order() == "desc"
+
+    def test_set_sort_is_silent(self, view):
+        fired: list = []
+        view.sortChanged.connect(lambda: fired.append(1))
+        view.set_sort("size", "asc")
+        assert fired == []  # restore must not re-emit (would re-persist)
+
+    def test_toggle_direction_emits_sort_changed(self, view, qtbot):
+        with qtbot.waitSignal(view.sortChanged, timeout=1000):
+            view._toggle_sort_direction()  # noqa: SLF001
+
+
 @pytest.fixture
 def view(qtbot, generator):
     v = QLibraryView(generator)
