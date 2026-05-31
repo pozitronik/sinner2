@@ -410,6 +410,7 @@ class QProcessorControls(QWidget):
             "nothing for out-of-plane (profile) turns. Affects output."
         )
         self._rotation_enabled.toggled.connect(self.configChanged)
+        self._rotation_enabled.toggled.connect(self._update_rotation_rows)
         face_form.addRow("Rotation compensation", self._rotation_enabled)
 
         self._rotation_threshold = QSpinBox()
@@ -456,20 +457,28 @@ class QProcessorControls(QWidget):
             "preview. Also toggles with F8."
         )
         self._overlay_enabled.toggled.connect(self.faceOverlayToggled)
+        self._overlay_enabled.toggled.connect(self._couple_overlay_to_comparison)
         face_form.addRow("Show detection overlay", self._overlay_enabled)
 
         # Comparison overlay (a view toggle, NOT a chain param → its own signal,
         # never configChanged). Shows [orig | swapped] thumbnails next to each
-        # face; effective only with the swapper + the overlay both on.
+        # face; it draws ON the detection overlay, so the two are linked:
+        # enabling comparison turns the overlay on, and turning the overlay off
+        # turns comparison off (see the couple_* handlers).
         self._comparison_enabled = QCheckBox()
         self._comparison_enabled.setToolTip(
             "Show original vs swapped face thumbnails next to each detected\n"
-            "face on the preview. Needs the face-detection overlay (F8) and\n"
-            "the swapper both on."
+            "face on the preview. Turns on the face-detection overlay (they're\n"
+            "linked); also needs the swapper on."
         )
+        # Couple FIRST so the overlay is already on by the time the comparison
+        # signal reaches the window — otherwise it transiently warns "needs the
+        # overlay" before the coupling enables it.
+        self._comparison_enabled.toggled.connect(self._couple_comparison_to_overlay)
         self._comparison_enabled.toggled.connect(self.faceComparisonToggled)
         face_form.addRow("Show orig/swapped", self._comparison_enabled)
         self._face_box = face_box
+        self._update_rotation_rows()  # reflect the default rotation-on state
 
         execution_box = QGroupBox("Execution")
         execution_form = QFormLayout(execution_box)
@@ -994,6 +1003,27 @@ class QProcessorControls(QWidget):
         self._comparison_enabled.setChecked(bool(on))
         self._comparison_enabled.blockSignals(False)
 
+    def _update_rotation_rows(self) -> None:
+        """Gray out the rotation knobs (threshold / re-detect / angle source)
+        when rotation compensation is off — they have no effect then."""
+        on = self._rotation_enabled.isChecked()
+        self._rotation_threshold.setEnabled(on)
+        self._rotation_redetect.setEnabled(on)
+        self._rotation_source.setEnabled(on)
+
+    def _couple_comparison_to_overlay(self, on: bool) -> None:
+        """The comparison thumbnails draw on the detection overlay, so enabling
+        comparison must enable the overlay too (otherwise the toggle looks
+        broken — nothing appears)."""
+        if on and not self._overlay_enabled.isChecked():
+            self._overlay_enabled.setChecked(True)  # fires faceOverlayToggled
+
+    def _couple_overlay_to_comparison(self, on: bool) -> None:
+        """Turning the detection overlay off also turns comparison off — there's
+        nothing to draw the thumbnails onto."""
+        if not on and self._comparison_enabled.isChecked():
+            self._comparison_enabled.setChecked(False)  # fires faceComparisonToggled
+
     def skip_strategy(self) -> FrameSkipStrategy:
         cls = _STRATEGIES[self._strategy_combo.currentText()]
         if cls is SyncedStrategy:
@@ -1315,4 +1345,5 @@ class QProcessorControls(QWidget):
         self._update_synced_threshold_enabled()
         self._update_scale_label()  # reflect a restored scale (set under blockSignals)
         self._update_enhancer_model_rows()  # reflect a restored enhancer model
+        self._update_rotation_rows()  # reflect a restored rotation-compensation state
         self.configChanged.emit()

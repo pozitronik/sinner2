@@ -230,10 +230,23 @@ class TestStatusActionButtons:
         window._processors._comparison_enabled.toggle()  # noqa: SLF001  # off
         assert window._detection_sink.wants_crops() is False  # noqa: SLF001
 
-    def test_comparison_wants_crops_requires_overlay_on(self, window):
-        # Comparison checked but the overlay is OFF → no crop extraction wanted.
-        window._processors._comparison_enabled.toggle()  # noqa: SLF001
+    def test_enabling_comparison_turns_on_the_overlay(self, window):
+        # The two are linked: comparison draws ON the overlay, so checking it
+        # with the overlay OFF must enable the overlay (else the toggle looks
+        # broken). Crops are then wanted.
+        assert window._processors.face_overlay_enabled() is False  # noqa: SLF001
+        window._processors._comparison_enabled.toggle()  # noqa: SLF001  # comparison on
+        assert window._processors.face_overlay_enabled() is True  # noqa: SLF001
         assert window._comparison_on is True  # noqa: SLF001
+        assert window._detection_sink.wants_crops() is True  # noqa: SLF001
+
+    def test_disabling_overlay_turns_off_comparison(self, window):
+        # Turning the overlay off must drop comparison too — nothing to draw on.
+        window._processors._comparison_enabled.toggle()  # noqa: SLF001  # both on (linked)
+        assert window._processors.face_comparison_enabled() is True  # noqa: SLF001
+        window._processors._overlay_enabled.toggle()  # noqa: SLF001  # overlay off
+        assert window._processors.face_comparison_enabled() is False  # noqa: SLF001
+        assert window._comparison_on is False  # noqa: SLF001
         assert window._detection_sink.wants_crops() is False  # noqa: SLF001
 
     def test_library_zoom_is_independent_per_panel(self, window):

@@ -565,6 +565,28 @@ class TestFaceDetectorGroup:
         assert p.rotation_threshold_deg == 30
         assert p.rotation_redetect is False
 
+    def test_rotation_subcontrols_disabled_when_off(self, widget):
+        widget._rotation_enabled.setChecked(True)  # noqa: SLF001
+        assert widget._rotation_threshold.isEnabled()  # noqa: SLF001
+        assert widget._rotation_redetect.isEnabled()  # noqa: SLF001
+        assert widget._rotation_source.isEnabled()  # noqa: SLF001
+        widget._rotation_enabled.setChecked(False)  # noqa: SLF001
+        assert not widget._rotation_threshold.isEnabled()  # noqa: SLF001
+        assert not widget._rotation_redetect.isEnabled()  # noqa: SLF001
+        assert not widget._rotation_source.isEnabled()  # noqa: SLF001
+
+    def test_enabling_comparison_checks_overlay(self, widget):
+        # The widget-level link: checking comparison checks the overlay box too.
+        assert widget._overlay_enabled.isChecked() is False  # noqa: SLF001
+        widget._comparison_enabled.setChecked(True)  # noqa: SLF001
+        assert widget._overlay_enabled.isChecked() is True  # noqa: SLF001
+
+    def test_unchecking_overlay_unchecks_comparison(self, widget):
+        widget._comparison_enabled.setChecked(True)  # noqa: SLF001  # both on (linked)
+        assert widget._comparison_enabled.isChecked() is True  # noqa: SLF001
+        widget._overlay_enabled.setChecked(False)  # noqa: SLF001
+        assert widget._comparison_enabled.isChecked() is False  # noqa: SLF001
+
 
 class TestProcessingScaleReadout:
     def test_percent_only_without_target(self, widget):

@@ -35,7 +35,11 @@ from sinner2.pipeline.image_writer import (
 )
 from sinner2.pipeline.playback_mode import PlaybackMode
 from sinner2.pipeline.processor import Processor
-from sinner2.pipeline.processors.face_enhancer import FaceEnhancer, FaceEnhancerParams
+from sinner2.pipeline.processors.face_enhancer import (
+    EnhancerModel,
+    FaceEnhancer,
+    FaceEnhancerParams,
+)
 from sinner2.pipeline.processors.face_swapper import FaceSwapper, FaceSwapperParams
 from sinner2.pipeline.processors.upscaler import Upscaler, UpscalerParams
 from sinner2.pipeline.realtime.executor import RealtimeExecutor
@@ -86,6 +90,14 @@ _DEFAULT_CACHE_SETTINGS = CacheSettings(
     write_workers=4,
     write_queue_size=8,
 )
+
+# CodeFormer is a heavy, GPU-bound, SHARED ONNX session: extra realtime workers
+# don't add throughput (they serialize on the one GPU session) and only deepen
+# the in-flight queue, which adds latency between a seek and the frame showing.
+# Cap the EFFECTIVE realtime worker count when it's the active enhancer so the
+# preview stays responsive. The user's stored worker count is untouched — this
+# only bounds what the executor actually runs with.
+_CODEFORMER_REALTIME_WORKER_CAP = 2
 
 
 def default_cache_root() -> Path:
@@ -286,6 +298,11 @@ class PlayerController(QObject):
         self._swapper_enabled = True
         self._strategy: FrameSkipStrategy = BestEffortStrategy()
         self._worker_count = 1
+        # Effective worker count the live executor was last started/set with
+        # (may be capped below _worker_count for a heavy enhancer — see
+        # _effective_worker_count). Tracked so a config change re-applies it
+        # only when the effective value actually moves.
+        self._applied_worker_count = 1
         self._playback_mode: PlaybackMode = PlaybackMode.FIXED_30
         self._cache_settings: CacheSettings = _DEFAULT_CACHE_SETTINGS
         # User-overridable cache root path. None → fall back to default.
@@ -412,8 +429,10 @@ class PlayerController(QObject):
                     manager, cache_dir, source, target,
                     reader_pool.frame_count, chain, writer,
                 )
+            effective_workers = self._effective_worker_count()
+            self._applied_worker_count = effective_workers
             executor, write_executor = self._session_factory(
-                reader_pool, chain, self._strategy, self._worker_count,
+                reader_pool, chain, self._strategy, effective_workers,
                 self._playback_mode, cache_settings, session_store,
             )
         except Exception:
@@ -658,7 +677,6 @@ class PlayerController(QObject):
             and strategy.max_lag_frames != self._strategy.max_lag_frames
         ):
             strategy_changed = True
-        worker_count_changed = worker_count != self._worker_count
         playback_mode_changed = playback_mode is not self._playback_mode
         cache_mode_changed = cache_settings.mode is not self._cache_settings.mode
 
@@ -704,12 +722,28 @@ class PlayerController(QObject):
                     self._executor.seek(current)
         if strategy_changed:
             self._executor.set_skip_strategy(strategy)
-        if worker_count_changed:
-            self._executor.set_worker_count(worker_count)
+        # Re-apply the EFFECTIVE worker count whenever it moves — that's the
+        # slider changing OR the enhancer flipping the CodeFormer cap on/off
+        # (the latter rides in on chain_changed, not a worker_count change).
+        effective_workers = self._effective_worker_count()
+        if effective_workers != self._applied_worker_count:
+            self._executor.set_worker_count(effective_workers)
+            self._applied_worker_count = effective_workers
         if playback_mode_changed:
             self._executor.set_playback_mode(playback_mode)
         if cache_mode_changed:
             self._executor.set_cache_mode(cache_settings.mode)
+
+    def _effective_worker_count(self) -> int:
+        """Realtime worker count actually used, capped for a heavy GPU-bound
+        enhancer (CodeFormer) so the preview stays responsive. Falls back to the
+        user's requested count for everything else."""
+        if (
+            self._enhancer_enabled
+            and self._enhancer_params.model is EnhancerModel.CODEFORMER
+        ):
+            return min(self._worker_count, _CODEFORMER_REALTIME_WORKER_CAP)
+        return self._worker_count
 
     def _build_chain(self, source: Source) -> list[Processor]:
         # Both processors are optional. An empty chain is valid — the
