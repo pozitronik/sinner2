@@ -60,3 +60,17 @@ def test_enhance_before_setup_raises():
 
     with pytest.raises(RuntimeError, match="before setup"):
         CodeFormerBackend().enhance(np.zeros((4, 4, 3), np.uint8))
+
+
+def test_release_evicts_session(monkeypatch):
+    import sinner2.pipeline.processors.codeformer as cf
+
+    evicted = []
+    monkeypatch.setattr(cf, "release_onnx_session", evicted.append)
+    backend = CodeFormerBackend()
+    backend._session = _IdentitySession()  # noqa: SLF001
+    backend._analyser = object()  # noqa: SLF001
+    backend.release()
+    assert backend._session is None  # noqa: SLF001
+    assert backend._analyser is None  # noqa: SLF001
+    assert evicted == [cf.MODEL_FILE]  # the exclusive CodeFormer session

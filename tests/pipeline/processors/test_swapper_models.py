@@ -142,3 +142,27 @@ class TestGenericGet:
         backend = _make_backend(SwapperModel.GHOST_2_256)
         with pytest.raises(RuntimeError, match="before setup"):
             backend.get(np.zeros((8, 8, 3), np.uint8), SimpleNamespace(kps=_KPS))
+
+    def test_release_evicts_model_and_converter(self, monkeypatch):
+        import sinner2.pipeline.processors.swapper_models as sm
+
+        evicted: list[str] = []
+        monkeypatch.setattr(sm, "release_onnx_session", evicted.append)
+        backend = _make_backend(SwapperModel.GHOST_2_256)
+        backend._session = _IdentitySession()  # noqa: SLF001
+        backend._converter = object()  # noqa: SLF001
+        backend.release()
+        assert backend._session is None  # noqa: SLF001
+        assert backend._converter is None  # noqa: SLF001
+        # ghost evicts both its weights AND the crossface converter
+        assert set(evicted) == {"ghost_2_256.onnx", "crossface_ghost.onnx"}
+
+    def test_release_uniface_has_no_converter(self, monkeypatch):
+        import sinner2.pipeline.processors.swapper_models as sm
+
+        evicted: list[str] = []
+        monkeypatch.setattr(sm, "release_onnx_session", evicted.append)
+        backend = _make_backend(SwapperModel.UNIFACE_256)
+        backend._session = _IdentitySession()  # noqa: SLF001
+        backend.release()
+        assert evicted == ["uniface_256.onnx"]  # no converter companion

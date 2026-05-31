@@ -116,6 +116,43 @@ class TestSessionCache:
         get_onnx_session("m.onnx")
         assert call_count == 2
 
+    def test_release_evicts_only_the_named_session(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        import onnxruntime
+
+        from sinner2.pipeline.model_cache import release_onnx_session
+
+        clear_session_cache()
+        monkeypatch.setenv("SINNER2_MODELS_DIR", str(tmp_path))
+        (tmp_path / "a.onnx").write_bytes(b"a")
+        (tmp_path / "b.onnx").write_bytes(b"b")
+
+        counts = {"a.onnx": 0, "b.onnx": 0}
+
+        def fake_session(path: str, *_a: object, **_k: object) -> MagicMock:
+            counts[Path(path).name] += 1
+            return MagicMock()
+
+        monkeypatch.setattr(onnxruntime, "InferenceSession", fake_session)
+
+        get_onnx_session("a.onnx")
+        get_onnx_session("b.onnx")
+        release_onnx_session("a.onnx")        # evict only 'a'
+        get_onnx_session("a.onnx")            # reloads
+        get_onnx_session("b.onnx")            # still cached
+        assert counts["a.onnx"] == 2          # built, evicted, rebuilt
+        assert counts["b.onnx"] == 1          # untouched
+
+    def test_release_unknown_session_is_noop(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        from sinner2.pipeline.model_cache import release_onnx_session
+
+        clear_session_cache()
+        monkeypatch.setenv("SINNER2_MODELS_DIR", str(tmp_path))
+        release_onnx_session("never_loaded.onnx")  # must not raise
+
 
 class TestAvailableProviders:
     """available_onnx_providers reports what ORT built in. Providers are no

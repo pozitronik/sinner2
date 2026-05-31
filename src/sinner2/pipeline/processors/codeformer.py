@@ -22,7 +22,7 @@ import numpy as np
 
 from sinner2.config.execution import DEFAULT_ONNX_PROVIDERS
 from sinner2.pipeline.face_analyser import FaceAnalyser
-from sinner2.pipeline.model_cache import get_onnx_session
+from sinner2.pipeline.model_cache import get_onnx_session, release_onnx_session
 from sinner2.types import Frame
 
 MODEL_FILE = "codeformer.onnx"
@@ -98,3 +98,11 @@ class CodeFormerBackend:
             except Exception:
                 continue
         return result
+
+    def release(self) -> None:
+        """Drop the session + detector refs and evict the (exclusive) CodeFormer
+        ONNX session from the shared cache so disabling the enhancer frees its
+        ~377 MB of VRAM instead of leaving it resident."""
+        self._session = None
+        self._analyser = None
+        release_onnx_session(MODEL_FILE)

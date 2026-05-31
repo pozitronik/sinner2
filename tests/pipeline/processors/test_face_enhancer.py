@@ -283,3 +283,32 @@ class TestCodeFormerBackend:
         fe = FaceEnhancer()
         fe.setup()
         assert fe._codeformer is None  # noqa: SLF001 — GFPGAN path
+
+    def test_release_evicts_codeformer_session(
+        self, models_dir, stub_face_detection, monkeypatch
+    ):
+        released: list[int] = []
+
+        class _StubBackend:
+            def __init__(self, *a, **k):
+                pass
+
+            def setup(self):
+                pass
+
+            def enhance(self, img):
+                return img
+
+            def release(self):
+                released.append(1)
+
+        monkeypatch.setattr(face_enhancer, "CodeFormerBackend", _StubBackend)
+        fe = FaceEnhancer(
+            params=FaceEnhancerParams(
+                model=EnhancerModel.CODEFORMER, rotation_compensation=False
+            )
+        )
+        fe.setup()
+        fe.release()
+        assert released == [1]  # backend.release() ran (evicts the ONNX session)
+        assert fe._codeformer is None  # noqa: SLF001

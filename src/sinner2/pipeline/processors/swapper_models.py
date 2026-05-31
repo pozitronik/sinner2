@@ -30,6 +30,7 @@ from sinner2.config.execution import DEFAULT_ONNX_PROVIDERS
 from sinner2.pipeline.model_cache import (
     get_onnx_session,
     record_actual_providers,
+    release_onnx_session,
 )
 from sinner2.types import Frame
 
@@ -290,3 +291,14 @@ class GenericOnnxSwapper:
         if not paste_back:
             return swapped
         return _paste_back(img, swapped, self._mask, matrix)
+
+    def release(self) -> None:
+        """Drop session/converter refs and evict the (exclusive) model + its
+        crossface converter from the shared ONNX cache, so disabling/switching
+        the swapper frees their VRAM instead of leaving them resident."""
+        self._session = None
+        self._converter = None
+        self._source_input = None
+        release_onnx_session(self._spec.model_file)
+        if self._spec.converter_file:
+            release_onnx_session(self._spec.converter_file)

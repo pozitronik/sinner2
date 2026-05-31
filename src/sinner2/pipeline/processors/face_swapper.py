@@ -302,6 +302,11 @@ class FaceSwapper:
         return TargetSex.BOTH
 
     def release(self) -> None:
+        # Generic ONNX backends (ghost/simswap/uniface) own a cached session;
+        # ask them to evict it so disabling/switching the swapper frees VRAM.
+        # The insightface backend (inswapper/reswapper) has no release().
+        if isinstance(self._swapper, GenericOnnxSwapper):
+            self._swapper.release()
         self._analyser = None
         self._swapper = None
         self._source_face = None

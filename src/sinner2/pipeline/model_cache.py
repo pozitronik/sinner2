@@ -351,6 +351,30 @@ def get_onnx_session(
         return session
 
 
+def release_onnx_session(name: str) -> None:
+    """Evict the cached ONNX session for ``name`` and free its device memory.
+
+    Called by a processor's release() when its feature is disabled so the model
+    doesn't linger in VRAM (ORT frees a session's GPU arena when the last
+    reference drops). Re-enabling the feature reloads it from disk via
+    get_onnx_session. No-op if nothing is cached for that name. Safe because
+    every cached session is exclusive to one feature (codeformer / a specific
+    swap model / a crossface converter); the shared insightface model lives
+    elsewhere, not in this cache.
+    """
+    import gc
+
+    path = get_models_dir() / name
+    with _session_lock:
+        session = _session_cache.pop(path, None)
+    if session is None:
+        return
+    # Drop the local ref and force a collection so ORT's session destructor
+    # runs now (freeing the CUDA arena) rather than at some later GC.
+    del session
+    gc.collect()
+
+
 def clear_session_cache() -> None:
     """Drop all cached ONNX sessions. Test-only; releases GPU memory."""
     with _session_lock:

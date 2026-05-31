@@ -167,7 +167,11 @@ class FaceEnhancer:
 
     def release(self) -> None:
         self._restorer = None
-        self._codeformer = None
+        if self._codeformer is not None:
+            # Evict the CodeFormer ONNX session from VRAM (its own release does
+            # the cache eviction) rather than just dropping our reference.
+            self._codeformer.release()
+            self._codeformer = None
         self._analyser = None
         # Hand the model's VRAM back to the driver. Torch's caching allocator
         # otherwise keeps the freed blocks reserved, so a realtime worker-count
