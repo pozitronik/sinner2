@@ -32,7 +32,11 @@ from sinner2.pipeline.processors.codeformer import (
     MODEL_FILE as CODEFORMER_MODEL_FILE,
 )
 from sinner2.pipeline.processors.face_enhancer import EnhancerModel
+from sinner2.pipeline.processors.face_swapper import SwapperModel
 from sinner2.pipeline.processors.occlusion import parser_model_file
+from sinner2.pipeline.processors.swapper_models import (
+    model_files as swapper_model_files,
+)
 from sinner2.pipeline.processors.upscaler import model_filename
 from sinner2.gui.player_controller import PlayerController, default_cache_root
 from sinner2.gui.widgets.batch_task_dialog import QBatchTaskDialog
@@ -575,6 +579,15 @@ class SinnerMainWindow(QMainWindow):
         # revert the toggle so the chain isn't rebuilt with a missing model.
         if self._processors.upscaler_enabled() and not self._ensure_upscaler_model():
             self._processors.set_upscaler_checked(False)
+        # A non-default swap model needs its weights (and, for ghost/simswap,
+        # an embedding converter) present. Confirm the download; decline reverts
+        # to inswapper_128 (a required model, always present).
+        if self._processors.swapper_enabled():
+            model = SwapperModel(self._processors.swapper_model())
+            if model is not SwapperModel.INSWAPPER_128 and not ensure_models(
+                self, swapper_model_files(model)
+            ):
+                self._processors.set_swapper_model(SwapperModel.INSWAPPER_128.value)
         swapper_cfg = self._processors.swapper_params()
         if swapper_cfg.occlusion_mask and not ensure_models(
             self, [parser_model_file(swapper_cfg.occlusion_parser)]
@@ -1049,6 +1062,7 @@ class SinnerMainWindow(QMainWindow):
             strategy_name=self._settings.strategy_name,
             enhancer_enabled=self._settings.enhancer_enabled,
             swapper_enabled=self._settings.swapper_enabled,
+            swapper_model=self._settings.swapper_model,
             swapper_detection_interval=self._settings.swapper_detection_interval,
             swapper_many_faces=self._settings.swapper_many_faces,
             swapper_target_sex=self._settings.swapper_target_sex,
@@ -1090,6 +1104,7 @@ class SinnerMainWindow(QMainWindow):
             strategy_name=self._processors.strategy_name(),
             enhancer_enabled=self._processors.enhancer_enabled(),
             swapper_enabled=self._processors.swapper_enabled(),
+            swapper_model=swapper.model.value,
             swapper_detection_interval=swapper.detection_interval,
             swapper_many_faces=swapper.many_faces,
             # str-Enum .value is the single-letter token, kept stable
@@ -1261,6 +1276,7 @@ class SinnerMainWindow(QMainWindow):
             output_format=default_format,
             cleanup_mode=default_cleanup,
             swapper_enabled=self._processors.swapper_enabled(),
+            swapper_model=swapper.model.value,
             swapper_detection_interval=swapper.detection_interval,
             swapper_many_faces=swapper.many_faces,
             swapper_target_sex=swapper.target_sex.value,

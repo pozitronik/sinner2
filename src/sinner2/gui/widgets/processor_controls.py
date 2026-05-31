@@ -37,6 +37,7 @@ from sinner2.pipeline.processors.upscaler import UpscalerModel, UpscalerParams
 from sinner2.pipeline.processors.face_swapper import (
     FaceSwapperParams,
     RotationAngleSource,
+    SwapperModel,
     TargetSex,
 )
 from sinner2.pipeline.skip_strategy import (
@@ -83,6 +84,16 @@ _VIDEO_BACKENDS: dict[str, VideoBackend] = {
 _ROTATION_SOURCES: list[tuple[str, str]] = [
     ("Eye keypoints", RotationAngleSource.KEYPOINTS.value),
     ("3D pose estimate", RotationAngleSource.POSE.value),
+]
+
+_SWAPPER_MODELS: list[tuple[str, str]] = [
+    (SwapperModel.INSWAPPER_128.value, "inswapper_128 (default, InsightFace)"),
+    (SwapperModel.RESWAPPER_128.value, "ReSwapper 128 (open reproduction)"),
+    (SwapperModel.GHOST_1_256.value, "Ghost 1 (256)"),
+    (SwapperModel.GHOST_2_256.value, "Ghost 2 (256)"),
+    (SwapperModel.GHOST_3_256.value, "Ghost 3 (256, heaviest)"),
+    (SwapperModel.SIMSWAP_256.value, "SimSwap (256, non-commercial)"),
+    (SwapperModel.UNIFACE_256.value, "UniFace (256, pose-aware)"),
 ]
 
 _ENHANCER_MODELS: list[tuple[str, str]] = [
@@ -174,6 +185,19 @@ class QProcessorControls(QWidget):
         swapper_box.toggled.connect(self.configChanged)
         self._swapper_box = swapper_box
         swapper_form = QFormLayout(swapper_box)
+        self._swapper_model = QComboBox()
+        for value, label in _SWAPPER_MODELS:
+            self._swapper_model.addItem(label, value)
+            if value == swapper_defaults.model.value:
+                self._swapper_model.setCurrentIndex(self._swapper_model.count() - 1)
+        self._swapper_model.setToolTip(
+            "Face-swap model. inswapper_128 (default) and ReSwapper are 128px;\n"
+            "Ghost / SimSwap / UniFace are 256px alternatives with different\n"
+            "trade-offs. Non-default weights download on first selection.\n"
+            "SimSwap is CC-BY-NC (non-commercial)."
+        )
+        self._swapper_model.currentIndexChanged.connect(self.configChanged)
+        swapper_form.addRow("Model", self._swapper_model)
         self._detection_interval = QSpinBox()
         self._detection_interval.setRange(1, 30)
         self._detection_interval.setValue(swapper_defaults.detection_interval)
@@ -852,6 +876,7 @@ class QProcessorControls(QWidget):
         # QVariant flattens str-Enum to str (see library sort fix). The
         # FaceSwapperParams model coerces back via str-Enum membership.
         return FaceSwapperParams(
+            model=SwapperModel(self._swapper_model.currentData()),
             detection_interval=self._detection_interval.value(),
             many_faces=self._many_faces.isChecked(),
             target_sex=self._target_sex.currentData(),
@@ -862,6 +887,19 @@ class QProcessorControls(QWidget):
             occlusion_mask=self._occlusion_mask.isChecked(),
             occlusion_parser=self._occlusion_parser.currentData(),
         )
+
+    def swapper_model(self) -> str:
+        return self._swapper_model.currentData()
+
+    def set_swapper_model(self, value: str) -> None:
+        """Set the swap model WITHOUT firing configChanged — used to revert the
+        selection when the user declines the model download."""
+        self._swapper_model.blockSignals(True)
+        for i in range(self._swapper_model.count()):
+            if self._swapper_model.itemData(i) == value:
+                self._swapper_model.setCurrentIndex(i)
+                break
+        self._swapper_model.blockSignals(False)
 
     def set_occlusion_checked(self, on: bool) -> None:
         """Reflect occlusion-on without firing configChanged — used to revert
@@ -1071,6 +1109,7 @@ class QProcessorControls(QWidget):
         strategy_name: str | None,
         enhancer_enabled: bool | None,
         swapper_enabled: bool | None = None,
+        swapper_model: str | None = None,
         swapper_detection_interval: int | None,
         swapper_many_faces: bool | None,
         swapper_target_sex: str | None,
@@ -1111,6 +1150,7 @@ class QProcessorControls(QWidget):
         """
         widgets = (
             self._swapper_box,
+            self._swapper_model,
             self._detection_interval,
             self._many_faces,
             self._target_sex,
@@ -1180,6 +1220,11 @@ class QProcessorControls(QWidget):
                         break
             if swapper_enabled is not None:
                 self._swapper_box.setChecked(swapper_enabled)
+            if swapper_model is not None:
+                for i in range(self._swapper_model.count()):
+                    if self._swapper_model.itemData(i) == swapper_model:
+                        self._swapper_model.setCurrentIndex(i)
+                        break
             if enhancer_enabled is not None:
                 self._enhancer_box.setChecked(enhancer_enabled)
             if enhancer_model is not None:

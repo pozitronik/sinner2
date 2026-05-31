@@ -56,6 +56,47 @@ MODEL_SOURCES: dict[str, str] = {
         "https://github.com/facefusion/facefusion-assets/releases/download/"
         "models-3.0.0/codeformer.onnx"
     ),
+    # ---- Alternative face-swap models (optional; lazy on selection) ----
+    # ReSwapper: clean-room reproduction of inswapper, drop-in via insightface's
+    # INSwapper class (same ArcFace embedding contract). Saved under our own
+    # filename; the upstream asset is reswapper-1019500.onnx. ~554 MB.
+    "reswapper_128.onnx": (
+        "https://huggingface.co/somanchiu/reswapper/resolve/main/"
+        "reswapper-1019500.onnx"
+    ),
+    # Ghost / SimSwap / UniFace: facefusion-style ONNX swappers (256px), driven
+    # by GenericOnnxSwapper. Ghost + SimSwap also need a crossface embedding
+    # converter (below). All from facefusion-assets, verified.
+    "ghost_1_256.onnx": (
+        "https://github.com/facefusion/facefusion-assets/releases/download/"
+        "models-3.0.0/ghost_1_256.onnx"
+    ),
+    "ghost_2_256.onnx": (
+        "https://github.com/facefusion/facefusion-assets/releases/download/"
+        "models-3.0.0/ghost_2_256.onnx"
+    ),
+    "ghost_3_256.onnx": (
+        "https://github.com/facefusion/facefusion-assets/releases/download/"
+        "models-3.0.0/ghost_3_256.onnx"
+    ),
+    "simswap_256.onnx": (
+        "https://github.com/facefusion/facefusion-assets/releases/download/"
+        "models-3.0.0/simswap_256.onnx"
+    ),
+    "uniface_256.onnx": (
+        "https://github.com/facefusion/facefusion-assets/releases/download/"
+        "models-3.0.0/uniface_256.onnx"
+    ),
+    # ArcFace→model embedding converters (facefusion crossface). Companion to
+    # ghost / simswap respectively; ~22 MB each.
+    "crossface_ghost.onnx": (
+        "https://github.com/facefusion/facefusion-assets/releases/download/"
+        "models-3.4.0/crossface_ghost.onnx"
+    ),
+    "crossface_simswap.onnx": (
+        "https://github.com/facefusion/facefusion-assets/releases/download/"
+        "models-3.4.0/crossface_simswap.onnx"
+    ),
 }
 
 # Downloaded up front by the first-run GUI flow. Optional models (the upscaler

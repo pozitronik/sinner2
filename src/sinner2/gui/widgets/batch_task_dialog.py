@@ -124,6 +124,24 @@ class QBatchTaskDialog(QDialog):
         swap_box.setChecked(task.swapper_enabled)
         self._swapper_box = swap_box
         swap_form = QFormLayout(swap_box)
+        self._swapper_model = QComboBox()
+        for value, label in (
+            ("inswapper_128", "inswapper_128 (default)"),
+            ("reswapper_128", "ReSwapper 128"),
+            ("ghost_1_256", "Ghost 1 (256)"),
+            ("ghost_2_256", "Ghost 2 (256)"),
+            ("ghost_3_256", "Ghost 3 (256)"),
+            ("simswap_256", "SimSwap (256, non-commercial)"),
+            ("uniface_256", "UniFace (256)"),
+        ):
+            self._swapper_model.addItem(label, value)
+            if value == task.swapper_model:
+                self._swapper_model.setCurrentIndex(self._swapper_model.count() - 1)
+        self._swapper_model.setToolTip(
+            "Face-swap model. Non-default weights download on first run of the "
+            "task."
+        )
+        swap_form.addRow("Model:", self._swapper_model)
         self._detection_interval = QSpinBox()
         self._detection_interval.setRange(1, 30)
         self._detection_interval.setValue(task.swapper_detection_interval)
@@ -447,6 +465,7 @@ class QBatchTaskDialog(QDialog):
                 "output_path": output_path,
                 "output_format": BatchOutputFormat(format_value),
                 "swapper_enabled": self._swapper_box.isChecked(),
+                "swapper_model": self._swapper_model.currentData(),
                 "swapper_detection_interval": self._detection_interval.value(),
                 "swapper_many_faces": self._many_faces.isChecked(),
                 "swapper_target_sex": self._target_sex.currentData(),

@@ -65,6 +65,7 @@ from sinner2.pipeline.processors.face_swapper import (
     FaceSwapper,
     FaceSwapperParams,
     RotationAngleSource,
+    SwapperModel,
     TargetSex,
 )
 from sinner2.pipeline.processors.occlusion import FaceParser
@@ -332,6 +333,7 @@ class BatchDriver:
         stages: list[StageSpec] = []
         if task.swapper_enabled:
             swapper_params = FaceSwapperParams(
+                model=SwapperModel(task.swapper_model),
                 detection_interval=task.swapper_detection_interval,
                 many_faces=task.swapper_many_faces,
                 target_sex=TargetSex(task.swapper_target_sex),

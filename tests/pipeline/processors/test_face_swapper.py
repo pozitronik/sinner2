@@ -132,6 +132,53 @@ class TestFaceSwapper:
         fs.process(_blank())
         assert stub_inswapper.get.call_count == 2
 
+
+class TestModelDispatch:
+    def test_generic_model_builds_generic_backend(
+        self,
+        source_image: Path,
+        models_dir: Path,
+        stub_insightface_app: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        # A non-insightface model (ghost) must route through GenericOnnxSwapper,
+        # NOT _load_inswapper — and prepare_source must run after source detect.
+        from sinner2.pipeline.processors.face_swapper import (
+            FaceSwapperParams,
+            SwapperModel,
+        )
+
+        events: list[str] = []
+
+        class _StubBackend:
+            def __init__(self, *a, **k):
+                pass
+
+            def setup(self):
+                events.append("setup")
+
+            def prepare_source(self, img, face):
+                events.append("prepare_source")
+
+            def get(self, frame, *a, **k):
+                return frame
+
+        def _boom(*a, **k):
+            raise AssertionError("_load_inswapper must not run for a ghost model")
+
+        monkeypatch.setattr(face_swapper, "GenericOnnxSwapper", _StubBackend)
+        monkeypatch.setattr(face_swapper, "_load_inswapper", _boom)
+
+        fs = FaceSwapper(
+            source=Source(path=source_image),
+            params=FaceSwapperParams(
+                model=SwapperModel.GHOST_2_256, rotation_compensation=False
+            ),
+        )
+        fs.setup()
+        assert events == ["setup", "prepare_source"]
+        assert fs.process(_blank()).shape == (10, 10, 3)
+
     def test_publishes_detections_to_sink(
         self,
         source_image: Path,

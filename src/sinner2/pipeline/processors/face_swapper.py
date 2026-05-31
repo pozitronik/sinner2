@@ -24,17 +24,28 @@ from sinner2.pipeline.processors.rotation_compensation import (
     compute_roll,
     swap_with_uprighting,
 )
+from sinner2.pipeline.processors.swapper_models import (
+    GenericOnnxSwapper,
+    SwapperModel,
+    get_spec,
+)
 from sinner2.types import Frame
 
 __all__ = [
     "FaceSwapper",
     "FaceSwapperParams",
     "RotationAngleSource",
+    "SwapperModel",
     "TargetSex",
 ]
 
 
 class FaceSwapperParams(SinnerBaseModel):
+    model: SwapperModel = Field(
+        default=SwapperModel.INSWAPPER_128,
+        description="Swap model: inswapper_128 / reswapper_128 / ghost_* / "
+        "simswap_256 / uniface_256",
+    )
     detection_interval: int = Field(
         default=1, ge=1, description="Detect faces every Nth frame; >=1"
     )
@@ -75,9 +86,6 @@ class FaceSwapperParams(SinnerBaseModel):
         default=FaceParser.BISENET,
         description="Face parser for the mask: bisenet (accurate) or parsenet (fast)",
     )
-
-
-_MODEL_FILE = "inswapper_128.onnx"
 
 
 _CROP_THUMB_MAX = 96  # longest side of a comparison thumbnail, px
@@ -179,7 +187,17 @@ class FaceSwapper:
             detection_interval=self._params.detection_interval,
             providers=providers,
         )
-        self._swapper = _load_inswapper(get_model_path(_MODEL_FILE), providers)
+        spec = get_spec(self._params.model)
+        # insightface-compatible models (inswapper / reswapper) load through the
+        # INSwapper wrapper; the rest use the facefusion-style generic backend.
+        # Both expose .get(img, target, source, paste_back=True), so the swap
+        # call sites (plain + rotation) don't branch.
+        backend: Any
+        if spec.insightface:
+            backend = _load_inswapper(get_model_path(spec.model_file), providers)
+        else:
+            backend = GenericOnnxSwapper(spec, providers)
+            backend.setup()
         source_img = imread_unicode(self._source.path)
         if source_img is None:
             raise ValueError(f"cannot read source image: {self._source.path}")
@@ -187,6 +205,11 @@ class FaceSwapper:
         if not faces:
             raise ValueError(f"no face detected in source: {self._source.path}")
         self._source_face = faces[0]
+        if not spec.insightface:
+            # Generic backend caches the source identity (converted embedding or
+            # aligned crop) — must run after the source face is detected.
+            backend.prepare_source(source_img, self._source_face)
+        self._swapper = backend
         if self._params.occlusion_mask:
             self._masker = OcclusionMasker(parser=self._params.occlusion_parser)
             self._masker.setup()
