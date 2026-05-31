@@ -27,6 +27,7 @@ from sinner2.config import media_extensions
 from sinner2.config import settings as user_settings
 from sinner2.config.execution import OnnxExecution, TorchExecution
 from sinner2.gui.face_detection_probe import FaceDetectionProbe, FaceDetectionSink
+from sinner2.gui.icon import app_icon
 from sinner2.gui.model_download import ensure_models
 from sinner2.pipeline.processors.codeformer import (
     MODEL_FILE as CODEFORMER_MODEL_FILE,
@@ -83,6 +84,7 @@ class SinnerMainWindow(QMainWindow):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("sinner2")
+        self.setWindowIcon(app_icon())
         self._settings = user_settings.load()
         # Apply configurable accepted file extensions app-wide (library accept
         # filters, file-dialog filters, Target.kind) BEFORE building the side

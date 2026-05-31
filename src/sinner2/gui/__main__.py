@@ -25,15 +25,35 @@ except Exception:  # noqa: BLE001  # CPU-only env / no torch — harmless
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
+from sinner2.gui.icon import app_icon  # noqa: E402
 from sinner2.gui.main_window import SinnerMainWindow  # noqa: E402
 
 
+def _set_windows_app_id() -> None:
+    """Give Windows an explicit AppUserModelID so the taskbar uses OUR window
+    icon (and groups our windows) instead of falling back to the generic
+    python.exe icon. Must run before the first window is shown. No-op off
+    Windows / if the shell call isn't available."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("sinner2.app")
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def main() -> int:
+    _set_windows_app_id()
     app = QApplication(sys.argv)
     # Set the application identity so the OS associates dialogs, MRU lists,
     # and per-app settings (Windows JumpLists, Recent items) with sinner2.
     app.setApplicationName("sinner2")
     app.setOrganizationName("sinner2")
+    # App-wide icon: covers every window + dialog (the main window also sets it
+    # explicitly as a belt-and-suspenders for platforms that prefer per-window).
+    app.setWindowIcon(app_icon())
     window = SinnerMainWindow()
     window.show()
     # First-run: if the model files are missing, offer to download them before
