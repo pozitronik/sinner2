@@ -22,6 +22,16 @@ Ranked queue of model-related features. Status: ✅ done · 🚧 in progress · 
   `codeformer.onnx`, scalar `weight` input verified), per-face align→restore→paste,
   shared thread-safe session. Confirmed lazy download; Upscale/Fidelity rows
   enable per model. Wired through realtime + batch + edit dialog.
+- ✅ **Alternative face-swap models** — Selector in the FaceSwapper group:
+  inswapper_128 (default) + ReSwapper-128 (drop-in via insightface INSwapper) +
+  Ghost 1/2/3, SimSwap-256, UniFace-256 (facefusion-style, `GenericOnnxSwapper`).
+  Per-model contract (template/size/mean/std/source-embedding/de-norm) ported
+  VERBATIM from facefusion master; ghost/simswap pull a crossface embedding
+  converter companion. All URLs verified; lazy confirmed download (declined →
+  revert to inswapper). Avoids the leaked inswapper-256/512. Rotation + occlusion
+  work unchanged (generic backend exposes insightface's `.get()` signature).
+  NOTE: 256px models validated structurally (stub-session unit tests) — needs a
+  real-footage quality pass; SimSwap is CC-BY-NC.
 
 ## Queued (high value)
 - ⬜ **More upscaler models** — nearly free now (register URL + arch): 4x-UltraSharp,
@@ -31,8 +41,6 @@ Ranked queue of model-related features. Status: ✅ done · 🚧 in progress · 
 - ⬜ **Color / lighting harmonization** — match swapped-face color to target lighting
   beyond histogram correction. Small, cheap, more realistic.
 - ⬜ **Frame interpolation** — RIFE / FILM as a batch post-stage (smooth / slow-mo).
-- ⬜ **Alternative swappers** — SimSwap-512, GHOST/GHOST-2, Reswapper. Openly-licensed
-  only — avoid the leaked inswapper-256/512.
 - ⬜ **Faster/better detectors** — YOLOv8-face / SCRFD variants; better keypoints also
   help the swap + rotation comp. (Ties to the NPU experiment in ideas.md.)
 
