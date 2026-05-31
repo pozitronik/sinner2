@@ -132,6 +132,45 @@ class TestFaceSwapper:
         fs.process(_blank())
         assert stub_inswapper.get.call_count == 2
 
+    def test_publishes_detections_to_sink(
+        self,
+        source_image: Path,
+        models_dir: Path,
+        stub_insightface_app: MagicMock,
+        stub_inswapper: MagicMock,
+    ):
+        t1, t2 = MagicMock(name="t1"), MagicMock(name="t2")
+        stub_insightface_app.get.side_effect = [
+            [MagicMock(name="src")],  # setup: source face
+            [t1, t2],                 # process: target faces (all published)
+        ]
+        sink = MagicMock()
+        fs = FaceSwapper(source=Source(path=source_image), detection_sink=sink)
+        fs.setup()
+        fs.process(_blank())  # 10x10 blank
+        sink.publish.assert_called_once()
+        args = sink.publish.call_args.args
+        assert args[0] == [t1, t2]
+        assert args[1:] == (10, 10)  # width, height
+
+    def test_sink_failure_does_not_break_swap(
+        self,
+        source_image: Path,
+        models_dir: Path,
+        stub_insightface_app: MagicMock,
+        stub_inswapper: MagicMock,
+    ):
+        stub_insightface_app.get.side_effect = [
+            [MagicMock(name="src")],
+            [MagicMock(name="t1")],
+        ]
+        sink = MagicMock()
+        sink.publish.side_effect = RuntimeError("overlay exploded")
+        fs = FaceSwapper(source=Source(path=source_image), detection_sink=sink)
+        fs.setup()
+        fs.process(_blank())  # must not raise despite the sink failing
+        assert stub_inswapper.get.call_count == 1
+
     def test_single_face_mode_swaps_only_first(
         self,
         source_image: Path,

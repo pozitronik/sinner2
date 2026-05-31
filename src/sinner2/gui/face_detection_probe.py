@@ -10,6 +10,7 @@ function is injectable for tests so they need no real models.
 """
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
 from typing import Any
 
@@ -22,6 +23,39 @@ from sinner2.gui.widgets.face_detection_overlay import (
 from sinner2.types import Frame
 
 DetectFn = Callable[[Frame], list]
+
+
+class FaceDetectionSink:
+    """Thread-safe holder for the face swapper's most recent PRE-swap
+    detections.
+
+    The swapper publishes here (from worker threads) right after it detects,
+    before it swaps; the GUI polls `latest_detections()` so the overlay can
+    show the exact boxes/keypoints that drove the swap — the real diagnostic,
+    versus re-detecting the already-swapped output. Raw insightface faces are
+    stored as-is and converted on read (cheap, and only ~6 Hz when polled),
+    so the swapper never imports the GUI types.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._latest: tuple[list, int, int] | None = None  # faces, width, height
+
+    def publish(self, faces: list, width: int, height: int) -> None:
+        with self._lock:
+            self._latest = (list(faces), width, height)
+
+    def latest_detections(self) -> tuple[list[FaceDetection], int, int] | None:
+        with self._lock:
+            latest = self._latest
+        if latest is None:
+            return None
+        faces, w, h = latest
+        return [face_from_insightface(f) for f in faces], w, h
+
+    def clear(self) -> None:
+        with self._lock:
+            self._latest = None
 
 
 class FaceDetectionProbe(QObject):

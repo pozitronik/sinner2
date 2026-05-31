@@ -162,6 +162,49 @@ class TestStatusActionButtons:
         assert window._status_bar.face_button.isChecked() is True  # noqa: SLF001
         assert window._face_overlay_on is True  # noqa: SLF001
 
+    def test_enabling_overlay_probes_current_frame_when_swapper_off(
+        self, window, monkeypatch
+    ):
+        # Swapper off → enabling while paused must probe the last shown frame
+        # at once, not wait for a new one.
+        import numpy as np
+
+        monkeypatch.setattr(window._processors, "swapper_enabled", lambda: False)
+        window._last_displayed_frame = np.zeros(  # noqa: SLF001
+            (10, 20, 3), dtype=np.uint8
+        )
+        seen: list = []
+        window._requestDetection.connect(  # noqa: SLF001
+            lambda _f, w, h: seen.append((w, h))
+        )
+        window._status_bar.face_button.toggle()  # noqa: SLF001  # enable
+        assert seen == [(20, 10)]  # (w, h) of the stored frame
+
+    def test_enabling_overlay_uses_swapper_detections_when_swapper_on(
+        self, window, monkeypatch
+    ):
+        from sinner2.gui.widgets.face_detection_overlay import FaceDetection
+
+        monkeypatch.setattr(window._processors, "swapper_enabled", lambda: True)
+        det = FaceDetection(bbox=(1.0, 2.0, 3.0, 4.0))
+        monkeypatch.setattr(
+            window._detection_sink,  # noqa: SLF001
+            "latest_detections",
+            lambda: ([det], 20, 10),
+        )
+        window._status_bar.face_button.toggle()  # noqa: SLF001  # enable
+        assert window._face_overlay._detections == [det]  # noqa: SLF001
+        assert window._face_overlay._frame_size == (20, 10)  # noqa: SLF001
+
+    def test_hint_reflects_swapper_state(self, window, monkeypatch):
+        monkeypatch.setattr(window._processors, "swapper_enabled", lambda: True)
+        window._set_face_overlay_visible(True)  # noqa: SLF001
+        assert "swapper" in window._status_bar.current_message().lower()  # noqa: SLF001
+
+        monkeypatch.setattr(window._processors, "swapper_enabled", lambda: False)
+        window._set_face_overlay_visible(True)  # noqa: SLF001
+        assert "swapper" not in window._status_bar.current_message().lower()  # noqa: SLF001
+
     def test_side_panel_button_hides_panel(self, window):
         assert window._side_panel.isHidden() is False  # noqa: SLF001  # default shown
         window._status_bar.side_panel_button.toggle()  # noqa: SLF001

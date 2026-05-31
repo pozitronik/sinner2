@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, Qt, QThread, Signal
+from PySide6.QtCore import QByteArray, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -24,7 +24,7 @@ from sinner2.batch.task import (
 from sinner2.batch.task_store import BatchTaskStore
 from sinner2.config import settings as user_settings
 from sinner2.config.execution import OnnxExecution, TorchExecution
-from sinner2.gui.face_detection_probe import FaceDetectionProbe
+from sinner2.gui.face_detection_probe import FaceDetectionProbe, FaceDetectionSink
 from sinner2.gui.player_controller import PlayerController, default_cache_root
 from sinner2.gui.widgets.batch_task_dialog import QBatchTaskDialog
 from sinner2.gui.widgets.batch_view import QBatchView
@@ -127,8 +127,19 @@ class SinnerMainWindow(QMainWindow):
         # live preview never stalls). Off by default; toggled with F8.
         self._face_overlay_on = False
         self._last_probe_feed = 0.0
+        # Last frame handed to the display, kept so enabling the overlay can
+        # detect the current frame immediately (e.g. while paused) instead of
+        # waiting for the next rendered frame.
+        self._last_displayed_frame: Frame | None = None
         self._face_overlay = QFaceDetectionOverlay(parent=self._display)
         self._display.set_face_overlay(self._face_overlay)
+        # When the swapper is running, the overlay shows ITS pre-swap
+        # detections (published to this sink) rather than re-detecting the
+        # swapped output. A timer polls the sink while the overlay is on.
+        self._detection_sink = FaceDetectionSink()
+        self._overlay_timer = QTimer(self)
+        self._overlay_timer.setInterval(int(self._PROBE_INTERVAL_S * 1000))
+        self._overlay_timer.timeout.connect(self._overlay_tick)
         self._detection_probe = FaceDetectionProbe(
             providers=self._settings.swapper_providers
         )
@@ -219,6 +230,9 @@ class SinnerMainWindow(QMainWindow):
         self._status_bar.add_permanent_widget(self._providers_label)
 
         self._controller = PlayerController(self._display, self._transport, parent=self)
+        # Wire the swapper's pre-swap detections to the overlay sink (set before
+        # any session so every built chain picks it up).
+        self._controller.set_detection_sink(self._detection_sink)
         self._controller.errorOccurred.connect(self._show_error)
         self._controller.processingFpsChanged.connect(self._update_fps_label)
         self._controller.sessionScratchDirChanged.connect(self._update_scratch_label)
@@ -844,18 +858,41 @@ class SinnerMainWindow(QMainWindow):
         if on:
             self._face_overlay.setGeometry(self._display.rect())
             self._face_overlay.show()
+            self._overlay_timer.start()
+            # Show something immediately rather than waiting for a poll tick or
+            # the next rendered frame (key when paused). Swapper on → its
+            # published detections; swapper off → probe the current frame.
+            if self._processors.swapper_enabled():
+                self._overlay_tick()
+            elif self._last_displayed_frame is not None:
+                self._submit_to_probe(self._last_displayed_frame)
         else:
+            self._overlay_timer.stop()
             self._face_overlay.hide()
             self._face_overlay.clear()
+            self._detection_sink.clear()
+
+    def _overlay_tick(self) -> None:
+        # Swapper-on path: poll the swapper's published PRE-swap detections.
+        # (Swapper-off path runs through the probe, fed by displayed frames.)
+        if not self._face_overlay_on or not self._processors.swapper_enabled():
+            return
+        latest = self._detection_sink.latest_detections()
+        if latest is not None:
+            detections, w, h = latest
+            self._face_overlay.set_detections(detections, w, h)
 
     def _set_face_overlay_visible(self, on: bool) -> None:
         """Toggle handler for the face button (and F8). Applies + persists."""
         self._apply_face_overlay_visible(on)
         if on:
-            self._status_bar.show_message(
-                "Face-detection overlay on (F8) — disable the swapper to "
-                "inspect target faces", 4000
-            )
+            # With the swapper ON the overlay shows the swapper's own pre-swap
+            # detections; with it OFF, a re-detection of the (raw) frame.
+            if self._processors.swapper_enabled():
+                msg = "Face-detection overlay on — showing the face swapper's detections"
+            else:
+                msg = "Face-detection overlay on (F8)"
+            self._status_bar.show_message(msg, 4000)
         self._update_settings(face_overlay_visible=on)
 
     def _restore_face_overlay_state(self) -> None:
@@ -864,16 +901,25 @@ class SinnerMainWindow(QMainWindow):
         self._set_button_checked(self._status_bar.face_button, visible)
 
     def _feed_detection_probe(self, frame: Frame) -> None:
-        # Tap each displayed frame; forward a throttled, decoupled copy to the
-        # probe thread. Zero cost when the overlay is off.
-        if not self._face_overlay_on:
+        # Tap each displayed frame. Always remember the latest (so enabling the
+        # overlay can detect it at once). Only run the probe when the overlay
+        # is on AND the swapper is off — when the swapper runs, the overlay
+        # uses its published pre-swap detections instead (the _overlay_tick
+        # poll), so re-detecting the swapped output would be both wrong and
+        # wasteful. Zero detection cost when the overlay is off.
+        self._last_displayed_frame = frame
+        if not self._face_overlay_on or self._processors.swapper_enabled():
             return
         import time as _time
 
-        now = _time.monotonic()
-        if now - self._last_probe_feed < self._PROBE_INTERVAL_S:
+        if _time.monotonic() - self._last_probe_feed < self._PROBE_INTERVAL_S:
             return
-        self._last_probe_feed = now
+        self._submit_to_probe(frame)
+
+    def _submit_to_probe(self, frame: Frame) -> None:
+        import time as _time
+
+        self._last_probe_feed = _time.monotonic()
         h, w = frame.shape[:2]
         # Copy so the producer can't mutate the buffer under the probe thread.
         self._requestDetection.emit(frame.copy(), w, h)

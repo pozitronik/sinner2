@@ -273,6 +273,10 @@ class PlayerController(QObject):
         # explicitly into the chain at build time — no global provider state.
         self._swapper_providers: tuple[str, ...] = ()
         self._enhancer_device: str = "auto"
+        # Optional debug-overlay sink the swapper publishes its pre-swap
+        # detections to. Set once at startup, before any session, so every
+        # rebuilt chain picks it up via _build_chain.
+        self._detection_sink: object | None = None
 
         transport.playRequested.connect(self._on_play)
         transport.pauseRequested.connect(self._on_pause)
@@ -528,6 +532,7 @@ class PlayerController(QObject):
                 source=source,
                 params=self._swapper_params,
                 providers=list(self._swapper_providers) or None,
+                detection_sink=self._detection_sink,
             ))
         if self._enhancer_enabled:
             # GFPGAN isn't thread-safe, so a single shared instance serialises
@@ -550,6 +555,11 @@ class PlayerController(QObject):
 
     def executor(self) -> RealtimeExecutor | None:
         return self._executor
+
+    def set_detection_sink(self, sink: object | None) -> None:
+        """Set the sink the swapper publishes pre-swap detections to. Call
+        before any session starts; the chain reads it at build time."""
+        self._detection_sink = sink
 
     def resync_transport(self) -> None:
         """Re-point the position bar at the live session.

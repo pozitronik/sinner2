@@ -88,12 +88,16 @@ class FaceSwapper:
         source: Source,
         params: FaceSwapperParams | None = None,
         providers: list[str] | None = None,
+        detection_sink: Any = None,
     ) -> None:
         self._source = source
         self._params = params or FaceSwapperParams()
         # ONNX providers from the swapper's OnnxExecution profile; None falls
         # back to the platform-default EP order (CUDA then CPU).
         self._providers = list(providers) if providers else None
+        # Optional sink for the debug overlay: receives the PRE-swap detections
+        # (duck-typed `.publish(faces, w, h)`); None outside the realtime GUI.
+        self._detection_sink = detection_sink
         self._analyser: FaceAnalyser | None = None
         self._swapper: Any = None
         self._source_face: Any = None
@@ -116,9 +120,18 @@ class FaceSwapper:
     def process(self, frame: Frame) -> Frame:
         if self._analyser is None or self._swapper is None or self._source_face is None:
             raise RuntimeError("FaceSwapper.process called before setup()")
+        faces = self._analyser.analyse(frame)
+        # Publish every detected face (before the sex filter) so the debug
+        # overlay shows exactly what the detector saw — including faces that
+        # won't be swapped. Best-effort; the overlay must never affect the swap.
+        if self._detection_sink is not None:
+            try:
+                self._detection_sink.publish(faces, frame.shape[1], frame.shape[0])
+            except Exception:
+                pass
         target_sex = self._resolved_target_sex()
         result = frame
-        for face in self._analyser.analyse(frame):
+        for face in faces:
             if not _face_matches(face, target_sex):
                 continue
             result = self._swapper.get(result, face, self._source_face, paste_back=True)
