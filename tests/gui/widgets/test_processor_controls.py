@@ -123,6 +123,7 @@ _FULL_RESTORE_KWARGS = dict(
     write_queue_size=16,
     video_backend=VideoBackend.CV2,
     reader_pool_size=4,
+    processing_scale=0.5,
     synced_max_lag_frames=120,
     swapper_providers=["CPUExecutionProvider"],
     enhancer_device="cpu",
@@ -146,6 +147,7 @@ _NONE_RESTORE_KWARGS = dict(
     write_queue_size=None,
     video_backend=None,
     reader_pool_size=None,
+    processing_scale=None,
     synced_max_lag_frames=None,
     swapper_providers=None,
     enhancer_device=None,
@@ -434,6 +436,7 @@ class TestSettingsEndToEnd:
                 write_queue_size=first.write_queue_size(),
                 video_backend=first.video_backend(),
                 reader_pool_size=first.reader_pool_size(),
+                processing_scale=first.processing_scale(),
                 synced_max_lag_frames=first.synced_max_lag_frames(),
                 swapper_providers=first.swapper_providers(),
                 enhancer_device=first.enhancer_device(),
@@ -462,6 +465,7 @@ class TestSettingsEndToEnd:
             write_queue_size=reloaded.write_queue_size,
             video_backend=reloaded.video_backend,
             reader_pool_size=reloaded.reader_pool_size,
+            processing_scale=reloaded.processing_scale,
             synced_max_lag_frames=reloaded.synced_max_lag_frames,
             swapper_providers=reloaded.swapper_providers,
             enhancer_device=reloaded.enhancer_device,
@@ -481,9 +485,28 @@ class TestSettingsEndToEnd:
         assert second.write_queue_size() == first.write_queue_size()
         assert second.video_backend() is first.video_backend()
         assert second.reader_pool_size() == first.reader_pool_size()
+        assert second.processing_scale() == first.processing_scale()
         assert second.synced_max_lag_frames() == first.synced_max_lag_frames()
         assert second.swapper_providers() == first.swapper_providers()
         assert second.enhancer_device() == first.enhancer_device()
+
+
+class TestProcessingScaleReadout:
+    def test_percent_only_without_target(self, widget):
+        widget._scale_slider.setValue(50)  # noqa: SLF001
+        assert widget._scale_label.text() == "50%"  # noqa: SLF001
+        assert widget.processing_scale() == 0.5
+
+    def test_shows_resulting_dims_with_target(self, widget):
+        widget.set_target_native_size((1920, 1080))
+        widget._scale_slider.setValue(50)  # noqa: SLF001
+        assert widget._scale_label.text() == "50% [960x540]"  # noqa: SLF001
+
+    def test_clearing_target_drops_dims(self, widget):
+        widget.set_target_native_size((1920, 1080))
+        widget.set_target_native_size(None)
+        widget._scale_slider.setValue(75)  # noqa: SLF001
+        assert widget._scale_label.text() == "75%"  # noqa: SLF001
 
 
 class TestResponsiveFormDensity:

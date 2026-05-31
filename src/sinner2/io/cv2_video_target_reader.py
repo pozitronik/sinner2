@@ -23,14 +23,17 @@ single-threaded access is the invariant the caller maintains.
 """
 from __future__ import annotations
 
+from typing import cast
+
 import cv2
 
 from sinner2.config.target import Target
+from sinner2.io.frame_resize import resize_frame, scaled_dims
 from sinner2.types import Frame, FrameIndex
 
 
 class CV2VideoTargetReader:
-    def __init__(self, target: Target) -> None:
+    def __init__(self, target: Target, scale: float = 1.0) -> None:
         self._target = target
         cap = cv2.VideoCapture(str(target.path))
         if not cap.isOpened():
@@ -44,13 +47,15 @@ class CV2VideoTargetReader:
         if frame_count <= 0:
             cap.release()
             raise OSError(f"cv2.VideoCapture reports no frames in {target.path}")
-        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        native_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        native_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         self._cap = cap
         self._fps = fps
         self._frame_count = frame_count
-        self._width = width
-        self._height = height
+        self._native_width = native_width
+        self._native_height = native_height
+        # cv2 has no decode-time scale; we resize each decoded frame instead.
+        self._width, self._height = scaled_dims(native_width, native_height, scale)
         self._next_index: FrameIndex = 0
 
     @property
@@ -69,6 +74,14 @@ class CV2VideoTargetReader:
     def height(self) -> int:
         return self._height
 
+    @property
+    def native_width(self) -> int:
+        return self._native_width
+
+    @property
+    def native_height(self) -> int:
+        return self._native_height
+
     def read(self, index: FrameIndex) -> Frame | None:
         if index < 0 or index >= self._frame_count:
             return None
@@ -80,7 +93,8 @@ class CV2VideoTargetReader:
         if not ok or frame is None:
             return None
         self._next_index = index + 1
-        return frame
+        # cv2 decodes 8-bit BGR for video; cast its looser MatLike to Frame.
+        return resize_frame(cast(Frame, frame), self._width, self._height)
 
     def release(self) -> None:
         try:

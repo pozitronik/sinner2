@@ -50,8 +50,18 @@ class TestImageTargetReader:
         assert first is not second  # re-decoded
 
     def test_unreadable_image_raises(self, tmp_path: Path):
+        # Decoded eagerly in __init__ (like the video readers probe), so a bad
+        # image fails fast at construction — the ReaderPool probe relies on
+        # construction surfacing the error.
         p = tmp_path / "bad.png"
         p.write_bytes(b"not actually an image")
-        r = ImageTargetReader(Target(path=p))
         with pytest.raises(OSError, match="cannot read image"):
-            r.read(0)
+            ImageTargetReader(Target(path=p))
+
+    def test_scale_downscales_frame_and_reports_native(self, image_target: Target):
+        r = ImageTargetReader(image_target, scale=0.5)
+        f = r.read(0)
+        assert f is not None
+        assert f.shape == (10, 10, 3)  # 20x20 native → 10x10 at 50%
+        assert r.width == 10 and r.height == 10
+        assert r.native_width == 20 and r.native_height == 20

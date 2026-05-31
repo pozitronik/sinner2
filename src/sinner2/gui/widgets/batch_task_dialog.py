@@ -214,6 +214,15 @@ class QBatchTaskDialog(QDialog):
         self._reader_pool_size.setRange(1, 16)
         self._reader_pool_size.setValue(task.reader_pool_size)
         exec_form.addRow("Reader pool size:", self._reader_pool_size)
+        self._processing_scale = QSpinBox()
+        self._processing_scale.setRange(10, 100)
+        self._processing_scale.setSuffix("%")
+        self._processing_scale.setValue(round(task.processing_scale * 100))
+        self._processing_scale.setToolTip(
+            "Downscale frames before processing for speed (output is the "
+            "reduced resolution). 100% = full resolution."
+        )
+        exec_form.addRow("Processing scale:", self._processing_scale)
         self._cleanup_combo = QComboBox()
         for label, value in _CLEANUP_OPTIONS:
             self._cleanup_combo.addItem(label, value)
@@ -327,6 +336,7 @@ class QBatchTaskDialog(QDialog):
                 ),
                 "video_backend": VideoBackend(self._video_backend.currentData()),
                 "reader_pool_size": self._reader_pool_size.value(),
+                "processing_scale": self._processing_scale.value() / 100.0,
                 "cleanup_mode": BatchCleanupMode(
                     self._cleanup_combo.currentData()
                 ),

@@ -64,6 +64,16 @@ class TestCV2VideoTargetReader:
         finally:
             r.release()
 
+    def test_scale_downscales_reads_and_reports_native(self, blue_video: Target):
+        r = CV2VideoTargetReader(blue_video, scale=0.5)
+        try:
+            assert (r.width, r.height) == (32, 24)
+            assert (r.native_width, r.native_height) == (64, 48)
+            f = r.read(0)
+            assert f is not None and f.shape == (24, 32, 3)
+        finally:
+            r.release()
+
     def test_random_seek_does_not_restart(self, blue_video: Target):
         # The whole point of this backend — read out of order and still
         # get frames back. The internal _next_index advances normally.

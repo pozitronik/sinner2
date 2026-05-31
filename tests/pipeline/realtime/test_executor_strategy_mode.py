@@ -39,6 +39,22 @@ class _StaticReader:
     def frame_count(self) -> int:
         return self._count
 
+    @property
+    def width(self) -> int:
+        return 4
+
+    @property
+    def height(self) -> int:
+        return 4
+
+    @property
+    def native_width(self) -> int:
+        return 4
+
+    @property
+    def native_height(self) -> int:
+        return 4
+
     def read(self, index):
         return self._frame if 0 <= index < self._count else None
 

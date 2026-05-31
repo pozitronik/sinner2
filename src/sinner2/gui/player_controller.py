@@ -105,20 +105,23 @@ def _cache_key(
     target: Target,
     chain: list[Processor],
     writer: ImageWriter,
+    scale: float = 1.0,
 ) -> str:
-    """Stable hash of (source path, target path, chain config, writer settings).
+    """Stable hash of (source path, target path, chain config, writer settings,
+    processing scale).
 
     Two sessions with identical inputs land in the same cache subdirectory
     so processed frames carry over between runs. Different chain params,
-    different image format, or different quality go to a different
-    subdirectory — keeps stale frames from a different configuration out
-    of view and lets the user toggle formats without losing their PNG
-    cache when they switch to JPEG.
+    different image format, different quality, or a different processing
+    scale go to a different subdirectory — keeps stale frames from a
+    different configuration out of view and lets the user toggle formats or
+    downscale without colliding with the full-resolution cache.
     """
     parts: list[str] = [
         str(source.path.resolve()),
         str(target.path.resolve()),
         writer.cache_key,
+        f"scale={scale:.4f}",
     ]
     for p in chain:
         parts.append(p.name)
@@ -128,22 +131,24 @@ def _cache_key(
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
 
 
-def _make_reader(target: Target, video_backend: VideoBackend) -> TargetReader:
+def _make_reader(
+    target: Target, video_backend: VideoBackend, scale: float = 1.0
+) -> TargetReader:
     if target.kind == TargetKind.IMAGE:
-        return ImageTargetReader(target)
+        return ImageTargetReader(target, scale)
     if target.kind == TargetKind.VIDEO:
-        return build_video_target_reader(target, video_backend)
+        return build_video_target_reader(target, video_backend, scale)
     raise ValueError(f"unsupported target kind: {target.kind}")
 
 
 def _make_reader_factory(
-    target: Target, video_backend: VideoBackend
+    target: Target, video_backend: VideoBackend, scale: float = 1.0
 ) -> Callable[[], TargetReader]:
     """Thunk that builds a fresh reader on each call.
 
     Used by ReaderPool to construct its N reader instances. Per-backend
     logic stays in _make_reader; this just curries the arguments."""
-    return lambda: _make_reader(target, video_backend)
+    return lambda: _make_reader(target, video_backend, scale)
 
 
 def _default_session_factory(
@@ -207,6 +212,7 @@ class PlayerController(QObject):
     bufferMetricsChanged = Signal(object)  # carries BufferMetrics; routes to status bar
     strategyModeChanged = Signal(object)  # carries str; routes to status bar mode label
     cacheStorageStatsChanged = Signal()  # fired on session start/teardown/clear so the cache panel can refresh
+    targetNativeSizeChanged = Signal(object)  # (width, height) on session start, None on teardown
 
     def __init__(
         self,
@@ -257,6 +263,10 @@ class PlayerController(QObject):
         # single-reader behaviour. Raise for slow sources (network/HDD)
         # with SyncedStrategy. Changes rebuild the session.
         self._reader_pool_size: int = 1
+        # Processing scale: downscale frames before the chain for speed.
+        # 0 < s <= 1; 1.0 = full resolution. Part of the cache key, so a
+        # change rebuilds the session into a distinct cache dir.
+        self._processing_scale: float = 1.0
         # Realtime swapper ONNX providers (priority order) + the realtime
         # enhancer torch device. Empty providers → platform-default EP order;
         # "auto" device → CUDA if available else CPU. Both are passed
@@ -279,7 +289,9 @@ class PlayerController(QObject):
             # Build the reader factory + pool first. The pool's eager
             # probe reader surfaces open errors here, so a bad source
             # fails session setup just like the old single-reader path.
-            reader_factory = _make_reader_factory(target, self._video_backend)
+            reader_factory = _make_reader_factory(
+                target, self._video_backend, self._processing_scale
+            )
             reader_pool = ReaderPool(
                 reader_factory,
                 size=self._reader_pool_size,
@@ -290,7 +302,9 @@ class PlayerController(QObject):
                 self._cache_settings.image_format,
                 self._cache_settings.image_quality,
             )
-            cache_dir = self._cache_root / _cache_key(source, target, chain, writer)
+            cache_dir = self._cache_root / _cache_key(
+                source, target, chain, writer, self._processing_scale
+            )
             # Cache root reachable? If not, fall back to OFF for this session
             # so the user sees something rather than a crash. They can change
             # the cache root in the management panel without restarting.
@@ -355,6 +369,10 @@ class PlayerController(QObject):
         self._transport.set_frame_count(reader_pool.frame_count)
         self.sessionScratchDirChanged.emit(cache_dir)
         self.cacheStorageStatsChanged.emit()
+        # Native source size for the scale readout ("50% [960x540]").
+        self.targetNativeSizeChanged.emit(
+            (reader_pool.native_width, reader_pool.native_height)
+        )
         # Load the target into the audio backend. Done after the executor
         # is built so a backend-init failure doesn't prevent silent playback.
         backend = self.audio_backend()
@@ -533,6 +551,22 @@ class PlayerController(QObject):
     def executor(self) -> RealtimeExecutor | None:
         return self._executor
 
+    def resync_transport(self) -> None:
+        """Re-point the position bar at the live session.
+
+        Used after something external (a batch render) has driven the
+        transport's slider to follow its own progress: restore the range +
+        playhead to the current session so the scrubber matches reality
+        again. No session → reset to an empty range.
+        """
+        if self._executor is None:
+            self._transport.set_frame_count(0)
+            return
+        self._transport.set_frame_count(self._executor.frame_count())
+        self._transport.set_current_frame(
+            max(0, self._executor.current_frame.get())
+        )
+
     # ---- Cache management ----
 
     def cache_root(self) -> Path:
@@ -648,6 +682,7 @@ class PlayerController(QObject):
             self._session_store = None
             self._session_cache_dir = None
             self.sessionScratchDirChanged.emit(None)
+            self.targetNativeSizeChanged.emit(None)
         self._current_source = None
         self._current_source_path = None
         self._current_target_path = None
@@ -756,6 +791,38 @@ class PlayerController(QObject):
         if clamped == self._reader_pool_size:
             return
         self._reader_pool_size = clamped
+        if (
+            self._executor is None
+            or self._current_source_path is None
+            or self._current_target_path is None
+        ):
+            return
+        was_playing = self._executor.is_playing.get()
+        last_frame = self._executor.current_frame.get()
+        source_path = self._current_source_path
+        target_path = self._current_target_path
+        self.set_source_and_target(source_path, target_path)
+        if self._executor is None:
+            return
+        if last_frame > 0:
+            self._executor.seek(last_frame)
+        if was_playing:
+            self._executor.play()
+
+    def processing_scale(self) -> float:
+        return self._processing_scale
+
+    def set_processing_scale(self, scale: float) -> None:
+        """Change the processing downscale (0 < s <= 1).
+
+        Scale is part of the cache key + reader construction, so a change
+        rebuilds the session (same pattern as set_reader_pool_size). Current
+        frame and play state are preserved across the rebuild.
+        """
+        clamped = max(0.01, min(1.0, scale))
+        if clamped == self._processing_scale:
+            return
+        self._processing_scale = clamped
         if (
             self._executor is None
             or self._current_source_path is None

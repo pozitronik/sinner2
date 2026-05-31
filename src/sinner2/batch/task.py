@@ -131,6 +131,10 @@ class BatchTask(SinnerBaseModel):
     )
     video_backend: VideoBackend = VideoBackend.FFMPEG
     reader_pool_size: int = 1
+    # Processing scale: downscale frames before the chain for speed. 0 < s <= 1;
+    # 1.0 = full resolution. Part of the cache-dir token so a scale change
+    # re-renders instead of reusing stale frames of the wrong size.
+    processing_scale: float = 1.0
 
     # ---- Output / cache config (used by frames mode + ffmpeg input glob) ----
     image_format: ImageFormat = ImageFormat.JPEG

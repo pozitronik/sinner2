@@ -28,13 +28,15 @@ class VideoBackend(str, Enum):
     CV2 = "cv2"
 
 
-def build_video_target_reader(target: Target, backend: VideoBackend) -> TargetReader:
+def build_video_target_reader(
+    target: Target, backend: VideoBackend, scale: float = 1.0
+) -> TargetReader:
     if backend is VideoBackend.FFMPEG:
         from sinner2.io.video_target_reader import FFmpegVideoTargetReader
 
-        return FFmpegVideoTargetReader(target)
+        return FFmpegVideoTargetReader(target, scale)
     if backend is VideoBackend.CV2:
         from sinner2.io.cv2_video_target_reader import CV2VideoTargetReader
 
-        return CV2VideoTargetReader(target)
+        return CV2VideoTargetReader(target, scale)
     raise ValueError(f"unknown video backend: {backend!r}")

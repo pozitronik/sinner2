@@ -184,14 +184,21 @@ class BatchDriver:
         writer = build_image_writer(task.image_format, task.image_quality)
         ext = writer.extension
         stages = self._build_stages(source, task)
+
+        # The first-stage reader probes total frame count + fps, and its
+        # (scaled) dimensions seed the cache-dir token: a processing-scale
+        # change yields different dir names, so frames of a different size
+        # never get reused as if they matched. Built before stage_dirs so the
+        # token reflects the actual output size.
+        reader = self._build_reader(
+            target, task.video_backend, task.processing_scale
+        )
+        size_token = f"{reader.width}x{reader.height}"
         task_cache = self._cache_root / task.id
         stage_dirs = [
-            task_cache / f"stage{i}-{spec.name}"
+            task_cache / f"stage{i}-{spec.name}@{size_token}"
             for i, spec in enumerate(stages)
         ]
-
-        # The first-stage reader also probes total frame count + fps.
-        reader = self._build_reader(target, task.video_backend)
         try:
             total = reader.frame_count
             fps = reader.fps
@@ -298,12 +305,12 @@ class BatchDriver:
 
     @staticmethod
     def _build_reader(
-        target: Target, video_backend: VideoBackend
+        target: Target, video_backend: VideoBackend, scale: float = 1.0
     ) -> TargetReader:
         if target.kind == TargetKind.IMAGE:
-            return ImageTargetReader(target)
+            return ImageTargetReader(target, scale)
         if target.kind == TargetKind.VIDEO:
-            return build_video_target_reader(target, video_backend)
+            return build_video_target_reader(target, video_backend, scale)
         raise ValueError(f"unsupported target kind: {target.kind}")
 
     @staticmethod

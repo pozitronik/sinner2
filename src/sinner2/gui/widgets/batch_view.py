@@ -9,8 +9,8 @@ Composes:
     update progress per row.
 
 The model is a plain QStandardItemModel with one row per task; the
-task's id is stored in column 0's UserRole so handlers can resolve
-the underlying BatchTask from any row.
+task's id is stored in the Source column's UserRole so handlers can
+resolve the underlying BatchTask from any row.
 """
 from __future__ import annotations
 
@@ -50,43 +50,92 @@ def _fmt_eta(seconds: float) -> str:
     return f"{minutes}:{secs:02d}"
 
 
-class _ThroughputTracker:
-    """Per-task frames/sec over a short wall-clock window, plus an ETA.
+class _StepTracker:
+    """Per-task frames/sec + elapsed/expected time, scoped to the CURRENT step.
 
-    A short window (not since-start) so the rate reflects the CURRENT stage —
-    the enhancer stage is slower than the swap stage, and a resume burns
-    through cached frames instantly; both would skew an average-since-start.
-    overall_completed advances monotonically across stage boundaries, so the
-    window rate is continuous and the ETA grows when a slower stage begins.
+    Everything resets when the stage index advances, so the rate, elapsed,
+    and expected duration all describe the step that's running now — the
+    enhancer step is slower than the swap step, and a resume burns through
+    cached frames instantly; an average-since-start would smear all of that
+    together. fps is measured over a short trailing window (not since the
+    step began) so it tracks the current speed rather than lagging it.
     """
 
     _WINDOW_S = 3.0
 
     def __init__(self) -> None:
+        self._stage_index: int | None = None
+        self._step_start = 0.0
         self._samples: deque[tuple[float, int]] = deque()
 
-    def update(self, completed: int, total: int) -> tuple[float, float | None]:
+    def update(
+        self, stage_index: int, completed: int, total: int
+    ) -> tuple[float, float, float | None]:
+        """Return (fps, elapsed_s, expected_total_s) for the current step.
+
+        expected_total is elapsed + projected-remaining; None until there's a
+        rate to project from (or the step is already complete)."""
         now = time.monotonic()
+        if stage_index != self._stage_index:
+            # New step: drop the prior step's samples and restart the clock.
+            self._stage_index = stage_index
+            self._step_start = now
+            self._samples.clear()
         self._samples.append((now, completed))
         cutoff = now - self._WINDOW_S
         while len(self._samples) > 2 and self._samples[0][0] < cutoff:
             self._samples.popleft()
+        elapsed = now - self._step_start
         fps = 0.0
         if len(self._samples) >= 2:
             t0, c0 = self._samples[0]
             span = now - t0
             if span > 0:
                 fps = (completed - c0) / span
-        eta = (total - completed) / fps if fps > 0 and total > completed else None
-        return fps, eta
+        remaining = (
+            (total - completed) / fps if fps > 0 and total > completed else None
+        )
+        expected = elapsed + remaining if remaining is not None else None
+        return fps, elapsed, expected
 
-_COL_SOURCE = 0
-_COL_TARGET = 1
-_COL_OUTPUT = 2
-_COL_FORMAT = 3
-_COL_STATUS = 4
-_COL_PROGRESS = 5
-_COLUMN_HEADERS = ("Source", "Target", "Output", "Format", "Status", "Progress")
+
+def _format_progress(
+    stage_index: int,
+    stage_count: int,
+    stage_name: str,
+    completed: int,
+    total: int,
+) -> str:
+    """Step-scoped progress line, e.g. `[1/2] 15% (1500/10000, faceswapper)`.
+
+    The percentage is of the CURRENT step (completed/total), not the overall
+    job — it lines up with the (completed/total) pair shown alongside it."""
+    if total <= 0:
+        return ""
+    pct = round(completed / total * 100)
+    return f"[{stage_index + 1}/{stage_count}] {pct}% ({completed}/{total}, {stage_name})"
+
+
+def _stage_names(task: BatchTask) -> list[str]:
+    """Ordered stage names for a task, mirroring BatchDriver._build_stages so
+    a reloaded (non-running) task shows the same stage labels the live signal
+    would. Both processors off → a single passthrough re-encode stage."""
+    names: list[str] = []
+    if task.swapper_enabled:
+        names.append("faceswapper")
+    if task.enhancer_enabled:
+        names.append("faceenhancer")
+    if not names:
+        names.append("passthrough")
+    return names
+
+_COL_PROGRESS = 0
+_COL_SOURCE = 1
+_COL_TARGET = 2
+_COL_OUTPUT = 3
+_COL_FORMAT = 4
+_COL_STATUS = 5
+_COLUMN_HEADERS = ("Progress", "Source", "Target", "Output", "Format", "Status")
 
 
 class QBatchView(QWidget):
@@ -171,13 +220,16 @@ class QBatchView(QWidget):
         header.setStretchLastSection(False)
         for col in (_COL_SOURCE, _COL_TARGET, _COL_OUTPUT):
             header.setSectionResizeMode(col, QHeaderView.ResizeMode.Stretch)
+        # Progress carries the longest text ("[1/2] 15% (1500/10000, …) · …"),
+        # so give it a roomy default; it stays user-resizable (Interactive).
+        header.resizeSection(_COL_PROGRESS, 320)
 
         layout = QVBoxLayout(self)
         layout.addLayout(toolbar)
         layout.addWidget(self._table, stretch=1)
 
-        # Per-running-task throughput/ETA trackers, keyed by task id.
-        self._throughput: dict[str, _ThroughputTracker] = {}
+        # Per-running-task step throughput/time trackers, keyed by task id.
+        self._throughput: dict[str, _StepTracker] = {}
 
         # Wire queue signals → row updates.
         self._queue.taskStarted.connect(self._on_task_started)
@@ -223,7 +275,7 @@ class QBatchView(QWidget):
         if task.error_message:
             items[_COL_STATUS].setToolTip(task.error_message)
         items[_COL_PROGRESS].setText(self._progress_text(task))
-        # Stash the id on column 0 so we can resolve a row → task.
+        # Stash the id on the Source column so we can resolve a row → task.
         items[_COL_SOURCE].setData(task.id, _ROLE_TASK_ID)
         for it in items:
             it.setEditable(False)
@@ -231,20 +283,27 @@ class QBatchView(QWidget):
 
     @staticmethod
     def _progress_text(task: BatchTask) -> str:
-        """Overall percent for a task loaded from the store (no live signal).
-        Derived from the persisted stage marker + current-stage frame, in
-        frame-units across all stages, clamped at 100%."""
+        """Step-scoped progress for a task loaded from the store (no live
+        signal). Mirrors the live format using the persisted stage marker +
+        current-stage frame, so a paused/completed row reads the same as a
+        running one (minus the throughput/time, which need the live rate)."""
         total = task.total_frames
         if total <= 0:
             return ""
-        stage_count = 2 if task.enhancer_enabled else 1
-        overall_total = stage_count * total
-        done = min(
-            overall_total,
-            task.completed_stages * total + max(0, task.last_completed_frame + 1),
+        names = _stage_names(task)
+        stage_count = len(names)
+        # completed_stages = fully-done prior stages = the current stage index;
+        # clamp into range (a completed task may carry completed_stages ==
+        # stage_count). A completed task shows the final stage at 100%.
+        stage_index = min(max(0, task.completed_stages), stage_count - 1)
+        if task.status is BatchTaskStatus.COMPLETED:
+            stage_index = stage_count - 1
+            completed = total
+        else:
+            completed = min(total, max(0, task.last_completed_frame + 1))
+        return _format_progress(
+            stage_index, stage_count, names[stage_index], completed, total
         )
-        pct = round(done / overall_total * 100) if overall_total else 0
-        return f"{pct}% ({done}/{overall_total})"
 
     def _row_for_task_id(self, task_id: str) -> int | None:
         for row in range(self._model.rowCount()):
@@ -274,7 +333,7 @@ class QBatchView(QWidget):
     # ---- Queue signal handlers ----
 
     def _on_task_started(self, task_id: str) -> None:
-        self._throughput[task_id] = _ThroughputTracker()
+        self._throughput[task_id] = _StepTracker()
         self._refresh_row(task_id)
 
     def _on_task_progress(self, task_id: str, progress) -> None:
@@ -282,22 +341,30 @@ class QBatchView(QWidget):
         if row is None:
             return
         # Update the cell directly (cheaper than _refresh_row, which re-loads
-        # the task from disk on every tick). Shows overall % + which stage is
-        # running + a recent-window throughput and ETA.
-        pct = round(progress.overall_fraction * 100)
-        tracker = self._throughput.setdefault(task_id, _ThroughputTracker())
-        fps, eta = tracker.update(
-            progress.overall_completed, progress.overall_total
+        # the task from disk on every tick). Shows the step index + step % +
+        # frame counts + stage name, then a recent-window throughput and the
+        # step's elapsed/expected time.
+        tracker = self._throughput.setdefault(task_id, _StepTracker())
+        fps, elapsed, expected = tracker.update(
+            progress.stage_index, progress.stage_completed, progress.stage_total
         )
         parts = [
-            f"{pct}%",
-            f"{progress.stage_name} "
-            f"{progress.stage_completed}/{progress.stage_total}",
+            _format_progress(
+                progress.stage_index,
+                progress.stage_count,
+                progress.stage_name,
+                progress.stage_completed,
+                progress.stage_total,
+            )
         ]
         if fps > 0:
             parts.append(f"{fps:.0f} fps")
-        if eta is not None:
-            parts.append(f"ETA {_fmt_eta(eta)}")
+        # Rough elapsed / expected-total for the current step; the "~" flags
+        # that the expected value is a moving estimate from the current rate.
+        time_part = _fmt_eta(elapsed)
+        if expected is not None:
+            time_part += f" / ~{_fmt_eta(expected)}"
+        parts.append(time_part)
         self._model.item(row, _COL_PROGRESS).setText(" · ".join(parts))
 
     def _on_task_completed(self, task_id: str) -> None:

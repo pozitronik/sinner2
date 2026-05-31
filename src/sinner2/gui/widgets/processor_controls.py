@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPushButton,
     QScrollArea,
+    QSlider,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -20,6 +21,7 @@ from sinner2.config.execution import (
     DEFAULT_ONNX_PROVIDERS,
     available_torch_devices,
 )
+from sinner2.io.frame_resize import scaled_dims
 from sinner2.io.video_backend import VideoBackend
 from sinner2.pipeline.cache_mode import CacheMode
 from sinner2.pipeline.model_cache import available_onnx_providers
@@ -291,6 +293,34 @@ class QProcessorControls(QWidget):
         )
         self._reader_pool_size.valueChanged.connect(self.configChanged)
         execution_form.addRow("Reader pool size", self._reader_pool_size)
+
+        # Processing scale: downscale frames before the chain for speed. The
+        # slider drives a percent; the label shows the percent + the resulting
+        # WxH for the loaded target (recomputed live, no session rebuild). The
+        # rebuild only fires on release — dragging would otherwise rebuild the
+        # session on every pixel of travel.
+        self._target_native_size: tuple[int, int] | None = None
+        self._scale_slider = QSlider(Qt.Orientation.Horizontal)
+        self._scale_slider.setRange(10, 100)  # 10%..100%
+        self._scale_slider.setValue(100)
+        self._scale_slider.setToolTip(
+            "Downscale frames before processing. Smaller frames decode,\n"
+            "detect, swap, enhance and encode faster — the speed lever for\n"
+            "weak hardware. Output is the reduced resolution. 100% = full\n"
+            "resolution (off). Applies on release — rebuilds the session\n"
+            "(current frame and play state preserved)."
+        )
+        self._scale_label = QLabel()
+        self._scale_label.setMinimumWidth(110)
+        self._scale_slider.valueChanged.connect(self._update_scale_label)
+        self._scale_slider.sliderReleased.connect(self.configChanged)
+        scale_row = QWidget()
+        scale_row_layout = QHBoxLayout(scale_row)
+        scale_row_layout.setContentsMargins(0, 0, 0, 0)
+        scale_row_layout.addWidget(self._scale_slider, stretch=1)
+        scale_row_layout.addWidget(self._scale_label)
+        execution_form.addRow("Processing scale", scale_row)
+        self._update_scale_label()
 
         self._playback_combo = QComboBox()
         for label in _PLAYBACK_MODES:
@@ -640,6 +670,30 @@ class QProcessorControls(QWidget):
     def reader_pool_size(self) -> int:
         return self._reader_pool_size.value()
 
+    def processing_scale(self) -> float:
+        """Downscale factor in (0, 1]; 1.0 = full resolution."""
+        return self._scale_slider.value() / 100.0
+
+    def set_target_native_size(self, size: object) -> None:
+        """Tell the scale readout the loaded target's native dimensions so it
+        can show the resulting size. `size` is (width, height) or None (no
+        target loaded)."""
+        if size is None:
+            self._target_native_size = None
+        else:
+            w, h = size  # type: ignore[misc]
+            self._target_native_size = (int(w), int(h))
+        self._update_scale_label()
+
+    def _update_scale_label(self) -> None:
+        pct = self._scale_slider.value()
+        if self._target_native_size is None:
+            self._scale_label.setText(f"{pct}%")
+            return
+        nw, nh = self._target_native_size
+        w, h = scaled_dims(nw, nh, pct / 100.0)
+        self._scale_label.setText(f"{pct}% [{w}x{h}]")
+
     def strategy_name(self) -> str:
         return type(self.skip_strategy()).__name__
 
@@ -730,6 +784,7 @@ class QProcessorControls(QWidget):
         write_queue_size: int | None,
         video_backend: VideoBackend | None,
         reader_pool_size: int | None,
+        processing_scale: float | None,
         synced_max_lag_frames: int | None,
         swapper_providers: list[str] | None,
         enhancer_device: str | None,
@@ -760,6 +815,7 @@ class QProcessorControls(QWidget):
             self._write_queue_size,
             self._video_backend_combo,
             self._reader_pool_size,
+            self._scale_slider,
             self._synced_max_lag_frames,
             *self._provider_checkboxes.values(),
         )
@@ -824,6 +880,10 @@ class QProcessorControls(QWidget):
                     self._video_backend_combo.setCurrentText(label)
             if reader_pool_size is not None:
                 self._reader_pool_size.setValue(reader_pool_size)
+            if processing_scale is not None:
+                self._scale_slider.setValue(
+                    max(10, min(100, round(processing_scale * 100)))
+                )
             if synced_max_lag_frames is not None:
                 self._synced_max_lag_frames.setValue(synced_max_lag_frames)
             if swapper_providers is not None:
@@ -840,4 +900,5 @@ class QProcessorControls(QWidget):
         # The format/strategy may have changed so refresh enabled states.
         self._update_quality_visibility()
         self._update_synced_threshold_enabled()
+        self._update_scale_label()  # reflect a restored scale (set under blockSignals)
         self.configChanged.emit()

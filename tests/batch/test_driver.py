@@ -96,6 +96,14 @@ class _IndexEncodingReader:
     def frame_count(self) -> int:
         return self._frame_count
 
+    @property
+    def width(self) -> int:
+        return 8
+
+    @property
+    def height(self) -> int:
+        return 8
+
     def read(self, index: int):
         return np.full((8, 8, 3), index, dtype=np.uint8)
 
@@ -119,6 +127,14 @@ class _ConcurrencyCheckingReader:
     @property
     def frame_count(self) -> int:
         return self._frame_count
+
+    @property
+    def width(self) -> int:
+        return 8
+
+    @property
+    def height(self) -> int:
+        return 8
 
     def read(self, index: int):
         with self._guard:
@@ -152,6 +168,14 @@ class _ShortReader:
     @property
     def frame_count(self) -> int:
         return self._claimed
+
+    @property
+    def width(self) -> int:
+        return 8
+
+    @property
+    def height(self) -> int:
+        return 8
 
     def read(self, index: int):
         if index >= self._real:
@@ -207,7 +231,12 @@ def _make_task(
 
 
 def _stage_dir(driver: BatchDriver, task: BatchTask, index: int, name: str):
-    return driver._cache_root / task.id / f"stage{index}-{name}"  # noqa: SLF001
+    # Stage dirs now carry a scaled-size token ("stage0-faceswapper@WxH"); the
+    # WxH depends on the stub reader, so resolve by prefix glob. Falls back to
+    # the token-less path (which won't exist) so "not exists" assertions hold.
+    parent = driver._cache_root / task.id  # noqa: SLF001
+    matches = list(parent.glob(f"stage{index}-{name}@*"))
+    return matches[0] if matches else parent / f"stage{index}-{name}"
 
 
 @pytest.fixture
@@ -412,7 +441,7 @@ class TestStageFailure:
         monkeypatch.setattr(
             BatchDriver,
             "_build_reader",
-            staticmethod(lambda target, backend: reader),
+            staticmethod(lambda target, backend, scale=1.0: reader),
         )
         monkeypatch.setattr(
             BatchDriver,
@@ -468,7 +497,7 @@ class TestReaderThreadSafety:
         monkeypatch.setattr(
             BatchDriver,
             "_build_reader",
-            staticmethod(lambda target, backend: reader),
+            staticmethod(lambda target, backend, scale=1.0: reader),
         )
         task = _make_task(tmp_path, image_target=True)
         task.swapper_execution.workers = 4  # would race if reads happened in workers
@@ -559,7 +588,7 @@ class TestOverReportedFrameCount:
         monkeypatch.setattr(
             BatchDriver,
             "_build_reader",
-            staticmethod(lambda target, backend: reader),
+            staticmethod(lambda target, backend, scale=1.0: reader),
         )
         task = _make_task(tmp_path, image_target=True)
         status = driver.run(task)
@@ -575,7 +604,7 @@ class TestOverReportedFrameCount:
         monkeypatch.setattr(
             BatchDriver,
             "_build_reader",
-            staticmethod(lambda target, backend: reader),
+            staticmethod(lambda target, backend, scale=1.0: reader),
         )
         task = _make_task(tmp_path, image_target=True)
         status = driver.run(task)

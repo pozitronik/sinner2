@@ -56,6 +56,7 @@ class Settings(SinnerBaseModel):
     audio_volume: int | None = None  # 0-100
     video_backend: VideoBackend | None = None
     reader_pool_size: int | None = None
+    processing_scale: float | None = None  # 0 < s <= 1; downscale frames before processing
     synced_max_lag_frames: int | None = None
     side_panel_visible: bool | None = None
     metrics_overlay_visible: bool | None = None

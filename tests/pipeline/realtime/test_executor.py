@@ -119,6 +119,22 @@ class _MultiFrameReader:
     def frame_count(self) -> int:
         return self._count
 
+    @property
+    def width(self) -> int:
+        return 8
+
+    @property
+    def height(self) -> int:
+        return 8
+
+    @property
+    def native_width(self) -> int:
+        return 8
+
+    @property
+    def native_height(self) -> int:
+        return 8
+
     def read(self, index: int) -> Frame | None:
         if index < 0 or index >= self._count:
             return None
@@ -1132,6 +1148,22 @@ class _SlowReader:
     @property
     def frame_count(self) -> int:
         return self._count
+
+    @property
+    def width(self) -> int:
+        return 4
+
+    @property
+    def height(self) -> int:
+        return 4
+
+    @property
+    def native_width(self) -> int:
+        return 4
+
+    @property
+    def native_height(self) -> int:
+        return 4
 
     def read(self, index: int) -> Frame | None:
         time.sleep(self._delay)

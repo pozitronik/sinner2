@@ -46,6 +46,22 @@ class _FakeReader:
     def frame_count(self) -> int:
         return self._count
 
+    @property
+    def width(self) -> int:
+        return 4
+
+    @property
+    def height(self) -> int:
+        return 4
+
+    @property
+    def native_width(self) -> int:
+        return 4
+
+    @property
+    def native_height(self) -> int:
+        return 4
+
     def read(self, index: FrameIndex) -> Frame | None:
         with self._lock:
             self.read_calls += 1

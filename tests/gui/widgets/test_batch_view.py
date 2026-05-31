@@ -130,11 +130,13 @@ class TestQueueSignalUpdates:
             ),
         )
         text = view._model.item(0, _COL_PROGRESS).text()  # noqa: SLF001
-        assert "75%" in text
+        # Step-scoped: 5/10 of stage 2-of-2 → 50%, with the stage name.
+        assert "[2/2]" in text
+        assert "50%" in text
         assert "faceenhancer" in text
         assert "5/10" in text
 
-    def test_progress_shows_fps_and_eta(
+    def test_progress_shows_fps_and_time(
         self, view, tmp_path, store, queue, monkeypatch
     ):
         from sinner2.batch.task import BatchProgress
@@ -145,7 +147,7 @@ class TestQueueSignalUpdates:
         t = _task(tmp_path)
         store.save(t)
         view.reload_from_store()
-        queue.taskStarted.emit(t.id)  # resets the throughput tracker
+        queue.taskStarted.emit(t.id)  # resets the step tracker
         progress = dict(
             stage_index=0,
             stage_count=2,
@@ -157,19 +159,21 @@ class TestQueueSignalUpdates:
             t.id,
             BatchProgress(stage_completed=0, overall_completed=0, overall_total=20, **progress),
         )
-        clock[0] = 2.0  # 10 frames in 2s → 5 fps, ETA (20-10)/5 = 2s
+        clock[0] = 1.0  # 5 frames in 1s → 5 fps; remaining (10-5)/5 = 1s
         queue.taskProgress.emit(
             t.id,
-            BatchProgress(stage_completed=10, overall_completed=10, overall_total=20, **progress),
+            BatchProgress(stage_completed=5, overall_completed=5, overall_total=20, **progress),
         )
         text = view._model.item(0, _COL_PROGRESS).text()  # noqa: SLF001
         assert "5 fps" in text
-        assert "ETA 0:02" in text
+        # Step elapsed 0:01, expected total ~0:02 (elapsed + remaining).
+        assert "0:01" in text
+        assert "~0:02" in text
 
-    def test_progress_text_derives_overall_for_reloaded_task(
+    def test_progress_text_derives_step_for_reloaded_task(
         self, view, tmp_path, store
     ):
-        # Paused mid stage-1 of 2 (stage 0 done): overall = 10 + 5 = 15/20.
+        # Paused mid stage-2 of 2 (stage 0 done, 5/10 of stage 1): step 50%.
         t = _task(
             tmp_path,
             enhancer_enabled=True,
@@ -180,7 +184,10 @@ class TestQueueSignalUpdates:
         )
         store.save(t)
         view.reload_from_store()
-        assert "75%" in view._model.item(0, _COL_PROGRESS).text()  # noqa: SLF001
+        text = view._model.item(0, _COL_PROGRESS).text()  # noqa: SLF001
+        assert "[2/2]" in text
+        assert "50%" in text
+        assert "faceenhancer" in text
 
     def test_completed_signal_refreshes_status_from_store(
         self, view, tmp_path, store, queue
@@ -299,7 +306,7 @@ class TestResumeAction:
         assert called == [t.id]
 
 
-class TestThroughputTracker:
+class TestStepTracker:
     def test_fmt_eta_formats(self):
         from sinner2.gui.widgets.batch_view import _fmt_eta
 
@@ -307,27 +314,48 @@ class TestThroughputTracker:
         assert _fmt_eta(65) == "1:05"
         assert _fmt_eta(3661) == "1:01:01"
 
-    def test_window_fps_and_eta(self, monkeypatch):
+    def test_window_fps_elapsed_and_expected(self, monkeypatch):
         from sinner2.gui.widgets import batch_view
 
         clock = [0.0]
         monkeypatch.setattr(batch_view.time, "monotonic", lambda: clock[0])
-        tracker = batch_view._ThroughputTracker()
-        fps, eta = tracker.update(0, 100)
-        assert fps == 0.0 and eta is None  # one sample → no rate yet
+        tracker = batch_view._StepTracker()
+        fps, elapsed, expected = tracker.update(0, 0, 100)
+        # One sample → no rate yet; elapsed is from the step start.
+        assert fps == 0.0 and elapsed == 0.0 and expected is None
         clock[0] = 1.0
-        fps, eta = tracker.update(10, 100)
+        fps, elapsed, expected = tracker.update(0, 10, 100)
         assert fps == pytest.approx(10.0)  # 10 frames in 1s
-        assert eta == pytest.approx(9.0)  # (100 - 10) / 10
+        assert elapsed == pytest.approx(1.0)
+        # remaining = (100 - 10) / 10 = 9s; expected = elapsed + remaining.
+        assert expected == pytest.approx(10.0)
 
-    def test_no_eta_when_idle(self, monkeypatch):
+    def test_new_step_resets_clock_and_rate(self, monkeypatch):
         from sinner2.gui.widgets import batch_view
 
         clock = [0.0]
         monkeypatch.setattr(batch_view.time, "monotonic", lambda: clock[0])
-        tracker = batch_view._ThroughputTracker()
-        tracker.update(50, 100)
-        clock[0] = 1.0
-        fps, eta = tracker.update(50, 100)  # no progress → fps 0, no ETA
+        tracker = batch_view._StepTracker()
+        tracker.update(0, 0, 100)
+        clock[0] = 5.0
+        tracker.update(0, 100, 100)  # stage 0 finishes at t=5
+        # Stage 1 begins at the same wall-clock — elapsed must restart at 0
+        # and the rate window must drop stage 0's samples.
+        fps, elapsed, expected = tracker.update(1, 0, 100)
+        assert elapsed == 0.0
         assert fps == 0.0
-        assert eta is None
+        assert expected is None
+
+    def test_no_expected_when_idle(self, monkeypatch):
+        from sinner2.gui.widgets import batch_view
+
+        clock = [0.0]
+        monkeypatch.setattr(batch_view.time, "monotonic", lambda: clock[0])
+        tracker = batch_view._StepTracker()
+        tracker.update(0, 50, 100)
+        clock[0] = 1.0
+        # No progress → fps 0, no expected; elapsed still advances.
+        fps, elapsed, expected = tracker.update(0, 50, 100)
+        assert fps == 0.0
+        assert expected is None
+        assert elapsed == pytest.approx(1.0)

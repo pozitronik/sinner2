@@ -83,6 +83,10 @@ class ReaderPool:
         probe = factory()
         self._fps = float(probe.fps)
         self._frame_count = int(probe.frame_count)
+        # Native (pre-scale) source dimensions, surfaced so the GUI can show
+        # the resulting size for any processing scale.
+        self._native_width = int(probe.native_width)
+        self._native_height = int(probe.native_height)
         # Build the remaining N-1 instances. If any later instance
         # raises, release the ones built so far before propagating.
         readers: list[TargetReader] = [probe]
@@ -131,6 +135,14 @@ class ReaderPool:
     @property
     def frame_count(self) -> int:
         return self._frame_count
+
+    @property
+    def native_width(self) -> int:
+        return self._native_width
+
+    @property
+    def native_height(self) -> int:
+        return self._native_height
 
     def reads_per_second(self) -> float:
         """Successful reads per wall-clock second over the last few

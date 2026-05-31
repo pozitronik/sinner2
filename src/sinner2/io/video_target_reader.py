@@ -4,6 +4,7 @@ import subprocess
 import numpy as np
 
 from sinner2.config.target import Target
+from sinner2.io.frame_resize import scaled_dims
 from sinner2.types import Frame, FrameIndex
 
 
@@ -23,9 +24,17 @@ class FFmpegVideoTargetReader:
     for v1; exact-frame seek is a future optimization.
     """
 
-    def __init__(self, target: Target) -> None:
+    def __init__(self, target: Target, scale: float = 1.0) -> None:
         self._target = target
-        self._fps, self._frame_count, self._width, self._height = self._probe()
+        self._fps, self._frame_count, self._native_width, self._native_height = (
+            self._probe()
+        )
+        # Downscale dimensions are baked into the ffmpeg -vf filter, so frames
+        # arrive already small (saving decode + pipe bandwidth, not just
+        # processing). width/height describe what actually comes out the pipe.
+        self._width, self._height = scaled_dims(
+            self._native_width, self._native_height, scale
+        )
         self._decoder: subprocess.Popen[bytes] | None = None
         self._next_index: FrameIndex = 0
 
@@ -44,6 +53,14 @@ class FFmpegVideoTargetReader:
     @property
     def height(self) -> int:
         return self._height
+
+    @property
+    def native_width(self) -> int:
+        return self._native_width
+
+    @property
+    def native_height(self) -> int:
+        return self._native_height
 
     def read(self, index: FrameIndex) -> Frame | None:
         if index < 0 or index >= self._frame_count:
@@ -116,6 +133,12 @@ class FFmpegVideoTargetReader:
             "-ss", f"{start_time:.6f}",
             "-i", str(self._target.path),
             "-vsync", "0",
+        ]
+        # Let ffmpeg do the downscale during decode — cheaper than decoding
+        # full-res and resizing in numpy, and it shrinks what crosses the pipe.
+        if (self._width, self._height) != (self._native_width, self._native_height):
+            cmd += ["-vf", f"scale={self._width}:{self._height}"]
+        cmd += [
             "-f", "rawvideo",
             "-pix_fmt", "bgr24",
             "-",

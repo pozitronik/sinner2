@@ -18,6 +18,7 @@ from sinner2.batch.task import (
     DEFAULT_SWAPPER_WORKERS,
     BatchCleanupMode,
     BatchOutputFormat,
+    BatchProgress,
     BatchTask,
 )
 from sinner2.batch.task_store import BatchTaskStore
@@ -68,6 +69,11 @@ class SinnerMainWindow(QMainWindow):
         # True while a batch task renders — locks the live-editing surface so
         # the display acts purely as a render preview (DaVinci-style).
         self._batch_active = False
+        # While a batch renders we repurpose the position bar to track the
+        # render's last frame; this caches the slider range we set so we only
+        # reset it when the stage's frame count actually changes (set_frame_count
+        # snaps the value to 0). -1 = "not set for the current batch".
+        self._batch_slider_total = -1
         if not self._restore_geometry_from_settings():
             self.resize(960, 720)
 
@@ -190,6 +196,9 @@ class SinnerMainWindow(QMainWindow):
         self._controller.errorOccurred.connect(self._show_error)
         self._controller.processingFpsChanged.connect(self._update_fps_label)
         self._controller.sessionScratchDirChanged.connect(self._update_scratch_label)
+        self._controller.targetNativeSizeChanged.connect(
+            self._processors.set_target_native_size
+        )
         self._controller.bufferMetricsChanged.connect(self._update_metrics_label)
         self._controller.strategyModeChanged.connect(self._update_strategy_mode_label)
 
@@ -209,6 +218,7 @@ class SinnerMainWindow(QMainWindow):
         # preview; when the queue empties, drop a status-bar note so
         # the user knows it's safe to play again.
         self._batch_queue.taskStarted.connect(self._on_batch_task_started)
+        self._batch_queue.taskProgress.connect(self._on_batch_progress)
         self._batch_queue.queueIdle.connect(self._on_batch_queue_idle)
         self._batch_queue.taskFailed.connect(self._on_batch_task_failed)
         self._batch_queue.taskPreview.connect(self._on_batch_preview)
@@ -520,6 +530,9 @@ class SinnerMainWindow(QMainWindow):
         # Reader pool size triggers a session rebuild via its own setter
         # (same pattern as video_backend).
         self._controller.set_reader_pool_size(self._processors.reader_pool_size())
+        # Processing scale also rebuilds the session via its own setter (it's
+        # part of the reader construction + cache key, not the live chain).
+        self._controller.set_processing_scale(self._processors.processing_scale())
         # Swapper-provider / enhancer-device rebuilds are folded into
         # apply_session_config above; just refresh the status-bar EP label
         # and the failed-provider highlight afterwards.
@@ -825,6 +838,7 @@ class SinnerMainWindow(QMainWindow):
             write_queue_size=self._settings.write_queue_size,
             video_backend=self._settings.video_backend,
             reader_pool_size=self._settings.reader_pool_size,
+            processing_scale=self._settings.processing_scale,
             synced_max_lag_frames=self._settings.synced_max_lag_frames,
             swapper_providers=self._settings.swapper_providers,
             enhancer_device=self._settings.enhancer_device,
@@ -854,6 +868,7 @@ class SinnerMainWindow(QMainWindow):
             write_queue_size=self._processors.write_queue_size(),
             video_backend=self._processors.video_backend(),
             reader_pool_size=self._processors.reader_pool_size(),
+            processing_scale=self._processors.processing_scale(),
             synced_max_lag_frames=self._processors.synced_max_lag_frames(),
             swapper_providers=self._processors.swapper_providers(),
             enhancer_device=self._processors.enhancer_device(),
@@ -984,6 +999,7 @@ class SinnerMainWindow(QMainWindow):
             enhancer_execution=enhancer_execution,
             video_backend=self._processors.video_backend(),
             reader_pool_size=self._processors.reader_pool_size(),
+            processing_scale=self._processors.processing_scale(),
             image_format=self._processors.image_format(),
             image_quality=self._processors.image_quality(),
         )
@@ -1009,13 +1025,27 @@ class SinnerMainWindow(QMainWindow):
         # contend for the GPU (OOM risk), and — more importantly — the
         # display must act purely as a render preview, not a live edit.
         self._batch_active = True
+        self._batch_slider_total = -1  # re-arm the position bar for this task
         if self._controller.executor() is not None:
             self._controller.executor().pause()
         self._set_editing_locked(True)
         self._status_bar.show_message("Batch running — editing locked", 5000)
 
+    def _on_batch_progress(self, _task_id: str, progress: BatchProgress) -> None:
+        # The editing surface is locked during a render, so repurpose the
+        # position bar to track the batch: set the slider range to the stage's
+        # frame count once (set_frame_count snaps the value to 0), then advance
+        # the playhead to the last rendered frame each tick.
+        if progress.stage_total != self._batch_slider_total:
+            self._batch_slider_total = progress.stage_total
+            self._transport.set_frame_count(progress.stage_total)
+        self._transport.set_current_frame(max(0, progress.stage_completed - 1))
+
     def _on_batch_queue_idle(self) -> None:
         self._batch_active = False
+        self._batch_slider_total = -1
+        # Restore the position bar to the live session we hijacked it from.
+        self._controller.resync_transport()
         self._set_editing_locked(False)
         self._status_bar.show_message(
             "Batch queue idle — editing unlocked", 3000
