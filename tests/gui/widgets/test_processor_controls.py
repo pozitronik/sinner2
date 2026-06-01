@@ -263,11 +263,20 @@ class TestApplyRestoredSettings:
                 **_NONE_RESTORE_KWARGS,
                 "enhancer_upscale": 3,
                 "enhancer_only_center_face": True,
+                "enhancer_fp16": False,
             }
         )
         params = widget.enhancer_params()
         assert params.upscale == 3
         assert params.only_center_face is True
+        assert params.fp16 is False
+
+    def test_enhancer_fp16_defaults_on_and_flows_to_params(self, widget):
+        # Default checked (matches FaceEnhancerParams default), and the checkbox
+        # state flows into the params the controller reads.
+        assert widget.enhancer_params().fp16 is True
+        widget._enhancer_fp16.setChecked(False)  # noqa: SLF001
+        assert widget.enhancer_params().fp16 is False
 
     def test_none_values_preserve_widget_defaults(self, widget):
         default_worker = widget.realtime_workers()

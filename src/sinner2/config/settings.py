@@ -46,6 +46,7 @@ class Settings(SinnerBaseModel):
     enhancer_upscale: int | None = None
     enhancer_only_center_face: bool | None = None
     enhancer_codeformer_fidelity: float | None = None  # CodeFormer w knob
+    enhancer_fp16: bool | None = None  # GFPGAN half precision (CUDA only)
     playback_mode: PlaybackMode | None = None
     cache_mode: CacheMode | None = None
     image_format: ImageFormat | None = None

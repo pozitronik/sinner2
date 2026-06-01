@@ -34,7 +34,9 @@ def stub_restorer(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     restorer = MagicMock()
     restorer.enhance = MagicMock(side_effect=lambda f, **_k: ([], [], f))
     monkeypatch.setattr(
-        face_enhancer, "_load_restorer", lambda _path, _upscale, _device: restorer
+        face_enhancer,
+        "_load_restorer",
+        lambda _path, _upscale, _device, fp16=False: restorer,
     )
     return restorer
 
@@ -57,6 +59,7 @@ class TestFaceEnhancerParams:
         p = FaceEnhancerParams()
         assert p.upscale == 1
         assert p.only_center_face is False
+        assert p.fp16 is True
 
     def test_rejects_zero_upscale(self):
         with pytest.raises(Exception):
@@ -110,7 +113,9 @@ class TestFaceEnhancer:
     ):
         captured: dict[str, int] = {}
 
-        def fake_load(_path: Path, upscale: int, _device: str) -> MagicMock:
+        def fake_load(
+            _path: Path, upscale: int, _device: str, fp16: bool = False
+        ) -> MagicMock:
             captured["upscale"] = upscale
             return MagicMock(enhance=MagicMock(return_value=([], [], None)))
 
@@ -127,7 +132,7 @@ class TestFaceEnhancer:
 
         captured: dict[str, str] = {}
 
-        def fake_load(_path: Path, _upscale: int, device) -> MagicMock:
+        def fake_load(_path: Path, _upscale: int, device, fp16: bool = False) -> MagicMock:
             captured["device"] = device
             return MagicMock(enhance=MagicMock(return_value=([], [], None)))
 
@@ -146,7 +151,7 @@ class TestFaceEnhancer:
 
         captured: dict = {}
 
-        def fake_load(_path, _upscale, device):
+        def fake_load(_path, _upscale, device, fp16=False):
             captured["device"] = device
             return MagicMock(enhance=MagicMock(return_value=([], [], None)))
 
@@ -175,7 +180,7 @@ class TestFaceEnhancer:
         monkeypatch.setattr(
             face_enhancer,
             "_load_restorer",
-            lambda *a: MagicMock(enhance=MagicMock(return_value=([], [], None))),
+            lambda *a, **k: MagicMock(enhance=MagicMock(return_value=([], [], None))),
         )
         monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
         empties: list[int] = []
@@ -193,7 +198,7 @@ class TestFaceEnhancer:
         monkeypatch.setattr(
             face_enhancer,
             "_load_restorer",
-            lambda *a: MagicMock(enhance=MagicMock(return_value=([], [], None))),
+            lambda *a, **k: MagicMock(enhance=MagicMock(return_value=([], [], None))),
         )
         empties: list[int] = []
         monkeypatch.setattr(torch.cuda, "empty_cache", lambda: empties.append(1))
@@ -201,6 +206,60 @@ class TestFaceEnhancer:
         fe.setup()
         fe.release()
         assert empties == []
+
+
+class TestFp16:
+    """GFPGAN half precision: active only on CUDA, gates the autocast wrapper,
+    and is passed to the loader so it can half the generator weights."""
+
+    def _capture_load(self, monkeypatch: pytest.MonkeyPatch) -> dict:
+        captured: dict = {}
+
+        def fake_load(_path, _upscale, _device, fp16=False):
+            captured["fp16"] = fp16
+            return MagicMock(enhance=MagicMock(return_value=([], [], None)))
+
+        monkeypatch.setattr(face_enhancer, "_load_restorer", fake_load)
+        return captured
+
+    def test_fp16_passed_to_loader_on_cuda(self, models_dir, monkeypatch):
+        import torch
+
+        captured = self._capture_load(monkeypatch)
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+        fe = FaceEnhancer(device="cuda", params=FaceEnhancerParams(fp16=True))
+        fe.setup()
+        assert captured["fp16"] is True
+        assert fe._fp16 is True  # noqa: SLF001
+
+    def test_fp16_disabled_on_cpu_even_when_requested(self, models_dir, monkeypatch):
+        captured = self._capture_load(monkeypatch)
+        # Explicit CPU device → fp16 is a no-op, so it's forced off.
+        fe = FaceEnhancer(device="cpu", params=FaceEnhancerParams(fp16=True))
+        fe.setup()
+        assert captured["fp16"] is False
+        assert fe._fp16 is False  # noqa: SLF001
+
+    def test_fp16_param_false_disables_on_cuda(self, models_dir, monkeypatch):
+        import torch
+
+        captured = self._capture_load(monkeypatch)
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+        fe = FaceEnhancer(device="cuda", params=FaceEnhancerParams(fp16=False))
+        fe.setup()
+        assert captured["fp16"] is False
+        assert fe._fp16 is False  # noqa: SLF001
+
+    def test_autocast_context_gating(self):
+        import contextlib
+
+        import torch
+
+        fe = FaceEnhancer()
+        fe._fp16 = False  # noqa: SLF001
+        assert isinstance(fe._gfpgan_autocast(), contextlib.nullcontext)  # noqa: SLF001
+        fe._fp16 = True  # noqa: SLF001
+        assert isinstance(fe._gfpgan_autocast(), torch.autocast)  # noqa: SLF001
 
 
 class TestRotationCompensation:

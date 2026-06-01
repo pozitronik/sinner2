@@ -129,6 +129,7 @@ class BatchTask(SinnerBaseModel):
     enhancer_upscale: int = 1
     enhancer_only_center_face: bool = False
     enhancer_codeformer_fidelity: float = 0.7  # CodeFormer w knob
+    enhancer_fp16: bool = True  # GFPGAN half precision (CUDA only)
     # Upscaler (Real-ESRGAN) — whole-frame super-resolution stage
     upscaler_enabled: bool = False
     upscaler_model: str = "general-x4v3"  # general-x4v3 | x4plus | x2plus

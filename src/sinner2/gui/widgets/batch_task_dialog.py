@@ -266,6 +266,13 @@ class QBatchTaskDialog(QDialog):
         self._only_center_face = QCheckBox()
         self._only_center_face.setChecked(task.enhancer_only_center_face)
         enh_form.addRow("Only center face:", self._only_center_face)
+        self._enhancer_fp16 = QCheckBox()
+        self._enhancer_fp16.setChecked(task.enhancer_fp16)
+        self._enhancer_fp16.setToolTip(
+            "GFPGAN half precision: less VRAM per worker + faster. CUDA only; "
+            "ignored by CodeFormer."
+        )
+        enh_form.addRow("Half precision:", self._enhancer_fp16)
         self._enhancer_workers = QSpinBox()
         self._enhancer_workers.setRange(1, 16)
         self._enhancer_workers.setValue(task.enhancer_execution.workers)
@@ -507,6 +514,7 @@ class QBatchTaskDialog(QDialog):
                 "enhancer_upscale": self._upscale.value(),
                 "enhancer_only_center_face": self._only_center_face.isChecked(),
                 "enhancer_codeformer_fidelity": self._enhancer_fidelity.value(),
+                "enhancer_fp16": self._enhancer_fp16.isChecked(),
                 "swapper_execution": self._task.swapper_execution.model_copy(
                     update={
                         "workers": self._swapper_workers.value(),

@@ -361,6 +361,7 @@ class BatchDriver:
                 upscale=task.enhancer_upscale,
                 only_center_face=task.enhancer_only_center_face,
                 codeformer_fidelity=task.enhancer_codeformer_fidelity,
+                fp16=task.enhancer_fp16,
                 # Rotation compensation is shared config (same task fields as
                 # the swapper) — the enhancer needs it too, GFPGAN has none.
                 rotation_compensation=task.swapper_rotation_compensation,

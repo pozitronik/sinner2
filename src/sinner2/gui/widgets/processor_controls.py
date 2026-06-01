@@ -336,6 +336,15 @@ class QProcessorControls(QWidget):
         self._only_center_face.setChecked(enhancer_defaults.only_center_face)
         self._only_center_face.toggled.connect(self.configChanged)
         enhancer_form.addRow("Center face only", self._only_center_face)
+        self._enhancer_fp16 = QCheckBox()
+        self._enhancer_fp16.setChecked(enhancer_defaults.fp16)
+        self._enhancer_fp16.setToolTip(
+            "GFPGAN half precision: less VRAM per worker + faster (tensor "
+            "cores).\nCUDA only; ignored by CodeFormer. Disable if you see "
+            "artifacts."
+        )
+        self._enhancer_fp16.toggled.connect(self.configChanged)
+        enhancer_form.addRow("Half precision", self._enhancer_fp16)
         # GFPGAN runs on PyTorch, so its device is torch's CUDA — independent
         # of the swapper's ONNX providers. Enumerate the actual devices (Auto,
         # CPU, then each CUDA GPU by name) so the user picks from what exists.
@@ -925,6 +934,8 @@ class QProcessorControls(QWidget):
         )
         self._upscale.setEnabled(not is_codeformer)
         self._enhancer_fidelity.setEnabled(is_codeformer)
+        # fp16 is a GFPGAN-only knob (CodeFormer is ONNX) — gray it out for CF.
+        self._enhancer_fp16.setEnabled(not is_codeformer)
 
     def enhancer_model(self) -> str:
         return self._enhancer_model.currentData()
@@ -948,6 +959,7 @@ class QProcessorControls(QWidget):
             upscale=self._upscale.value(),
             only_center_face=self._only_center_face.isChecked(),
             codeformer_fidelity=self._enhancer_fidelity.value(),
+            fp16=self._enhancer_fp16.isChecked(),
             rotation_compensation=self._rotation_enabled.isChecked(),
             rotation_threshold_deg=self._rotation_threshold.value(),
             rotation_redetect=self._rotation_redetect.isChecked(),
@@ -1153,6 +1165,7 @@ class QProcessorControls(QWidget):
         enhancer_upscale: int | None,
         enhancer_only_center_face: bool | None,
         enhancer_codeformer_fidelity: float | None = None,
+        enhancer_fp16: bool | None = None,
         playback_mode: PlaybackMode | None,
         cache_mode: CacheMode | None,
         image_format: ImageFormat | None,
@@ -1200,6 +1213,7 @@ class QProcessorControls(QWidget):
             self._upscale,
             self._enhancer_fidelity,
             self._only_center_face,
+            self._enhancer_fp16,
             self._enhancer_device,
             self._strategy_combo,
             self._worker_count,
@@ -1268,6 +1282,8 @@ class QProcessorControls(QWidget):
                 self._enhancer_fidelity.setValue(enhancer_codeformer_fidelity)
             if enhancer_only_center_face is not None:
                 self._only_center_face.setChecked(enhancer_only_center_face)
+            if enhancer_fp16 is not None:
+                self._enhancer_fp16.setChecked(enhancer_fp16)
             if enhancer_device is not None:
                 # Match by stored token; a persisted cuda:N that no longer
                 # exists on this machine simply isn't found → keep default.

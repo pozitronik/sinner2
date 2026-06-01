@@ -24,8 +24,8 @@ Read [Responsible use](#responsible-use) before you start.
   visible at once.
 - **Selectable models per stage.** The face swapper offers `inswapper_128`
   (default) plus alternatives (ReSwapper, Ghost, SimSwap, UniFace); the enhancer
-  offers GFPGAN or CodeFormer (with a fidelity control). Non-default weights
-  download on demand, with confirmation.
+  offers GFPGAN (with a half-precision option) or CodeFormer (with a fidelity
+  control). Non-default weights download on demand, with confirmation.
 - **Whole-frame upscaler.** An optional Real-ESRGAN super-resolution stage after
   the face work, with tile-size and half-precision controls.
 - **Rotation compensation.** For faces tilted in-plane past a threshold, the
