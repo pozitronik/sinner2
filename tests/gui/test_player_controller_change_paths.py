@@ -172,6 +172,51 @@ class TestChangeTargetWithSession:
         ctrl.shutdown()
 
 
+class TestAudioRestoredOnSwap:
+    """A source/target change must re-drive the audio backend to match the
+    restored position + play state. The restore block resumes the EXECUTOR
+    only; without _restore_audio_state the audio (paused in _detach_for_swap,
+    reloaded in _install_session) stays silent until the user manually toggles
+    play — the reported "sound disappears on source change" bug."""
+
+    def _attach_audio(self, ctrl: PlayerController) -> MagicMock:
+        audio = MagicMock()
+        audio.is_loaded.return_value = True
+        ctrl._audio_backend = audio  # noqa: SLF001
+        ctrl._target_fps = 30.0  # noqa: SLF001
+        return audio
+
+    def test_resumes_audio_with_seek_when_playing(self, widgets, monkeypatch):
+        ctrl = _make_controller(widgets)
+        _attach_fake_session(ctrl, playing=True, current_frame=60)
+        _stub_build(ctrl, monkeypatch)
+        audio = self._attach_audio(ctrl)
+        ctrl.change_source(Path("/new/source.png"))
+        audio.seek_seconds.assert_called_once_with(60 / 30.0)
+        audio.play.assert_called_once_with()
+        ctrl.shutdown()
+
+    def test_keeps_audio_paused_when_not_playing(self, widgets, monkeypatch):
+        ctrl = _make_controller(widgets)
+        _attach_fake_session(ctrl, playing=False, current_frame=10)
+        _stub_build(ctrl, monkeypatch)
+        audio = self._attach_audio(ctrl)
+        ctrl.change_source(Path("/new/source.png"))
+        audio.seek_seconds.assert_called_once_with(10 / 30.0)
+        audio.play.assert_not_called()
+        ctrl.shutdown()
+
+    def test_target_change_seeks_audio_to_zero(self, widgets, monkeypatch):
+        ctrl = _make_controller(widgets)
+        _attach_fake_session(ctrl, playing=True, current_frame=999)
+        _stub_build(ctrl, monkeypatch)
+        audio = self._attach_audio(ctrl)
+        ctrl.change_target(Path("/new/target.mp4"))
+        audio.seek_seconds.assert_called_once_with(0.0)
+        audio.play.assert_called_once_with()
+        ctrl.shutdown()
+
+
 class TestAsyncSwapBehavior:
     def test_emits_session_switching_around_swap(self, widgets, monkeypatch):
         ctrl = _make_controller(widgets)

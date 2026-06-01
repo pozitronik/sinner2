@@ -585,11 +585,38 @@ class PlayerController(QObject):
                 self._executor.seek(self._restore_frame)
                 if self._restore_play:
                     self._executor.play()
+            # Drive the (freshly (re)loaded) audio backend to match. The restore
+            # block above resumes only the EXECUTOR; without this the audio —
+            # paused in _detach_for_swap and reloaded in _install_session — stays
+            # silent after a source/target change until the user manually toggles
+            # play (the "sound disappears on source change" bug).
+            self._restore_audio_state()
         self.sessionSwitching.emit(False)
         if self._swap_pending is not None:
             source_path, target_path = self._swap_pending
             self._swap_pending = None
             self._begin_swap(source_path, target_path)
+
+    def _restore_audio_state(self) -> None:
+        """Re-point the audio backend at the restored position + play state
+        after an async session swap.
+
+        _install_session has already reloaded the target into the backend
+        (a no-op when only the source changed and the target path is the same).
+        QtMediaAudioBackend arms a pending seek/play when the media isn't ready
+        yet, so issuing these immediately is safe — they apply the moment the
+        codec reports LoadedMedia. Mirrors the play/seek the transport handlers
+        do, but driven by the controller's restore intent rather than a user
+        action."""
+        backend = self._audio_backend
+        if backend is None or not backend.is_loaded():
+            return
+        if self._target_fps > 0:
+            backend.seek_seconds(self._restore_frame / self._target_fps)
+        if self._restore_play:
+            backend.play()
+        else:
+            backend.pause()
 
     @staticmethod
     def _write_session_metadata(
