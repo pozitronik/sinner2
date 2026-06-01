@@ -12,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -20,11 +21,13 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QSlider,
     QSpinBox,
     QVBoxLayout,
@@ -398,14 +401,38 @@ class QBatchTaskDialog(QDialog):
         button_box.accepted.connect(self.accept)
         button_box.rejected.connect(self.reject)
 
+        # Stack the config groups in a SCROLLABLE area: the full form is taller
+        # than short displays (~768 px laptops), so without this the dialog
+        # opened bigger than the screen and OK/Cancel fell off the bottom. The
+        # button box stays OUTSIDE the scroll area so it's always reachable.
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.addWidget(paths_box)
+        content_layout.addWidget(swap_box)
+        content_layout.addWidget(enh_box)
+        content_layout.addWidget(up_box)
+        content_layout.addWidget(exec_box)
+        content_layout.addWidget(out_box)
+        content_layout.addStretch(1)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(content)
+
         layout = QVBoxLayout(self)
-        layout.addWidget(paths_box)
-        layout.addWidget(swap_box)
-        layout.addWidget(enh_box)
-        layout.addWidget(up_box)
-        layout.addWidget(exec_box)
-        layout.addWidget(out_box)
+        layout.addWidget(scroll, stretch=1)
         layout.addWidget(button_box)
+
+        # Open at the form's natural size but never taller than the screen —
+        # the scroll area absorbs any overflow on small displays.
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        if screen is not None:
+            avail_h = screen.availableGeometry().height()
+            self.setMaximumHeight(avail_h)
+            desired_h = content.sizeHint().height() + button_box.sizeHint().height() + 24
+            self.resize(640, min(desired_h, int(avail_h * 0.9)))
 
         # ---- Output default ----
         # With no explicit override, show the auto-derived path (so the
