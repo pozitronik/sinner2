@@ -1051,38 +1051,41 @@ class PlayerController(QObject):
         if self.audio_backend() is not None:
             self._audio_backend.set_volume(self._audio_volume / 100.0)  # type: ignore[union-attr]
 
-    def video_backend(self) -> VideoBackend:
-        return self._video_backend
+    def _rebuild_current_session_async(self) -> None:
+        """Re-point the running session at its CURRENT source+target through the
+        in-place reconfigure path, preserving frame + play state.
 
-    def set_video_backend(self, backend: VideoBackend) -> None:
-        """Switch the video reader backend.
-
-        If a session is running, rebuild it so the new backend takes
-        effect immediately — the chain reload that comes with this is
-        the same cost as a source/target change. The current frame and
-        play state are preserved across the rebuild so the user lands
-        roughly where they were."""
-        if backend is self._video_backend:
-            return
-        self._video_backend = backend
+        Used by the structural settings (video backend, reader-pool size,
+        processing scale) that each need a fresh reader pool / cache dir but must
+        NOT tear the executor down — recreating the worker threads leaks GPU
+        memory (see RealtimeExecutor.reconfigure_from). No-op when no session is
+        active. The reconfigure path restores position/play (and audio) once the
+        new world is live, so callers just set their field and call this."""
         if (
             self._executor is None
             or self._current_source_path is None
             or self._current_target_path is None
         ):
             return
-        was_playing = self._executor.is_playing.get()
-        last_frame = self._executor.current_frame.get()
-        source_path = self._current_source_path
-        target_path = self._current_target_path
-        self.set_source_and_target(source_path, target_path)
-        if self._executor is None:
-            # Rebuild failed (errorOccurred already emitted); nothing to resume.
+        self._restore_frame = max(0, self._executor.current_frame.get())
+        self._restore_play = self._executor.is_playing.get()
+        self._change_session_async(
+            self._current_source_path, self._current_target_path
+        )
+
+    def video_backend(self) -> VideoBackend:
+        return self._video_backend
+
+    def set_video_backend(self, backend: VideoBackend) -> None:
+        """Switch the video reader backend.
+
+        If a session is running, rebuild it in place so the new backend takes
+        effect immediately while keeping the worker pool alive. The current
+        frame and play state are preserved across the rebuild."""
+        if backend is self._video_backend:
             return
-        if last_frame > 0:
-            self._executor.seek(last_frame)
-        if was_playing:
-            self._executor.play()
+        self._video_backend = backend
+        self._rebuild_current_session_async()
 
     def reader_pool_size(self) -> int:
         return self._reader_pool_size
@@ -1090,32 +1093,16 @@ class PlayerController(QObject):
     def set_reader_pool_size(self, n: int) -> None:
         """Change the parallel reader pool size.
 
-        Pool size is structural — the pool can't be resized after
-        construction without disrupting in-flight reads, so a change
-        triggers a session rebuild (same pattern as set_video_backend).
-        Current frame and play state are preserved across the rebuild.
+        Pool size is structural — the pool can't be resized after construction
+        without disrupting in-flight reads, so a change rebuilds the session in
+        place (same pattern as set_video_backend). Current frame and play state
+        are preserved across the rebuild.
         """
         clamped = max(1, min(16, n))
         if clamped == self._reader_pool_size:
             return
         self._reader_pool_size = clamped
-        if (
-            self._executor is None
-            or self._current_source_path is None
-            or self._current_target_path is None
-        ):
-            return
-        was_playing = self._executor.is_playing.get()
-        last_frame = self._executor.current_frame.get()
-        source_path = self._current_source_path
-        target_path = self._current_target_path
-        self.set_source_and_target(source_path, target_path)
-        if self._executor is None:
-            return
-        if last_frame > 0:
-            self._executor.seek(last_frame)
-        if was_playing:
-            self._executor.play()
+        self._rebuild_current_session_async()
 
     def processing_scale(self) -> float:
         return self._processing_scale
@@ -1124,30 +1111,14 @@ class PlayerController(QObject):
         """Change the processing downscale (0 < s <= 1).
 
         Scale is part of the cache key + reader construction, so a change
-        rebuilds the session (same pattern as set_reader_pool_size). Current
-        frame and play state are preserved across the rebuild.
+        rebuilds the session in place (same pattern as set_reader_pool_size).
+        Current frame and play state are preserved across the rebuild.
         """
         clamped = max(0.01, min(1.0, scale))
         if clamped == self._processing_scale:
             return
         self._processing_scale = clamped
-        if (
-            self._executor is None
-            or self._current_source_path is None
-            or self._current_target_path is None
-        ):
-            return
-        was_playing = self._executor.is_playing.get()
-        last_frame = self._executor.current_frame.get()
-        source_path = self._current_source_path
-        target_path = self._current_target_path
-        self.set_source_and_target(source_path, target_path)
-        if self._executor is None:
-            return
-        if last_frame > 0:
-            self._executor.seek(last_frame)
-        if was_playing:
-            self._executor.play()
+        self._rebuild_current_session_async()
 
     def swapper_providers(self) -> tuple[str, ...]:
         return self._swapper_providers
