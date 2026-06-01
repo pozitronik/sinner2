@@ -17,6 +17,7 @@ from sinner2.pipeline.messages import (
     Message,
     PauseMsg,
     PlayMsg,
+    ReconfigureMsg,
     RerenderMsg,
     SeekMsg,
     SetChainMsg,
@@ -426,6 +427,62 @@ class RealtimeExecutor:
         I/O paths the buffer takes; no rebuild required."""
         self._buffer.set_cache_mode(mode)
 
+    def reconfigure_from(
+        self,
+        other: "RealtimeExecutor",
+        *,
+        restore_frame: FrameIndex,
+        play: bool,
+        timeout_s: float = 30.0,
+    ) -> tuple[ReaderPool, FrameBuffer] | None:
+        """Adopt the world (reader pool, buffer, timeline, chain, strategy,
+        playback mode) of an UNSTARTED executor into this RUNNING one, keeping
+        this executor's own dispatcher / playback / worker threads alive.
+
+        This is how a source/target change avoids leaking GPU memory: tearing
+        the executor down and building a new one would destroy all worker
+        threads and spawn fresh ones, and ORT's CUDA EP never frees the
+        per-thread state of the dead threads. Reusing the threads sidesteps that
+        completely.
+
+        ``other`` must be a freshly built, NEVER-STARTED executor (so its chain
+        is un-set-up and it owns no threads). The swap runs on this executor's
+        dispatcher thread (so the new chain's setup() — which calls ORT for
+        source-face detection — runs on a persistent thread, not a per-swap
+        one). Returns this executor's PREVIOUS (reader_pool, buffer) for the
+        caller to shut down off-thread, or None if the swap failed (chain setup
+        raised, the executor is stopped, or it timed out) — in which case the
+        old world stays live and ``other``'s resources should be discarded.
+        """
+        with self._state_lock:
+            if self._state is _State.STOPPED:
+                return None
+        done = threading.Event()
+        old_out: list[tuple[ReaderPool, FrameBuffer]] = []
+        error_out: list[str] = []
+        self._command_queue.put(
+            ReconfigureMsg(
+                reader_pool=other._reader_pool,
+                buffer=other._buffer,
+                timeline=other._timeline,
+                chain=other._chain,
+                strategy=other._strategy,
+                playback_mode=other._playback_mode,
+                restore_frame=restore_frame,
+                play=play,
+                done=done,
+                old_out=old_out,
+                error_out=error_out,
+            )
+        )
+        if not done.wait(timeout=timeout_s):
+            self.status.set("reconfigure timed out")
+            return None
+        if error_out:
+            self.status.set(f"reconfigure failed: {error_out[0]}")
+            return None
+        return old_out[0] if old_out else None
+
     def reads_per_second(self) -> float:
         """Latest read-throughput rate from the underlying ReaderPool.
         Exposed so the metrics overlay can sample without needing
@@ -482,6 +539,8 @@ class RealtimeExecutor:
                 self._handle_set_worker_count(n)
             case SetPlaybackModeMsg(mode=mode):
                 self._handle_set_playback_mode(mode)
+            case ReconfigureMsg():
+                self._handle_reconfigure(msg)
             case SetParamsMsg():
                 self.status.set(
                     "set_params is not implemented; rebuild processors and use set_chain"
@@ -616,6 +675,69 @@ class RealtimeExecutor:
                 if remaining <= 0 or self._stop_event.is_set():
                     return
                 self._inflight_cv.wait(timeout=remaining)
+
+    def _handle_reconfigure(self, msg: ReconfigureMsg) -> None:
+        """Swap reader pool / buffer / timeline / chain in place, on the
+        dispatcher thread, without disturbing the worker pool. See
+        reconfigure_from for why this avoids the per-thread CUDA leak."""
+        # 1) Set up the NEW chain HERE (dispatcher thread) so the source-face
+        #    detector's ORT call runs on a persistent thread, not a per-swap
+        #    one. On failure, abandon the swap and leave the old world live.
+        try:
+            for p in msg.chain:
+                if self._stop_event.is_set():
+                    msg.error_out.append("stopped during reconfigure")
+                    msg.done.set()
+                    return
+                p.setup()
+        except Exception as e:  # noqa: BLE001 — surfaced to the caller via error_out
+            msg.error_out.append(str(e))
+            msg.done.set()
+            return
+        # 2) Quiesce the OLD world: cancel queued reads and wait for any worker
+        #    mid-process to finish on the old chain/buffer before we swap +
+        #    release it (same hazard set_chain guards against).
+        self._drain_work_queue()
+        self._wait_for_inflight()
+        with self._state_lock:
+            old_chain = self._chain
+            old_reader_pool = self._reader_pool
+            old_buffer = self._buffer
+            self._reader_pool = msg.reader_pool
+            self._buffer = msg.buffer
+            self._timeline = msg.timeline
+            self._chain = msg.chain
+            self._strategy = msg.strategy
+            self._playback_mode = msg.playback_mode
+            # New world → reset progress trackers and the playback dup-guard so
+            # the restored frame is actually re-emitted to the display.
+            self._last_submitted = msg.restore_frame - 1
+            self._last_completed = msg.restore_frame - 1
+            self._last_shown_frame_index = None
+            self._timeline.seek(msg.restore_frame)
+            if msg.play:
+                self._timeline.start(from_frame=msg.restore_frame)
+                self._state = _State.PLAYING
+            else:
+                self._timeline.pause()
+                self._state = _State.PAUSED
+        # 3) Release the OLD chain's processors (drops refs; cached/shared models
+        #    like the inswapper persist in model_cache). Off the state lock.
+        for p in old_chain:
+            try:
+                p.release()
+            except Exception as e:  # noqa: BLE001
+                self.status.set(f"reconfigure release error: {e}")
+        # 4) Publish the new state and submit the restore frame so the display
+        #    reflects the new source/target immediately, then hand the old
+        #    reader pool + buffer back for off-thread shutdown.
+        self.is_playing.set(msg.play)
+        self.strategy_mode.set(self._strategy.current_mode())
+        self.metrics.set(self._buffer.metrics())
+        self._submit_specific_frame(msg.restore_frame)
+        self._playback_wake.set()
+        msg.old_out.append((old_reader_pool, old_buffer))
+        msg.done.set()
 
     def _handle_set_strategy(self, strategy: FrameSkipStrategy) -> None:
         self._drain_work_queue()

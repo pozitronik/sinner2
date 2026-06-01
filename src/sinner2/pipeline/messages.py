@@ -1,3 +1,4 @@
+import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -6,6 +7,9 @@ from sinner2.pipeline.playback_mode import PlaybackMode
 from sinner2.types import FrameIndex
 
 if TYPE_CHECKING:
+    from sinner2.io.reader_pool import ReaderPool
+    from sinner2.pipeline.buffer.buffer import FrameBuffer
+    from sinner2.pipeline.buffer.timeline import Timeline
     from sinner2.pipeline.processor import Processor
     from sinner2.pipeline.skip_strategy import FrameSkipStrategy
 
@@ -83,6 +87,41 @@ class RerenderMsg:
     pass
 
 
+@dataclass(frozen=True)
+class ReconfigureMsg:
+    """Re-point a RUNNING executor at a new reader pool / buffer / timeline /
+    chain WITHOUT tearing down the worker pool.
+
+    Source/target changes use this instead of stop()+new-executor: recreating
+    the worker threads leaks GPU memory because ORT's CUDA execution provider
+    keeps per-thread state for threads that have since died, so each rebuild
+    stacks ~N-workers' worth of CUDA memory. Keeping the same threads across the
+    swap avoids that entirely.
+
+    The new chain arrives UN-set-up; the handler calls setup() on the dispatcher
+    thread so the source-face detector's ORT call runs on a persistent thread,
+    not a freshly spawned one. Coordination is via the carried containers:
+      - ``done``: set when the swap completes (success or failure).
+      - ``old_out``: receives this executor's PREVIOUS (reader_pool, buffer) so
+        the caller can shut them down off the dispatcher thread.
+      - ``error_out``: receives a message string if the new chain's setup raised
+        (e.g. no face in the new source) — the swap is abandoned and the old
+        world stays live.
+    """
+
+    reader_pool: "ReaderPool"
+    buffer: "FrameBuffer"
+    timeline: "Timeline"
+    chain: tuple["Processor", ...]
+    strategy: "FrameSkipStrategy"
+    playback_mode: PlaybackMode
+    restore_frame: FrameIndex
+    play: bool
+    done: threading.Event
+    old_out: list
+    error_out: list
+
+
 type Message = (
     PlayMsg
     | PauseMsg
@@ -94,4 +133,5 @@ type Message = (
     | SetWorkerCountMsg
     | SetPlaybackModeMsg
     | RerenderMsg
+    | ReconfigureMsg
 )

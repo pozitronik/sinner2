@@ -1311,3 +1311,119 @@ class TestRerenderFromCurrent:
         # Current frame resubmitted so a paused display updates immediately.
         ex._reader_pool.read_async.assert_called_once_with(50)  # noqa: SLF001
         assert ex._last_submitted == 50  # noqa: SLF001  # set by _submit_specific_frame
+
+
+class TestReconfigureFrom:
+    """reconfigure_from adopts a freshly built (unstarted) executor's world into
+    a RUNNING executor WITHOUT recreating the worker threads. Churning the
+    workers on every source/target change leaked GPU memory (ORT's CUDA EP keeps
+    per-thread state for dead threads); keeping the same threads avoids it."""
+
+    def _build_unstarted(
+        self, tmp_path: Path, sub: str, chain, frames: int = 3
+    ):
+        store = DiskFrameStore(tmp_path / sub)
+        cache = MemoryFrameCache(max_bytes=10 * 1024 * 1024)
+        timeline = Timeline(fps=30.0)
+        we = BoundedWriteExecutor(max_workers=2, max_outstanding=8)
+        buffer = FrameBuffer(store, cache, timeline, we)
+        ex = RealtimeExecutor(
+            reader_pool=_pool_for(_MultiFrameReader(frames)),
+            buffer=buffer,
+            timeline=timeline,
+            chain=chain,
+            strategy=BestEffortStrategy(),
+        )
+        return ex, we
+
+    def test_keeps_worker_threads_and_swaps_chain(self, tmp_path, buffer_setup):
+        buffer, timeline, _ = buffer_setup
+        old_p = _CountingProcessor()
+        live = RealtimeExecutor(
+            reader_pool=_pool_for(_MultiFrameReader(3)),
+            buffer=buffer,
+            timeline=timeline,
+            chain=[old_p],
+            strategy=BestEffortStrategy(),
+            worker_count=2,
+        )
+        live.start()
+        assert live.wait_until_ready(timeout=2.0)
+        before = {h.thread.ident for h in live._workers}  # noqa: SLF001
+
+        new_p = _CountingProcessor()
+        unstarted, new_we = self._build_unstarted(tmp_path, "new", [new_p])
+        try:
+            old = live.reconfigure_from(unstarted, restore_frame=0, play=False)
+            assert old is not None
+            old_reader_pool, old_buffer = old
+            assert old_buffer is buffer  # the displaced world comes back
+            # New chain set up on the dispatcher thread; old chain released.
+            assert new_p.setup_calls == 1
+            assert _wait_until(lambda: old_p.release_calls == 1)
+            # The SAME worker threads survive the swap — this is the fix.
+            after = {h.thread.ident for h in live._workers}  # noqa: SLF001
+            assert after == before
+            # Frames now flow through the NEW chain.
+            assert _wait_until(lambda: new_p.process_calls >= 1)
+            old_reader_pool.shutdown()
+        finally:
+            live.stop()
+            new_we.shutdown(wait=True)
+
+    def test_failed_setup_keeps_old_world_live(self, tmp_path, buffer_setup):
+        buffer, timeline, _ = buffer_setup
+        old_p = _CountingProcessor()
+        live = RealtimeExecutor(
+            reader_pool=_pool_for(_MultiFrameReader(3)),
+            buffer=buffer,
+            timeline=timeline,
+            chain=[old_p],
+            strategy=BestEffortStrategy(),
+        )
+        live.start()
+        assert live.wait_until_ready(timeout=2.0)
+
+        class _BoomSetup:
+            name = "boom"
+
+            def setup(self) -> None:
+                raise RuntimeError("no face in source")
+
+            def process(self, frame):
+                return frame
+
+            def release(self) -> None:
+                pass
+
+        unstarted, new_we = self._build_unstarted(tmp_path, "boom", [_BoomSetup()])
+        try:
+            old = live.reconfigure_from(unstarted, restore_frame=0, play=False)
+            assert old is None  # swap abandoned
+            assert old_p.release_calls == 0  # old chain stays live
+        finally:
+            live.stop()
+            new_we.shutdown(wait=True)
+            unstarted._reader_pool.shutdown()  # noqa: SLF001
+
+    def test_returns_none_when_executor_stopped(self, tmp_path, buffer_setup):
+        buffer, timeline, _ = buffer_setup
+        live = RealtimeExecutor(
+            reader_pool=_pool_for(_MultiFrameReader(3)),
+            buffer=buffer,
+            timeline=timeline,
+            chain=[_CountingProcessor()],
+            strategy=BestEffortStrategy(),
+        )
+        live.start()
+        live.stop()
+        unstarted, new_we = self._build_unstarted(
+            tmp_path, "stopped", [_CountingProcessor()]
+        )
+        try:
+            assert live.reconfigure_from(
+                unstarted, restore_frame=0, play=False
+            ) is None
+        finally:
+            new_we.shutdown(wait=True)
+            unstarted._reader_pool.shutdown()  # noqa: SLF001

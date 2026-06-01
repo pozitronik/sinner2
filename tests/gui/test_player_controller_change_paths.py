@@ -1,11 +1,16 @@
 """Tests for PlayerController.change_source / change_target.
 
-The QOL flow: when only the source path changes, the session rebuilds under the
-hood but the current frame and play state are preserved; a target change resets
-to frame 0 but submits it for processing immediately. The rebuild is now
-ASYNCHRONOUS (the teardown can block on uninterruptible in-flight inference, so
-it runs off the GUI thread) — these tests drive the swap inline via the
-`_spawn_swap` injection point and stub the build/install so they exercise the
+The QOL flow: when only the source path changes, the running session is
+re-pointed at the new source under the hood but the current frame and play
+state are preserved; a target change resets to frame 0 but submits it for
+processing immediately.
+
+The rebuild is now done WITHOUT tearing down the executor — the live executor
+ADOPTS the freshly built (unstarted) executor's world via reconfigure_from, so
+its worker threads (and their ORT per-thread CUDA state) survive the swap. That
+churn was what leaked GPU memory cycle after cycle. The teardown still runs off
+the GUI thread (the reader probe is slow), so these tests drive the swap inline
+via the `_spawn_swap` injection point and stub the build to exercise the
 path-routing + state-restore logic without real sessions."""
 from __future__ import annotations
 
@@ -30,7 +35,12 @@ def widgets(qtbot):
 
 def _make_controller(widgets) -> PlayerController:
     display, transport = widgets
-    ctrl = PlayerController(frame_display=display, transport=transport)
+    ctrl = PlayerController(
+        frame_display=display,
+        transport=transport,
+        # Keep real QtMultimedia out of unit tests — adopt() touches audio.
+        audio_backend_factory=lambda name: MagicMock(),
+    )
     # Run the swap job inline so the async flow completes synchronously.
     ctrl._spawn_swap = lambda job: (job(), None)[1]  # noqa: SLF001
     return ctrl
@@ -39,34 +49,49 @@ def _make_controller(widgets) -> PlayerController:
 def _attach_fake_session(
     ctrl: PlayerController, *, playing: bool = False, current_frame: int = 0
 ) -> MagicMock:
+    """Attach a fake LIVE executor. reconfigure_from returns a displaced
+    (reader_pool, buffer) tuple so the swap job's off-thread shutdown runs."""
     ctrl._current_source_path = Path("/dummy/source.jpg")  # noqa: SLF001
     ctrl._current_target_path = Path("/dummy/target.mp4")  # noqa: SLF001
     fake_executor = MagicMock()
     fake_executor.is_playing.get.return_value = playing
     fake_executor.current_frame.get.return_value = current_frame
+    fake_executor.reconfigure_from.return_value = (MagicMock(), MagicMock())
     ctrl._executor = fake_executor  # noqa: SLF001
     return fake_executor
 
 
+def _make_bundle(unstarted: MagicMock) -> MagicMock:
+    """A session bundle around the UNSTARTED executor handed to reconfigure_from,
+    with realistic numeric fields so _adopt_swapped_bundle's audio/transport math
+    works."""
+    bundle = MagicMock()
+    bundle.executor = unstarted
+    bundle.source = MagicMock()
+    bundle.source_path = Path("/dummy/source.jpg")
+    bundle.target_path = Path("/dummy/target.mp4")
+    bundle.target_fps = 30.0
+    bundle.frame_count = 100
+    bundle.native_size = (1920, 1080)
+    bundle.cache_dir = Path("/tmp/cache")
+    bundle.write_executor = None
+    bundle.session_store = None
+    return bundle
+
+
 def _stub_build(ctrl: PlayerController, monkeypatch) -> tuple[list, MagicMock]:
     """Stub _build_session to record (source, target) and return a bundle around
-    a fresh fake executor; stub _install_session to just install it. Returns the
-    build-call log and the new fake executor (restore targets this one)."""
+    a fresh UNSTARTED executor. Returns the build-call log and that unstarted
+    executor (reconfigure_from must receive it)."""
     builds: list[tuple[Path, Path]] = []
-    new_executor = MagicMock()
+    unstarted = MagicMock(name="unstarted_executor")
 
     def fake_build(source_path, target_path):
         builds.append((source_path, target_path))
-        bundle = MagicMock()
-        bundle.executor = new_executor
-        return bundle
+        return _make_bundle(unstarted)
 
     monkeypatch.setattr(ctrl, "_build_session", fake_build)
-    monkeypatch.setattr(
-        ctrl, "_install_session",
-        lambda bundle: setattr(ctrl, "_executor", bundle.executor),
-    )
-    return builds, new_executor
+    return builds, unstarted
 
 
 class TestChangeSourceNoOp:
@@ -98,30 +123,35 @@ class TestChangeSourceWithSession:
         assert builds == [(Path("/new/source.png"), Path("/dummy/target.mp4"))]
         ctrl.shutdown()
 
-    def test_preserves_play_state_when_was_playing(self, widgets, monkeypatch):
+    def test_adopts_new_world_preserving_play_state(self, widgets, monkeypatch):
         ctrl = _make_controller(widgets)
-        _attach_fake_session(ctrl, playing=True, current_frame=42)
-        _, new_ex = _stub_build(ctrl, monkeypatch)
+        live = _attach_fake_session(ctrl, playing=True, current_frame=42)
+        _, unstarted = _stub_build(ctrl, monkeypatch)
         ctrl.change_source(Path("/new/source.png"))
-        new_ex.seek.assert_called_once_with(42)
-        new_ex.play.assert_called_once_with()
+        live.reconfigure_from.assert_called_once_with(
+            unstarted, restore_frame=42, play=True
+        )
+        live.stop.assert_not_called()  # the whole point: executor is NOT torn down
         ctrl.shutdown()
 
-    def test_paused_session_seeks_but_does_not_play(self, widgets, monkeypatch):
+    def test_paused_session_restores_frame_without_playing(self, widgets, monkeypatch):
         ctrl = _make_controller(widgets)
-        _attach_fake_session(ctrl, playing=False, current_frame=10)
-        _, new_ex = _stub_build(ctrl, monkeypatch)
+        live = _attach_fake_session(ctrl, playing=False, current_frame=10)
+        _, unstarted = _stub_build(ctrl, monkeypatch)
         ctrl.change_source(Path("/new/source.png"))
-        new_ex.seek.assert_called_once_with(10)
-        new_ex.play.assert_not_called()
+        live.reconfigure_from.assert_called_once_with(
+            unstarted, restore_frame=10, play=False
+        )
         ctrl.shutdown()
 
-    def test_seeks_to_zero_when_current_frame_is_zero(self, widgets, monkeypatch):
+    def test_restores_frame_zero_when_current_frame_is_zero(self, widgets, monkeypatch):
         ctrl = _make_controller(widgets)
-        _attach_fake_session(ctrl, playing=False, current_frame=0)
-        _, new_ex = _stub_build(ctrl, monkeypatch)
+        live = _attach_fake_session(ctrl, playing=False, current_frame=0)
+        _, unstarted = _stub_build(ctrl, monkeypatch)
         ctrl.change_source(Path("/new/source.png"))
-        new_ex.seek.assert_called_once_with(0)
+        live.reconfigure_from.assert_called_once_with(
+            unstarted, restore_frame=0, play=False
+        )
         ctrl.shutdown()
 
 
@@ -154,36 +184,38 @@ class TestChangeTargetWithSession:
         assert builds == [(Path("/dummy/source.jpg"), Path("/new/target.mp4"))]
         ctrl.shutdown()
 
-    def test_always_seeks_to_zero(self, widgets, monkeypatch):
+    def test_always_restores_frame_zero(self, widgets, monkeypatch):
         ctrl = _make_controller(widgets)
-        _attach_fake_session(ctrl, playing=False, current_frame=999)
-        _, new_ex = _stub_build(ctrl, monkeypatch)
+        live = _attach_fake_session(ctrl, playing=False, current_frame=999)
+        _, unstarted = _stub_build(ctrl, monkeypatch)
         ctrl.change_target(Path("/new/target.mp4"))
-        new_ex.seek.assert_called_once_with(0)
+        live.reconfigure_from.assert_called_once_with(
+            unstarted, restore_frame=0, play=False
+        )
         ctrl.shutdown()
 
     def test_preserves_play_state(self, widgets, monkeypatch):
         ctrl = _make_controller(widgets)
-        _attach_fake_session(ctrl, playing=True, current_frame=999)
-        _, new_ex = _stub_build(ctrl, monkeypatch)
+        live = _attach_fake_session(ctrl, playing=True, current_frame=999)
+        _, unstarted = _stub_build(ctrl, monkeypatch)
         ctrl.change_target(Path("/new/target.mp4"))
-        new_ex.seek.assert_called_once_with(0)
-        new_ex.play.assert_called_once_with()
+        live.reconfigure_from.assert_called_once_with(
+            unstarted, restore_frame=0, play=True
+        )
         ctrl.shutdown()
 
 
 class TestAudioRestoredOnSwap:
     """A source/target change must re-drive the audio backend to match the
-    restored position + play state. The restore block resumes the EXECUTOR
-    only; without _restore_audio_state the audio (paused in _detach_for_swap,
-    reloaded in _install_session) stays silent until the user manually toggles
-    play — the reported "sound disappears on source change" bug."""
+    restored position + play state. reconfigure resumes only the EXECUTOR;
+    without _restore_audio_state the audio (paused at swap start, reloaded in
+    _adopt_swapped_bundle) stays silent until the user manually toggles play —
+    the reported "sound disappears on source change" bug."""
 
     def _attach_audio(self, ctrl: PlayerController) -> MagicMock:
         audio = MagicMock()
         audio.is_loaded.return_value = True
         ctrl._audio_backend = audio  # noqa: SLF001
-        ctrl._target_fps = 30.0  # noqa: SLF001
         return audio
 
     def test_resumes_audio_with_seek_when_playing(self, widgets, monkeypatch):
@@ -229,20 +261,21 @@ class TestAsyncSwapBehavior:
         assert ctrl._swapping is False  # noqa: SLF001
         ctrl.shutdown()
 
-    def test_does_not_stop_executor_on_gui_thread(self, widgets, monkeypatch):
-        # The whole point: the slow stop() must run in the swap job, not on the
-        # calling (GUI) thread before the job is spawned.
+    def test_does_not_touch_executor_until_job_runs(self, widgets, monkeypatch):
+        # The whole point: the live executor must not be reconfigured (or
+        # stopped) on the calling (GUI) thread before the deferred job runs.
         ctrl = _make_controller(widgets)
-        old = _attach_fake_session(ctrl)
+        live = _attach_fake_session(ctrl)
         _stub_build(ctrl, monkeypatch)
         spawned: list = []
-        # Defer the job instead of running inline so we can observe ordering.
         ctrl._spawn_swap = lambda job: spawned.append(job) or None  # noqa: SLF001
         ctrl.change_source(Path("/new/source.png"))
-        old.stop.assert_not_called()  # not stopped before the job runs
+        live.reconfigure_from.assert_not_called()  # nothing before the job runs
+        live.stop.assert_not_called()
         assert len(spawned) == 1
-        spawned[0]()  # run the deferred job → now the old executor is stopped
-        old.stop.assert_called_once_with()
+        spawned[0]()  # run the deferred job → now the live executor adopts
+        live.reconfigure_from.assert_called_once()
+        live.stop.assert_not_called()  # never torn down
         ctrl.shutdown()
 
     def test_coalesces_rapid_swaps_latest_wins(self, widgets, monkeypatch):

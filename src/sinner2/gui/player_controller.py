@@ -509,99 +509,131 @@ class PlayerController(QObject):
     def _begin_swap(self, source_path: Path, target_path: Path) -> None:
         self._swapping = True
         self.sessionSwitching.emit(True)
-        # Detach the old session on the GUI thread (Qt cleanup: bridges, audio,
-        # signals) and hand its heavy resources to the worker for stop().
-        old = self._detach_for_swap()
-
-        def job() -> None:
-            try:
-                self._stop_old_resources(*old)
-                bundle = self._build_session(source_path, target_path)
-            except Exception as exc:  # noqa: BLE001 — surfaced on the GUI thread
-                self._sessionSwapReady.emit(_SwapOutcome(error=str(exc)))
-                return
-            self._sessionSwapReady.emit(_SwapOutcome(bundle=bundle))
-
-        self._swap_thread = self._spawn_swap(job)
-
-    def _detach_for_swap(
-        self,
-    ) -> tuple[
-        RealtimeExecutor | None, BoundedWriteExecutor | None, FrameStore | None
-    ]:
-        """GUI-thread half of teardown: unbind observables, pause audio, emit
-        the session-ending signals, and clear the ACTIVE-executor references —
-        but DON'T do the slow stop() here, and DON'T clear _current_*_path (they
-        track the logical selection so a change arriving mid-swap can coalesce).
-        Returns the old executor / write executor / store for the worker to stop
-        off the GUI thread."""
-        for bridge in self._bridges:
-            bridge.shutdown()
-        self._bridges = []
+        # Pause audio for the brief swap window; _on_session_swap_ready restores
+        # it (re-seek + play) once the new world is live. The EXECUTOR is NOT
+        # torn down — it keeps running the old frames until the in-place swap
+        # lands, so the display never blanks.
         if self._audio_backend is not None and self._audio_backend.is_loaded():
             self._audio_backend.pause()
-        executor, write_executor, store = (
-            self._executor, self._write_executor, self._session_store
+        self._swap_thread = self._spawn_swap(
+            lambda: self._run_swap_job(source_path, target_path)
         )
-        self._executor = None
-        self._write_executor = None
-        self._session_store = None
-        self._session_cache_dir = None
-        self._current_source = None
-        self.sessionScratchDirChanged.emit(None)
-        self.targetNativeSizeChanged.emit(None)
-        self.cacheStorageStatsChanged.emit()
-        return executor, write_executor, store
+
+    def _run_swap_job(self, source_path: Path, target_path: Path) -> None:
+        """Worker-thread half of an async source/target change. Builds the new
+        session world (the slow reader-probe runs here, off the GUI thread) as an
+        UNSTARTED executor, then hands its world to the LIVE executor to adopt —
+        keeping the live executor's worker threads (and their ORT per-thread CUDA
+        state) alive instead of churning them, which is what leaked GPU memory.
+        Shuts the displaced old resources down here too, then marshals GUI-ref
+        updates back to the main thread."""
+        executor = self._executor
+        if executor is None:
+            # No live executor to adopt into (shouldn't happen — change_* guard
+            # against it). Fall back to reporting nothing changed.
+            self._sessionSwapReady.emit(_SwapOutcome(error="no active session"))
+            return
+        try:
+            bundle = self._build_session(source_path, target_path)
+        except Exception as exc:  # noqa: BLE001 — surfaced on the GUI thread
+            self._sessionSwapReady.emit(_SwapOutcome(error=str(exc)))
+            return
+        # Capture the OLD write executor + store (controller-owned) to shut down
+        # after the swap; the old reader pool comes back from reconfigure_from.
+        old_write_executor = self._write_executor
+        old_store = self._session_store
+        old = executor.reconfigure_from(
+            bundle.executor,
+            restore_frame=self._restore_frame,
+            play=self._restore_play,
+        )
+        if old is None:
+            # Swap failed (e.g. no face in the new source) — the old world is
+            # still live. Discard the freshly built (unstarted) world.
+            self._discard_unstarted_bundle(bundle)
+            self._sessionSwapReady.emit(
+                _SwapOutcome(error="could not switch to the new source/target")
+            )
+            return
+        old_reader_pool, _old_buffer = old
+        # Shut the displaced resources down off the GUI thread. The old reader
+        # pool's threads + the write executor's threads don't touch ORT, so
+        # recreating them is harmless (unlike the worker threads we kept).
+        old_reader_pool.shutdown()
+        if old_write_executor is not None:
+            old_write_executor.shutdown(wait=True)
+        if old_store is not None:
+            old_store.close()
+        self._sessionSwapReady.emit(_SwapOutcome(bundle=bundle))
 
     @staticmethod
-    def _stop_old_resources(
-        executor: RealtimeExecutor | None,
-        write_executor: BoundedWriteExecutor | None,
-        store: FrameStore | None,
-    ) -> None:
-        """The slow part of teardown, safe to run off the GUI thread: stop the
-        executor (joins workers finishing their in-flight inference), drain the
-        write executor, and close the store. No Qt here."""
-        if executor is not None:
-            executor.stop()
-        if write_executor is not None:
-            write_executor.shutdown(wait=True)
-        if store is not None:
-            store.close()
+    def _discard_unstarted_bundle(bundle: _SessionBundle) -> None:
+        """Tear down the resources of a freshly built but NEVER-INSTALLED session
+        (the executor was never start()ed, so it owns no threads — only the
+        reader pool + write executor + store need releasing)."""
+        try:
+            bundle.executor._reader_pool.shutdown()  # noqa: SLF001
+        except Exception:
+            pass
+        try:
+            bundle.write_executor.shutdown(wait=False)
+        except Exception:
+            pass
+        try:
+            bundle.session_store.close()
+        except Exception:
+            pass
 
     def _on_session_swap_ready(self, outcome: _SwapOutcome) -> None:
-        """GUI thread: a background swap finished. Install the new session (or
-        report the error), restore position/play state, then run any swap that
-        was requested while this one was in flight (coalesced, latest wins)."""
+        """GUI thread: a background swap finished. The LIVE executor has already
+        adopted the new world (or kept the old one on failure); here we just
+        re-point the controller's GUI-facing references at the new resources,
+        reload + restore audio, and run any swap coalesced while this one ran."""
         self._swapping = False
         self._swap_thread = None
         if outcome.error is not None:
             self.errorOccurred.emit(f"session switch failed: {outcome.error}")
         elif outcome.bundle is not None:
-            self._install_session(outcome.bundle)
-            if self._executor is not None:
-                # Seek even to 0 — it forces the worker to process the frame so
-                # the display reflects the new source/target immediately.
-                self._executor.seek(self._restore_frame)
-                if self._restore_play:
-                    self._executor.play()
-            # Drive the (freshly (re)loaded) audio backend to match. The restore
-            # block above resumes only the EXECUTOR; without this the audio —
-            # paused in _detach_for_swap and reloaded in _install_session — stays
-            # silent after a source/target change until the user manually toggles
-            # play (the "sound disappears on source change" bug).
-            self._restore_audio_state()
+            self._adopt_swapped_bundle(outcome.bundle)
         self.sessionSwitching.emit(False)
         if self._swap_pending is not None:
             source_path, target_path = self._swap_pending
             self._swap_pending = None
             self._begin_swap(source_path, target_path)
 
+    def _adopt_swapped_bundle(self, bundle: _SessionBundle) -> None:
+        """Re-point controller state + widgets at the new world after the live
+        executor adopted it. The executor itself (and its observable bridges)
+        is unchanged — bridges stay wired to the same executor observables — so
+        this only refreshes the controller-owned references, the transport
+        range, the cache panel, the native-size readout, and audio."""
+        self._current_source = bundle.source
+        self._current_source_path = bundle.source_path
+        self._current_target_path = bundle.target_path
+        self._write_executor = bundle.write_executor
+        self._session_store = bundle.session_store
+        self._session_cache_dir = bundle.cache_dir
+        self._target_fps = bundle.target_fps
+        self._transport.set_frame_count(bundle.frame_count)
+        self.sessionScratchDirChanged.emit(bundle.cache_dir)
+        self.cacheStorageStatsChanged.emit()
+        self.targetNativeSizeChanged.emit(bundle.native_size)
+        # Reload audio for the (possibly new) target — a no-op in the backend
+        # when the path is unchanged (source-only swap) — then restore the
+        # position + play state so sound resumes with the picture.
+        backend = self.audio_backend()
+        if backend is not None:
+            try:
+                backend.load(bundle.target_path)
+            except Exception as exc:
+                self.errorOccurred.emit(f"audio load failed: {exc}")
+        self._restore_audio_state()
+
     def _restore_audio_state(self) -> None:
         """Re-point the audio backend at the restored position + play state
         after an async session swap.
 
-        _install_session has already reloaded the target into the backend
+        _adopt_swapped_bundle has already reloaded the target into the backend
         (a no-op when only the source changed and the target path is the same).
         QtMediaAudioBackend arms a pending seek/play when the media isn't ready
         yet, so issuing these immediately is safe — they apply the moment the
