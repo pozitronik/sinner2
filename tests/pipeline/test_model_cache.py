@@ -154,6 +154,73 @@ class TestSessionCache:
         release_onnx_session("never_loaded.onnx")  # must not raise
 
 
+class TestInsightfaceCache:
+    """The insightface swap model (inswapper / reswapper) is cached by
+    (path, providers) so a session rebuild — every source/target change —
+    reuses the resident model instead of allocating a fresh ORT session and
+    stacking VRAM. insightface.model_zoo.get_model has no cache of its own."""
+
+    @staticmethod
+    def _stub_get_model(monkeypatch, counter):
+        import sys
+        import types
+
+        def fake_get_model(path, *_a, **_k):
+            counter["n"] += 1
+            return MagicMock(name=f"model:{path}")
+
+        mz = types.ModuleType("insightface.model_zoo")
+        mz.get_model = fake_get_model  # type: ignore[attr-defined]
+        pkg = sys.modules.get("insightface") or types.ModuleType("insightface")
+        monkeypatch.setitem(sys.modules, "insightface", pkg)
+        monkeypatch.setitem(sys.modules, "insightface.model_zoo", mz)
+
+    def test_reuses_model_for_same_path_and_providers(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        from sinner2.pipeline.model_cache import get_insightface_swap_model
+
+        clear_session_cache()
+        counter = {"n": 0}
+        self._stub_get_model(monkeypatch, counter)
+
+        p = Path("/models/inswapper_128.onnx")
+        m1 = get_insightface_swap_model(p, ["CPUExecutionProvider"])
+        m2 = get_insightface_swap_model(p, ["CPUExecutionProvider"])
+        assert m1 is m2
+        assert counter["n"] == 1  # built once, reused on the second rebuild
+
+    def test_different_providers_build_distinct_models(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        from sinner2.pipeline.model_cache import get_insightface_swap_model
+
+        clear_session_cache()
+        counter = {"n": 0}
+        self._stub_get_model(monkeypatch, counter)
+
+        p = Path("/models/inswapper_128.onnx")
+        m1 = get_insightface_swap_model(p, ["CUDAExecutionProvider"])
+        m2 = get_insightface_swap_model(p, ["CPUExecutionProvider"])
+        assert m1 is not m2
+        assert counter["n"] == 2
+
+    def test_clear_session_cache_evicts_insightface_model(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        from sinner2.pipeline.model_cache import get_insightface_swap_model
+
+        clear_session_cache()
+        counter = {"n": 0}
+        self._stub_get_model(monkeypatch, counter)
+
+        p = Path("/models/inswapper_128.onnx")
+        get_insightface_swap_model(p, ["CPUExecutionProvider"])
+        clear_session_cache()  # the providers-change path drops it
+        get_insightface_swap_model(p, ["CPUExecutionProvider"])
+        assert counter["n"] == 2  # rebuilt after the clear
+
+
 class TestAvailableProviders:
     """available_onnx_providers reports what ORT built in. Providers are no
     longer global state — each processor receives them via its execution

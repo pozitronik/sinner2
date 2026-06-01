@@ -4,7 +4,7 @@ import sys
 import threading
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     import onnxruntime as ort
@@ -110,6 +110,15 @@ REQUIRED_MODELS: tuple[str, ...] = (
 _DEFAULT_PROVIDERS: tuple[str, ...] = ("CUDAExecutionProvider", "CPUExecutionProvider")
 
 _session_cache: dict[Path, "ort.InferenceSession"] = {}
+# Cached insightface swap models (inswapper / reswapper), keyed by
+# (path, providers). insightface.model_zoo.get_model builds a BRAND-NEW ORT
+# session on every call and never caches, so without this a source/target
+# change — which rebuilds the swapper — would allocate a fresh inswapper
+# session each time, its VRAM stacking up cycle after cycle. Caching here makes
+# the swap model a process-wide resident, the same way the buffalo_l detector
+# already is. Keyed by providers so a providers change (which calls
+# clear_session_cache) rebuilds it on the new EP list.
+_insightface_cache: dict[tuple[Path, tuple[str, ...]], Any] = {}
 _session_lock = threading.RLock()
 _cuda_preloaded = False
 # What ORT actually wired up at session-construction time. Differs from the
@@ -375,7 +384,37 @@ def release_onnx_session(name: str) -> None:
     gc.collect()
 
 
+def get_insightface_swap_model(
+    path: Path, providers: list[str] | None = None
+) -> Any:
+    """Return a cached insightface swap model (INSwapper-family) for ``path``.
+
+    insightface's ``model_zoo.get_model`` builds a fresh ORT session every call
+    and keeps no cache of its own, so the swapper's ``setup()`` would otherwise
+    allocate a new inswapper session on every session rebuild (each source /
+    target change), leaking VRAM cycle after cycle. We cache the wrapped model
+    by (path, providers) and reuse it — a rebuild then re-binds the resident
+    model instead of loading another copy. The model stays resident across
+    swapper teardown (FaceSwapper.release just drops its local ref); the
+    providers-change path clears this via ``clear_session_cache``.
+    """
+    from insightface.model_zoo import get_model
+
+    eps = tuple(providers) if providers else _DEFAULT_PROVIDERS
+    key = (path, eps)
+    with _session_lock:
+        cached = _insightface_cache.get(key)
+        if cached is not None:
+            return cached
+        model = get_model(str(path), providers=list(eps))
+        _insightface_cache[key] = model
+        return model
+
+
 def clear_session_cache() -> None:
-    """Drop all cached ONNX sessions. Test-only; releases GPU memory."""
+    """Drop all cached ONNX sessions + insightface swap models. Releases GPU
+    memory. Used by the providers-change path (so models rebuild on the new EP
+    list) and by tests."""
     with _session_lock:
         _session_cache.clear()
+        _insightface_cache.clear()

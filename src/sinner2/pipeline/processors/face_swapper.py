@@ -10,7 +10,11 @@ from sinner2.config.execution import DEFAULT_ONNX_PROVIDERS
 from sinner2.config.source import Source
 from sinner2.io.cv2_unicode import imread_unicode
 from sinner2.pipeline.face_analyser import FaceAnalyser
-from sinner2.pipeline.model_cache import get_model_path, record_actual_providers
+from sinner2.pipeline.model_cache import (
+    get_insightface_swap_model,
+    get_model_path,
+    record_actual_providers,
+)
 from sinner2.pipeline.processors.face_swapper_types import (
     RotationAngleSource,
     TargetSex,
@@ -135,14 +139,16 @@ def _load_inswapper(path: Path, providers: list[str]) -> Any:
     """Loader indirection so tests can stub the insightface call cheaply.
 
     `providers` is the swapper's ONNX execution-provider list (from its
-    OnnxExecution profile). After load, record what ORT actually wired up —
-    `get_available_providers()` advertises EPs whose plugin DLL loads, but the
-    EP can still fail at session construction (the TensorRT EP DLL loads even
-    when nvinfer is missing; ORT then silently falls back). The recorded
-    actual list drives the status-bar truth indicator."""
-    from insightface.model_zoo import get_model
-
-    model = get_model(str(path), providers=list(providers))
+    OnnxExecution profile). The model is fetched through model_cache so it is
+    loaded ONCE and reused across session rebuilds — insightface's get_model
+    builds a new ORT session every call, so loading it directly on each
+    source/target change stacked inswapper sessions up in VRAM. After load,
+    record what ORT actually wired up — `get_available_providers()` advertises
+    EPs whose plugin DLL loads, but the EP can still fail at session
+    construction (the TensorRT EP DLL loads even when nvinfer is missing; ORT
+    then silently falls back). The recorded actual list drives the status-bar
+    truth indicator."""
+    model = get_insightface_swap_model(path, list(providers))
     # insightface wraps the ORT session in a Model object; the session
     # attribute name is stable for inswapper.
     session = getattr(model, "session", None)
@@ -304,7 +310,10 @@ class FaceSwapper:
     def release(self) -> None:
         # Generic ONNX backends (ghost/simswap/uniface) own a cached session;
         # ask them to evict it so disabling/switching the swapper frees VRAM.
-        # The insightface backend (inswapper/reswapper) has no release().
+        # The insightface backend (inswapper/reswapper) stays resident in
+        # model_cache by design (loaded once, reused across session rebuilds so
+        # source/target changes don't stack inswapper sessions in VRAM); we just
+        # drop our local ref here.
         if isinstance(self._swapper, GenericOnnxSwapper):
             self._swapper.release()
         self._analyser = None
