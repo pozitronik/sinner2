@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable
+from typing import Any
 
 from sinner2.pipeline.processor import Processor
 from sinner2.types import Frame
@@ -36,9 +37,17 @@ class PerWorkerProcessor:
     # concurrently without a lock.
     thread_safe = True
 
-    def __init__(self, factory: Callable[[], Processor], name: str) -> None:
+    def __init__(
+        self, factory: Callable[[], Processor], name: str, params: Any = None
+    ) -> None:
         self.name = name
         self._factory = factory
+        # The wrapped processor's params (a Pydantic model), exposed under the
+        # SAME attribute name the realtime cache key looks for (_cache_key reads
+        # p._params.model_dump_json()). Without this, the enhancer/upscaler — the
+        # only processors that run wrapped — contribute nothing to the cache key,
+        # so changing their settings serves stale cached frames.
+        self._params = params
         self._local = threading.local()
         # Every instance ever built, so release() can tear them all down.
         # Guarded because workers append from their own threads.

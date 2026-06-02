@@ -829,6 +829,9 @@ class PlayerController(QObject):
             chain.append(PerWorkerProcessor(
                 factory=lambda p=params, d=device: FaceEnhancer(params=p, device=d),
                 name=FaceEnhancer.name,
+                # Surface the params so they're part of the frame cache key — a
+                # change must invalidate cached frames, not serve stale ones.
+                params=params,
             ))
         if self._upscaler_enabled:
             # Whole-frame super-resolution, last in the chain. Torch model →
@@ -838,6 +841,7 @@ class PlayerController(QObject):
             chain.append(PerWorkerProcessor(
                 factory=lambda p=up_params, d=up_device: Upscaler(params=p, device=d),
                 name=Upscaler.name,
+                params=up_params,
             ))
         return chain
 
