@@ -833,11 +833,28 @@ class RealtimeExecutor:
                 self.strategy_mode.set(mode)
                 return
             frame_index = decision.next_frame
-            if frame_index >= self._reader_pool.frame_count:
+            last_frame = self._reader_pool.frame_count - 1
+            # End-of-playback is when the DISPLAY (wall-clock playhead) has
+            # reached the last frame AND that frame is actually rendered — NOT
+            # when submission runs off the end. A faster-than-target pipeline
+            # submits the whole clip ahead of the playhead; keying the end on
+            # the submission index froze playback partway through. The playhead
+            # is clamped to last_frame (Timeline.set_max_frame), so it settles
+            # there and this fires once the tail frame completes.
+            if (
+                self._timeline.current_frame() >= last_frame
+                and self._last_completed >= last_frame
+            ):
                 self._timeline.pause()
                 self._state = _State.PAUSED
                 self.is_playing.set(False)
                 self.status.set("end of target")
+                self.strategy_mode.set(mode)
+                return
+            if frame_index > last_frame:
+                # decide wants a frame past the end (everything up to last_frame
+                # is already submitted). Nothing new to do this tick — idle and
+                # let the playhead / workers advance toward the end condition.
                 self.strategy_mode.set(mode)
                 return
 

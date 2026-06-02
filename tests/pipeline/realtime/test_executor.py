@@ -16,7 +16,7 @@ from sinner2.io.reader_pool import ReaderPool
 from sinner2.pipeline.buffer.timeline import Timeline
 from sinner2.pipeline.playback_mode import PlaybackMode
 from sinner2.pipeline.realtime.executor import RealtimeExecutor
-from sinner2.pipeline.skip_strategy import BestEffortStrategy
+from sinner2.pipeline.skip_strategy import BestEffortStrategy, SyncedStrategy
 from sinner2.types import Frame
 
 
@@ -529,6 +529,32 @@ class TestRealtimeExecutorPlayback:
             ex.play()
             assert _wait_until(lambda: ex.status.get() == "end of target", timeout=2.0)
             assert ex.is_playing.get() is False
+        finally:
+            ex.stop()
+
+    def test_fast_pipeline_waits_for_playhead_before_ending(self, buffer_setup):
+        # A pipeline faster than the target fps pre-renders ALL frames long
+        # before the wall-clock playhead reaches the end. It must NOT pause
+        # "end of target" while the display is still far from the last frame —
+        # otherwise playback freezes partway through (the premature-end bug).
+        buffer, _timeline, _ = buffer_setup
+        ex = RealtimeExecutor(
+            reader_pool=_pool_for(_MultiFrameReader(10, fps=2.0)),
+            buffer=buffer,
+            timeline=Timeline(fps=2.0),  # playhead crawls: frame 9 ~= 4.5s away
+            chain=[],                    # instant processing → renders all 10 fast
+            strategy=SyncedStrategy(),
+        )
+        try:
+            ex.start()
+            ex.play()
+            # All frames complete almost immediately...
+            assert _wait_until(lambda: ex.last_completed_frame() >= 9, timeout=2.0)
+            # ...but the slow playhead is nowhere near the end. Give the
+            # dispatcher ample time to (wrongly) hit the end check: it must NOT
+            # pause while the display is still far from the last frame.
+            assert not _wait_until(lambda: not ex.is_playing.get(), timeout=0.5)
+            assert ex.status.get() != "end of target"
         finally:
             ex.stop()
 
