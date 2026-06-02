@@ -736,3 +736,41 @@ class TestSortAndFilterUi:
         )
         view._sort_combo.setCurrentIndex(size_index)  # noqa: SLF001
         assert current_order() == [z, a, m]
+
+
+class TestSwitchLibraryCancelsScans:
+    """Switching the library (set_roots / set_paths) MUST cancel an in-flight
+    folder scan — bumping the cancel epoch so the old scan's late batches are
+    discarded instead of repopulating the freshly-cleared grid (the same guard
+    clear() already applies)."""
+
+    def _busy_folder(self, tmp_path):
+        folder = tmp_path / "lib"
+        folder.mkdir()
+        for i in range(50):
+            (folder / f"f{i:03d}.png").write_bytes(b"x")
+        return folder
+
+    def test_set_roots_cancels_in_flight_scan(self, qtbot, generator, tmp_path):
+        view = QLibraryView(generator)
+        qtbot.addWidget(view)
+        try:
+            view.ingest_files_and_folders([self._busy_folder(tmp_path)])
+            assert view._scan_jobs, "scan didn't start"  # noqa: SLF001
+            before = view._scan_cancel_epoch  # noqa: SLF001
+            view.set_roots([])  # switch library
+            assert view._scan_cancel_epoch > before  # noqa: SLF001  stale batches discarded
+        finally:
+            view.shutdown()
+
+    def test_set_paths_cancels_in_flight_scan(self, qtbot, generator, tmp_path):
+        view = QLibraryView(generator)
+        qtbot.addWidget(view)
+        try:
+            view.ingest_files_and_folders([self._busy_folder(tmp_path)])
+            assert view._scan_jobs, "scan didn't start"  # noqa: SLF001
+            before = view._scan_cancel_epoch  # noqa: SLF001
+            view.set_paths([])
+            assert view._scan_cancel_epoch > before  # noqa: SLF001
+        finally:
+            view.shutdown()

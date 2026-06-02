@@ -406,6 +406,10 @@ class QLibraryView(QWidget):
         """Replace the entire library with the given paths (silent —
         does NOT emit pathsChanged, used by restore-from-settings).
         Does NOT touch roots — see set_roots for that."""
+        # Cancel any in-flight folder scan FIRST (bump the epoch) so its late
+        # batches don't repopulate the grid we're about to replace — same guard
+        # clear() applies.
+        self._cancel_active_scans()
         self._model.clear_paths()
         accepted = [p for p in paths if self._accept(p)]
         self._model.add_paths(accepted)
@@ -416,6 +420,12 @@ class QLibraryView(QWidget):
         re-expanded — files added to the grid directly, folders scanned
         in the background. Does NOT emit rootsChanged or pathsChanged
         (restore mustn't round-trip back into persist)."""
+        # Cancel any in-flight scan FIRST (bump the epoch) so a prior scan's late
+        # batches don't survive into the new library — and so the new scan
+        # started below carries the bumped epoch (without this they share an
+        # epoch and the old batches pass the staleness check and reinsert the
+        # previous folder's files). Mirrors clear().
+        self._cancel_active_scans()
         self._roots = []
         self._model.clear_paths()
         immediate_files: list[Path] = []
