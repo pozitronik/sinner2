@@ -592,6 +592,11 @@ class PlayerController(QObject):
         self._swap_thread = None
         if outcome.error is not None:
             self.errorOccurred.emit(f"session switch failed: {outcome.error}")
+            # The old session is still live (the failed swap left it untouched)
+            # and, if it was playing, still producing frames — but _begin_swap
+            # paused audio. Re-sync audio to it so the video doesn't play on
+            # silently (A/V desync) until the user manually toggles play.
+            self._restore_audio_to_live_session()
         elif outcome.bundle is not None:
             self._adopt_swapped_bundle(outcome.bundle)
         self.sessionSwitching.emit(False)
@@ -1065,6 +1070,13 @@ class PlayerController(QObject):
         if backend is None or self._current_target_path is None:
             return
         backend.load(self._current_target_path)
+        self._restore_audio_to_live_session()
+
+    def _restore_audio_to_live_session(self) -> None:
+        """Re-sync the audio backend to the currently-live executor's play/seek
+        state (no reload). Used when audio was paused for an operation but the
+        old session stays live — e.g. a swap that failed — so the backend
+        doesn't sit silent against still-advancing video."""
         if self._executor is not None:
             self._restore_frame = max(0, self._executor.current_frame.get())
             self._restore_play = self._executor.is_playing.get()
