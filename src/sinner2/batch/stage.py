@@ -29,6 +29,7 @@ stage's model is resident while it runs.
 """
 from __future__ import annotations
 
+import logging
 import queue
 import threading
 import time
@@ -45,6 +46,8 @@ from sinner2.io.target_reader import TargetReader
 from sinner2.pipeline.image_writer import ImageWriter
 from sinner2.pipeline.processor import Processor
 from sinner2.types import Frame, FrameIndex
+
+_log = logging.getLogger(__name__)
 
 
 def frame_ok(path: Path) -> bool:
@@ -69,6 +72,9 @@ class StageResult:
     completed_frames: int  # contiguous valid frames from index 0
     missing: list[int] = field(default_factory=list)  # populated on FAILED
     total: int = 0  # effective frame count (may shrink from EOF tolerance)
+    # First per-frame exception (type + message), carried so the driver can
+    # tell the user WHY the stage failed instead of just "frames missing".
+    error: str | None = None
 
 
 class StageInput(Protocol):
@@ -178,6 +184,16 @@ def run_stage(
         if on_progress is not None:
             on_progress(done)
 
+    errors: list[str] = []
+
+    def record_error(exc: BaseException) -> None:
+        # The output gap is caught by the integrity pass, but the *cause* would
+        # otherwise vanish. Log it (with the traceback) and keep the first one
+        # to surface on the result.
+        _log.warning("stage frame processing error: %s", exc, exc_info=exc)
+        if not errors:
+            errors.append(f"{type(exc).__name__}: {exc}")
+
     preview_last = 0.0
 
     def maybe_preview(frame: Frame | None) -> None:
@@ -196,7 +212,7 @@ def run_stage(
         status, eof_at = _feed(
             pending, stage_input, pool, output_dir, ext, writer,
             workers, pause_event, cancel_event, bump, eof_on_none,
-            maybe_preview,
+            maybe_preview, record_error,
         )
         if status in (StageStatus.PAUSED, StageStatus.CANCELLED):
             return StageResult(status, contiguous(total), total=total)
@@ -212,14 +228,15 @@ def run_stage(
             status, _ = _feed(
                 remaining, stage_input, pool, output_dir, ext, writer,
                 workers, pause_event, cancel_event, bump, False,
-                maybe_preview,
+                maybe_preview, record_error,
             )
             if status is StageStatus.CANCELLED:
                 return StageResult(status, contiguous(total), total=total)
             remaining = missing(total)
         if remaining:
             return StageResult(
-                StageStatus.FAILED, contiguous(total), remaining, total=total
+                StageStatus.FAILED, contiguous(total), remaining, total=total,
+                error=errors[0] if errors else None,
             )
         return StageResult(StageStatus.COMPLETED, total, total=total)
     finally:
@@ -296,6 +313,7 @@ def _feed(
     bump: Callable[[], None],
     eof_on_none: bool,
     maybe_preview: Callable[[Frame | None], None],
+    on_error: Callable[[BaseException], None],
 ) -> tuple[StageStatus, int | None]:
     """Submit ``indices`` through the processor pool. Reads happen here on a
     single thread (sequential decode); workers only process + write. Returns
@@ -327,9 +345,9 @@ def _feed(
                 executor.submit(_process_write, pool, frame, out_path, writer)
             )
             if len(inflight) >= cap:
-                _drain_one(inflight, bump, maybe_preview)
+                _drain_one(inflight, bump, maybe_preview, on_error)
         while inflight:
-            _drain_one(inflight, bump, maybe_preview)
+            _drain_one(inflight, bump, maybe_preview, on_error)
     return (interrupted or StageStatus.COMPLETED), eof_at
 
 
@@ -337,15 +355,21 @@ def _drain_one(
     inflight: list[Future],
     bump: Callable[[], None],
     maybe_preview: Callable[[Frame | None], None],
+    on_error: Callable[[BaseException], None],
 ) -> None:
     done, _pending = wait(inflight, return_when="FIRST_COMPLETED")
     for fut in done:
         inflight.remove(fut)
-        # Per-frame errors are swallowed: the missing output is caught by the
-        # integrity pass, which reprocesses then fails loudly if persistent.
-        if fut.exception() is None:
+        # Per-frame errors don't stop the stage: the missing output is caught by
+        # the integrity pass, which reprocesses then fails loudly if persistent.
+        # But the cause must not vanish — on_error logs it and retains the first
+        # one so a persistent failure surfaces WHY, not just "frames missing".
+        exc = fut.exception()
+        if exc is None:
             bump()
             maybe_preview(fut.result())
+        else:
+            on_error(exc)
 
 
 def _process_write(

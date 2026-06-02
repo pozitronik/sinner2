@@ -269,7 +269,7 @@ class BatchDriver:
                     if result.status is StageStatus.FAILED:
                         task.status = BatchTaskStatus.FAILED
                         task.error_message = self._stage_failed_message(
-                            name, result.missing
+                            name, result.missing, result.error
                         )
                         task.last_completed_frame = result.completed_frames - 1
                         return task.status
@@ -450,12 +450,15 @@ class BatchDriver:
         return emit
 
     @staticmethod
-    def _stage_failed_message(stage_name: str, missing: list[int]) -> str:
+    def _stage_failed_message(
+        stage_name: str, missing: list[int], error: str | None = None
+    ) -> str:
         preview = ", ".join(str(i) for i in missing[:8])
         more = "" if len(missing) <= 8 else f", +{len(missing) - 8} more"
+        cause = f" First error: {error}." if error else ""
         return (
             f"stage '{stage_name}': {len(missing)} frame(s) missing or empty "
-            f"({preview}{more}); refusing to encode a truncated video. "
+            f"({preview}{more}); refusing to encode a truncated video.{cause} "
             "Re-run to retry — cached frames are kept."
         )
 

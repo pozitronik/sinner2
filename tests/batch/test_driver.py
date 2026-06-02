@@ -459,6 +459,9 @@ class TestStageFailure:
         status = driver.run(task)
         assert status is BatchTaskStatus.FAILED
         assert "missing or empty" in (task.error_message or "")
+        # The underlying cause is surfaced, not just the symptom — so the user
+        # sees "RuntimeError: boom ..." rather than a bare frame-count failure.
+        assert "boom on target frame" in (task.error_message or "")
         assert not task.output_path.exists()  # no truncated output
         s0 = _stage_dir(driver, task, 0, "faceswapper")
         assert len(list(s0.glob("*.jpg"))) == 3  # good frames kept

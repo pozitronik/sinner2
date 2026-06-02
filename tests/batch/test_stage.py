@@ -201,6 +201,29 @@ class TestRunStage:
         assert res.status is StageStatus.FAILED
         assert 2 in res.missing
 
+    def test_processor_error_surfaces_cause_in_result(self, tmp_path, writer):
+        # A deterministic processor failure must not be reported as a bland
+        # "frame missing" — the first exception's type+message is carried on
+        # the result so the driver can tell the user WHY it failed.
+        out = tmp_path / "stage0"
+        res = _run(out, _StubInput(4), _FailAt(2), writer, workers=1)
+        assert res.status is StageStatus.FAILED
+        assert res.error is not None
+        assert "RuntimeError" in res.error
+        assert "boom" in res.error
+
+    def test_processor_error_is_logged(self, tmp_path, writer, caplog):
+        # The swallowed per-frame exception must leave a trace in the log
+        # (with the traceback) — otherwise a transient processor bug is
+        # invisible once it's masked by a successful reprocess pass.
+        import logging
+
+        out = tmp_path / "stage0"
+        with caplog.at_level(logging.WARNING, logger="sinner2.batch.stage"):
+            _run(out, _StubInput(4), _FailAt(2), writer, workers=1)
+        assert any("boom" in r.getMessage() or (r.exc_info and "boom" in str(r.exc_info[1]))
+                   for r in caplog.records)
+
     def test_pause_returns_paused_and_releases(self, tmp_path, writer):
         out = tmp_path / "stage0"
         pause = threading.Event()
