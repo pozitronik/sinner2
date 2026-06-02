@@ -211,6 +211,14 @@ class BatchDriver:
         try:
             total = reader.frame_count
             fps = reader.fps
+            # Prefer the real decoded length persisted from a prior run. The
+            # container's nb_frames over-counts for VFR sources; stage 0 corrects
+            # it to the true length at EOF (below), but on RESUME stage 0 is
+            # skipped, so without this stages 1+ look for frames that never
+            # existed and fail "frames missing". 0 < persisted <= container
+            # guards a stale or absent value (total_frames defaults to -1).
+            if 0 < task.total_frames <= total:
+                total = task.total_frames
             task.total_frames = total
             stage_count = len(stages)
 

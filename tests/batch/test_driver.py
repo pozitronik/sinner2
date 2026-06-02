@@ -611,6 +611,34 @@ class TestOverReportedFrameCount:
         assert status is BatchTaskStatus.FAILED
         assert "truncated" in (task.error_message or "")
 
+    def test_resume_uses_persisted_real_length_not_container(
+        self, driver, stub_stages, tmp_path, monkeypatch
+    ):
+        # A 2-stage AUTO task whose stage 0 already ran: the real decoded length
+        # (8) was persisted + stage 0 marked done. On resume the container still
+        # over-reports 10. Stage 0 is skipped (so its EOF correction does NOT
+        # re-run), so the driver MUST use the persisted real length — else stage
+        # 1 looks for 10 frames in an 8-frame dir and fails "frames missing".
+        import cv2
+
+        reader = _ShortReader(claimed=10, real=8)
+        monkeypatch.setattr(
+            BatchDriver,
+            "_build_reader",
+            staticmethod(lambda target, backend, scale=1.0: reader),
+        )
+        task = _make_task(tmp_path, image_target=False, enhancer_enabled=True)
+        task.cleanup_mode = BatchCleanupMode.AUTO
+        task.total_frames = 8     # persisted real length from the prior run
+        task.completed_stages = 1  # stage 0 already done
+        stage0 = driver._cache_root / task.id / "stage0-faceswapper@8x8"  # noqa: SLF001
+        stage0.mkdir(parents=True)
+        for i in range(8):
+            cv2.imwrite(str(stage0 / f"{i:08d}.jpg"), np.full((8, 8, 3), i, np.uint8))
+        status = driver.run(task)
+        assert status is BatchTaskStatus.COMPLETED, task.error_message
+        assert task.total_frames == 8
+
 
 class TestBuildStages:
     @staticmethod
