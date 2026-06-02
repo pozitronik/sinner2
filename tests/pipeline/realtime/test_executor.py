@@ -568,6 +568,47 @@ class TestRealtimeExecutorPlayback:
         finally:
             ex.stop()
 
+    def test_dispatcher_waits_for_setup_before_submitting(self, buffer_setup):
+        # While the chain is still loading models, the dispatcher must NOT
+        # pre-fill the work queue with opening frames the parked workers can't
+        # process yet (they'd go stale → slow-motion-then-snap at startup).
+        buffer, _timeline, _ = buffer_setup
+        setup_gate = threading.Event()
+
+        class _SlowSetup:
+            name = "slow"
+
+            def setup(self) -> None:
+                setup_gate.wait(timeout=5.0)
+
+            def process(self, frame):  # type: ignore[no-untyped-def]
+                return frame
+
+            def release(self) -> None:
+                pass
+
+        ex = RealtimeExecutor(
+            reader_pool=_pool_for(_MultiFrameReader(100, fps=100.0)),
+            buffer=buffer,
+            timeline=Timeline(fps=100.0),
+            chain=[_SlowSetup()],
+            strategy=SyncedStrategy(),
+        )
+        try:
+            ex.start()
+            ex.play()
+            # Setup is blocked → nothing should be submitted while it loads.
+            assert not _wait_until(
+                lambda: ex._last_submitted >= 0, timeout=0.3  # noqa: SLF001
+            )
+            setup_gate.set()  # let setup finish
+            assert _wait_until(
+                lambda: ex._last_submitted >= 0, timeout=3.0  # noqa: SLF001
+            )
+        finally:
+            setup_gate.set()
+            ex.stop()
+
     def test_ends_even_if_last_frame_read_fails(self, buffer_setup):
         # The final frame's read returns None (transient hiccup). Playback must
         # still reach "end of target" — not hang one frame short forever waiting

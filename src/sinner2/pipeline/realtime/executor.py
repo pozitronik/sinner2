@@ -532,7 +532,13 @@ class RealtimeExecutor:
 
             with self._state_lock:
                 should_submit = self._state is _State.PLAYING
-            if should_submit:
+            # Don't submit until the chain is set up. During model load the
+            # workers are parked on _setup_done_event, so submitting here just
+            # pre-fills the bounded work queue with opening frames that go stale
+            # before the first one can be processed — the user then sees the
+            # opening crawl past in slow-motion before the display snaps to
+            # wall-clock. Setup is typically the longest cold-start phase.
+            if should_submit and self._setup_done_event.is_set():
                 self._try_submit_next_frame()
 
     def _handle_message(self, msg: Message) -> None:
