@@ -299,6 +299,13 @@ def build_session_options() -> "ort.SessionOptions":
 
 
 _session_cache: dict[Path, "ort.InferenceSession"] = {}
+# Per-path consumer refcount for _session_cache. A single cached session can be
+# SHARED by several consumers (notably the N per-worker CodeFormer backends, each
+# of which get_onnx_session's the same path). release_onnx_session must only
+# evict when the LAST consumer releases — otherwise one worker's release pulls
+# the session out from under the others and a later get rebuilds a duplicate
+# (VRAM leak). get bumps the count; release decrements and evicts at 0.
+_session_refcount: dict[Path, int] = {}
 # Cached insightface swap models (inswapper / reswapper), keyed by
 # (path, providers). insightface.model_zoo.get_model builds a BRAND-NEW ORT
 # session on every call and never caches, so without this a source/target
@@ -543,6 +550,7 @@ def get_onnx_session(
     with _session_lock:
         cached = _session_cache.get(path)
         if cached is not None:
+            _session_refcount[path] = _session_refcount.get(path, 0) + 1
             return cached
         session = ort.InferenceSession(
             str(path),
@@ -551,29 +559,40 @@ def get_onnx_session(
             provider_options=build_provider_options(names),
         )
         _session_cache[path] = session
+        _session_refcount[path] = 1
         return session
 
 
 def release_onnx_session(name: str) -> None:
-    """Evict the cached ONNX session for ``name`` and free its device memory.
+    """Drop one consumer's hold on the cached ONNX session for ``name``; evict +
+    free its device memory only when the LAST consumer releases.
 
     Called by a processor's release() when its feature is disabled so the model
     doesn't linger in VRAM (ORT frees a session's GPU arena when the last
-    reference drops). Re-enabling the feature reloads it from disk via
-    get_onnx_session. No-op if nothing is cached for that name. Safe because
-    every cached session is exclusive to one feature (codeformer / a specific
-    swap model / a crossface converter); the shared insightface model lives
-    elsewhere, not in this cache.
+    reference drops). A session can be shared (N per-worker CodeFormer backends),
+    so this is refcounted: each get_onnx_session bumped the count, each release
+    decrements it, and only the final release pops + collects. Without the
+    refcount, one per-worker release would evict the session the others still use
+    and a later get would rebuild a duplicate (VRAM leak). No-op if nothing is
+    cached for that name. Re-enabling reloads from disk via get_onnx_session.
     """
     import gc
 
     path = get_models_dir() / name
     with _session_lock:
+        if path not in _session_cache:
+            return
+        remaining = _session_refcount.get(path, 1) - 1
+        if remaining > 0:
+            _session_refcount[path] = remaining
+            return  # other consumers still hold it
+        _session_refcount.pop(path, None)
         session = _session_cache.pop(path, None)
     if session is None:
         return
-    # Drop the local ref and force a collection so ORT's session destructor
-    # runs now (freeing the CUDA arena) rather than at some later GC.
+    # Last consumer gone — drop the local ref and force a collection so ORT's
+    # session destructor runs now (freeing the CUDA arena) rather than at a
+    # later GC.
     del session
     gc.collect()
 
@@ -620,4 +639,5 @@ def clear_session_cache() -> None:
     list) and by tests."""
     with _session_lock:
         _session_cache.clear()
+        _session_refcount.clear()
         _insightface_cache.clear()

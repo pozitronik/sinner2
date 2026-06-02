@@ -155,6 +155,38 @@ class TestSessionCache:
         monkeypatch.setenv("SINNER2_MODELS_DIR", str(tmp_path))
         release_onnx_session("never_loaded.onnx")  # must not raise
 
+    def test_release_refcounts_shared_session(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        # N per-worker CodeFormer backends share ONE cached session. One backend
+        # releasing must NOT evict the session out from under the others — only
+        # the LAST release evicts.
+        import onnxruntime
+
+        from sinner2.pipeline.model_cache import release_onnx_session
+
+        clear_session_cache()
+        monkeypatch.setenv("SINNER2_MODELS_DIR", str(tmp_path))
+        (tmp_path / "m.onnx").write_bytes(b"x")
+        builds = {"n": 0}
+
+        def fake(*_a: object, **_k: object) -> MagicMock:
+            builds["n"] += 1
+            return MagicMock()
+
+        monkeypatch.setattr(onnxruntime, "InferenceSession", fake)
+
+        s1 = get_onnx_session("m.onnx")  # build, refcount 1
+        s2 = get_onnx_session("m.onnx")  # cached, refcount 2
+        assert s1 is s2 and builds["n"] == 1
+        release_onnx_session("m.onnx")   # refcount 1 — still in use, NOT evicted
+        s3 = get_onnx_session("m.onnx")  # still cached (not rebuilt)
+        assert s3 is s1 and builds["n"] == 1
+        release_onnx_session("m.onnx")   # refcount 1
+        release_onnx_session("m.onnx")   # refcount 0 → evict
+        get_onnx_session("m.onnx")       # rebuild
+        assert builds["n"] == 2
+
 
 class TestSessionTuning:
     """Every ONNX session is built with tuned CUDA provider options (cuDNN algo
