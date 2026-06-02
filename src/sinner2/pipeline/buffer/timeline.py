@@ -23,6 +23,19 @@ class Timeline:
         self._anchor_frame: FrameIndex = 0
         self._anchor_time_s: float = 0.0
         self._is_playing = False
+        # Upper bound for current_frame(): the last real frame index. Without
+        # it the wall-clock playhead runs unbounded past the end of the media
+        # (anchor + elapsed*fps keeps climbing), so every consumer — the skip
+        # strategy's end check, the buffer's current-frame read, the metrics —
+        # sees an index that can never be satisfied. None = no clamp (unknown
+        # length). Set by the executor from the reader's frame_count.
+        self._max_frame: FrameIndex | None = None
+
+    def set_max_frame(self, max_frame: FrameIndex | None) -> None:
+        """Clamp current_frame() to at most ``max_frame`` (the last frame
+        index). Called by the executor whenever the reader pool is (re)bound."""
+        with self._lock:
+            self._max_frame = max_frame
 
     @property
     def fps(self) -> float:
@@ -67,6 +80,10 @@ class Timeline:
 
     def _current_frame_locked(self) -> FrameIndex:
         if not self._is_playing:
-            return self._anchor_frame
-        elapsed = time.monotonic() - self._anchor_time_s
-        return self._anchor_frame + int(elapsed * self._fps)
+            frame = self._anchor_frame
+        else:
+            elapsed = time.monotonic() - self._anchor_time_s
+            frame = self._anchor_frame + int(elapsed * self._fps)
+        if self._max_frame is not None and frame > self._max_frame:
+            return self._max_frame
+        return frame

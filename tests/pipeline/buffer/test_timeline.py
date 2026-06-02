@@ -105,3 +105,33 @@ class TestTimelineElapsed:
         t.start()
         time.sleep(0.03)
         assert t.elapsed_seconds() > 0.02
+
+
+class TestTimelineMaxFrame:
+    def test_current_frame_clamped_to_max(self):
+        # Wall-clock would race well past frame 5, but the clamp holds it there.
+        t = Timeline(fps=1000)
+        t.set_max_frame(5)
+        t.start()
+        time.sleep(0.05)  # 0.05 * 1000 = 50 frames without the clamp
+        assert t.current_frame() == 5
+
+    def test_no_clamp_when_max_frame_unset(self):
+        t = Timeline(fps=1000)
+        t.start()
+        time.sleep(0.05)
+        assert t.current_frame() > 5
+
+    def test_clamp_can_be_cleared(self):
+        t = Timeline(fps=1000)
+        t.set_max_frame(5)
+        t.set_max_frame(None)
+        t.start()
+        time.sleep(0.05)
+        assert t.current_frame() > 5
+
+    def test_paused_anchor_also_clamped(self):
+        t = Timeline(fps=30)
+        t.set_max_frame(10)
+        t.seek(100)  # seek beyond the end (paused)
+        assert t.current_frame() == 10

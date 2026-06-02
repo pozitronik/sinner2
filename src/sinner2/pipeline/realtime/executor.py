@@ -127,6 +127,9 @@ class RealtimeExecutor:
         self._reader_pool = reader_pool
         self._buffer = buffer
         self._timeline = timeline
+        # Clamp the wall-clock playhead to the real last frame so it can't run
+        # off the end of the media (see Timeline.set_max_frame).
+        self._timeline.set_max_frame(max(0, reader_pool.frame_count - 1))
         self._strategy = strategy
         # Initial worker count; the live count is len(self._workers) and can
         # be changed via set_worker_count() at any point after start().
@@ -714,6 +717,7 @@ class RealtimeExecutor:
             self._reader_pool = msg.reader_pool
             self._buffer = msg.buffer
             self._timeline = msg.timeline
+            self._timeline.set_max_frame(max(0, msg.reader_pool.frame_count - 1))
             self._chain = msg.chain
             self._strategy = msg.strategy
             self._playback_mode = msg.playback_mode
