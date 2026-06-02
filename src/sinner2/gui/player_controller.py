@@ -1051,6 +1051,24 @@ class PlayerController(QObject):
         # Reconstruct so the new backend picks up the cached volume and is
         # ready for the next session's load() call.
         self.audio_backend()
+        # If a session is live, reload the current media into the fresh backend
+        # and restore seek+play from the executor. Without this, switching the
+        # backend mid-session leaves it with no media loaded, so play/pause/seek
+        # all no-op and audio stays silent for the rest of the session.
+        self._reload_audio_into_backend()
+
+    def _reload_audio_into_backend(self) -> None:
+        """Reload the current target into the active audio backend and restore
+        seek+play from the live executor. No-op when no backend, no target, or
+        no live session — used after the backend is (re)constructed mid-session."""
+        backend = self._audio_backend
+        if backend is None or self._current_target_path is None:
+            return
+        backend.load(self._current_target_path)
+        if self._executor is not None:
+            self._restore_frame = max(0, self._executor.current_frame.get())
+            self._restore_play = self._executor.is_playing.get()
+        self._restore_audio_state()
 
     def _on_audio_volume_changed(self, value: int) -> None:
         self._audio_volume = max(0, min(100, value))
