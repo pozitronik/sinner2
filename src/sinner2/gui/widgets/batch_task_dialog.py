@@ -548,11 +548,12 @@ class QBatchTaskDialog(QDialog):
     # ---- helpers ----
 
     def _selected_providers(self) -> list[str]:
-        """Checked ONNX providers in display order. Empty = use the platform
-        default (the swapper treats an empty list as 'no override')."""
-        return [
+        """Checked ONNX providers in display order. An empty selection is floored
+        to CPU — you can't run an ONNX model on no provider."""
+        selected = [
             name for name, cb in self._provider_checkboxes.items() if cb.isChecked()
         ]
+        return selected or ["CPUExecutionProvider"]
 
     def _resolve_default_output(self) -> Path:
         """The auto-derived output path for the current source / target /

@@ -289,13 +289,12 @@ class QProcessorControls(QWidget):
             else:
                 cb.setToolTip(
                     "ONNX execution provider. Multiple may be checked; ORT\n"
-                    "tries them in the order shown. Uncheck everything to use\n"
-                    "NO provider — ORT then falls back to its CPU last-resort\n"
-                    "(slow, no GPU). Applies immediately — rebuilds the session\n"
-                    "(chain reloads)."
+                    "tries them in the order shown. You can't run on no provider\n"
+                    "— unchecking everything forces CPU back on (the floor).\n"
+                    "Applies immediately — rebuilds the session (chain reloads)."
                 )
             cb.setChecked(prov in default_active)
-            cb.toggled.connect(self.configChanged)
+            cb.toggled.connect(self._on_provider_toggled)
             providers_layout.addWidget(cb)
             self._provider_checkboxes[prov] = cb
         swapper_form.addRow("ONNX providers", providers_box)
@@ -1094,10 +1093,30 @@ class QProcessorControls(QWidget):
     def video_backend(self) -> VideoBackend:
         return _VIDEO_BACKENDS[self._video_backend_combo.currentText()]
 
+    _CPU_PROVIDER = "CPUExecutionProvider"
+
+    def _force_cpu_if_no_provider(self) -> None:
+        """Refuse an empty provider selection by forcing the CPU provider on.
+        You can't run an ONNX model on zero providers — CPU is the floor — so
+        unchecking everything snaps CPU back. Signals are blocked so this doesn't
+        re-trigger the toggle handler."""
+        if any(cb.isChecked() for cb in self._provider_checkboxes.values()):
+            return
+        cpu = self._provider_checkboxes.get(self._CPU_PROVIDER)
+        if cpu is not None:
+            cpu.blockSignals(True)
+            cpu.setChecked(True)
+            cpu.blockSignals(False)
+
+    def _on_provider_toggled(self) -> None:
+        """A provider checkbox changed: keep at least CPU selected, then apply."""
+        self._force_cpu_if_no_provider()
+        self.configChanged.emit()
+
     def swapper_providers(self) -> list[str]:
-        """Realtime ONNX providers for the swapper + analyser, in the order
-        they appear in the checkbox column (the platform's default preference
-        order). Empty list = use the default (caller decides what that means)."""
+        """Realtime ONNX providers for the swapper + analyser, in the order they
+        appear in the checkbox column (the platform's default preference order).
+        Always non-empty — the UI forces CPU on when everything is unchecked."""
         return [
             name
             for name, cb in self._provider_checkboxes.items()
@@ -1363,6 +1382,9 @@ class QProcessorControls(QWidget):
                 wanted = set(swapper_providers)
                 for name, cb in self._provider_checkboxes.items():
                     cb.setChecked(name in wanted)
+                # A persisted empty (or all-unknown) selection would leave zero
+                # providers — force CPU on (you can't run on none).
+                self._force_cpu_if_no_provider()
         finally:
             for w in widgets:
                 w.blockSignals(False)

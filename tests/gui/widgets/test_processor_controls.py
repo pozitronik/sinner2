@@ -17,6 +17,34 @@ def widget(qtbot):
     return w
 
 
+class TestProviderFloor:
+    """You can't run on no provider — unchecking everything forces CPU back on
+    (the floor), so the swapper provider selection is never empty."""
+
+    def test_unchecking_all_forces_cpu(self, widget):
+        for cb in list(widget._provider_checkboxes.values()):  # noqa: SLF001
+            cb.setChecked(False)
+        cpu = widget._provider_checkboxes["CPUExecutionProvider"]  # noqa: SLF001
+        assert cpu.isChecked()
+        assert widget.swapper_providers() == ["CPUExecutionProvider"]
+
+    def test_cuda_only_selection_is_left_alone(self, widget):
+        # Only when EVERYTHING is unchecked does CPU get forced — a non-empty
+        # selection (e.g. CUDA only) is respected.
+        for name, cb in widget._provider_checkboxes.items():  # noqa: SLF001
+            cb.setChecked(name == "CUDAExecutionProvider")
+        if "CUDAExecutionProvider" in widget._provider_checkboxes:  # noqa: SLF001
+            assert widget.swapper_providers() == ["CUDAExecutionProvider"]
+
+    def test_restore_empty_selection_forces_cpu(self, widget):
+        # _NONE_RESTORE_KWARGS is a module global (defined below) — resolved at
+        # call time, so referencing it here is fine.
+        widget.apply_restored_settings(
+            **{**_NONE_RESTORE_KWARGS, "swapper_providers": []}
+        )
+        assert widget.swapper_providers() == ["CPUExecutionProvider"]
+
+
 class TestQProcessorControls:
     def test_default_swapper_params(self, widget):
         params = widget.swapper_params()

@@ -25,6 +25,17 @@ def _task(tmp_path: Path, **overrides) -> BatchTask:
     return BatchTask(**kwargs)
 
 
+class TestProviderFloor:
+    def test_empty_selection_floored_to_cpu(self, qtbot, tmp_path):
+        dlg = QBatchTaskDialog.from_task(_task(tmp_path))
+        qtbot.addWidget(dlg)
+        for cb in dlg._provider_checkboxes.values():  # noqa: SLF001
+            cb.setChecked(False)
+        # You can't run on no provider — the saved task floors to CPU.
+        assert dlg._selected_providers() == ["CPUExecutionProvider"]  # noqa: SLF001
+        assert dlg.to_task().swapper_execution.providers == ["CPUExecutionProvider"]
+
+
 class TestPrefill:
     def test_dialog_fields_match_task(self, qtbot, tmp_path):
         t = _task(
