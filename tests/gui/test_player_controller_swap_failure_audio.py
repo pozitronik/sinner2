@@ -9,8 +9,6 @@ to the still-live executor's play/seek state.
 """
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from sinner2.audio.audio_backend import AudioBackendName

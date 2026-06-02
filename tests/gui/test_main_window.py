@@ -539,7 +539,11 @@ class TestTensorRTBuildWait:
         monkeypatch.setattr(window._processors, "swapper_providers", lambda: requested)  # noqa: SLF001
         monkeypatch.setattr(model_cache, "get_actual_providers", lambda: actual)
         monkeypatch.setattr(model_cache, "tensorrt_engine_cached", lambda: cached)
-        monkeypatch.setattr(window._controller, "executor", lambda: (MagicMock() if has_executor else None))  # noqa: SLF001
+        monkeypatch.setattr(  # noqa: SLF001
+            window._controller,
+            "executor",
+            lambda: (MagicMock() if has_executor else None),
+        )
 
     def test_no_wait_when_trt_not_requested(self, window, monkeypatch):
         self._set(window, monkeypatch, requested=["CUDAExecutionProvider"],

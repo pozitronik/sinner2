@@ -570,9 +570,14 @@ class TestReleaseRaceContract:
     def test_process_survives_release_during_swap(
         self, models_dir, source_image, stub_insightface_app, stub_inswapper
     ):
-        src = MagicMock(name="src"); src.sex = "M"
-        f1 = MagicMock(name="f1"); f1.sex = "M"; f1.bbox = np.array([0, 0, 4, 4], float)
-        f2 = MagicMock(name="f2"); f2.sex = "M"; f2.bbox = np.array([4, 4, 8, 8], float)
+        src = MagicMock(name="src")
+        src.sex = "M"
+        f1 = MagicMock(name="f1")
+        f1.sex = "M"
+        f1.bbox = np.array([0, 0, 4, 4], float)
+        f2 = MagicMock(name="f2")
+        f2.sex = "M"
+        f2.bbox = np.array([4, 4, 8, 8], float)
         # setup() detects the source (1 face); process() detects 2 target faces.
         stub_insightface_app.get.side_effect = [[src], [f1, f2]]
         fs = FaceSwapper(
