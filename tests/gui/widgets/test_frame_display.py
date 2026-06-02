@@ -118,3 +118,38 @@ class TestRotation:
         widget.set_rotation(180)
         assert widget._pixmap.width() == 20  # noqa: SLF001
         assert widget._pixmap.height() == 50  # noqa: SLF001
+
+
+class TestRotatedPixmapCache:
+    """The rotated render source must be cached, not re-allocated on every
+    paint. paintEvent fires once per displayed frame (30-60 fps); a full-res
+    SmoothTransformation rotation each time is wasteful. _rotated_source() is
+    the cached seam both paintEvent and current_pixmap render through."""
+
+    def test_rotation_zero_returns_source_pixmap(self, widget):
+        widget._on_frame_ready(_bgr(h=50, w=20), 0)  # noqa: SLF001
+        assert widget._rotated_source() is widget._pixmap  # noqa: SLF001
+
+    def test_rotated_source_is_cached_across_calls(self, widget):
+        widget._on_frame_ready(_bgr(h=50, w=20), 0)  # noqa: SLF001
+        widget.set_rotation(90)
+        # Two consecutive calls with no source/rotation change must return the
+        # SAME underlying pixmap (same cacheKey) — recomputing would allocate
+        # a fresh rotated pixmap each time and yield different cacheKeys.
+        first = widget._rotated_source()  # noqa: SLF001
+        second = widget._rotated_source()  # noqa: SLF001
+        assert first.cacheKey() == second.cacheKey()
+
+    def test_rotated_source_recomputes_on_rotation_change(self, widget):
+        widget._on_frame_ready(_bgr(h=50, w=20), 0)  # noqa: SLF001
+        widget.set_rotation(90)
+        key_90 = widget._rotated_source().cacheKey()  # noqa: SLF001
+        widget.set_rotation(180)
+        assert widget._rotated_source().cacheKey() != key_90  # noqa: SLF001
+
+    def test_rotated_source_recomputes_on_new_frame(self, widget):
+        widget._on_frame_ready(_bgr(h=50, w=20), 0)  # noqa: SLF001
+        widget.set_rotation(90)
+        key_first = widget._rotated_source().cacheKey()  # noqa: SLF001
+        widget._on_frame_ready(_bgr(h=50, w=20, value=200), 1)  # noqa: SLF001
+        assert widget._rotated_source().cacheKey() != key_first  # noqa: SLF001

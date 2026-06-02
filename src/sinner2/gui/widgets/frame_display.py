@@ -33,6 +33,11 @@ class QFrameDisplayWidget(QWidget):
         super().__init__(parent)
         self._pixmap: QPixmap | None = None
         self._rotation: int = 0
+        # Cache of the rotated render source so paintEvent (once per displayed
+        # frame, 30-60 fps) doesn't re-allocate a full-res SmoothTransformation
+        # rotation every paint. Invalidated by key = (source cacheKey, rotation).
+        self._rotated_cache: QPixmap | None = None
+        self._rotated_cache_key: tuple[int, int] | None = None
         # A full-cover child overlay (face-detection debug) kept stretched to
         # the display's rect; None when no overlay is attached.
         self._face_overlay: QWidget | None = None
@@ -61,18 +66,28 @@ class QFrameDisplayWidget(QWidget):
         self.set_rotation(_VALID_ROTATIONS[idx])
         return self._rotation
 
-    def current_pixmap(self) -> QPixmap | None:
-        """The rotated pixmap as currently rendered, or None when no
-        frame has been shown yet. Used by save-current-frame to get
-        exactly what the user sees."""
+    def _rotated_source(self) -> QPixmap | None:
+        """The display pixmap with the active rotation baked in, cached so the
+        full-resolution rotation is computed once per (frame, rotation) rather
+        than on every paint. Returns the un-rotated pixmap directly at 0°."""
         if self._pixmap is None or self._pixmap.isNull():
             return None
         if self._rotation == 0:
             return self._pixmap
-        transform = QTransform().rotate(self._rotation)
-        return self._pixmap.transformed(
-            transform, Qt.TransformationMode.SmoothTransformation
-        )
+        key = (self._pixmap.cacheKey(), self._rotation)
+        if self._rotated_cache is None or self._rotated_cache_key != key:
+            self._rotated_cache = self._pixmap.transformed(
+                QTransform().rotate(self._rotation),
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            self._rotated_cache_key = key
+        return self._rotated_cache
+
+    def current_pixmap(self) -> QPixmap | None:
+        """The rotated pixmap as currently rendered, or None when no
+        frame has been shown yet. Used by save-current-frame to get
+        exactly what the user sees."""
+        return self._rotated_source()
 
     def show_frame(self, frame: Frame, index: FrameIndex = 0) -> None:
         """Schedule the frame for display. Safe to call from any thread."""
@@ -139,18 +154,12 @@ class QFrameDisplayWidget(QWidget):
     def paintEvent(self, event: QPaintEvent) -> None:
         painter = QPainter(self)
         painter.fillRect(self.rect(), Qt.GlobalColor.black)
-        if self._pixmap is None:
+        # Rotation swaps the apparent width/height for 90/270, so we measure
+        # AFTER applying it. _rotated_source() caches the rotated pixmap; the
+        # source stays intact for save-current-frame.
+        source = self._rotated_source()
+        if source is None:
             return
-        # Rotation swaps the apparent width/height for 90/270, so we
-        # measure AFTER applying it. transformed() returns a new
-        # pixmap; the source remains intact for save-current-frame.
-        if self._rotation == 0:
-            source = self._pixmap
-        else:
-            source = self._pixmap.transformed(
-                QTransform().rotate(self._rotation),
-                Qt.TransformationMode.SmoothTransformation,
-            )
         widget_w = self.width()
         widget_h = self.height()
         pix_w = source.width()
