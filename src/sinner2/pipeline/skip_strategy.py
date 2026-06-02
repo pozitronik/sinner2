@@ -118,14 +118,17 @@ class SyncedStrategy:
         metrics: BufferMetrics,
     ) -> SkipDecision:
         target = timeline.current_frame()
+        # Warm-up: nothing has completed yet (cold start — the first frame is
+        # still loading models / running its first inference, which can take
+        # seconds). Don't chase the wall-clock target: it climbs the whole time,
+        # so max(last_submitted+1, target) would fill the queue with sparse high
+        # indices and SKIP the opening of the clip. Submit sequentially from
+        # where we are so the opening frames are actually processed.
+        if last_completed < 0:
+            self._in_fallback = False
+            return SkipDecision(next_frame=last_submitted + 1)
         # Fall back to sequential when we're catastrophically behind.
-        # `last_completed >= 0` guards the warm-up case where nothing
-        # has completed yet — we shouldn't decide we're "behind" before
-        # the first frame even processes.
-        if (
-            last_completed >= 0
-            and target - last_completed > self._max_lag_frames
-        ):
+        if target - last_completed > self._max_lag_frames:
             self._in_fallback = True
             return SkipDecision(next_frame=last_submitted + 1)
         self._in_fallback = False

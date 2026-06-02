@@ -186,12 +186,12 @@ class TestSyncedStrategyAdaptiveFallback:
         )
         assert d.next_frame == 5
 
-    def test_warmup_does_not_trigger_fallback(self):
-        # last_completed = -1 means nothing has completed yet. We
-        # shouldn't claim we're "behind" before the first frame even
-        # processes — that would prevent the system from ever catching
-        # up from a cold start.
-        s = SyncedStrategy(max_lag_frames=0)  # aggressive — would trigger if -1 weren't guarded
+    def test_warmup_submits_sequentially_not_jump_to_target(self):
+        # last_completed = -1 means nothing has completed yet (cold start while
+        # the first frame loads). The wall-clock target has run far ahead (999),
+        # but chasing it would flood the queue with sparse high indices and skip
+        # the opening — so warm-up submits sequentially from where we are.
+        s = SyncedStrategy(max_lag_frames=0)
         timeline = MagicMock()
         timeline.current_frame.return_value = 999
         d = s.decide(
@@ -200,7 +200,16 @@ class TestSyncedStrategyAdaptiveFallback:
             timeline=timeline,
             metrics=_zero_metrics(),
         )
-        assert d.next_frame == 999
+        assert d.next_frame == 0  # sequential from the start, NOT a jump to 999
+
+    def test_warmup_does_not_enter_fallback_mode(self):
+        # Warm-up isn't "lagging" — it's just cold. Mode stays "synced".
+        s = SyncedStrategy(max_lag_frames=0)
+        timeline = MagicMock()
+        timeline.current_frame.return_value = 999
+        s.decide(last_submitted=-1, last_completed=-1, timeline=timeline,
+                 metrics=_zero_metrics())
+        assert s.current_mode() == "synced"
 
     def test_recovers_when_caught_up(self):
         # Once last_completed catches up to within threshold, behaviour
