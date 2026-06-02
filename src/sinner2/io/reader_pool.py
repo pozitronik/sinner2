@@ -58,6 +58,11 @@ _POLL_S = 0.5  # how long a reader thread waits for a request before re-checking
 # executor's processing_fps: time-windowed so a brief idle period
 # decays cleanly to 0 instead of holding a stale historical average.
 _READ_RATE_WINDOW_S = 3.0
+# When reads are too sparse for a windowed rate (e.g. a single slow read in
+# flight), report the rate implied by time-since-last-read so the overlay shows
+# a small positive value rather than 0 (which looks like a hang). Past this with
+# no read at all, fall through to 0.
+_READ_STALL_HOLD_S = 30.0
 
 # Sentinel pushed onto the request queue at shutdown to unblock the
 # reader-thread `queue.get`. A None future also works as the sentinel —
@@ -118,6 +123,10 @@ class ReaderPool:
         # strategy uses to tell an I/O-bound source (slow random reads) from a
         # compute-bound one (cheap reads, slow GPU).
         self._read_durations_ms: deque[tuple[float, float]] = deque()
+        # Most recent read timestamp (never trimmed) + last windowed rate, so a
+        # slow-but-alive reader reports a decaying estimate instead of 0.
+        self._last_read_time: float | None = None
+        self._last_read_rate = 0.0
 
         for i, reader in enumerate(readers):
             t = threading.Thread(
@@ -160,12 +169,21 @@ class ReaderPool:
             while self._read_times and self._read_times[0] < cutoff:
                 self._read_times.popleft()
             count = len(self._read_times)
-            if count < 2:
-                return 0.0
-            span = self._read_times[-1] - self._read_times[0]
-        if span <= 0:
+            last = self._last_read_time
+            if count >= 2:
+                span = self._read_times[-1] - self._read_times[0]
+                rate = (count - 1) / span if span > 0 else 0.0
+                self._last_read_rate = rate
+                return rate
+            # Sparse: report the rate implied by time-since-last-read, decaying
+            # toward 0, capped by the last windowed rate so it doesn't spike.
+            if last is not None and (now - last) <= _READ_STALL_HOLD_S:
+                elapsed = now - last
+                decayed = (1.0 / elapsed) if elapsed > 0 else self._last_read_rate
+                if self._last_read_rate > 0:
+                    return min(self._last_read_rate, decayed)
+                return decayed
             return 0.0
-        return (count - 1) / span
 
     def recent_read_latency_ms(self) -> float:
         """Median duration of recent successful reads (ms), over the same window
@@ -226,6 +244,7 @@ class ReaderPool:
                         with self._rate_lock:
                             self._read_times.append(now)
                             self._read_durations_ms.append((now, duration_ms))
+                            self._last_read_time = now
                 except Exception as exc:
                     future.set_exception(exc)
         finally:

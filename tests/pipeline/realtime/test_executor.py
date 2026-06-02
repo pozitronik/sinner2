@@ -1594,6 +1594,8 @@ class TestPlaybackFallbackNoBackwardStutter:
         ex._state = _State.PLAYING  # noqa: SLF001
         ex._fps_lock = threading.Lock()  # noqa: SLF001
         ex._completion_times = deque()  # noqa: SLF001
+        ex._last_completion_time = None  # noqa: SLF001
+        ex._last_fps = 0.0  # noqa: SLF001
         ex.current_frame = MagicMock()
         ex.metrics = MagicMock()
         ex.processing_fps = MagicMock()
@@ -1624,3 +1626,47 @@ class TestPlaybackFallbackNoBackwardStutter:
         shown, last = self._tick(last_shown=None, fallback_index=50)
         assert shown == [200]
         assert last == 50
+
+
+class TestProcessingFpsStallDecay:
+    """processing_fps reports a decaying estimate during slow-but-alive
+    progress instead of a hard 0, so a slow source isn't mistaken for a hang."""
+
+    def _refresh(self, *, completion_times, last_completion_time, last_fps):
+        from collections import deque
+        from unittest.mock import MagicMock
+
+        ex = object.__new__(RealtimeExecutor)
+        ex._fps_lock = threading.RLock()  # noqa: SLF001
+        ex._completion_times = deque(completion_times)  # noqa: SLF001
+        ex._last_completion_time = last_completion_time  # noqa: SLF001
+        ex._last_fps = last_fps  # noqa: SLF001
+        ex.processing_fps = MagicMock()
+        ex._refresh_fps()  # noqa: SLF001
+        (val,), _ = ex.processing_fps.set.call_args
+        return val
+
+    def test_decays_to_small_positive_during_slow_progress(self):
+        now = time.monotonic()
+        fps = self._refresh(completion_times=[], last_completion_time=now - 5.0,
+                            last_fps=10.0)
+        assert 0.1 < fps < 0.4  # ~0.2, not 0
+
+    def test_zero_after_long_stall(self):
+        now = time.monotonic()
+        fps = self._refresh(completion_times=[], last_completion_time=now - 60.0,
+                            last_fps=10.0)
+        assert fps == 0.0
+
+    def test_never_completed_is_zero(self):
+        fps = self._refresh(completion_times=[], last_completion_time=None,
+                            last_fps=0.0)
+        assert fps == 0.0
+
+    def test_windowed_rate_when_healthy(self):
+        now = time.monotonic()
+        fps = self._refresh(
+            completion_times=[now - 0.3, now - 0.2, now - 0.1, now],
+            last_completion_time=now, last_fps=0.0,
+        )
+        assert fps > 5.0

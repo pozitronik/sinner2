@@ -62,6 +62,11 @@ _UNLIMITED_PLAYBACK_TICK_S = 0.001
 # that can stay stale through pauses. 3s is short enough to update visibly
 # after the user changes a setting and long enough to be smooth at low fps.
 _FPS_WINDOW_S = 3.0
+# When completions are too sparse for a windowed rate, report the rate implied
+# by "time since the last completion" so a slow-but-progressing pipeline shows a
+# small positive fps instead of a hard 0 (indistinguishable from a hang). After
+# this long with no completion at all, fall through to 0 — genuinely stalled.
+_FPS_STALL_HOLD_S = 30.0
 # Time window for per-processor average-ms readout. Matches _FPS_WINDOW_S
 # so the metrics-overlay row and the rates next to it cover the same
 # wall-clock slice. Cap deque size so a fast no-op chain (1000+ fps)
@@ -216,6 +221,10 @@ class RealtimeExecutor:
         # (~30 Hz) instead of per-completion (which scales with worker
         # count and serialises the whole pool on the observable's lock).
         self._completion_times: deque[float] = deque()
+        # Most recent completion timestamp (never trimmed) + last windowed fps,
+        # so a slow-but-alive pipeline reports a decaying estimate rather than 0.
+        self._last_completion_time: float | None = None
+        self._last_fps = 0.0
         # Per-processor timing: append (timestamp, processor_name, ns)
         # per process() call inside _apply_chain. Readers (overlay) get
         # a time-windowed dict via processor_timings(). bounded deque
@@ -1036,7 +1045,9 @@ class RealtimeExecutor:
         and no observable publish in the worker hot path. The playback
         thread reads these timestamps and publishes processing_fps."""
         with self._fps_lock:
-            self._completion_times.append(time.monotonic())
+            now = time.monotonic()
+            self._completion_times.append(now)
+            self._last_completion_time = now
 
     def _refresh_fps(self) -> None:
         """Trim timestamps older than _FPS_WINDOW_S and publish processing_fps.
@@ -1053,10 +1064,20 @@ class RealtimeExecutor:
             while self._completion_times and self._completion_times[0] < cutoff:
                 self._completion_times.popleft()
             count = len(self._completion_times)
+            last = self._last_completion_time
             if count >= 2:
                 span = self._completion_times[-1] - self._completion_times[0]
                 if span > 0:
                     fps = (count - 1) / span
+                self._last_fps = fps
+            elif last is not None and (now - last) <= _FPS_STALL_HOLD_S:
+                # Sparse: report the rate implied by the time since the last
+                # completion, decaying toward 0 the longer it's been. Cap with
+                # the last windowed value so the instant after a completion
+                # doesn't spike to a huge 1/tiny-elapsed reading.
+                elapsed = now - last
+                decayed = (1.0 / elapsed) if elapsed > 0 else self._last_fps
+                fps = min(self._last_fps, decayed) if self._last_fps > 0 else decayed
         self.processing_fps.set(fps)
 
     # ---- Playback ----

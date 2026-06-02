@@ -201,6 +201,35 @@ class TestReadLatency:
             pool.shutdown()
 
 
+class TestReadsPerSecondStallDecay:
+    """reads_per_second reports a decaying estimate while a slow read is in
+    flight rather than a hard 0 (which is indistinguishable from a hang)."""
+
+    def test_decays_to_small_positive_during_slow_progress(self):
+        pool, _ = _make_pool(1)
+        try:
+            now = time.monotonic()
+            with pool._rate_lock:  # noqa: SLF001
+                pool._read_times.clear()  # noqa: SLF001
+                pool._last_read_time = now - 5.0  # noqa: SLF001
+                pool._last_read_rate = 10.0  # noqa: SLF001
+            assert 0.1 < pool.reads_per_second() < 0.4
+        finally:
+            pool.shutdown()
+
+    def test_zero_after_long_stall(self):
+        pool, _ = _make_pool(1)
+        try:
+            now = time.monotonic()
+            with pool._rate_lock:  # noqa: SLF001
+                pool._read_times.clear()  # noqa: SLF001
+                pool._last_read_time = now - 60.0  # noqa: SLF001
+                pool._last_read_rate = 10.0  # noqa: SLF001
+            assert pool.reads_per_second() == 0.0
+        finally:
+            pool.shutdown()
+
+
 class TestParallelism:
     def test_size_n_parallelises(self):
         # 4 readers each sleeping 50ms: 8 requests should complete in
@@ -315,23 +344,24 @@ class TestReadsPerSecond:
             pool.shutdown()
 
     def test_decays_to_zero_after_idle(self):
-        # Confirm the rolling-window semantics: pump reads, then
-        # wait > window, and the rate must drop back to 0. read_delay
-        # ensures distinct timestamps; sleep after exceeds the
-        # shrunken window.
+        # Pump reads, then wait past BOTH the rolling window and the stall-hold
+        # window — the rate must drop back to 0 (truly idle, not slow progress).
         from sinner2.io import reader_pool as rp_module
 
         original_window = rp_module._READ_RATE_WINDOW_S
+        original_hold = rp_module._READ_STALL_HOLD_S
         rp_module._READ_RATE_WINDOW_S = 0.3
+        rp_module._READ_STALL_HOLD_S = 0.3  # short so idle reaches 0 quickly
         try:
             pool, _ = _make_pool(1, read_delay=0.005)
             try:
                 for i in range(5):
                     pool.read_async(i).result(timeout=1.0)
                 assert pool.reads_per_second() > 0.0
-                time.sleep(0.4)  # exceed the test window
+                time.sleep(0.5)  # exceed the window AND the stall-hold
                 assert pool.reads_per_second() == 0.0
             finally:
                 pool.shutdown()
         finally:
             rp_module._READ_RATE_WINDOW_S = original_window
+            rp_module._READ_STALL_HOLD_S = original_hold
