@@ -1576,3 +1576,51 @@ class TestTransientWorkerErrorIsRecoverable:
             assert not ex._stop_event.is_set()  # noqa: SLF001
         finally:
             ex.stop()
+
+
+class TestPlaybackFallbackNoBackwardStutter:
+    """During forward playback the display fallback must not repaint a frame
+    OLDER than what's on screen — that's a visible backward stutter. Holds the
+    current frame until a frame >= the last shown one is available."""
+
+    def _tick(self, *, last_shown, fallback_index):
+        from collections import deque
+        from unittest.mock import MagicMock
+
+        from sinner2.pipeline.realtime.executor import _State
+
+        ex = object.__new__(RealtimeExecutor)
+        ex._state_lock = threading.RLock()  # noqa: SLF001
+        ex._state = _State.PLAYING  # noqa: SLF001
+        ex._fps_lock = threading.Lock()  # noqa: SLF001
+        ex._completion_times = deque()  # noqa: SLF001
+        ex.current_frame = MagicMock()
+        ex.metrics = MagicMock()
+        ex.processing_fps = MagicMock()
+        ex.status = MagicMock()
+        ex._last_shown_frame_index = last_shown  # noqa: SLF001
+        shown: list[int] = []
+        ex._on_frame = lambda f, i: shown.append(i)  # noqa: SLF001
+        buf = MagicMock()
+        buf.get_at_current_time.return_value = (200, None)  # miss at target 200
+        buf.latest_index_at_or_below.return_value = fallback_index
+        buf.get.return_value = np.zeros((2, 2, 3), dtype=np.uint8)
+        ex._buffer = buf  # noqa: SLF001
+        ex._do_playback_tick()  # noqa: SLF001
+        return shown, ex._last_shown_frame_index  # noqa: SLF001
+
+    def test_does_not_repaint_older_fallback_frame(self):
+        # Showed 100; only frame <= target is 95 (older) -> hold, don't stutter.
+        shown, last = self._tick(last_shown=100, fallback_index=95)
+        assert shown == []
+        assert last == 100
+
+    def test_repaints_newer_fallback_frame(self):
+        shown, last = self._tick(last_shown=100, fallback_index=105)
+        assert shown == [200]
+        assert last == 105
+
+    def test_first_paint_with_no_history(self):
+        shown, last = self._tick(last_shown=None, fallback_index=50)
+        assert shown == [200]
+        assert last == 50

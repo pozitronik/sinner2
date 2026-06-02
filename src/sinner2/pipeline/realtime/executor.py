@@ -1096,7 +1096,16 @@ class RealtimeExecutor:
             # at the paused frame — the worker's resubmit (from _handle_pause)
             # will produce that exact frame and the display converges.
             fallback_index = self._buffer.latest_index_at_or_below(index)
-            if fallback_index is not None:
+            # Don't repaint an OLDER frame than what's already on screen during
+            # forward playback — that's a visible backward stutter (the newest
+            # frame ≤ target can be lower than the last shown when skipped
+            # frames complete out of order or an old one is evicted). Hold the
+            # current frame instead. A seek resets _last_shown_frame_index to
+            # None, so seeks (incl. backward) still repaint freely.
+            if fallback_index is not None and (
+                self._last_shown_frame_index is None
+                or fallback_index >= self._last_shown_frame_index
+            ):
                 frame = self._buffer.get(fallback_index)
                 shown_index = fallback_index
         if (
