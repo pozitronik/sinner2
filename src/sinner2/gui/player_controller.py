@@ -631,6 +631,11 @@ class PlayerController(QObject):
         self._session_cache_dir = bundle.cache_dir
         self._target_fps = bundle.target_fps
         self._transport.set_frame_count(bundle.frame_count)
+        # set_frame_count resets the slider to 0. Restore the position we seeked
+        # back to, so a target change while PAUSED doesn't show 0 until the user
+        # hits play (the continuous current_frame stream that would otherwise
+        # correct it only runs during playback).
+        self._transport.set_current_frame(self._restore_frame)
         self.sessionScratchDirChanged.emit(bundle.cache_dir)
         self.cacheStorageStatsChanged.emit()
         self.targetNativeSizeChanged.emit(bundle.native_size)
