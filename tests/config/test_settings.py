@@ -46,6 +46,36 @@ class TestLoadAndSave:
         s = settings.load()
         assert s.window_geometry_hex is None
 
+    def test_corrupt_file_is_backed_up_not_destroyed(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        # A truncated/corrupt settings file must be preserved as .bak on load
+        # so the next save() (which writes defaults) can't silently and
+        # permanently destroy the user's real preferences.
+        path = tmp_path / "settings.json"
+        corrupt = '{"window_geometry_hex": "deadbe'  # truncated mid-write
+        path.write_text(corrupt, encoding="utf-8")
+        monkeypatch.setenv("SINNER2_SETTINGS_PATH", str(path))
+
+        settings.load()  # detects corruption, backs up
+        settings.save(settings.Settings())  # would have overwritten the original
+
+        bak = tmp_path / "settings.json.bak"
+        assert bak.is_file()
+        assert bak.read_text(encoding="utf-8") == corrupt
+
+    def test_save_leaves_no_temp_file(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        # Atomic write goes through a sibling temp + os.replace; the temp must
+        # not linger after a successful save.
+        path = tmp_path / "settings.json"
+        monkeypatch.setenv("SINNER2_SETTINGS_PATH", str(path))
+        settings.save(settings.Settings(window_geometry_hex="aa"))
+        leftovers = [p.name for p in tmp_path.iterdir() if p.suffix == ".tmp"]
+        assert leftovers == []
+        assert settings.load().window_geometry_hex == "aa"
+
     def test_save_creates_parent_dir(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ):

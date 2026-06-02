@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 from pathlib import Path
 
@@ -8,6 +9,8 @@ from sinner2.io.video_backend import VideoBackend
 from sinner2.pipeline.cache_mode import CacheMode
 from sinner2.pipeline.image_writer import ImageFormat
 from sinner2.pipeline.playback_mode import PlaybackMode
+
+_log = logging.getLogger(__name__)
 
 
 def _install_dir() -> Path:
@@ -124,11 +127,27 @@ def load() -> Settings:
         return Settings()
     try:
         return Settings.model_validate_json(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError, ValueError):
+    except (json.JSONDecodeError, OSError, ValueError) as exc:
+        # The file exists but is unreadable/corrupt (e.g. truncated by a crash
+        # or power loss mid-write). Preserve it as .bak instead of letting the
+        # next save() silently overwrite it with defaults — that would
+        # permanently destroy every persisted preference. Then start fresh.
+        _log.warning(
+            "settings file unreadable (%s); backing up to %s.bak", exc, path.name
+        )
+        try:
+            os.replace(path, path.with_name(path.name + ".bak"))
+        except OSError:
+            pass  # best-effort; never block startup on the backup
         return Settings()
 
 
 def save(settings: Settings) -> None:
     path = settings_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(settings.model_dump_json(indent=2), encoding="utf-8")
+    # Atomic write: a crash/power-loss mid-write must never truncate the real
+    # settings file. Write a sibling temp then os.replace() onto the target —
+    # an atomic rename on the same filesystem on both POSIX and Windows.
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(settings.model_dump_json(indent=2), encoding="utf-8")
+    os.replace(tmp, path)
