@@ -687,6 +687,8 @@ class SinnerMainWindow(QMainWindow):
         before = model_cache.get_actual_providers()
         if before is not None and trt in before:
             return False  # a session already built + loaded TRT this run
+        if model_cache.tensorrt_engine_cached():
+            return False  # engine already compiled on disk → fast load, no modal
         dialog = QProgressDialog(
             "Compiling the TensorRT engine for the swap model.\n"
             "One-time step (about 30 seconds); cached for next time.",

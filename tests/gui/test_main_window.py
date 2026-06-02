@@ -532,12 +532,13 @@ class TestTensorRTBuildWait:
     (get_actual_providers), so it also fires at launch (actual = None), not just
     on a toggle."""
 
-    def _set(self, window, monkeypatch, *, requested, actual, has_executor):
+    def _set(self, window, monkeypatch, *, requested, actual, has_executor, cached=False):
         from unittest.mock import MagicMock
 
         from sinner2.pipeline import model_cache
         monkeypatch.setattr(window._processors, "swapper_providers", lambda: requested)  # noqa: SLF001
         monkeypatch.setattr(model_cache, "get_actual_providers", lambda: actual)
+        monkeypatch.setattr(model_cache, "tensorrt_engine_cached", lambda: cached)
         monkeypatch.setattr(window._controller, "executor", lambda: (MagicMock() if has_executor else None))  # noqa: SLF001
 
     def test_no_wait_when_trt_not_requested(self, window, monkeypatch):
@@ -577,3 +578,12 @@ class TestTensorRTBuildWait:
         assert dialogs, "a modal compile dialog should be shown at launch too"
         for d in dialogs:
             d.close()
+
+    def test_no_modal_when_engine_already_cached(self, window, monkeypatch):
+        # Toggling TRT off then on: it's not the active provider, but the engine
+        # is already compiled on disk → fast load → NO modal flash.
+        from PySide6.QtWidgets import QProgressDialog
+        self._set(window, monkeypatch, requested=["TensorrtExecutionProvider"],
+                  actual=("CUDAExecutionProvider",), has_executor=True, cached=True)
+        assert window._wait_for_tensorrt_build() is False  # noqa: SLF001
+        assert not window.findChildren(QProgressDialog)

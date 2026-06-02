@@ -165,6 +165,22 @@ def get_trt_cache_dir() -> Path:
     return get_models_dir() / "trt_engines"
 
 
+def tensorrt_engine_cached() -> bool:
+    """True if at least one compiled TensorRT engine already exists in the cache
+    dir, so the next TRT session LOADS one (fast) rather than COMPILING.
+
+    Lets the GUI skip the 'compiling…' modal when there's nothing to compile —
+    e.g. after toggling the provider off and on again, where TRT is no longer the
+    active provider but the engine is still on disk. (`.engine` files only; the
+    `.timing` cache alone doesn't mean an engine is built.)
+    """
+    cache = get_trt_cache_dir()
+    try:
+        return cache.is_dir() and any(cache.glob("*.engine"))
+    except OSError:
+        return False
+
+
 def _tensorrt_libs_dir() -> Path | None:
     """Locate the `tensorrt_libs` package dir (where the `tensorrt-cu12` wheel
     drops nvinfer_10.dll etc.) WITHOUT importing it (find_spec doesn't run the
