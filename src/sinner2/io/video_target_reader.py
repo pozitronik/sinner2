@@ -37,6 +37,12 @@ class FFmpegVideoTargetReader:
         )
         self._decoder: subprocess.Popen[bytes] | None = None
         self._next_index: FrameIndex = 0
+        # The lowest index found to be past the real end of the media. Probed
+        # nb_frames (or the duration*fps fallback) can over-count decodable
+        # frames; without this, every trailing phantom index would fork a fresh
+        # ffmpeg that immediately re-hits EOF. Once set, reads at or past it
+        # short-circuit to None.
+        self._eof_index: FrameIndex | None = None
 
     @property
     def fps(self) -> float:
@@ -65,11 +71,21 @@ class FFmpegVideoTargetReader:
     def read(self, index: FrameIndex) -> Frame | None:
         if index < 0 or index >= self._frame_count:
             return None
+        if self._eof_index is not None and index >= self._eof_index:
+            # Real EOF was discovered earlier (the container over-reported its
+            # frame count). Everything at or past it is past the true end —
+            # short-circuit so trailing phantom indices don't each restart ffmpeg.
+            return None
         if self._decoder is None or index != self._next_index:
             self._start_decoder_at(index)
         frame = self._read_frame_from_pipe()
-        if frame is not None:
-            self._next_index = index + 1
+        if frame is None:
+            # The decoder yielded fewer frames than the metadata promised: this
+            # in-range index is the true end of stream. Remember it so the rest
+            # of the phantom tail short-circuits instead of forking ffmpeg.
+            self._eof_index = index
+            return None
+        self._next_index = index + 1
         return frame
 
     def release(self) -> None:
