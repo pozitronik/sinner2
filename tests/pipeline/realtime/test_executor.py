@@ -939,7 +939,11 @@ class TestRealtimeExecutorSetChain:
 
 
 class TestRealtimeExecutorWorkerError:
-    def test_worker_error_stops_executor(self, buffer_setup):
+    def test_chain_error_is_logged_and_recoverable_not_fatal(self, buffer_setup):
+        # A per-frame chain error must be RECOVERABLE: logged as a non-fatal
+        # "frame error" status (NOT "worker error", which the GUI escalates to a
+        # modal) and skipped — the executor keeps running rather than tearing the
+        # whole pipeline down on a transient bad frame.
         buffer, timeline, _ = buffer_setup
 
         class Boom:
@@ -959,7 +963,9 @@ class TestRealtimeExecutorWorkerError:
         try:
             ex.start()
             ex.play()
-            assert _wait_until(lambda: "worker error" in ex.status.get(), timeout=2.0)
+            assert _wait_until(lambda: "frame error" in ex.status.get(), timeout=2.0)
+            assert "worker error" not in ex.status.get()  # not the modal-escalated prefix
+            assert not ex._stop_event.is_set()  # noqa: SLF001  not self-terminated
         finally:
             ex.stop()
 
@@ -1469,3 +1475,54 @@ class TestSetChainSetupOrdering:
         assert spy.in_chain_at_setup is False  # set up BEFORE the chain swap
         assert ex._chain == (spy,)  # noqa: SLF001
         assert old.release_calls == 1  # dropped processor released
+
+
+class _FailOnceProcessor:
+    """Raises on the first process() call, then passes frames through."""
+
+    name = "FailOnce"
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self._lock = threading.Lock()
+
+    def setup(self) -> None:
+        pass
+
+    def process(self, frame: Frame) -> Frame:
+        with self._lock:
+            self.calls += 1
+            n = self.calls
+        if n == 1:
+            raise RuntimeError("transient boom")
+        return frame
+
+    def release(self) -> None:
+        pass
+
+
+class TestTransientWorkerErrorIsRecoverable:
+    """A single transient per-frame chain error must NOT tear the whole executor
+    down (which also leaves _state lying + GPU held); it's logged and skipped
+    like a reader error, and processing continues."""
+
+    def test_transient_error_does_not_stop_executor(self, buffer_setup):
+        buffer, timeline, _ = buffer_setup
+        p = _FailOnceProcessor()
+        ex = RealtimeExecutor(
+            reader_pool=_pool_for(_MultiFrameReader(20)),
+            buffer=buffer, timeline=timeline, chain=[p],
+            strategy=BestEffortStrategy(), worker_count=1,
+            playback_mode=PlaybackMode.UNLIMITED,
+        )
+        try:
+            ex.start()
+            assert ex.wait_until_ready(2.0)
+            ex.play()
+            # With the bug, the worker breaks + sets _stop_event after call 1, so
+            # calls never climb past 1. With the fix it keeps processing.
+            kept_going = _wait_until(lambda: p.calls >= 3, timeout=4.0)
+            assert kept_going, "executor self-terminated on a transient frame error"
+            assert not ex._stop_event.is_set()  # noqa: SLF001
+        finally:
+            ex.stop()

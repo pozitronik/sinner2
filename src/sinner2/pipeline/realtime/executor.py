@@ -929,9 +929,17 @@ class RealtimeExecutor:
                         self._last_completed = item.frame_index
                 self._record_completion()
             except Exception as e:
-                self.status.set(f"worker error: {e}")
-                self._stop_event.set()
-                break
+                # A per-frame chain/buffer error is RECOVERABLE — log it and
+                # skip this frame, exactly like a reader error above. Do NOT set
+                # _stop_event: that tears down the whole executor (dispatcher +
+                # all workers + playback) on a single transient bad frame WITHOUT
+                # going through stop(), so processors are never release()d (GPU
+                # held) and _state is left lying. The finally block restores
+                # _inflight_count. Use a non-"worker error" prefix so the GUI
+                # surfaces it in the status bar instead of popping a modal per
+                # frame (the "worker error" prefix routes to errorOccurred).
+                self.status.set(f"frame error at {item.frame_index}: {e}")
+                continue
             finally:
                 with self._inflight_cv:
                     self._inflight_count -= 1
