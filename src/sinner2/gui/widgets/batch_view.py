@@ -484,5 +484,11 @@ class QBatchView(QWidget):
 
     def _emit_edit_for_row(self, row: int) -> None:
         task_id = self._task_id_at_row(row)
-        if task_id is not None:
-            self.editRequested.emit(task_id)
+        if task_id is None:
+            return
+        # Editing the RUNNING task races the queue's store writer and re-opens
+        # its resume state mid-render. The context menu hides Edit for the
+        # running task; the double-click path must honour the same guard.
+        if task_id == self._queue.current_task_id:
+            return
+        self.editRequested.emit(task_id)

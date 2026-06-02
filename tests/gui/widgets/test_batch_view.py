@@ -214,6 +214,21 @@ class TestEditRequest:
             view._emit_edit_for_row(0)  # noqa: SLF001
         assert blocker.args == [t.id]
 
+    def test_double_click_does_not_edit_running_task(
+        self, view, tmp_path, store, queue
+    ):
+        # Editing the RUNNING task races the queue's store writer + reopens its
+        # resume state. The context menu hides Edit for it; the double-click path
+        # must honour the same guard.
+        t = _task(tmp_path)
+        store.save(t)
+        view.reload_from_store()
+        queue._current_task_id = t.id  # noqa: SLF001  this task is "running"
+        triggered: list[str] = []
+        view.editRequested.connect(triggered.append)
+        view._emit_edit_for_row(0)  # noqa: SLF001
+        assert triggered == []
+
 
 class TestOutputColumnRespectsGlobalDir:
     def test_output_uses_global_dir_when_resolver_returns_path(
