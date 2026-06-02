@@ -262,6 +262,10 @@ class SinnerMainWindow(QMainWindow):
         self._controller.errorOccurred.connect(self._show_error)
         self._controller.processingFpsChanged.connect(self._update_fps_label)
         self._controller.sessionScratchDirChanged.connect(self._update_scratch_label)
+        # Also drives the TensorRT compile dialog on session START (the launch
+        # case: TRT persisted + no cached engine → build runs at first load, with
+        # no config-change event to hook).
+        self._controller.sessionScratchDirChanged.connect(self._on_session_scratch_dir)
         self._controller.targetNativeSizeChanged.connect(
             self._processors.set_target_native_size
         )
@@ -653,22 +657,36 @@ class SinnerMainWindow(QMainWindow):
 
     _TRT_PROVIDER = "TensorrtExecutionProvider"
 
-    def _wait_for_tensorrt_build(self) -> bool:
-        """If TensorRT was just requested but isn't the effective provider yet, a
-        (possibly slow, one-time) engine build is about to run. Show a modal busy
-        dialog until TensorRT becomes effective (build done) or we time out, then
-        refresh the provider highlight. Returns True if it took over the wait
-        (caller must NOT also highlight); False if there's nothing to wait for.
+    def _on_session_scratch_dir(self, scratch_dir: object) -> None:
+        """A session was (re)installed (non-None dir). If it's about to compile a
+        TensorRT engine, surface the modal wait — this covers the launch case
+        (TRT persisted, no cached engine, build happens at the first session
+        start with no config-change event to hook)."""
+        if scratch_dir is not None:
+            self._wait_for_tensorrt_build()
 
-        No-op when: TRT isn't requested, it's already effective (cached engine),
-        or there's no live session (the build then happens at next session start
-        under the normal 'loading models' flow)."""
-        if self._TRT_PROVIDER not in self._processors.swapper_providers():
-            return False
-        if self._TRT_PROVIDER in self._controller.effective_onnx_providers():
+    def _wait_for_tensorrt_build(self) -> bool:
+        """If TensorRT is requested but no session has actually loaded it yet, a
+        (possibly slow, one-time) engine build is about to run. Show a modal busy
+        dialog until TensorRT shows up in the ACTUAL recorded providers (build
+        done) or we give up, then refresh the provider highlight. Returns True if
+        it took over the wait (caller must NOT also highlight); False otherwise.
+
+        Uses model_cache.get_actual_providers() — the truly-loaded list — NOT the
+        controller's effective_onnx_providers(), which falls back to the REQUESTED
+        list before any session loads (so at launch it would wrongly report TRT as
+        already active and skip the dialog). No-op when TRT isn't requested,
+        there's no session, or a session has already recorded TRT (cached)."""
+        from sinner2.pipeline import model_cache
+
+        trt = self._TRT_PROVIDER
+        if trt not in self._processors.swapper_providers():
             return False
         if self._controller.executor() is None:
             return False
+        before = model_cache.get_actual_providers()
+        if before is not None and trt in before:
+            return False  # a session already built + loaded TRT this run
         dialog = QProgressDialog(
             "Compiling the TensorRT engine for the swap model.\n"
             "One-time step (about 30 seconds); cached for next time.",
@@ -687,10 +705,18 @@ class SinnerMainWindow(QMainWindow):
         timer.setInterval(400)
 
         def _poll() -> None:
-            done = self._TRT_PROVIDER in self._controller.effective_onnx_providers()
-            # 75s safety net: a successful build appears well before then; this
-            # bounds the wait if TRT silently fell back (engine never records).
-            if done or elapsed.elapsed() > 75_000 or self._controller.executor() is None:
+            actual = model_cache.get_actual_providers()
+            built = actual is not None and trt in actual
+            # A DIFFERENT session recorded providers without TRT → it fell back
+            # (engine failed to load) → stop waiting and let the red highlight
+            # show the truth. (Can't detect a same-providers fallback; the 75s
+            # timeout backstops that rare case.)
+            fell_back = actual is not None and actual != before and trt not in actual
+            gone = (
+                self._controller.executor() is None
+                or trt not in self._processors.swapper_providers()
+            )
+            if built or fell_back or gone or elapsed.elapsed() > 75_000:
                 timer.stop()
                 dialog.close()
                 self._highlight_failed_providers()

@@ -526,37 +526,54 @@ class TestSaveCurrentFrame:
 
 
 class TestTensorRTBuildWait:
-    """_wait_for_tensorrt_build shows a modal 'compiling' dialog only when a TRT
-    engine build is actually about to run (TRT requested, not yet effective, live
-    session) — and otherwise no-ops so the normal highlight runs."""
+    """_wait_for_tensorrt_build shows a modal 'compiling' dialog whenever a TRT
+    engine build is about to run (TRT requested, a live session, and no session
+    has actually recorded TRT yet) — keyed off the REAL recorded providers
+    (get_actual_providers), so it also fires at launch (actual = None), not just
+    on a toggle."""
 
-    def _set(self, window, monkeypatch, *, requested, effective, has_executor):
+    def _set(self, window, monkeypatch, *, requested, actual, has_executor):
         from unittest.mock import MagicMock
+
+        from sinner2.pipeline import model_cache
         monkeypatch.setattr(window._processors, "swapper_providers", lambda: requested)  # noqa: SLF001
-        monkeypatch.setattr(window._controller, "effective_onnx_providers", lambda: tuple(effective))  # noqa: SLF001
+        monkeypatch.setattr(model_cache, "get_actual_providers", lambda: actual)
         monkeypatch.setattr(window._controller, "executor", lambda: (MagicMock() if has_executor else None))  # noqa: SLF001
 
     def test_no_wait_when_trt_not_requested(self, window, monkeypatch):
         self._set(window, monkeypatch, requested=["CUDAExecutionProvider"],
-                  effective=["CUDAExecutionProvider"], has_executor=True)
+                  actual=("CUDAExecutionProvider",), has_executor=True)
         assert window._wait_for_tensorrt_build() is False  # noqa: SLF001
 
-    def test_no_wait_when_trt_already_effective(self, window, monkeypatch):
+    def test_no_wait_when_trt_already_recorded(self, window, monkeypatch):
         self._set(window, monkeypatch, requested=["TensorrtExecutionProvider"],
-                  effective=["TensorrtExecutionProvider", "CUDAExecutionProvider"], has_executor=True)
+                  actual=("TensorrtExecutionProvider", "CUDAExecutionProvider"), has_executor=True)
         assert window._wait_for_tensorrt_build() is False  # noqa: SLF001
 
     def test_no_wait_when_no_session(self, window, monkeypatch):
         self._set(window, monkeypatch, requested=["TensorrtExecutionProvider"],
-                  effective=["CUDAExecutionProvider"], has_executor=False)
+                  actual=("CUDAExecutionProvider",), has_executor=False)
         assert window._wait_for_tensorrt_build() is False  # noqa: SLF001
 
-    def test_shows_modal_when_build_pending(self, window, monkeypatch):
+    def test_shows_modal_on_toggle(self, window, monkeypatch):
+        # Live CUDA session, user just enabled TRT → actual still CUDA → wait.
         from PySide6.QtWidgets import QProgressDialog
         self._set(window, monkeypatch, requested=["TensorrtExecutionProvider"],
-                  effective=["CUDAExecutionProvider"], has_executor=True)
+                  actual=("CUDAExecutionProvider",), has_executor=True)
         assert window._wait_for_tensorrt_build() is True  # noqa: SLF001
         dialogs = window.findChildren(QProgressDialog)
         assert dialogs, "a modal compile dialog should be shown"
         for d in dialogs:
-            d.close()  # release modality / clean up
+            d.close()
+
+    def test_shows_modal_at_launch_when_nothing_recorded(self, window, monkeypatch):
+        # The reported bug: launch with TRT persisted + no cached engine. No
+        # session has recorded providers yet (actual = None) → must still wait.
+        from PySide6.QtWidgets import QProgressDialog
+        self._set(window, monkeypatch, requested=["TensorrtExecutionProvider"],
+                  actual=None, has_executor=True)
+        assert window._wait_for_tensorrt_build() is True  # noqa: SLF001
+        dialogs = window.findChildren(QProgressDialog)
+        assert dialogs, "a modal compile dialog should be shown at launch too"
+        for d in dialogs:
+            d.close()
