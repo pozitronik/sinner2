@@ -575,6 +575,30 @@ class TestRealtimeExecutorPlayback:
         finally:
             ex.stop()
 
+    def test_backward_seek_lowers_last_completed(self, buffer_setup):
+        # A backward seek must clamp last_completed DOWN to the new position.
+        # Otherwise the stale-high value masks lag, disabling SyncedStrategy's
+        # catch-up fallback until wall-clock re-advances past the old value.
+        buffer, _timeline, _ = buffer_setup
+        ex = RealtimeExecutor(
+            reader_pool=_pool_for(_MultiFrameReader(1000)),
+            buffer=buffer,
+            timeline=Timeline(fps=100.0),
+            chain=[],
+            strategy=SyncedStrategy(),
+        )
+        try:
+            ex.start()
+            with ex._state_lock:  # noqa: SLF001 — simulate forward progress
+                ex._last_completed = 150  # noqa: SLF001
+                ex._last_submitted = 150  # noqa: SLF001
+            ex.seek(50)  # backward
+            assert _wait_until(
+                lambda: ex.last_completed_frame() <= 50, timeout=2.0
+            )
+        finally:
+            ex.stop()
+
     def test_seek_while_paused_processes_target_frame(self, buffer_setup):
         buffer, timeline, _ = buffer_setup
         p = _CountingProcessor()

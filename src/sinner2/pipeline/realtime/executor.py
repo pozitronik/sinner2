@@ -584,8 +584,12 @@ class RealtimeExecutor:
         with self._state_lock:
             self._timeline.seek(target)
             self._last_submitted = target - 1
-            if self._last_completed < target - 1:
-                self._last_completed = target - 1
+            # Reset progress to the seek point in BOTH directions. Only raising
+            # it (the old behaviour) left a backward seek with a stale-high
+            # last_completed, which makes SyncedStrategy read "caught up" and
+            # never engage its catch-up fallback. Mirror _handle_rerender /
+            # _handle_reconfigure, which both clamp to the new position.
+            self._last_completed = target - 1
         # Invalidate the buffer entry for the target so the next read
         # there returns None instead of OLD cached/store data. Combined
         # with the duplicate-frame-guard reset below, this guarantees
