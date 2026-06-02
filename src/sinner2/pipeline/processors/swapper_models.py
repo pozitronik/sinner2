@@ -222,7 +222,11 @@ class GenericOnnxSwapper:
 
     def __init__(self, spec: SwapperSpec, providers: list[str] | None = None) -> None:
         self._spec = spec
-        self._providers = list(providers) if providers else list(DEFAULT_ONNX_PROVIDERS)
+        # None → platform default; an explicit [] stays empty (user picked no
+        # providers → ORT runs on CPU), not a substituted GPU default.
+        self._providers = (
+            list(DEFAULT_ONNX_PROVIDERS) if providers is None else list(providers)
+        )
         self._template = _TEMPLATES[spec.template]
         self._mean = np.array(spec.mean, np.float32)
         self._std = np.array(spec.std, np.float32)

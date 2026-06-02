@@ -289,10 +289,10 @@ class QProcessorControls(QWidget):
             else:
                 cb.setToolTip(
                     "ONNX execution provider. Multiple may be checked; ORT\n"
-                    "tries them in the order shown. If you uncheck everything,\n"
-                    "the system falls back to the platform defaults (CUDA + CPU)\n"
-                    "so inference still works. Applies immediately — rebuilds\n"
-                    "the session (chain reloads)."
+                    "tries them in the order shown. Uncheck everything to use\n"
+                    "NO provider — ORT then falls back to its CPU last-resort\n"
+                    "(slow, no GPU). Applies immediately — rebuilds the session\n"
+                    "(chain reloads)."
                 )
             cb.setChecked(prov in default_active)
             cb.toggled.connect(self.configChanged)
@@ -1130,10 +1130,10 @@ class QProcessorControls(QWidget):
                 cb.setStyleSheet("")
                 cb.setToolTip(
                     "ONNX execution provider. Multiple may be checked; ORT\n"
-                    "tries them in the order shown. If you uncheck everything,\n"
-                    "the system falls back to the platform defaults (CUDA + CPU)\n"
-                    "so inference still works. Applies immediately — rebuilds\n"
-                    "the session (chain reloads)."
+                    "tries them in the order shown. Uncheck everything to use\n"
+                    "NO provider — ORT then falls back to its CPU last-resort\n"
+                    "(slow, no GPU). Applies immediately — rebuilds the session\n"
+                    "(chain reloads)."
                 )
 
     def cache_mode(self) -> CacheMode:

@@ -12,7 +12,6 @@ from sinner2.audio.audio_backend import (
     AudioBackendName,
     build_audio_backend,
 )
-from sinner2.config.execution import DEFAULT_ONNX_PROVIDERS
 from sinner2.config.source import Source
 from sinner2.config.target import Target, TargetKind
 from sinner2.gui.bridges.observable_bridge import ObservableValueBridge
@@ -814,7 +813,10 @@ class PlayerController(QObject):
             chain.append(FaceSwapper(
                 source=source,
                 params=self._swapper_params,
-                providers=list(self._swapper_providers) or None,
+                # Pass the selection through verbatim — an EMPTY list means the
+                # user unchecked everything ("no providers"); the swapper keeps
+                # it empty (ORT → CPU) instead of substituting a GPU default.
+                providers=list(self._swapper_providers),
                 detection_sink=self._detection_sink,
             ))
         if self._enhancer_enabled:
@@ -1139,7 +1141,9 @@ class PlayerController(QObject):
         actual = model_cache.get_actual_providers()
         if actual:
             return actual
-        return self._swapper_providers or tuple(DEFAULT_ONNX_PROVIDERS)
+        # No session loaded yet: report exactly what the user requested — an
+        # empty tuple means "no providers selected", not a hidden GPU default.
+        return self._swapper_providers
 
     def change_source(self, source_path: Path) -> None:
         """Replace the source while preserving frame position + play state.

@@ -140,3 +140,45 @@ class TestSharedFaceAnalysisProviders:
         )
         assert "TensorrtExecutionProvider" not in captured["providers"]
         assert captured["providers"] == ["CUDAExecutionProvider", "CPUExecutionProvider"]
+
+    def _capture(self, monkeypatch: pytest.MonkeyPatch) -> dict:
+        import sys
+        import types
+
+        captured: dict = {}
+
+        class FakeFaceAnalysis:
+            def __init__(self, name=None, providers=None, provider_options=None, **kw):
+                captured["providers"] = providers
+
+            def prepare(self, ctx_id=0, det_size=None):  # noqa: ARG002
+                pass
+
+        app_mod = types.ModuleType("insightface.app")
+        app_mod.FaceAnalysis = FakeFaceAnalysis  # type: ignore[attr-defined]
+        pkg = sys.modules.get("insightface") or types.ModuleType("insightface")
+        monkeypatch.setitem(sys.modules, "insightface", pkg)
+        monkeypatch.setitem(sys.modules, "insightface.app", app_mod)
+        return captured
+
+    def test_empty_providers_stay_empty(self, monkeypatch: pytest.MonkeyPatch):
+        # User selected NO providers → detector gets [] (ORT → CPU), NOT a
+        # substituted default.
+        captured = self._capture(monkeypatch)
+        face_analyser._get_shared_face_analysis([])
+        assert captured["providers"] == []
+
+    def test_none_providers_use_default(self, monkeypatch: pytest.MonkeyPatch):
+        # None = unspecified (e.g. a programmatic caller) → platform default.
+        captured = self._capture(monkeypatch)
+        face_analyser._get_shared_face_analysis(None)
+        assert captured["providers"] == ["CUDAExecutionProvider", "CPUExecutionProvider"]
+
+    def test_tensorrt_only_falls_back_to_default_for_detector(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        # Only TRT picked → detector can't use it; falls back to the GPU default
+        # (NOT empty — that's the deliberate exception to "empty stays empty").
+        captured = self._capture(monkeypatch)
+        face_analyser._get_shared_face_analysis(["TensorrtExecutionProvider"])
+        assert captured["providers"] == ["CUDAExecutionProvider", "CPUExecutionProvider"]

@@ -32,7 +32,9 @@ def _get_shared_face_analysis(providers: list[str] | None = None) -> Any:
             from sinner2.config.execution import DEFAULT_ONNX_PROVIDERS
             from sinner2.pipeline.model_cache import build_provider_options
 
-            eps = list(providers) if providers else list(DEFAULT_ONNX_PROVIDERS)
+            # None → platform default; an explicit [] stays empty (the user chose
+            # no providers → ORT runs on CPU). Only unspecified falls back.
+            eps = list(DEFAULT_ONNX_PROVIDERS) if providers is None else list(providers)
             # The detector pack (buffalo_l = 5 small fixed-shape models) does NOT
             # go through TensorRT: each sub-model would compile its OWN engine
             # (minutes of first-run build) for little gain, and some hit the same
@@ -40,9 +42,13 @@ def _get_shared_face_analysis(providers: list[str] | None = None) -> Any:
             # CUDA(+CPU) even when the swapper uses TRT — only the (single, heavy)
             # inswapper model is worth a TRT engine. FaceAnalysis still forwards
             # provider_options, so the detector keeps the CUDA cuDNN/arena tuning.
-            eps = [p for p in eps if p != "TensorrtExecutionProvider"] or list(
-                DEFAULT_ONNX_PROVIDERS
-            )
+            stripped = [p for p in eps if p != "TensorrtExecutionProvider"]
+            if eps and not stripped:
+                # User picked ONLY TensorRT — the detector can't use it; fall back
+                # to the GPU default rather than nothing. An already-empty list
+                # (no providers selected) stays empty.
+                stripped = list(DEFAULT_ONNX_PROVIDERS)
+            eps = stripped
             app = FaceAnalysis(
                 name=_FACE_MODEL_NAME,
                 providers=eps,
@@ -76,7 +82,9 @@ class FaceAnalyser:
         if detection_interval < 1:
             raise ValueError(f"detection_interval must be >= 1; got {detection_interval}")
         self._detection_interval = detection_interval
-        self._providers = list(providers) if providers else None
+        # Preserve an explicit empty list (user selected no providers) — only
+        # None means "unspecified" (→ platform default in _get_shared_face_analysis).
+        self._providers = list(providers) if providers is not None else None
         self._frame_counter = 0
         self._cached_faces: list[Any] | None = None
         self._lock = threading.RLock()

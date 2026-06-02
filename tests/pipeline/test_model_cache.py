@@ -255,6 +255,26 @@ class TestSessionTuning:
         assert captured["provider_options"][1] == {}
         assert captured["sess_options"] is not None
 
+    def test_get_onnx_session_empty_providers_stay_empty(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        import onnxruntime
+
+        clear_session_cache()
+        monkeypatch.setenv("SINNER2_MODELS_DIR", str(tmp_path))
+        (tmp_path / "m.onnx").write_bytes(b"x")
+        captured: dict = {}
+
+        def fake_session(_path: str, **kwargs: object) -> MagicMock:
+            captured.update(kwargs)
+            return MagicMock()
+
+        monkeypatch.setattr(onnxruntime, "InferenceSession", fake_session)
+        get_onnx_session("m.onnx", [])  # explicit "no providers"
+        # NOT substituted with the CUDA+CPU default — passed through empty.
+        assert captured["providers"] == []
+        assert captured["provider_options"] == []
+
 
 class TestInsightfaceCache:
     """The insightface swap model (inswapper / reswapper) is cached by
@@ -353,6 +373,30 @@ class TestInsightfaceCache:
         assert captured["provider_options"][0]["arena_extend_strategy"] == (
             "kSameAsRequested"
         )
+
+    def test_empty_providers_stay_empty(self, monkeypatch: pytest.MonkeyPatch):
+        import sys
+        import types
+
+        from sinner2.pipeline.model_cache import get_insightface_swap_model
+
+        clear_session_cache()
+        captured: dict = {}
+
+        def fake_get_model(_path, *_a, **kw):
+            captured.update(kw)
+            return MagicMock()
+
+        mz = types.ModuleType("insightface.model_zoo")
+        mz.get_model = fake_get_model  # type: ignore[attr-defined]
+        pkg = sys.modules.get("insightface") or types.ModuleType("insightface")
+        monkeypatch.setitem(sys.modules, "insightface", pkg)
+        monkeypatch.setitem(sys.modules, "insightface.model_zoo", mz)
+
+        get_insightface_swap_model(Path("/models/inswapper_128.onnx"), [])
+        # "No providers" passed through, not substituted with the default.
+        assert captured["providers"] == []
+        assert captured["provider_options"] == []
 
 
 class TestAvailableProviders:

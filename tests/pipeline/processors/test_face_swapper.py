@@ -524,3 +524,39 @@ class TestFaceMatchesHelper:
         fs.release()
         with pytest.raises(RuntimeError):
             fs.process(_blank())
+
+
+class TestProviderResolution:
+    """None (unspecified) → platform default; an explicit empty list (user
+    unchecked all providers) stays empty so ORT falls back to CPU — no hidden
+    GPU default is substituted."""
+
+    def _capture_load(self, monkeypatch):
+        captured: dict = {}
+
+        def fake_load(_path, providers):
+            captured["providers"] = providers
+            m = MagicMock()
+            m.get = MagicMock(side_effect=lambda f, *a, **k: f)
+            return m
+
+        monkeypatch.setattr(face_swapper, "_load_inswapper", fake_load)
+        return captured
+
+    def test_empty_providers_stay_empty(
+        self, models_dir, source_image, stub_insightface_app, monkeypatch
+    ):
+        captured = self._capture_load(monkeypatch)
+        fs = FaceSwapper(source=Source(path=source_image), providers=[])
+        fs.setup()
+        assert captured["providers"] == []
+
+    def test_none_providers_use_default(
+        self, models_dir, source_image, stub_insightface_app, monkeypatch
+    ):
+        from sinner2.config.execution import DEFAULT_ONNX_PROVIDERS
+
+        captured = self._capture_load(monkeypatch)
+        fs = FaceSwapper(source=Source(path=source_image), providers=None)
+        fs.setup()
+        assert captured["providers"] == list(DEFAULT_ONNX_PROVIDERS)

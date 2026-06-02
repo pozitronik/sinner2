@@ -173,9 +173,11 @@ class FaceSwapper:
     ) -> None:
         self._source = source
         self._params = params or FaceSwapperParams()
-        # ONNX providers from the swapper's OnnxExecution profile; None falls
-        # back to the platform-default EP order (CUDA then CPU).
-        self._providers = list(providers) if providers else None
+        # ONNX providers from the swapper's OnnxExecution profile. Distinguish
+        # None (caller didn't specify → platform default) from an EMPTY list
+        # (user explicitly selected no providers → pass it through; ORT then runs
+        # on its CPU last-resort). Only None is treated as "unspecified".
+        self._providers = list(providers) if providers is not None else None
         # Optional sink for the debug overlay: receives the PRE-swap detections
         # (duck-typed `.publish(faces, w, h)`); None outside the realtime GUI.
         self._detection_sink = detection_sink
@@ -188,7 +190,11 @@ class FaceSwapper:
         self._mask_lock = threading.Lock()
 
     def setup(self) -> None:
-        providers = self._providers or list(DEFAULT_ONNX_PROVIDERS)
+        # None → platform default; an explicit [] stays empty (no GPU the user
+        # didn't ask for — ORT falls back to CPU).
+        providers = (
+            list(DEFAULT_ONNX_PROVIDERS) if self._providers is None else self._providers
+        )
         self._analyser = FaceAnalyser(
             detection_interval=self._params.detection_interval,
             providers=providers,

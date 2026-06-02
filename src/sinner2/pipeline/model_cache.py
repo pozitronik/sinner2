@@ -521,7 +521,9 @@ def get_onnx_session(
     import onnxruntime as ort
 
     path = get_model_path(name, on_progress=on_progress)
-    names = list(providers) if providers else list(_DEFAULT_PROVIDERS)
+    # None → platform default; an explicit [] stays empty (ORT then uses its CPU
+    # last-resort). Only an unspecified (None) list falls back to the default.
+    names = list(_DEFAULT_PROVIDERS) if providers is None else list(providers)
     with _session_lock:
         cached = _session_cache.get(path)
         if cached is not None:
@@ -576,7 +578,8 @@ def get_insightface_swap_model(
     """
     from insightface.model_zoo import get_model
 
-    eps = tuple(providers) if providers else _DEFAULT_PROVIDERS
+    # None → platform default; an explicit [] stays empty (→ ORT CPU last-resort).
+    eps = _DEFAULT_PROVIDERS if providers is None else tuple(providers)
     key = (path, eps)
     with _session_lock:
         cached = _insightface_cache.get(key)
