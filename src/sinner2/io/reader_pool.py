@@ -58,6 +58,11 @@ _POLL_S = 0.5  # how long a reader thread waits for a request before re-checking
 # executor's processing_fps: time-windowed so a brief idle period
 # decays cleanly to 0 instead of holding a stale historical average.
 _READ_RATE_WINDOW_S = 3.0
+# Hard cap on the per-read duration history. recent_read_latency_ms() trims by
+# time, but it only runs on the PLAYING dispatcher path; reads issued while
+# paused (seeks/rerenders) would otherwise grow the deque without bound. The cap
+# comfortably covers the time window at any realistic read rate.
+_READ_DURATION_CAP = 1024
 # When reads are too sparse for a windowed rate (e.g. a single slow read in
 # flight), report the rate implied by time-since-last-read so the overlay shows
 # a small positive value rather than 0 (which looks like a hang). Past this with
@@ -122,7 +127,9 @@ class ReaderPool:
         # the window is the "how expensive are reads right now" signal the skip
         # strategy uses to tell an I/O-bound source (slow random reads) from a
         # compute-bound one (cheap reads, slow GPU).
-        self._read_durations_ms: deque[tuple[float, float]] = deque()
+        self._read_durations_ms: deque[tuple[float, float]] = deque(
+            maxlen=_READ_DURATION_CAP
+        )
         # Most recent read timestamp (never trimmed) + last windowed rate, so a
         # slow-but-alive reader reports a decaying estimate instead of 0.
         self._last_read_time: float | None = None

@@ -181,6 +181,21 @@ class TestReadLatency:
         finally:
             pool.shutdown()
 
+    def test_durations_deque_is_bounded(self):
+        # The latency window is trimmed only when recent_read_latency_ms() is
+        # called (a PLAYING-only path); reads issued while paused (seeks) would
+        # otherwise grow it without bound. A maxlen caps it regardless.
+        pool, _ = _make_pool(1)
+        try:
+            cap = pool._read_durations_ms.maxlen  # noqa: SLF001
+            assert cap is not None  # bounded, not an unbounded deque
+            with pool._rate_lock:  # noqa: SLF001
+                for _ in range(cap + 500):
+                    pool._read_durations_ms.append((0.0, 1.0))  # noqa: SLF001
+            assert len(pool._read_durations_ms) == cap  # noqa: SLF001
+        finally:
+            pool.shutdown()
+
     def test_reflects_slow_reads(self):
         pool, _ = _make_pool(1, read_delay=0.05)  # 50 ms per read
         try:
