@@ -345,6 +345,11 @@ class PlayerController(QObject):
         self._swapping = False
         self._swap_pending: tuple[Path, Path] | None = None
         self._swap_thread: threading.Thread | None = None
+        # A completed-but-not-yet-adopted swap bundle. Set on the worker thread
+        # the moment a swap succeeds and cleared by the GUI slot once adopted;
+        # if shutdown() races the queued slot, it's still set and shutdown
+        # releases its (new, live) write executor + store to avoid a leak.
+        self._last_swap_bundle: _SessionBundle | None = None
         # Desired post-swap position/play state. Held as controller state (not a
         # per-call callback) so coalesced changes during a swap carry forward
         # the latest intent. Applied to the new executor once it's installed.
@@ -563,6 +568,10 @@ class PlayerController(QObject):
             old_write_executor.shutdown(wait=True)
         if old_store is not None:
             old_store.close()
+        # Stash before emitting: the live executor now writes through this
+        # bundle's write executor + store. If shutdown() joins this thread
+        # before the queued GUI slot adopts the bundle, shutdown drains it.
+        self._last_swap_bundle = bundle
         self._sessionSwapReady.emit(_SwapOutcome(bundle=bundle))
 
     @staticmethod
@@ -599,6 +608,9 @@ class PlayerController(QObject):
             self._restore_audio_to_live_session()
         elif outcome.bundle is not None:
             self._adopt_swapped_bundle(outcome.bundle)
+            # Adopted into our refs — _teardown_session now owns it, so clear
+            # the shutdown-drain stash to avoid a double teardown.
+            self._last_swap_bundle = None
         self.sessionSwitching.emit(False)
         if self._swap_pending is not None:
             source_path, target_path = self._swap_pending
@@ -858,6 +870,22 @@ class PlayerController(QObject):
         if swap_thread is not None and swap_thread.is_alive():
             swap_thread.join(timeout=30.0)
         self._teardown_session()
+        # If a swap completed but its GUI slot never adopted the bundle (close
+        # raced the queued signal), _teardown_session tore down the OLD refs —
+        # the new bundle's write executor + store are live but unadopted, so
+        # release them here. Done AFTER teardown stops the executor that writes
+        # through them. (None in the normal case — the slot cleared it.)
+        bundle = self._last_swap_bundle
+        self._last_swap_bundle = None
+        if bundle is not None:
+            try:
+                bundle.write_executor.shutdown(wait=True)
+            except Exception:
+                pass
+            try:
+                bundle.session_store.close()
+            except Exception:
+                pass
         if self._audio_backend is not None:
             self._audio_backend.shutdown()
             self._audio_backend = None
