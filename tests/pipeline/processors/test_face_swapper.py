@@ -597,3 +597,19 @@ class TestReleaseRaceContract:
         out = fs.process(np.zeros((10, 10, 3), dtype=np.uint8))  # must NOT raise
         assert calls["n"] == 2  # both faces swapped via the local snapshots
         assert out is not None
+
+
+class TestReleaseFreesMasker:
+    def test_release_releases_occlusion_masker(
+        self, models_dir, source_image, stub_insightface_app, stub_inswapper
+    ):
+        # The torch occlusion masker holds CUDA memory; FaceSwapper.release()
+        # must release it (not just drop the ref) so its VRAM is freed on a
+        # chain rebuild — same as it does for the swap backend.
+        fs = FaceSwapper(source=Source(path=source_image))
+        fs.setup()
+        masker = MagicMock()
+        fs._masker = masker  # noqa: SLF001  simulate occlusion enabled
+        fs.release()
+        masker.release.assert_called_once()
+        assert fs._masker is None  # noqa: SLF001

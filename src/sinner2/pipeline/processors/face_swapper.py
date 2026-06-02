@@ -340,6 +340,10 @@ class FaceSwapper:
         # drop our local ref here.
         if isinstance(self._swapper, GenericOnnxSwapper):
             self._swapper.release()
+        # The occlusion masker holds a torch model on CUDA — release it (free its
+        # VRAM) rather than just dropping the ref, like the swap backend above.
+        if self._masker is not None:
+            self._masker.release()
         self._analyser = None
         self._swapper = None
         self._source_face = None

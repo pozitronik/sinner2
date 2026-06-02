@@ -45,3 +45,21 @@ class TestApplyOcclusion:
 
         out = apply_occlusion(before, swapped, _face(), _Boom())
         assert np.array_equal(out, swapped)
+
+
+class TestRelease:
+    def test_release_frees_cuda_and_nulls_model(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        import torch
+
+        from sinner2.pipeline.processors.occlusion import OcclusionMasker
+
+        m = OcclusionMasker()
+        m._model = MagicMock()  # noqa: SLF001
+        m._device_is_cuda = True  # noqa: SLF001  (set in setup() after the fix)
+        empties: list[int] = []
+        monkeypatch.setattr(torch.cuda, "empty_cache", lambda: empties.append(1))
+        m.release()
+        assert m._model is None  # noqa: SLF001
+        assert empties == [1]  # VRAM handed back

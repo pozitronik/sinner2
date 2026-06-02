@@ -96,6 +96,9 @@ class OcclusionMasker:
         self._device_str = device
         self._device: Any = None
         self._model: Any = None
+        # Whether the resolved device is CUDA, so release() knows to hand the
+        # parser's GPU memory back to the driver.
+        self._device_is_cuda = False
 
     def setup(self) -> None:
         from facexlib.parsing import init_parsing_model
@@ -110,12 +113,24 @@ class OcclusionMasker:
                 f"{get_models_dir() / self._spec.filename}"
             )
         self._device = resolve_torch_device(self._device_str)
+        self._device_is_cuda = self._device.type == "cuda"
         self._model = init_parsing_model(
             model_name=self._parser.value,
             device=self._device,
             model_rootpath=str(get_models_dir()),
         )
         self._model.eval()
+
+    def release(self) -> None:
+        """Drop the parser model and hand its VRAM back to the driver — torch's
+        caching allocator keeps the freed blocks reserved otherwise, so a chain
+        rebuild with occlusion on would stack a fresh parser's GPU memory on top
+        of the old one's until process exit (mirrors FaceEnhancer.release)."""
+        self._model = None
+        if self._device_is_cuda:
+            import torch
+
+            torch.cuda.empty_cache()
 
     def face_mask(self, aligned_bgr: Frame) -> np.ndarray:
         """512×512 float mask (1 = facial region) for an aligned BGR crop."""
