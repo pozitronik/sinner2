@@ -29,6 +29,7 @@ class FrameSkipStrategy(Protocol):
         last_completed: FrameIndex,
         timeline: Timeline,
         metrics: BufferMetrics,
+        read_latency_ms: float | None = None,
     ) -> SkipDecision: ...
 
     def current_mode(self) -> str:
@@ -57,6 +58,7 @@ class BestEffortStrategy:
         last_completed: FrameIndex,
         timeline: Timeline,
         metrics: BufferMetrics,
+        read_latency_ms: float | None = None,
     ) -> SkipDecision:
         return SkipDecision(next_frame=last_submitted + 1)
 
@@ -101,11 +103,20 @@ class SyncedStrategy:
     # the display (wasted compute + memory, all discarded on a seek).
     _DEFAULT_LOOKAHEAD_FRAMES = 120
 
+    # A single read slower than this (ms) means the SOURCE is the bottleneck:
+    # skipping then forces random-access reads a slow source can't sustain
+    # (network share, HDD, ffmpeg keyframe-seek restart ~100-200 ms), so the
+    # sequential fallback is warranted. Below it the disk keeps up and skipping
+    # is free — stay synced. ~1.5x a 30 fps frame budget; cheap SSD / cv2 in-
+    # place seek reads (single-digit ms) never trip it.
+    _DEFAULT_IO_BOUND_READ_MS = 50.0
+
     def __init__(
         self,
         max_lag_frames: int | None = None,
         recover_lag_frames: int | None = None,
         lookahead_frames: int | None = None,
+        io_bound_read_ms: float | None = None,
     ) -> None:
         self._max_lag_frames = (
             max_lag_frames
@@ -116,6 +127,11 @@ class SyncedStrategy:
             lookahead_frames
             if lookahead_frames is not None
             else self._DEFAULT_LOOKAHEAD_FRAMES
+        )
+        self._io_bound_read_ms = (
+            io_bound_read_ms
+            if io_bound_read_ms is not None
+            else self._DEFAULT_IO_BOUND_READ_MS
         )
         # Hysteresis: enter fallback above max_lag, but don't LEAVE it until lag
         # drops below this lower bound. Without the gap, a lag parked near the
@@ -146,6 +162,7 @@ class SyncedStrategy:
         last_completed: FrameIndex,
         timeline: Timeline,
         metrics: BufferMetrics,
+        read_latency_ms: float | None = None,
     ) -> SkipDecision:
         target = timeline.current_frame()
         # Warm-up: nothing has completed yet (cold start — the first frame is
@@ -157,15 +174,22 @@ class SyncedStrategy:
         if last_completed < 0:
             self._in_fallback = False
             return SkipDecision(next_frame=last_submitted + 1)
-        # Fall back to sequential when we're catastrophically behind, with
-        # hysteresis: enter above max_lag, stay until lag drops below
-        # recover_lag. A single threshold flaps the mode (and the read pattern)
-        # when lag hovers at the boundary.
+        # Fall back to sequential only when we're catastrophically behind AND
+        # READS are the bottleneck (I/O-bound): skipping then means random reads
+        # a slow source can't sustain (→ ~0 fps death-spiral). When COMPUTE is
+        # the bottleneck (fast disk, slow GPU), reads are cheap, so keep skipping
+        # to stay synced — sequential there is just slow-motion drift. Hysteresis:
+        # enter above max_lag, stay until lag drops below recover_lag, so a lag
+        # parked at the boundary doesn't flap the mode/read pattern. No latency
+        # signal → assume compute-bound (don't degrade to slow-motion blindly).
         lag = target - last_completed
+        io_bound = (
+            read_latency_ms is not None and read_latency_ms > self._io_bound_read_ms
+        )
         if self._in_fallback:
             if lag <= self._recover_lag_frames:
                 self._in_fallback = False
-        elif lag > self._max_lag_frames:
+        elif lag > self._max_lag_frames and io_bound:
             self._in_fallback = True
         if self._in_fallback:
             return SkipDecision(next_frame=last_submitted + 1)

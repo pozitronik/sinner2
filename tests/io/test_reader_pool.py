@@ -170,6 +170,37 @@ class TestReadAsync:
             pool.shutdown()
 
 
+class TestReadLatency:
+    """recent_read_latency_ms() exposes how expensive reads currently are, so
+    the skip strategy can tell an I/O-bound source from a compute-bound one."""
+
+    def test_zero_when_no_reads(self):
+        pool, _ = _make_pool(1)
+        try:
+            assert pool.recent_read_latency_ms() == 0.0
+        finally:
+            pool.shutdown()
+
+    def test_reflects_slow_reads(self):
+        pool, _ = _make_pool(1, read_delay=0.05)  # 50 ms per read
+        try:
+            for i in range(4):
+                pool.read_async(i).result(timeout=2.0)
+            lat = pool.recent_read_latency_ms()
+            assert 30.0 < lat < 250.0  # ~50 ms, generous for scheduler jitter
+        finally:
+            pool.shutdown()
+
+    def test_fast_reads_stay_low(self):
+        pool, _ = _make_pool(1)  # no delay
+        try:
+            for i in range(8):
+                pool.read_async(i).result(timeout=2.0)
+            assert pool.recent_read_latency_ms() < 20.0
+        finally:
+            pool.shutdown()
+
+
 class TestParallelism:
     def test_size_n_parallelises(self):
         # 4 readers each sleeping 50ms: 8 requests should complete in

@@ -113,6 +113,11 @@ class ReaderPool:
         # distinct from worker-completion throughput.
         self._rate_lock = threading.Lock()
         self._read_times: deque[float] = deque()
+        # (timestamp, duration_ms) of recent successful reads. The median over
+        # the window is the "how expensive are reads right now" signal the skip
+        # strategy uses to tell an I/O-bound source (slow random reads) from a
+        # compute-bound one (cheap reads, slow GPU).
+        self._read_durations_ms: deque[tuple[float, float]] = deque()
 
         for i, reader in enumerate(readers):
             t = threading.Thread(
@@ -162,6 +167,26 @@ class ReaderPool:
             return 0.0
         return (count - 1) / span
 
+    def recent_read_latency_ms(self) -> float:
+        """Median duration of recent successful reads (ms), over the same window
+        as reads_per_second. A read slower than a frame budget means the SOURCE
+        is the bottleneck; the skip strategy uses this to decide whether
+        random-access skipping is affordable. 0.0 when no reads in the window
+        (idle / startup) — read as 'no evidence of an I/O bottleneck'."""
+        now = time.monotonic()
+        cutoff = now - _READ_RATE_WINDOW_S
+        with self._rate_lock:
+            while self._read_durations_ms and self._read_durations_ms[0][0] < cutoff:
+                self._read_durations_ms.popleft()
+            durations = sorted(d for _, d in self._read_durations_ms)
+        if not durations:
+            return 0.0
+        n = len(durations)
+        mid = n // 2
+        if n % 2:
+            return durations[mid]
+        return (durations[mid - 1] + durations[mid]) / 2.0
+
     def read_async(self, index: FrameIndex) -> Future[Frame | None]:
         """Submit a read request. Returns a Future that resolves on the
         reader thread that services it. If the pool is shutting down,
@@ -190,13 +215,17 @@ class ReaderPool:
                 if not future.set_running_or_notify_cancel():
                     continue
                 try:
+                    t0 = time.monotonic()
                     frame = reader.read(index)
+                    duration_ms = (time.monotonic() - t0) * 1000.0
                     future.set_result(frame)
                     # Record successful reads only — exceptions and Nones
                     # would inflate the rate with non-useful work.
                     if frame is not None:
+                        now = time.monotonic()
                         with self._rate_lock:
-                            self._read_times.append(time.monotonic())
+                            self._read_times.append(now)
+                            self._read_durations_ms.append((now, duration_ms))
                 except Exception as exc:
                     future.set_exception(exc)
         finally:

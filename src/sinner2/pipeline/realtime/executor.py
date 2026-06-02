@@ -825,6 +825,10 @@ class RealtimeExecutor:
                 last_completed=self._last_completed,
                 timeline=self._timeline,
                 metrics=metrics,
+                # How expensive reads are right now, so SyncedStrategy can tell
+                # an I/O-bound source (skip → thrash) from a compute-bound one
+                # (skip → free, stay synced).
+                read_latency_ms=self._reader_pool.recent_read_latency_ms(),
             )
             # Read strategy mode right after decide so the value reflects
             # this exact tick's behaviour (SyncedStrategy sets _in_fallback

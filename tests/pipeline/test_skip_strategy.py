@@ -147,7 +147,8 @@ class TestSyncedStrategyAdaptiveFallback:
     jump-ahead is a costly random seek the reader can't service."""
 
     def test_falls_back_to_sequential_when_far_behind(self):
-        # target - last_completed = 200, well above default threshold (60).
+        # target - last_completed = 200, well above default threshold (60), AND
+        # reads are slow (I/O-bound) so the sequential fallback is warranted.
         s = SyncedStrategy()
         timeline = MagicMock()
         timeline.current_frame.return_value = 200
@@ -156,6 +157,7 @@ class TestSyncedStrategyAdaptiveFallback:
             last_completed=0,
             timeline=timeline,
             metrics=_zero_metrics(),
+            read_latency_ms=120.0,
         )
         # Sequential submission instead of jumping to 200.
         assert d.next_frame == 11
@@ -183,6 +185,7 @@ class TestSyncedStrategyAdaptiveFallback:
             last_completed=5,  # target - last_completed = 11 > threshold
             timeline=timeline,
             metrics=_zero_metrics(),
+            read_latency_ms=120.0,  # I/O-bound → fallback allowed
         )
         assert d.next_frame == 5
 
@@ -250,6 +253,8 @@ class TestSyncedStrategyHysteresis:
     parked near the boundary doesn't flap the mode/read-pattern every frame."""
 
     def _decide(self, s, target, last_completed, last_submitted=0):
+        # Hold reads I/O-bound throughout so these tests exercise the LAG
+        # thresholds (the bottleneck-awareness gate is tested separately).
         timeline = MagicMock()
         timeline.current_frame.return_value = target
         return s.decide(
@@ -257,6 +262,7 @@ class TestSyncedStrategyHysteresis:
             last_completed=last_completed,
             timeline=timeline,
             metrics=_zero_metrics(),
+            read_latency_ms=120.0,
         )
 
     def test_recover_lag_defaults_to_half(self):
@@ -293,6 +299,49 @@ class TestSyncedStrategyHysteresis:
         d = self._decide(s, target=200, last_completed=155)
         assert d.next_frame == 200
         assert s.current_mode() == "synced"
+
+
+class TestSyncedStrategyBottleneckAware:
+    """Fallback to sequential is only right when READS are the bottleneck
+    (slow source → skipping thrashes random I/O to ~0 fps). When COMPUTE is the
+    bottleneck (fast disk, slow GPU), skipping is free for the reader and keeps
+    playback synced; sequential there is just slow-motion."""
+
+    def _decide(self, s, target, last_completed, last_submitted=0, read_latency_ms=None):
+        timeline = MagicMock()
+        timeline.current_frame.return_value = target
+        return s.decide(
+            last_submitted=last_submitted,
+            last_completed=last_completed,
+            timeline=timeline,
+            metrics=_zero_metrics(),
+            read_latency_ms=read_latency_ms,
+        )
+
+    def test_compute_bound_keeps_skipping_when_far_behind(self):
+        # Lag 200 (far behind) but reads are FAST (2 ms) → compute-bound → keep
+        # skipping to stay synced, NOT slow-motion sequential.
+        s = SyncedStrategy(io_bound_read_ms=50)
+        d = self._decide(s, target=200, last_completed=0, last_submitted=10,
+                         read_latency_ms=2.0)
+        assert d.next_frame == 200
+        assert s.current_mode() == "synced"
+
+    def test_io_bound_falls_back_when_far_behind(self):
+        # Lag 200 AND reads SLOW (150 ms, e.g. ffmpeg random seek) → I/O-bound →
+        # sequential fallback.
+        s = SyncedStrategy(io_bound_read_ms=50)
+        d = self._decide(s, target=200, last_completed=0, last_submitted=10,
+                         read_latency_ms=150.0)
+        assert d.next_frame == 11
+        assert s.current_mode() == "synced (lagging)"
+
+    def test_no_latency_signal_keeps_skipping(self):
+        # No read-cost signal → default to staying synced, not assume I/O-bound.
+        s = SyncedStrategy(io_bound_read_ms=50)
+        d = self._decide(s, target=200, last_completed=0, last_submitted=10,
+                         read_latency_ms=None)
+        assert d.next_frame == 200
 
 
 class TestSyncedStrategyLookaheadCap:
@@ -360,6 +409,7 @@ class TestCurrentMode:
             last_completed=5,  # gap = 95, over threshold
             timeline=timeline,
             metrics=_zero_metrics(),
+            read_latency_ms=120.0,  # I/O-bound → fallback engages
         )
         assert s.current_mode() == "synced (lagging)"
 
@@ -374,6 +424,7 @@ class TestCurrentMode:
             last_completed=5,
             timeline=timeline,
             metrics=_zero_metrics(),
+            read_latency_ms=120.0,  # I/O-bound → fallback engages
         )
         assert s.current_mode() == "synced (lagging)"
         # Now caught up.
