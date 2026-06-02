@@ -104,12 +104,15 @@ class JPEGImageWriter:
 def build_image_writer(image_format: ImageFormat, quality: int) -> ImageWriter:
     """Factory used by callers that have settings values but not writer instances.
 
-    `quality` is interpreted per-format: 0-9 for PNG (compression level),
-    1-100 for JPEG (encode quality). Clamping is the writers' job; this
-    factory just dispatches.
+    Callers share ONE `quality` integer on the JPEG scale (1-100; the UI default
+    is 95 and the spinbox is 1-100). PNG compression is a DIFFERENT scale (0-9)
+    and PNGImageWriter rejects out-of-range values, so for PNG we clamp the
+    shared value into 0-9 rather than forwarding a 95 that would raise and crash
+    session/batch setup. The UI gives no PNG-specific control, so the exact
+    clamped level isn't user-visible. JPEG gets the value as-is.
     """
     if image_format is ImageFormat.PNG:
-        return PNGImageWriter(compression=quality)
+        return PNGImageWriter(compression=max(0, min(9, quality)))
     if image_format is ImageFormat.JPEG:
         return JPEGImageWriter(quality=quality)
     raise ValueError(f"unsupported image format: {image_format}")

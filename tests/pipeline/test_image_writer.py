@@ -90,3 +90,16 @@ class TestBuildImageWriter:
         w = build_image_writer(ImageFormat.JPEG, quality=85)
         assert isinstance(w, JPEGImageWriter)
         assert w.quality == 85
+
+    def test_build_png_clamps_jpeg_scale_quality(self):
+        # Callers share one `quality` setting on the JPEG scale (1-100, default
+        # 95). PNG compression is 0-9 and PNGImageWriter rejects out-of-range, so
+        # the factory must clamp instead of forwarding a 95 that raises (which
+        # crashed every PNG session/batch task).
+        w = build_image_writer(ImageFormat.PNG, quality=95)
+        assert isinstance(w, PNGImageWriter)
+        assert w.compression == 9  # clamped into 0-9
+
+    def test_build_png_clamps_below_range(self):
+        w = build_image_writer(ImageFormat.PNG, quality=0)
+        assert w.compression == 0
