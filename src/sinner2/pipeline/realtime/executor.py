@@ -858,10 +858,19 @@ class RealtimeExecutor:
             # the submission index froze playback partway through. The playhead
             # is clamped to last_frame (Timeline.set_max_frame), so it settles
             # there and this fires once the tail frame completes.
-            if (
-                self._timeline.current_frame() >= last_frame
-                and self._last_completed >= last_frame
-            ):
+            # Robustness: if the last frame was submitted but can NEVER complete
+            # (its read returned None / raised — a transient slow-source hiccup),
+            # last_completed stays below last_frame forever and the dispatcher
+            # won't resubmit it (idle branch below). End anyway once nothing is
+            # left in flight, so playback can't hang one frame short of the end.
+            reached_end = self._timeline.current_frame() >= last_frame
+            last_done = self._last_completed >= last_frame
+            stuck_at_end = (
+                self._last_submitted >= last_frame
+                and self._work_queue.empty()
+                and self._inflight_count == 0
+            )
+            if reached_end and (last_done or stuck_at_end):
                 self._timeline.pause()
                 self._state = _State.PAUSED
                 self.is_playing.set(False)

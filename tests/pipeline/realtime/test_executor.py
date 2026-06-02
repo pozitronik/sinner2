@@ -144,6 +144,16 @@ class _MultiFrameReader:
         self.release_calls += 1
 
 
+class _LastFrameFailsReader(_MultiFrameReader):
+    """Like _MultiFrameReader, but the LAST frame's read returns None (a
+    transient source hiccup) — so last_completed can never reach last_frame."""
+
+    def read(self, index: int) -> Frame | None:
+        if index == self._count - 1:
+            return None
+        return super().read(index)
+
+
 @pytest.fixture
 def buffer_setup(tmp_path: Path):
     store = DiskFrameStore(tmp_path / "frames")
@@ -555,6 +565,28 @@ class TestRealtimeExecutorPlayback:
             # pause while the display is still far from the last frame.
             assert not _wait_until(lambda: not ex.is_playing.get(), timeout=0.5)
             assert ex.status.get() != "end of target"
+        finally:
+            ex.stop()
+
+    def test_ends_even_if_last_frame_read_fails(self, buffer_setup):
+        # The final frame's read returns None (transient hiccup). Playback must
+        # still reach "end of target" — not hang one frame short forever waiting
+        # for a completion that can never come.
+        buffer, _timeline, _ = buffer_setup
+        ex = RealtimeExecutor(
+            reader_pool=_pool_for(_LastFrameFailsReader(5, fps=100.0)),
+            buffer=buffer,
+            timeline=Timeline(fps=100.0),
+            chain=[],
+            strategy=SyncedStrategy(),
+        )
+        try:
+            ex.start()
+            ex.play()
+            assert _wait_until(
+                lambda: ex.status.get() == "end of target", timeout=3.0
+            )
+            assert ex.is_playing.get() is False
         finally:
             ex.stop()
 
