@@ -218,3 +218,20 @@ class TestResumeTask:
         store.save(task)
         queue.resume_task(task.id)  # not a resumable state
         assert store.load(task.id).status is BatchTaskStatus.COMPLETED
+
+
+class TestStopPausesNotCancels:
+    """App shutdown (BatchQueue.stop) must PAUSE the running task — leaving its
+    rendered frames on disk so it resumes — NOT cancel it, which rmtree's the
+    whole per-task cache and resets resume markers (data loss)."""
+
+    def test_stop_pauses_running_task_does_not_cancel(self, queue):
+        from unittest.mock import MagicMock
+        driver = MagicMock()  # hold a ref — stop() nulls queue._driver
+        queue._driver = driver  # noqa: SLF001
+        queue._thread = MagicMock()  # noqa: SLF001
+        queue._worker = MagicMock()  # noqa: SLF001
+        queue._current_task_id = "abc"  # noqa: SLF001
+        queue.stop()
+        driver.pause.assert_called_once()   # resumable
+        driver.cancel.assert_not_called()   # no cache wipe

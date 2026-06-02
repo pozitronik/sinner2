@@ -125,11 +125,15 @@ class BatchQueue(QObject):
         self._paused = True
 
     def stop(self) -> None:
-        """Stop the queue and cancel the running task (if any). Used
-        at app shutdown so we don't leak the runner thread."""
+        """Stop the queue at app shutdown WITHOUT losing work. PAUSES the running
+        task (if any) rather than cancelling it: pause returns a PAUSED status
+        that leaves the task's already-rendered frames on disk so it resumes next
+        run, whereas cancel() rmtree's the whole per-task cache and resets the
+        resume markers (data loss). Pause still lets the runner thread finish, so
+        we don't leak it. Explicit user cancellation goes through cancel_task()."""
         self._paused = True
         if self._driver is not None:
-            self._driver.cancel()
+            self._driver.pause()
         if self._thread is not None:
             self._thread.quit()
             self._thread.wait(30_000)  # generous: in-flight encode can be slow
