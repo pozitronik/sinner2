@@ -560,3 +560,40 @@ class TestProviderResolution:
         fs = FaceSwapper(source=Source(path=source_image), providers=None)
         fs.setup()
         assert captured["providers"] == list(DEFAULT_ONNX_PROVIDERS)
+
+
+class TestReleaseRaceContract:
+    """process() must snapshot its backend handles so a concurrent release()
+    (from a live chain swap, bounded inflight wait) can't null them mid-call and
+    turn the worker's frame into a fatal None.get() AttributeError."""
+
+    def test_process_survives_release_during_swap(
+        self, models_dir, source_image, stub_insightface_app, stub_inswapper
+    ):
+        src = MagicMock(name="src"); src.sex = "M"
+        f1 = MagicMock(name="f1"); f1.sex = "M"; f1.bbox = np.array([0, 0, 4, 4], float)
+        f2 = MagicMock(name="f2"); f2.sex = "M"; f2.bbox = np.array([4, 4, 8, 8], float)
+        # setup() detects the source (1 face); process() detects 2 target faces.
+        stub_insightface_app.get.side_effect = [[src], [f1, f2]]
+        fs = FaceSwapper(
+            source=Source(path=source_image),
+            params=FaceSwapperParams(
+                rotation_compensation=False, occlusion_mask=False, many_faces=True
+            ),
+        )
+        fs.setup()
+
+        calls = {"n": 0}
+
+        def swap(img, target, source, paste_back=True):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                # Simulate set_chain/reconfigure releasing this processor while a
+                # worker is mid-process() (the bounded _wait_for_inflight expired).
+                fs.release()
+            return img
+
+        stub_inswapper.get.side_effect = swap
+        out = fs.process(np.zeros((10, 10, 3), dtype=np.uint8))  # must NOT raise
+        assert calls["n"] == 2  # both faces swapped via the local snapshots
+        assert out is not None

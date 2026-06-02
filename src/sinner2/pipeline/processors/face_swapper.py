@@ -227,9 +227,19 @@ class FaceSwapper:
             self._masker.setup()
 
     def process(self, frame: Frame) -> Frame:
-        if self._analyser is None or self._swapper is None or self._source_face is None:
+        # Snapshot the backend handles into locals — release() (from a live
+        # set_chain/reconfigure) can null self._* concurrently, and the
+        # executor's _wait_for_inflight is bounded (5s), so a long in-flight
+        # frame can outlive the wait. Holding local refs keeps the backend alive
+        # for THIS call regardless. (self._params / _detection_sink aren't nulled
+        # by release(), so they're safe to read off self.)
+        analyser = self._analyser
+        swapper = self._swapper
+        source_face = self._source_face
+        masker = self._masker
+        if analyser is None or swapper is None or source_face is None:
             raise RuntimeError("FaceSwapper.process called before setup()")
-        faces = self._analyser.analyse(frame)
+        faces = analyser.analyse(frame)
         # Publish every detected face (before the sex filter) so the debug
         # overlay shows exactly what the detector saw — including faces that
         # won't be swapped. Best-effort; the overlay must never affect the swap.
@@ -238,19 +248,19 @@ class FaceSwapper:
                 self._detection_sink.publish(faces, frame.shape[1], frame.shape[0])
             except Exception:
                 pass
-        target_sex = self._resolved_target_sex()
+        target_sex = self._resolved_target_sex(source_face)
         result = frame
         swapped_faces: list[Any] = []
         for face in faces:
             if not _face_matches(face, target_sex):
                 continue
             before = result
-            result = self._swap_one(before, face)
-            if self._params.occlusion_mask and self._masker is not None:
+            result = self._swap_one(before, face, swapper, source_face, analyser)
+            if self._params.occlusion_mask and masker is not None:
                 # Revert non-facial pixels (hair/glasses/boundary) to the
                 # pre-swap frame. Torch parser → serialize across workers.
                 with self._mask_lock:
-                    result = apply_occlusion(before, result, face, self._masker)
+                    result = apply_occlusion(before, result, face, masker)
             swapped_faces.append(face)
             if not self._params.many_faces:
                 break
@@ -280,25 +290,33 @@ class FaceSwapper:
         except Exception:
             pass
 
-    def _swap_one(self, result: Frame, face: Any) -> Frame:
+    def _swap_one(
+        self,
+        result: Frame,
+        face: Any,
+        swapper: Any,
+        source_face: Any,
+        analyser: FaceAnalyser,
+    ) -> Frame:
         """Swap a single face — uprighting it first when rotation
         compensation is on and the face is tilted past the threshold,
-        otherwise a plain in-place swap."""
+        otherwise a plain in-place swap. Backend handles are passed in (snapshot
+        from process()) so a concurrent release() can't null them mid-swap."""
         if self._params.rotation_compensation:
             roll = compute_roll(face, self._params.rotation_angle_source)
             if abs(roll) >= self._params.rotation_threshold_deg:
                 return swap_with_uprighting(
                     result,
                     face,
-                    self._source_face,
-                    self._swapper,
-                    self._analyser,
+                    source_face,
+                    swapper,
+                    analyser,
                     angle_deg=roll,
                     redetect=self._params.rotation_redetect,
                 )
-        return self._swapper.get(result, face, self._source_face, paste_back=True)
+        return swapper.get(result, face, source_face, paste_back=True)
 
-    def _resolved_target_sex(self) -> TargetSex:
+    def _resolved_target_sex(self, source_face: Any) -> TargetSex:
         """Resolve AS_SOURCE to the source face's actual sex. BOTH/M/F
         pass through unchanged. Falls back to BOTH if the source face
         has no sex attribute (older insightface model) so we never
@@ -306,7 +324,7 @@ class FaceSwapper:
         ts = self._params.target_sex
         if ts is not TargetSex.AS_SOURCE:
             return ts
-        source_sex = getattr(self._source_face, "sex", None)
+        source_sex = getattr(source_face, "sex", None)
         if source_sex == "M":
             return TargetSex.MALE
         if source_sex == "F":
