@@ -95,12 +95,26 @@ class SyncedStrategy:
     # prevent the death-spiral on truly slow sources.
     _DEFAULT_MAX_LAG_FRAMES = 60
 
-    def __init__(self, max_lag_frames: int | None = None) -> None:
+    def __init__(
+        self,
+        max_lag_frames: int | None = None,
+        recover_lag_frames: int | None = None,
+    ) -> None:
         self._max_lag_frames = (
             max_lag_frames
             if max_lag_frames is not None
             else self._DEFAULT_MAX_LAG_FRAMES
         )
+        # Hysteresis: enter fallback above max_lag, but don't LEAVE it until lag
+        # drops below this lower bound. Without the gap, a lag parked near the
+        # threshold flaps the mode (and the read pattern) on every frame. Default
+        # to half the enter threshold; clamp so it's never above it.
+        self._recover_lag_frames = (
+            recover_lag_frames
+            if recover_lag_frames is not None
+            else self._max_lag_frames // 2
+        )
+        self._recover_lag_frames = min(self._recover_lag_frames, self._max_lag_frames)
         # Updated on each decide() call so current_mode() can report
         # whether we're keeping up or in fallback. The dispatcher reads
         # current_mode() right after decide(), so the value is fresh.
@@ -109,6 +123,10 @@ class SyncedStrategy:
     @property
     def max_lag_frames(self) -> int:
         return self._max_lag_frames
+
+    @property
+    def recover_lag_frames(self) -> int:
+        return self._recover_lag_frames
 
     def decide(
         self,
@@ -127,11 +145,18 @@ class SyncedStrategy:
         if last_completed < 0:
             self._in_fallback = False
             return SkipDecision(next_frame=last_submitted + 1)
-        # Fall back to sequential when we're catastrophically behind.
-        if target - last_completed > self._max_lag_frames:
+        # Fall back to sequential when we're catastrophically behind, with
+        # hysteresis: enter above max_lag, stay until lag drops below
+        # recover_lag. A single threshold flaps the mode (and the read pattern)
+        # when lag hovers at the boundary.
+        lag = target - last_completed
+        if self._in_fallback:
+            if lag <= self._recover_lag_frames:
+                self._in_fallback = False
+        elif lag > self._max_lag_frames:
             self._in_fallback = True
+        if self._in_fallback:
             return SkipDecision(next_frame=last_submitted + 1)
-        self._in_fallback = False
         return SkipDecision(next_frame=max(last_submitted + 1, target))
 
     def current_mode(self) -> str:

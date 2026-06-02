@@ -245,6 +245,56 @@ class TestSyncedStrategyAdaptiveFallback:
         assert SyncedStrategy().max_lag_frames == 60  # default
 
 
+class TestSyncedStrategyHysteresis:
+    """Fallback enters above max_lag but only LEAVES below recover_lag, so a lag
+    parked near the boundary doesn't flap the mode/read-pattern every frame."""
+
+    def _decide(self, s, target, last_completed, last_submitted=0):
+        timeline = MagicMock()
+        timeline.current_frame.return_value = target
+        return s.decide(
+            last_submitted=last_submitted,
+            last_completed=last_completed,
+            timeline=timeline,
+            metrics=_zero_metrics(),
+        )
+
+    def test_recover_lag_defaults_to_half(self):
+        assert SyncedStrategy().recover_lag_frames == 30
+        assert SyncedStrategy(max_lag_frames=40).recover_lag_frames == 20
+
+    def test_recover_clamped_below_enter(self):
+        s = SyncedStrategy(max_lag_frames=10, recover_lag_frames=50)
+        assert s.recover_lag_frames == 10
+
+    def test_stays_in_fallback_in_the_hysteresis_band(self):
+        s = SyncedStrategy(max_lag_frames=60, recover_lag_frames=30)
+        # Enter fallback (lag 100 > 60).
+        assert self._decide(s, target=200, last_completed=100).next_frame == 1
+        assert s.current_mode() == "synced (lagging)"
+        # Lag now 45 — between recover(30) and enter(60). Must STAY in fallback
+        # (sequential), not flip back to skip-to-target.
+        d = self._decide(s, target=200, last_completed=155, last_submitted=0)
+        assert d.next_frame == 1  # still sequential
+        assert s.current_mode() == "synced (lagging)"
+
+    def test_exits_fallback_below_recover(self):
+        s = SyncedStrategy(max_lag_frames=60, recover_lag_frames=30)
+        self._decide(s, target=200, last_completed=100)  # enter fallback
+        # Lag now 20 (< recover 30) → leave fallback → skip to target.
+        d = self._decide(s, target=200, last_completed=180, last_submitted=0)
+        assert d.next_frame == 200
+        assert s.current_mode() == "synced"
+
+    def test_does_not_reenter_in_the_band(self):
+        s = SyncedStrategy(max_lag_frames=60, recover_lag_frames=30)
+        # Not in fallback; lag 45 is in the band but below the ENTER threshold,
+        # so we keep skipping (don't enter on the lower bound).
+        d = self._decide(s, target=200, last_completed=155)
+        assert d.next_frame == 200
+        assert s.current_mode() == "synced"
+
+
 class TestCurrentMode:
     """current_mode() surfaces in the status bar so the user can tell
     when an adaptive strategy has shifted behaviour."""
