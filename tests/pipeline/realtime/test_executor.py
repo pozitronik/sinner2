@@ -1702,3 +1702,12 @@ class TestProcessingFpsStallDecay:
             last_completion_time=now, last_fps=0.0,
         )
         assert fps > 5.0
+
+    def test_cold_start_decay_is_capped(self):
+        # First completion just happened (count=1), windowed rate undefined,
+        # last_fps still 0 → the 1/tiny-elapsed estimate must be capped, not a
+        # bogus thousands-fps spike.
+        now = time.monotonic()
+        fps = self._refresh(completion_times=[now], last_completion_time=now,
+                            last_fps=0.0)
+        assert fps <= 120.0

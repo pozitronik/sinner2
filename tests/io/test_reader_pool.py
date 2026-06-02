@@ -244,6 +244,20 @@ class TestReadsPerSecondStallDecay:
         finally:
             pool.shutdown()
 
+    def test_cold_start_decay_is_capped(self):
+        # First read just happened, no prior windowed rate → cap the
+        # 1/tiny-elapsed estimate instead of spiking absurdly.
+        pool, _ = _make_pool(1)
+        try:
+            now = time.monotonic()
+            with pool._rate_lock:  # noqa: SLF001
+                pool._read_times.clear()  # noqa: SLF001
+                pool._last_read_time = now  # noqa: SLF001  (just now)
+                pool._last_read_rate = 0.0  # noqa: SLF001  (no prior rate)
+            assert pool.reads_per_second() <= 300.0
+        finally:
+            pool.shutdown()
+
 
 class TestParallelism:
     def test_size_n_parallelises(self):

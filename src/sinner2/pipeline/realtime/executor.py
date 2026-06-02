@@ -67,6 +67,10 @@ _FPS_WINDOW_S = 3.0
 # small positive fps instead of a hard 0 (indistinguishable from a hang). After
 # this long with no completion at all, fall through to 0 — genuinely stalled.
 _FPS_STALL_HOLD_S = 30.0
+# Ceiling for the stall decay estimate when there's no prior windowed rate to
+# cap it (cold start): keeps the first-completion 1/tiny-elapsed reading from
+# spiking to a bogus thousands-fps value before the windowed rate kicks in.
+_FPS_DECAY_CAP = 120.0
 # Time window for per-processor average-ms readout. Matches _FPS_WINDOW_S
 # so the metrics-overlay row and the rates next to it cover the same
 # wall-clock slice. Cap deque size so a fast no-op chain (1000+ fps)
@@ -1086,7 +1090,8 @@ class RealtimeExecutor:
                 # doesn't spike to a huge 1/tiny-elapsed reading.
                 elapsed = now - last
                 decayed = (1.0 / elapsed) if elapsed > 0 else self._last_fps
-                fps = min(self._last_fps, decayed) if self._last_fps > 0 else decayed
+                cap = self._last_fps if self._last_fps > 0 else _FPS_DECAY_CAP
+                fps = min(decayed, cap)
         self.processing_fps.set(fps)
 
     # ---- Playback ----

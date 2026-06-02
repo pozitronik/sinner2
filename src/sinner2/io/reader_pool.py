@@ -68,6 +68,9 @@ _READ_DURATION_CAP = 1024
 # a small positive value rather than 0 (which looks like a hang). Past this with
 # no read at all, fall through to 0.
 _READ_STALL_HOLD_S = 30.0
+# Ceiling for the stall decay estimate with no prior windowed rate (cold start),
+# so the first read's 1/tiny-elapsed reading doesn't spike absurdly.
+_READ_RATE_DECAY_CAP = 300.0
 
 # Sentinel pushed onto the request queue at shutdown to unblock the
 # reader-thread `queue.get`. A None future also works as the sentinel —
@@ -187,9 +190,12 @@ class ReaderPool:
             if last is not None and (now - last) <= _READ_STALL_HOLD_S:
                 elapsed = now - last
                 decayed = (1.0 / elapsed) if elapsed > 0 else self._last_read_rate
-                if self._last_read_rate > 0:
-                    return min(self._last_read_rate, decayed)
-                return decayed
+                cap = (
+                    self._last_read_rate
+                    if self._last_read_rate > 0
+                    else _READ_RATE_DECAY_CAP
+                )
+                return min(decayed, cap)
             return 0.0
 
     def recent_read_latency_ms(self) -> float:
