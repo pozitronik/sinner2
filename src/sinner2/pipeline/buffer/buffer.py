@@ -196,6 +196,7 @@ class FrameBuffer:
             write_submitted=write_m.submitted,
             write_completed=write_m.completed,
             write_dropped=write_m.dropped,
+            write_failed=write_m.failed,
             write_latency_p50_ms=write_m.latency_p50_ms,
             write_latency_p95_ms=write_m.latency_p95_ms,
         )

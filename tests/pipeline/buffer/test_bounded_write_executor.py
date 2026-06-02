@@ -110,3 +110,34 @@ class TestShutdown:
         ex.shutdown(wait=True)
         assert ex.submit(lambda: None) is False
         assert ex.metrics_snapshot().dropped == 1
+
+
+class TestFailedWriteAccounting:
+    """A write fn that raises (disk full / permission / bad path) must be counted
+    as FAILED, not silently as completed — otherwise a persistent disk failure
+    silently loses frames while metrics report healthy."""
+
+    def test_failed_write_counted_as_failed_not_completed(self):
+        ex = BoundedWriteExecutor(max_workers=1, max_outstanding=4)
+        try:
+            def boom() -> None:
+                raise OSError("disk full")
+
+            assert ex.submit(boom) is True
+        finally:
+            ex.shutdown(wait=True)  # flush the task
+        m = ex.metrics_snapshot()
+        assert m.failed == 1
+        assert m.completed == 0  # NOT counted as a success
+        assert m.outstanding == 0
+
+    def test_successful_write_counted_as_completed(self):
+        ex = BoundedWriteExecutor(max_workers=1, max_outstanding=4)
+        done: list[int] = []
+        try:
+            ex.submit(lambda: done.append(1))
+        finally:
+            ex.shutdown(wait=True)
+        m = ex.metrics_snapshot()
+        assert m.completed == 1
+        assert m.failed == 0

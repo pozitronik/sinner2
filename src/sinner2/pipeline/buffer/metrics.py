@@ -29,5 +29,6 @@ class BufferMetrics:
     write_submitted: int = 0
     write_completed: int = 0
     write_dropped: int = 0
+    write_failed: int = 0  # writes that raised (disk full / permission / bad path)
     write_latency_p50_ms: float = 0.0
     write_latency_p95_ms: float = 0.0

@@ -34,6 +34,7 @@ class WriteExecutorMetrics:
     dropped: int
     latency_p50_ms: float
     latency_p95_ms: float
+    failed: int = 0  # writes that raised (disk full / permission / bad path)
 
 
 class BoundedWriteExecutor:
@@ -50,6 +51,7 @@ class BoundedWriteExecutor:
         self._outstanding = 0
         self._submitted = 0
         self._completed = 0
+        self._failed = 0
         self._dropped = 0
         self._latencies_ms: deque[float] = deque(maxlen=_LATENCY_WINDOW)
 
@@ -65,14 +67,25 @@ class BoundedWriteExecutor:
 
         def wrapped() -> None:
             t0 = time.perf_counter()
+            ok = True
             try:
                 fn(*args, **kwargs)
-            finally:
-                latency_ms = (time.perf_counter() - t0) * 1000
-                with self._lock:
-                    self._outstanding -= 1
+            except Exception:
+                # A raised write (disk full / permission / bad path) must NOT be
+                # counted as completed — that would hide a persistent disk
+                # failure (the frame is silently lost once LRU evicts the cached
+                # copy) behind healthy-looking metrics. Count it as failed and
+                # swallow here (the Future is discarded — nobody checks it — so
+                # re-raising would just be a lost-exception); _failed surfaces it.
+                ok = False
+            latency_ms = (time.perf_counter() - t0) * 1000
+            with self._lock:
+                self._outstanding -= 1
+                if ok:
                     self._completed += 1
                     self._latencies_ms.append(latency_ms)
+                else:
+                    self._failed += 1
 
         try:
             self._pool.submit(wrapped)
@@ -93,6 +106,7 @@ class BoundedWriteExecutor:
                 submitted=self._submitted,
                 completed=self._completed,
                 dropped=self._dropped,
+                failed=self._failed,
                 latency_p50_ms=_percentile(self._latencies_ms, 50),
                 latency_p95_ms=_percentile(self._latencies_ms, 95),
             )
