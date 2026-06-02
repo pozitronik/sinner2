@@ -147,6 +147,12 @@ class SyncedStrategy:
         # whether we're keeping up or in fallback. The dispatcher reads
         # current_mode() right after decide(), so the value is fresh.
         self._in_fallback = False
+        # Whether ANY frame has completed this session. Warm-up (cold start,
+        # first frame loading models) is keyed on this, NOT on last_completed<0
+        # alone — a mid-session seek to frame 0 also drives last_completed to -1
+        # and must not be mistaken for a cold start (which would flood the
+        # opening sequentially instead of tracking wall-clock).
+        self._ever_completed = False
 
     @property
     def max_lag_frames(self) -> int:
@@ -165,13 +171,17 @@ class SyncedStrategy:
         read_latency_ms: float | None = None,
     ) -> SkipDecision:
         target = timeline.current_frame()
+        if last_completed >= 0:
+            self._ever_completed = True
         # Warm-up: nothing has completed yet (cold start — the first frame is
         # still loading models / running its first inference, which can take
         # seconds). Don't chase the wall-clock target: it climbs the whole time,
         # so max(last_submitted+1, target) would fill the queue with sparse high
         # indices and SKIP the opening of the clip. Submit sequentially from
-        # where we are so the opening frames are actually processed.
-        if last_completed < 0:
+        # where we are so the opening frames are actually processed. Gated on
+        # _ever_completed so a mid-session seek-to-0 (also last_completed<0)
+        # isn't misread as a cold start.
+        if last_completed < 0 and not self._ever_completed:
             self._in_fallback = False
             return SkipDecision(next_frame=last_submitted + 1)
         # Fall back to sequential only when we're catastrophically behind AND

@@ -214,6 +214,22 @@ class TestSyncedStrategyAdaptiveFallback:
                  metrics=_zero_metrics())
         assert s.current_mode() == "synced"
 
+    def test_seek_to_zero_after_completion_is_not_warmup(self):
+        # Warm-up is a COLD-START concept (first frame loading models). A seek to
+        # frame 0 mid-session also drives last_completed back to -1, but it must
+        # NOT be treated as warm-up (which would flood the opening sequentially)
+        # — normal skip-to-wall-clock applies once any frame has ever completed.
+        s = SyncedStrategy()
+        tl = MagicMock()
+        tl.current_frame.return_value = 50
+        s.decide(last_submitted=50, last_completed=50, timeline=tl,
+                 metrics=_zero_metrics())  # a frame completed this session
+        # Seek-to-0: last_completed back to -1, but wall-clock playhead is at 10.
+        tl.current_frame.return_value = 10
+        d = s.decide(last_submitted=-1, last_completed=-1, timeline=tl,
+                     metrics=_zero_metrics())
+        assert d.next_frame == 10  # normal skip to wall-clock, NOT warm-up's 0
+
     def test_recovers_when_caught_up(self):
         # Once last_completed catches up to within threshold, behaviour
         # returns to "jump to target." This is the recovery path —
