@@ -23,6 +23,23 @@ from sinner2.pipeline.skip_strategy import BestEffortStrategy
 from sinner2.types import Frame, FrameIndex
 
 
+def _await_setup(executor: RealtimeExecutor, timeout_s: float) -> str | None:
+    """Block until the executor's chain finishes loading models.
+
+    start() runs chain.setup() on a background thread, so model-load failures
+    never raise out of it — they land in the status observable as
+    'chain setup failed: …' with the stop event set. Returns an error message
+    if setup timed out or failed (caller should bail), or None when the chain
+    is ready to play.
+    """
+    if not executor.wait_until_ready(timeout=timeout_s):
+        return f"timeout after {timeout_s}s loading models"
+    status = executor.status.get()
+    if status.startswith("chain setup failed"):
+        return status
+    return None
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="sinner2 smoke test: image-source × image-target end-to-end"
@@ -84,10 +101,14 @@ def main() -> int:
     executor.on_frame_ready(on_frame)
 
     print(f"loading models, running chain: {[p.name for p in chain]}")
-    try:
-        executor.start()
-    except Exception as exc:
-        print(f"setup failed: {exc}", file=sys.stderr)
+    executor.start()
+    # start() loads the chain asynchronously, so a model-load failure does NOT
+    # raise here — it lands in the status observable. Wait for readiness and
+    # bail immediately on failure instead of spinning the full playback timeout.
+    setup_err = _await_setup(executor, timeout_s=300.0)
+    if setup_err is not None:
+        print(f"setup failed: {setup_err}", file=sys.stderr)
+        executor.stop()
         write_executor.shutdown(wait=False)
         return 3
 
@@ -96,8 +117,15 @@ def main() -> int:
     timeout_s = 300.0
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
-        end_of_target = executor.status.get() == "end of target"
-        if end_of_target and delivered.is_set():
+        status = executor.status.get()
+        if status.startswith("chain setup failed"):
+            # A failure that only surfaces once playback starts must also break
+            # the loop rather than waiting out the timeout.
+            print(f"setup failed: {status}", file=sys.stderr)
+            executor.stop()
+            write_executor.shutdown(wait=True)
+            return 3
+        if status == "end of target" and delivered.is_set():
             break
         time.sleep(0.1)
     else:
