@@ -587,3 +587,67 @@ class TestTensorRTBuildWait:
                   actual=("CUDAExecutionProvider",), has_executor=True, cached=True)
         assert window._wait_for_tensorrt_build() is False  # noqa: SLF001
         assert not window.findChildren(QProgressDialog)
+
+
+class TestProviderHighlightDeferred:
+    """A provider toggle rebuilds the chain via the ASYNC set_chain, so the
+    'actual' providers ORT wired up aren't recorded until the dispatcher thread
+    finishes the rebuild. The failed-provider highlight must wait for that
+    recording — otherwise it compares the NEW request against the PREVIOUS
+    session's providers and flashes a spurious red until the next toggle
+    (the reported bug: re-checking a provider goes red, clears a toggle later)."""
+
+    def _wire(self, window, monkeypatch, *, requested, state):
+        from sinner2.pipeline import model_cache
+        monkeypatch.setattr(window._processors, "swapper_providers",  # noqa: SLF001
+                            lambda: requested)
+        monkeypatch.setattr(window._controller, "executor", lambda: object())  # noqa: SLF001
+        monkeypatch.setattr(model_cache, "get_actual_providers",
+                            lambda: state["actual"])
+        monkeypatch.setattr(window._controller, "effective_onnx_providers",  # noqa: SLF001
+                            lambda: state["actual"] or ())
+        marked: list[set] = []
+        monkeypatch.setattr(window._processors, "mark_providers_failed",  # noqa: SLF001
+                            lambda s: marked.append(set(s)))
+        return marked
+
+    def test_no_spurious_red_before_rebuild_records(self, window, qtbot, monkeypatch):
+        # Stale actual is missing the just-requested TRT (rebuild not done yet).
+        # The highlight must NOT fire on this stale value.
+        req = ["TensorrtExecutionProvider", "CUDAExecutionProvider",
+               "CPUExecutionProvider"]
+        state = {"actual": ("CUDAExecutionProvider", "CPUExecutionProvider")}
+        marked = self._wire(window, monkeypatch, requested=req, state=state)
+        window._schedule_provider_highlight_refresh()  # noqa: SLF001
+        assert marked == []  # nothing highlighted on the stale snapshot
+        # Async rebuild lands: ORT actually wired up all three.
+        state["actual"] = tuple(req)
+        qtbot.waitUntil(lambda: bool(marked), timeout=3000)
+        assert marked[-1] == set()  # highlighted against truth → no failure
+
+    def test_genuine_fallback_still_marks_red(self, window, qtbot, monkeypatch):
+        # before = a working TRT session; the rebuild really falls back to
+        # CUDA+CPU → the highlight must still go red (post-rebuild, not spurious).
+        req = ["TensorrtExecutionProvider", "CUDAExecutionProvider",
+               "CPUExecutionProvider"]
+        state = {"actual": tuple(req)}
+        marked = self._wire(window, monkeypatch, requested=req, state=state)
+        window._schedule_provider_highlight_refresh()  # noqa: SLF001
+        state["actual"] = ("CUDAExecutionProvider", "CPUExecutionProvider")
+        qtbot.waitUntil(lambda: bool(marked), timeout=3000)
+        assert "TensorrtExecutionProvider" in marked[-1]
+
+    def test_no_session_highlights_immediately(self, window, monkeypatch):
+        # No live session → nothing to wait for → highlight right away.
+        from sinner2.pipeline import model_cache
+        monkeypatch.setattr(window._processors, "swapper_providers",  # noqa: SLF001
+                            lambda: ["CUDAExecutionProvider"])
+        monkeypatch.setattr(window._controller, "executor", lambda: None)  # noqa: SLF001
+        monkeypatch.setattr(model_cache, "get_actual_providers", lambda: None)
+        monkeypatch.setattr(window._controller, "effective_onnx_providers",  # noqa: SLF001
+                            lambda: ("CUDAExecutionProvider",))
+        marked: list[set] = []
+        monkeypatch.setattr(window._processors, "mark_providers_failed",  # noqa: SLF001
+                            lambda s: marked.append(set(s)))
+        window._schedule_provider_highlight_refresh()  # noqa: SLF001
+        assert marked == [set()]  # immediate, no deferral

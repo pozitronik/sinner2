@@ -119,6 +119,11 @@ class SinnerMainWindow(QMainWindow):
         # True while a batch task renders — locks the live-editing surface so
         # the display acts purely as a render preview (DaVinci-style).
         self._batch_active = False
+        # Non-modal poll that refreshes the failed-provider highlight AFTER an
+        # async chain rebuild records the real providers (see
+        # _schedule_provider_highlight_refresh). One at a time — a newer toggle
+        # replaces it.
+        self._provider_highlight_timer: QTimer | None = None
         # While a batch renders we repurpose the position bar to track the
         # render's last frame; this caches the slider range we set so we only
         # reset it when the stage's frame count actually changes (set_frame_count
@@ -583,6 +588,55 @@ class SinnerMainWindow(QMainWindow):
                 7000,
             )
 
+    def _schedule_provider_highlight_refresh(self) -> None:
+        """Refresh the failed-provider highlight AFTER the async chain rebuild
+        records what ORT actually wired up.
+
+        ``set_chain`` is asynchronous — the rebuild + provider recording run on
+        the executor's dispatcher thread — so highlighting synchronously here
+        would compare the new request against the PREVIOUS session's providers
+        and flash a spurious red until the next toggle (the reported bug: a
+        re-checked provider goes red, then clears one toggle later). Poll
+        ``get_actual_providers()`` (non-modal) until it changes from the
+        pre-rebuild snapshot, a newer toggle supersedes this request, the
+        session goes away, or a short timeout backstops a same-providers
+        rebuild — then highlight against the truth. A genuine fallback still
+        shows red, just after the rebuild instead of before it.
+        """
+        from sinner2.pipeline import model_cache
+
+        requested = tuple(self._processors.swapper_providers())
+        if not requested or self._controller.executor() is None:
+            # Defaults in use, or no live session to rebuild — nothing to wait
+            # for; highlight against the current truth immediately.
+            self._highlight_failed_providers()
+            return
+        before = model_cache.get_actual_providers()
+        # Replace any in-flight refresh so rapid toggles don't stack timers.
+        if self._provider_highlight_timer is not None:
+            self._provider_highlight_timer.stop()
+        elapsed = QElapsedTimer()
+        elapsed.start()
+        timer = QTimer(self)
+        timer.setInterval(150)
+        self._provider_highlight_timer = timer
+
+        def _poll() -> None:
+            actual = model_cache.get_actual_providers()
+            rebuilt = actual != before  # the rebuilt session recorded its EPs
+            superseded = tuple(self._processors.swapper_providers()) != requested
+            gone = self._controller.executor() is None
+            if rebuilt or superseded or gone or elapsed.elapsed() > 8000:
+                timer.stop()
+                if self._provider_highlight_timer is timer:
+                    self._provider_highlight_timer = None
+                # A newer toggle owns the highlight now — don't fight it.
+                if not superseded:
+                    self._highlight_failed_providers()
+
+        timer.timeout.connect(_poll)
+        timer.start()
+
     def _update_metrics_label(self, metrics: object) -> None:
         # `metrics` is BufferMetrics. Compact one-liner: cache hit% / memory MB,
         # write queue depth, total drops, write latency p50/p95.
@@ -674,8 +728,11 @@ class SinnerMainWindow(QMainWindow):
         # (blocks the dispatcher ~25s). Show a modal "compiling" dialog until it
         # finishes rather than leaving a frozen preview + a (prematurely) red
         # provider checkbox; the highlight is refreshed when the wait ends.
+        # Otherwise defer the highlight until the async rebuild records the real
+        # providers (set_chain is async), so re-checking a provider doesn't flash
+        # a spurious red against the previous session's provider list.
         if not self._wait_for_tensorrt_build():
-            self._highlight_failed_providers()
+            self._schedule_provider_highlight_refresh()
 
     _TRT_PROVIDER = "TensorrtExecutionProvider"
 
