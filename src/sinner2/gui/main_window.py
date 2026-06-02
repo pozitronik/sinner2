@@ -1,12 +1,13 @@
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QByteArray, QElapsedTimer, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
     QFileDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
+    QProgressDialog,
     QSplitter,
     QVBoxLayout,
     QWidget,
@@ -606,11 +607,6 @@ class SinnerMainWindow(QMainWindow):
         ):
             self._processors.set_enhancer_model(EnhancerModel.GFPGAN.value)
 
-        # TensorRT fp16 is read when a TRT session builds; push it before the
-        # chain rebuild so a providers change that turns TRT on picks it up.
-        from sinner2.pipeline import model_cache
-        model_cache.set_tensorrt_fp16(self._processors.tensorrt_fp16())
-
         self._controller.apply_session_config(
             swapper_params=self._processors.swapper_params(),
             enhancer_params=self._processors.enhancer_params(),
@@ -648,7 +644,60 @@ class SinnerMainWindow(QMainWindow):
         # apply_session_config above; just refresh the status-bar EP label
         # and the failed-provider highlight afterwards.
         self._refresh_providers_label()
-        self._highlight_failed_providers()
+        # A TensorRT-enable triggers a one-time engine compile on the executor
+        # (blocks the dispatcher ~25s). Show a modal "compiling" dialog until it
+        # finishes rather than leaving a frozen preview + a (prematurely) red
+        # provider checkbox; the highlight is refreshed when the wait ends.
+        if not self._wait_for_tensorrt_build():
+            self._highlight_failed_providers()
+
+    _TRT_PROVIDER = "TensorrtExecutionProvider"
+
+    def _wait_for_tensorrt_build(self) -> bool:
+        """If TensorRT was just requested but isn't the effective provider yet, a
+        (possibly slow, one-time) engine build is about to run. Show a modal busy
+        dialog until TensorRT becomes effective (build done) or we time out, then
+        refresh the provider highlight. Returns True if it took over the wait
+        (caller must NOT also highlight); False if there's nothing to wait for.
+
+        No-op when: TRT isn't requested, it's already effective (cached engine),
+        or there's no live session (the build then happens at next session start
+        under the normal 'loading models' flow)."""
+        if self._TRT_PROVIDER not in self._processors.swapper_providers():
+            return False
+        if self._TRT_PROVIDER in self._controller.effective_onnx_providers():
+            return False
+        if self._controller.executor() is None:
+            return False
+        dialog = QProgressDialog(
+            "Compiling the TensorRT engine for the swap model.\n"
+            "One-time step (about 30 seconds); cached for next time.",
+            "", 0, 0, self,
+        )
+        dialog.setWindowTitle("TensorRT")
+        dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
+        dialog.setCancelButton(None)  # the compile can't be interrupted
+        dialog.setMinimumDuration(0)
+        dialog.setAutoClose(False)
+        dialog.setAutoReset(False)
+        dialog.show()
+        elapsed = QElapsedTimer()
+        elapsed.start()
+        timer = QTimer(self)
+        timer.setInterval(400)
+
+        def _poll() -> None:
+            done = self._TRT_PROVIDER in self._controller.effective_onnx_providers()
+            # 75s safety net: a successful build appears well before then; this
+            # bounds the wait if TRT silently fell back (engine never records).
+            if done or elapsed.elapsed() > 75_000 or self._controller.executor() is None:
+                timer.stop()
+                dialog.close()
+                self._highlight_failed_providers()
+
+        timer.timeout.connect(_poll)
+        timer.start()
+        return True
 
     def _ensure_upscaler_model(self) -> bool:
         """Confirm + download the selected upscaler's weights if missing.
@@ -1107,7 +1156,6 @@ class SinnerMainWindow(QMainWindow):
             processing_scale=self._settings.processing_scale,
             synced_max_lag_frames=self._settings.synced_max_lag_frames,
             swapper_providers=self._settings.swapper_providers,
-            tensorrt_fp16=self._settings.tensorrt_fp16,
             enhancer_device=self._settings.enhancer_device,
             upscaler_enabled=self._settings.upscaler_enabled,
             upscaler_model=self._settings.upscaler_model,
@@ -1115,11 +1163,6 @@ class SinnerMainWindow(QMainWindow):
             upscaler_fp16=self._settings.upscaler_fp16,
             upscaler_device=self._settings.upscaler_device,
         )
-        # Push the persisted TensorRT fp16 choice into model_cache before any
-        # session builds (the value is read when a TRT session is constructed).
-        # Defaults OFF — inswapper's fp16 TRT engine produces a corrupted swap.
-        from sinner2.pipeline import model_cache
-        model_cache.set_tensorrt_fp16(bool(self._settings.tensorrt_fp16))
 
     def _persist_processor_settings(self) -> None:
         swapper = self._processors.swapper_params()
@@ -1158,7 +1201,6 @@ class SinnerMainWindow(QMainWindow):
             processing_scale=self._processors.processing_scale(),
             synced_max_lag_frames=self._processors.synced_max_lag_frames(),
             swapper_providers=self._processors.swapper_providers(),
-            tensorrt_fp16=self._processors.tensorrt_fp16(),
             enhancer_device=self._processors.enhancer_device(),
             upscaler_enabled=self._processors.upscaler_enabled(),
             upscaler_model=self._processors.upscaler_params().model.value,

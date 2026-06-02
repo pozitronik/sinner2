@@ -129,20 +129,24 @@ _CUDA_PROVIDER_OPTIONS: dict[str, str] = {
 }
 
 
-# TensorRT engine precision. Defaults to fp32 (off): inswapper_128's TRT fp16
-# engine produces NaN output (the swap comes out as garbage), measured on the
-# 5090. fp32 TRT matches CUDA bit-for-bit and is still meaningfully faster.
-# The GUI toggle (set_tensorrt_fp16) lets the curious try fp16 per-model, but it
-# stays off by default for correctness. Baked into the built engine, so a change
-# takes effect once a new (precision-specific) engine is built.
-_tensorrt_fp16 = False
+# TensorRT engine precision. fp32 (off) by design: inswapper_128's TRT fp16
+# engine produces a corrupted swap (max abs error ~0.93 vs CUDA, measured on the
+# 5090), so there is deliberately NO GUI toggle for it. fp32 TRT matches CUDA and
+# is still faster. The SINNER2_TENSORRT_FP16 env var is an escape hatch for
+# experimenting with a different, fp16-clean swap model — not a user-facing knob.
+# Baked into the built engine, so a change needs a new (precision-specific) build.
+_tensorrt_fp16 = os.environ.get("SINNER2_TENSORRT_FP16", "").lower() in (
+    "1", "true", "yes", "on",
+)
 _tensorrt_preloaded = False
 
 
 def set_tensorrt_fp16(enabled: bool) -> None:
-    """In-app toggle for TensorRT fp16. Affects engines built AFTER the change
-    (the flag is compiled into the engine); existing cached engines keep their
-    precision until the cache directory is cleared."""
+    """Programmatic override for TensorRT fp16 (used by tests / advanced
+    callers). Affects engines built AFTER the change (the flag is compiled into
+    the engine); existing cached engines keep their precision until the cache
+    directory is cleared. No GUI toggle exposes this — fp16 corrupts the bundled
+    inswapper model."""
     global _tensorrt_fp16
     _tensorrt_fp16 = bool(enabled)
 

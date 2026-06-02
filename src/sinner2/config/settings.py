@@ -74,7 +74,6 @@ class Settings(SinnerBaseModel):
     swapper_occlusion_mask: bool | None = None
     swapper_occlusion_parser: str | None = None  # bisenet | parsenet
     swapper_providers: list[str] | None = None  # realtime ONNX EPs (swapper + analyser)
-    tensorrt_fp16: bool | None = None  # build TensorRT engines in fp16 (when TRT EP selected)
     enhancer_device: str | None = None  # realtime torch device for GFPGAN
     # Upscaler (Real-ESRGAN) — whole-frame super-resolution
     upscaler_enabled: bool | None = None

@@ -523,3 +523,40 @@ class TestSaveCurrentFrame:
         assert out.is_file()
         assert out.stat().st_size > 0
         assert "Saved" in window._status_bar.current_message()  # noqa: SLF001
+
+
+class TestTensorRTBuildWait:
+    """_wait_for_tensorrt_build shows a modal 'compiling' dialog only when a TRT
+    engine build is actually about to run (TRT requested, not yet effective, live
+    session) — and otherwise no-ops so the normal highlight runs."""
+
+    def _set(self, window, monkeypatch, *, requested, effective, has_executor):
+        from unittest.mock import MagicMock
+        monkeypatch.setattr(window._processors, "swapper_providers", lambda: requested)  # noqa: SLF001
+        monkeypatch.setattr(window._controller, "effective_onnx_providers", lambda: tuple(effective))  # noqa: SLF001
+        monkeypatch.setattr(window._controller, "executor", lambda: (MagicMock() if has_executor else None))  # noqa: SLF001
+
+    def test_no_wait_when_trt_not_requested(self, window, monkeypatch):
+        self._set(window, monkeypatch, requested=["CUDAExecutionProvider"],
+                  effective=["CUDAExecutionProvider"], has_executor=True)
+        assert window._wait_for_tensorrt_build() is False  # noqa: SLF001
+
+    def test_no_wait_when_trt_already_effective(self, window, monkeypatch):
+        self._set(window, monkeypatch, requested=["TensorrtExecutionProvider"],
+                  effective=["TensorrtExecutionProvider", "CUDAExecutionProvider"], has_executor=True)
+        assert window._wait_for_tensorrt_build() is False  # noqa: SLF001
+
+    def test_no_wait_when_no_session(self, window, monkeypatch):
+        self._set(window, monkeypatch, requested=["TensorrtExecutionProvider"],
+                  effective=["CUDAExecutionProvider"], has_executor=False)
+        assert window._wait_for_tensorrt_build() is False  # noqa: SLF001
+
+    def test_shows_modal_when_build_pending(self, window, monkeypatch):
+        from PySide6.QtWidgets import QProgressDialog
+        self._set(window, monkeypatch, requested=["TensorrtExecutionProvider"],
+                  effective=["CUDAExecutionProvider"], has_executor=True)
+        assert window._wait_for_tensorrt_build() is True  # noqa: SLF001
+        dialogs = window.findChildren(QProgressDialog)
+        assert dialogs, "a modal compile dialog should be shown"
+        for d in dialogs:
+            d.close()  # release modality / clean up

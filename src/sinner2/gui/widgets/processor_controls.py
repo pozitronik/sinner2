@@ -299,21 +299,6 @@ class QProcessorControls(QWidget):
             providers_layout.addWidget(cb)
             self._provider_checkboxes[prov] = cb
         swapper_form.addRow("ONNX providers", providers_box)
-        # fp16 for TensorRT engine builds. Only affects the TensorRT provider
-        # (greyed-out value otherwise); kept next to the provider list since
-        # that's where TRT is enabled.
-        self._tensorrt_fp16 = QCheckBox()
-        self._tensorrt_fp16.setChecked(False)
-        self._tensorrt_fp16.setToolTip(
-            "Build TensorRT engines in fp16 (faster). OFF by default because the\n"
-            "inswapper fp16 engine produces a corrupted swap on this model —\n"
-            "leave it off unless you've verified your swap model is fp16-clean.\n"
-            "Only matters when the TensorRT provider is enabled; changing it\n"
-            "rebuilds the engine on the next session (engines are precision-\n"
-            "specific)."
-        )
-        self._tensorrt_fp16.toggled.connect(self.configChanged)
-        swapper_form.addRow("TensorRT fp16", self._tensorrt_fp16)
 
         enhancer_box = QGroupBox("FaceEnhancer")
         enhancer_box.setCheckable(True)
@@ -1119,11 +1104,6 @@ class QProcessorControls(QWidget):
             if cb.isChecked()
         ]
 
-    def tensorrt_fp16(self) -> bool:
-        """Whether TensorRT engines should be built in fp16 (only relevant when
-        the TensorRT provider is enabled)."""
-        return self._tensorrt_fp16.isChecked()
-
     def enhancer_device(self) -> str:
         """Selected torch device token for the realtime enhancer
         ("auto" / "cpu" / "cuda:N")."""
@@ -1208,7 +1188,6 @@ class QProcessorControls(QWidget):
         processing_scale: float | None,
         synced_max_lag_frames: int | None,
         swapper_providers: list[str] | None,
-        tensorrt_fp16: bool | None = None,
         enhancer_device: str | None,
         upscaler_enabled: bool | None = None,
         upscaler_model: str | None = None,
@@ -1259,7 +1238,6 @@ class QProcessorControls(QWidget):
             self._reader_pool_size,
             self._scale_slider,
             self._synced_max_lag_frames,
-            self._tensorrt_fp16,
             *self._provider_checkboxes.values(),
         )
         for w in widgets:
@@ -1385,8 +1363,6 @@ class QProcessorControls(QWidget):
                 wanted = set(swapper_providers)
                 for name, cb in self._provider_checkboxes.items():
                     cb.setChecked(name in wanted)
-            if tensorrt_fp16 is not None:
-                self._tensorrt_fp16.setChecked(tensorrt_fp16)
         finally:
             for w in widgets:
                 w.blockSignals(False)
