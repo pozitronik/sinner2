@@ -95,15 +95,27 @@ class SyncedStrategy:
     # prevent the death-spiral on truly slow sources.
     _DEFAULT_MAX_LAG_FRAMES = 60
 
+    # How far ahead of the wall-clock playhead the dispatcher may pre-render.
+    # ~4 s at 30 fps: enough cushion to ride out brief slow-downs without a
+    # faster-than-target pipeline rendering the whole rest of the clip ahead of
+    # the display (wasted compute + memory, all discarded on a seek).
+    _DEFAULT_LOOKAHEAD_FRAMES = 120
+
     def __init__(
         self,
         max_lag_frames: int | None = None,
         recover_lag_frames: int | None = None,
+        lookahead_frames: int | None = None,
     ) -> None:
         self._max_lag_frames = (
             max_lag_frames
             if max_lag_frames is not None
             else self._DEFAULT_MAX_LAG_FRAMES
+        )
+        self._lookahead_frames = (
+            lookahead_frames
+            if lookahead_frames is not None
+            else self._DEFAULT_LOOKAHEAD_FRAMES
         )
         # Hysteresis: enter fallback above max_lag, but don't LEAVE it until lag
         # drops below this lower bound. Without the gap, a lag parked near the
@@ -157,7 +169,13 @@ class SyncedStrategy:
             self._in_fallback = True
         if self._in_fallback:
             return SkipDecision(next_frame=last_submitted + 1)
-        return SkipDecision(next_frame=max(last_submitted + 1, target))
+        nxt = max(last_submitted + 1, target)
+        if nxt > target + self._lookahead_frames:
+            # Already rendered the full look-ahead window past the playhead —
+            # idle rather than pre-render further. Bounds a faster-than-target
+            # pipeline's render-ahead to a fixed cushion.
+            return SkipDecision(next_frame=None)
+        return SkipDecision(next_frame=nxt)
 
     def current_mode(self) -> str:
         return "synced (lagging)" if self._in_fallback else "synced"

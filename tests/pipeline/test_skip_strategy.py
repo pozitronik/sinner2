@@ -295,6 +295,39 @@ class TestSyncedStrategyHysteresis:
         assert s.current_mode() == "synced"
 
 
+class TestSyncedStrategyLookaheadCap:
+    """A faster-than-target pipeline must not pre-render the whole rest of the
+    clip ahead of the playhead — render-ahead is bounded to lookahead_frames."""
+
+    def _decide(self, s, target, last_submitted, last_completed=None):
+        timeline = MagicMock()
+        timeline.current_frame.return_value = target
+        return s.decide(
+            last_submitted=last_submitted,
+            last_completed=last_completed if last_completed is not None else target,
+            timeline=timeline,
+            metrics=_zero_metrics(),
+        )
+
+    def test_idles_when_rendered_full_lookahead_ahead(self):
+        s = SyncedStrategy(lookahead_frames=120)
+        # Submitted 250, playhead at 10 → 240 ahead, past the 120 cushion → idle.
+        d = self._decide(s, target=10, last_submitted=250, last_completed=10)
+        assert d.next_frame is None
+
+    def test_submits_within_the_lookahead_window(self):
+        s = SyncedStrategy(lookahead_frames=120)
+        # Submitted 100, playhead 10 → 90 ahead, within the cushion → keep going.
+        d = self._decide(s, target=10, last_submitted=100, last_completed=10)
+        assert d.next_frame == 101
+
+    def test_default_lookahead_does_not_block_normal_sync(self):
+        # In-sync submission (target just ahead of last_submitted) is never capped.
+        s = SyncedStrategy()
+        d = self._decide(s, target=500, last_submitted=499, last_completed=499)
+        assert d.next_frame == 500
+
+
 class TestCurrentMode:
     """current_mode() surfaces in the status bar so the user can tell
     when an adaptive strategy has shifted behaviour."""
