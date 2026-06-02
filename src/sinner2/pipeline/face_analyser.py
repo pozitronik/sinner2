@@ -33,10 +33,16 @@ def _get_shared_face_analysis(providers: list[str] | None = None) -> Any:
             from sinner2.pipeline.model_cache import build_provider_options
 
             eps = list(providers) if providers else list(DEFAULT_ONNX_PROVIDERS)
-            # FaceAnalysis forwards providers + provider_options to each
-            # sub-model's ORT session (detector, landmark, etc.), so the detector
-            # gets the same CUDA tuning (cuDNN algo search, arena strategy) as
-            # the swapper.
+            # The detector pack (buffalo_l = 5 small fixed-shape models) does NOT
+            # go through TensorRT: each sub-model would compile its OWN engine
+            # (minutes of first-run build) for little gain, and some hit the same
+            # fp16 issues as the swapper. Strip TRT here so the detector runs on
+            # CUDA(+CPU) even when the swapper uses TRT — only the (single, heavy)
+            # inswapper model is worth a TRT engine. FaceAnalysis still forwards
+            # provider_options, so the detector keeps the CUDA cuDNN/arena tuning.
+            eps = [p for p in eps if p != "TensorrtExecutionProvider"] or list(
+                DEFAULT_ONNX_PROVIDERS
+            )
             app = FaceAnalysis(
                 name=_FACE_MODEL_NAME,
                 providers=eps,

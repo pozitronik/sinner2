@@ -278,10 +278,11 @@ class TestApplyRestoredSettings:
         widget._enhancer_fp16.setChecked(False)  # noqa: SLF001
         assert widget.enhancer_params().fp16 is False
 
-    def test_tensorrt_fp16_default_on_and_getter(self, widget):
-        assert widget.tensorrt_fp16() is True
-        widget._tensorrt_fp16.setChecked(False)  # noqa: SLF001
+    def test_tensorrt_fp16_default_off_and_getter(self, widget):
+        # OFF by default: inswapper's fp16 TRT engine yields a corrupted swap.
         assert widget.tensorrt_fp16() is False
+        widget._tensorrt_fp16.setChecked(True)  # noqa: SLF001
+        assert widget.tensorrt_fp16() is True
 
     def test_applies_tensorrt_fp16(self, widget):
         widget.apply_restored_settings(

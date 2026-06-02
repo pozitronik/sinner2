@@ -113,3 +113,30 @@ class TestSharedFaceAnalysisProviders:
         ]
         assert captured["provider_options"][0]["cudnn_conv_algo_search"] == "EXHAUSTIVE"
         assert captured["provider_options"][1] == {}
+
+    def test_detector_does_not_use_tensorrt(self, monkeypatch: pytest.MonkeyPatch):
+        # The detector pack stays on CUDA even when the swapper uses TensorRT —
+        # else buffalo_l's 5 sub-models each compile their own engine.
+        import sys
+        import types
+
+        captured: dict = {}
+
+        class FakeFaceAnalysis:
+            def __init__(self, name=None, providers=None, provider_options=None, **kw):
+                captured["providers"] = providers
+
+            def prepare(self, ctx_id=0, det_size=None):  # noqa: ARG002
+                pass
+
+        app_mod = types.ModuleType("insightface.app")
+        app_mod.FaceAnalysis = FakeFaceAnalysis  # type: ignore[attr-defined]
+        pkg = sys.modules.get("insightface") or types.ModuleType("insightface")
+        monkeypatch.setitem(sys.modules, "insightface", pkg)
+        monkeypatch.setitem(sys.modules, "insightface.app", app_mod)
+
+        face_analyser._get_shared_face_analysis(
+            ["TensorrtExecutionProvider", "CUDAExecutionProvider", "CPUExecutionProvider"]
+        )
+        assert "TensorrtExecutionProvider" not in captured["providers"]
+        assert captured["providers"] == ["CUDAExecutionProvider", "CPUExecutionProvider"]

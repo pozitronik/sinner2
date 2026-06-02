@@ -129,11 +129,13 @@ _CUDA_PROVIDER_OPTIONS: dict[str, str] = {
 }
 
 
-# TensorRT engine builds in fp16 by default (≈2× tensor-core throughput,
-# negligible quality cost for the swap/detect models). Toggled at runtime by the
-# GUI via set_tensorrt_fp16 — the value is baked into the built engine, so a
-# change only takes effect once the engine cache is cleared / rebuilt.
-_tensorrt_fp16 = True
+# TensorRT engine precision. Defaults to fp32 (off): inswapper_128's TRT fp16
+# engine produces NaN output (the swap comes out as garbage), measured on the
+# 5090. fp32 TRT matches CUDA bit-for-bit and is still meaningfully faster.
+# The GUI toggle (set_tensorrt_fp16) lets the curious try fp16 per-model, but it
+# stays off by default for correctness. Baked into the built engine, so a change
+# takes effect once a new (precision-specific) engine is built.
+_tensorrt_fp16 = False
 _tensorrt_preloaded = False
 
 

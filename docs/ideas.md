@@ -31,17 +31,20 @@ What the pipeline already does well, so we don't redo it:
 
 ### High payoff
 
-- ~~**TensorRT execution provider** for the swapper + detector.~~ **✅ DONE.**
-  Selecting `TensorrtExecutionProvider` in the swapper's ONNX providers routes
-  the inswapper + buffalo_l through TensorRT; `model_cache.build_provider_options`
-  attaches a persistent engine cache (`<models>/trt_engines/`) + fp16, and
-  `_preload_tensorrt_libs` registers the TRT runtime DLLs so the EP actually
-  loads (else ORT silently falls back to CUDA). **Measured ~3.06× on inswapper
-  (11.9 → 3.9 ms) on an RTX 5090**, one-time 25 s engine build (then ~3 s cached
-  load). Needs the TRT 10.x runtime (the installer offers it; `nvinfer_10` —
-  the 11.x line is incompatible with onnxruntime-gpu 1.20+). fp16 toggle in the
-  realtime panel + settings. Remaining TRT follow-ups: int8, CUDA-graph, and
-  wiring engine cache for CodeFormer/upscaler.
+- ~~**TensorRT execution provider** for the swapper + detector.~~ **✅ SHIPPED
+  (fp32 only).** Selecting `TensorrtExecutionProvider` in the swapper's ONNX
+  providers routes the **inswapper** (only — the detector stays on CUDA so
+  buffalo_l's 5 sub-models don't each compile an engine) through TensorRT.
+  `model_cache.build_provider_options` attaches a persistent engine cache
+  (`<models>/trt_engines/`); `_preload_tensorrt_libs` registers the TRT runtime
+  DLLs (else ORT silently falls back to CUDA). Needs TRT 10.x (`nvinfer_10`; the
+  11.x line is incompatible with onnxruntime-gpu 1.20+); installer offers it.
+  **Reality check (RTX 5090):** fp16 is **3.5× (3.4 ms) but produces a corrupted
+  swap — max abs error 0.93 vs CUDA on inswapper** → fp16 defaults OFF. Correct
+  **fp32 is only ~1.3× (11.8 → 9.1 ms)**. So the net win is modest. One-time
+  ~25 s engine build (then ~3 s cached). Open follow-ups if pursued: build the
+  engine OFF the dispatcher thread (the build currently freezes the preview on
+  first enable), investigate an fp16-clean swap model, int8/CUDA-graph.
 
 - ~~**FP16 for GFPGAN.**~~ **✅ DONE.** `FaceEnhancerParams.fp16` (default on,
   CUDA only) half()s the GFPGAN generator and wraps `restorer.enhance` in
@@ -173,9 +176,9 @@ a model entry. Roughly in value order:
 
 ## Suggested sequencing
 
-1. **Speed:** ~~GFPGAN fp16~~, ~~ORT session tuning~~, ~~TensorRT EP + engine
-   cache~~ (✅ done, ~3× on the swapper) → next: IO binding, or extend the TRT
-   engine cache to CodeFormer/upscaler; int8 is a quality trade-off.
+1. **Speed:** ~~GFPGAN fp16~~, ~~ORT session tuning~~ (✅ done); TensorRT EP
+   shipped but only ~1.3× at fp32 (fp16 corrupts inswapper) — modest. Next:
+   IO binding, or an fp16-clean swap model so TRT's 3.5× becomes usable.
 2. **Quality:** ~~enhancer-as-a-choice (CodeFormer) + occlusion masking~~
    (✅ done) → GPEN / RestoreFormer++ for higher-detail restoration.
 3. **Hardware:** treat the provider list as the seam to later experiment with

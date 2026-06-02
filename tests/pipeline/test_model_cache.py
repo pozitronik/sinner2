@@ -162,6 +162,13 @@ class TestSessionTuning:
     are applied centrally so the swapper, detector, codeformer, and converters
     are all tuned identically — and this is the seam TensorRT later reuses."""
 
+    @pytest.fixture(autouse=True)
+    def _reset_trt_fp16(self):
+        from sinner2.pipeline.model_cache import set_tensorrt_fp16
+
+        yield
+        set_tensorrt_fp16(False)  # module default; don't leak across tests
+
     def test_cuda_gets_tuned_options(self):
         opts = build_provider_options(
             ["CUDAExecutionProvider", "CPUExecutionProvider"]
@@ -201,11 +208,14 @@ class TestSessionTuning:
 
         monkeypatch.setenv("SINNER2_TRT_CACHE_DIR", str(tmp_path / "trt"))
         try:
+            set_tensorrt_fp16(True)
+            opts = build_provider_options(["TensorrtExecutionProvider"])
+            assert opts[0]["trt_fp16_enable"] == "True"
             set_tensorrt_fp16(False)
             opts = build_provider_options(["TensorrtExecutionProvider"])
             assert "trt_fp16_enable" not in opts[0]  # fp16 off → flag omitted
         finally:
-            set_tensorrt_fp16(True)  # restore module default for other tests
+            set_tensorrt_fp16(False)  # restore module default (off) for other tests
 
     def test_options_are_fresh_copies(self):
         # Each call returns independent dicts — mutating one must not corrupt

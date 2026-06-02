@@ -303,12 +303,14 @@ class QProcessorControls(QWidget):
         # (greyed-out value otherwise); kept next to the provider list since
         # that's where TRT is enabled.
         self._tensorrt_fp16 = QCheckBox()
-        self._tensorrt_fp16.setChecked(True)
+        self._tensorrt_fp16.setChecked(False)
         self._tensorrt_fp16.setToolTip(
-            "Build TensorRT engines in fp16 (≈2× faster, negligible quality\n"
-            "cost). Only matters when the TensorRT provider is enabled. Changing\n"
-            "it rebuilds the engine on the next session (engines are precision-\n"
-            "specific). Disable if you see fp16 artifacts."
+            "Build TensorRT engines in fp16 (faster). OFF by default because the\n"
+            "inswapper fp16 engine produces a corrupted swap on this model —\n"
+            "leave it off unless you've verified your swap model is fp16-clean.\n"
+            "Only matters when the TensorRT provider is enabled; changing it\n"
+            "rebuilds the engine on the next session (engines are precision-\n"
+            "specific)."
         )
         self._tensorrt_fp16.toggled.connect(self.configChanged)
         swapper_form.addRow("TensorRT fp16", self._tensorrt_fp16)

@@ -51,9 +51,11 @@ Read [Responsible use](#responsible-use) before you start.
   have their own ONNX Runtime providers / Torch device and worker count, so you
   can tune their parallelism or place them on different hardware.
 - **Optional TensorRT acceleration.** Selecting the TensorRT provider compiles a
-  GPU-specific engine for the face swap + detection (~2–3× faster than CUDA),
-  cached to disk so the one-time build is paid once. Requires the TensorRT
-  runtime (the installer offers it); falls back to CUDA when it's unavailable.
+  GPU-specific engine for the face swap, cached to disk so the one-time build is
+  paid once. The win is modest at the safe fp32 precision (~1.3× on inswapper;
+  fp16 is faster but corrupts the swap, so it's off by default). Requires the
+  TensorRT runtime (the installer offers it); falls back to CUDA when it's
+  unavailable.
 - **Responsive session switching.** Changing the source or target rebuilds the
   session on a background thread, so the UI stays responsive while the old models
   unload and the new ones load. Disabling a stage frees its model from memory.
@@ -99,7 +101,7 @@ It offers these builds and recommends one based on your GPU and driver:
 If a GPU build is selected but the driver is missing or too old, the installer
 explains what to install and lets you recheck, switch to the CPU build, or stop.
 On a GPU build it also offers to install **TensorRT** (an optional ~2 GB
-download) for a ~2–3× faster swap; you can decline and add it later with
+download) for a modestly faster swap; you can decline and add it later with
 `uv pip install -e ".[tensorrt]"`. When it finishes, it writes `run.sh` (Linux)
 or `run.bat` (Windows).
 

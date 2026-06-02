@@ -1117,10 +1117,9 @@ class SinnerMainWindow(QMainWindow):
         )
         # Push the persisted TensorRT fp16 choice into model_cache before any
         # session builds (the value is read when a TRT session is constructed).
+        # Defaults OFF — inswapper's fp16 TRT engine produces a corrupted swap.
         from sinner2.pipeline import model_cache
-        model_cache.set_tensorrt_fp16(
-            self._settings.tensorrt_fp16 if self._settings.tensorrt_fp16 is not None else True
-        )
+        model_cache.set_tensorrt_fp16(bool(self._settings.tensorrt_fp16))
 
     def _persist_processor_settings(self) -> None:
         swapper = self._processors.swapper_params()
