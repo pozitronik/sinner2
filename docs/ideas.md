@@ -83,8 +83,12 @@ What the pipeline already does well, so we don't redo it:
   PyNvVideoCodec offloads it — but decode already overlaps inference, so only
   worth it when a profile shows decode-bound. Measure first.
 
-- **ORT session tuning** (cheap to try alongside TensorRT): graph optimization
-  level ALL, intra/inter-op thread counts, cudnn conv algo search.
+- ~~**ORT session tuning**~~ **✅ DONE.** All ONNX sessions (swapper, detector,
+  codeformer, converters) now build through a central `SessionOptions` +
+  CUDA `provider_options` seam in `model_cache.py` (`build_session_options` /
+  `build_provider_options`): graph-opt ALL, `cudnn_conv_algo_search=EXHAUSTIVE`,
+  `arena_extend_strategy=kSameAsRequested`. This is also the seam TensorRT's
+  engine-cache options slot into.
 
 ## 2. Intel AI Boost (NPU) as a backend
 
@@ -166,8 +170,9 @@ a model entry. Roughly in value order:
 
 ## Suggested sequencing
 
-1. **Speed:** ~~GFPGAN fp16~~ (✅ done) → **TensorRT EP + engine cache** is now
-   the biggest remaining realtime lever; pair with the cheap ORT session tuning.
+1. **Speed:** ~~GFPGAN fp16~~, ~~ORT session tuning~~ (✅ done) → **TensorRT EP +
+   engine cache** is now the biggest remaining realtime lever (needs the TRT
+   runtime installed; the provider-options seam is already in place).
 2. **Quality:** ~~enhancer-as-a-choice (CodeFormer) + occlusion masking~~
    (✅ done) → GPEN / RestoreFormer++ for higher-detail restoration.
 3. **Hardware:** treat the provider list as the seam to later experiment with

@@ -5,6 +5,8 @@ import pytest
 
 from sinner2.pipeline.model_cache import (
     available_onnx_providers,
+    build_provider_options,
+    build_session_options,
     clear_session_cache,
     get_actual_providers,
     get_model_path,
@@ -154,6 +156,68 @@ class TestSessionCache:
         release_onnx_session("never_loaded.onnx")  # must not raise
 
 
+class TestSessionTuning:
+    """Every ONNX session is built with tuned CUDA provider options (cuDNN algo
+    search + arena strategy) and a graph-optimized SessionOptions. The options
+    are applied centrally so the swapper, detector, codeformer, and converters
+    are all tuned identically — and this is the seam TensorRT later reuses."""
+
+    def test_cuda_gets_tuned_options(self):
+        opts = build_provider_options(
+            ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        )
+        assert len(opts) == 2  # aligned 1:1 with providers (ORT requires it)
+        assert opts[0]["cudnn_conv_algo_search"] == "EXHAUSTIVE"
+        assert opts[0]["arena_extend_strategy"] == "kSameAsRequested"
+        assert opts[1] == {}  # CPU EP: no options
+
+    def test_non_cuda_providers_get_empty_options(self):
+        # TensorRT options aren't wired yet → empty; CUDA still tuned.
+        opts = build_provider_options(
+            ["TensorrtExecutionProvider", "CUDAExecutionProvider"]
+        )
+        assert opts[0] == {}
+        assert opts[1]["cudnn_conv_algo_search"] == "EXHAUSTIVE"
+
+    def test_options_are_fresh_copies(self):
+        # Each call returns independent dicts — mutating one must not corrupt
+        # the shared module constant for the next session.
+        first = build_provider_options(["CUDAExecutionProvider"])
+        first[0]["arena_extend_strategy"] = "kNextPowerOfTwo"
+        second = build_provider_options(["CUDAExecutionProvider"])
+        assert second[0]["arena_extend_strategy"] == "kSameAsRequested"
+
+    def test_session_options_optimize_graph(self):
+        import onnxruntime as ort
+
+        so = build_session_options()
+        assert so.graph_optimization_level == ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+
+    def test_get_onnx_session_applies_tuning(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        import onnxruntime
+
+        clear_session_cache()
+        monkeypatch.setenv("SINNER2_MODELS_DIR", str(tmp_path))
+        (tmp_path / "m.onnx").write_bytes(b"x")
+        captured: dict = {}
+
+        def fake_session(_path: str, **kwargs: object) -> MagicMock:
+            captured.update(kwargs)
+            return MagicMock()
+
+        monkeypatch.setattr(onnxruntime, "InferenceSession", fake_session)
+        get_onnx_session("m.onnx", ["CUDAExecutionProvider", "CPUExecutionProvider"])
+        assert captured["providers"] == [
+            "CUDAExecutionProvider",
+            "CPUExecutionProvider",
+        ]
+        assert captured["provider_options"][0]["cudnn_conv_algo_search"] == "EXHAUSTIVE"
+        assert captured["provider_options"][1] == {}
+        assert captured["sess_options"] is not None
+
+
 class TestInsightfaceCache:
     """The insightface swap model (inswapper / reswapper) is cached by
     (path, providers) so a session rebuild — every source/target change —
@@ -219,6 +283,38 @@ class TestInsightfaceCache:
         clear_session_cache()  # the providers-change path drops it
         get_insightface_swap_model(p, ["CPUExecutionProvider"])
         assert counter["n"] == 2  # rebuilt after the clear
+
+    def test_forwards_tuned_provider_options(self, monkeypatch: pytest.MonkeyPatch):
+        import sys
+        import types
+
+        from sinner2.pipeline.model_cache import get_insightface_swap_model
+
+        clear_session_cache()
+        captured: dict = {}
+
+        def fake_get_model(_path, *_a, **kw):
+            captured.update(kw)
+            return MagicMock()
+
+        mz = types.ModuleType("insightface.model_zoo")
+        mz.get_model = fake_get_model  # type: ignore[attr-defined]
+        pkg = sys.modules.get("insightface") or types.ModuleType("insightface")
+        monkeypatch.setitem(sys.modules, "insightface", pkg)
+        monkeypatch.setitem(sys.modules, "insightface.model_zoo", mz)
+
+        get_insightface_swap_model(
+            Path("/models/inswapper_128.onnx"),
+            ["CUDAExecutionProvider", "CPUExecutionProvider"],
+        )
+        assert captured["providers"] == [
+            "CUDAExecutionProvider",
+            "CPUExecutionProvider",
+        ]
+        # The inswapper gets the same CUDA tuning as every other model.
+        assert captured["provider_options"][0]["arena_extend_strategy"] == (
+            "kSameAsRequested"
+        )
 
 
 class TestAvailableProviders:

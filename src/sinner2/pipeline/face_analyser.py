@@ -30,9 +30,18 @@ def _get_shared_face_analysis(providers: list[str] | None = None) -> Any:
             from insightface.app import FaceAnalysis
 
             from sinner2.config.execution import DEFAULT_ONNX_PROVIDERS
+            from sinner2.pipeline.model_cache import build_provider_options
 
             eps = list(providers) if providers else list(DEFAULT_ONNX_PROVIDERS)
-            app = FaceAnalysis(name=_FACE_MODEL_NAME, providers=eps)
+            # FaceAnalysis forwards providers + provider_options to each
+            # sub-model's ORT session (detector, landmark, etc.), so the detector
+            # gets the same CUDA tuning (cuDNN algo search, arena strategy) as
+            # the swapper.
+            app = FaceAnalysis(
+                name=_FACE_MODEL_NAME,
+                providers=eps,
+                provider_options=build_provider_options(eps),
+            )
             app.prepare(ctx_id=0, det_size=_DET_SIZE)
             _shared_app = app
         return _shared_app

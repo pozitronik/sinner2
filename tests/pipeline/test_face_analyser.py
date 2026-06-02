@@ -77,3 +77,39 @@ class TestFaceAnalyser:
         faces = a.analyse(_blank_frame())
         faces.append("extra")
         assert a.analyse(_blank_frame()) == [face]
+
+
+class TestSharedFaceAnalysisProviders:
+    """The shared insightface detector is built with the same tuned CUDA
+    provider options as the swapper (FaceAnalysis forwards provider_options to
+    each sub-model's ORT session)."""
+
+    def test_forwards_tuned_provider_options(self, monkeypatch: pytest.MonkeyPatch):
+        import sys
+        import types
+
+        captured: dict = {}
+
+        class FakeFaceAnalysis:
+            def __init__(self, name=None, providers=None, provider_options=None, **kw):
+                captured["providers"] = providers
+                captured["provider_options"] = provider_options
+
+            def prepare(self, ctx_id=0, det_size=None):  # noqa: ARG002
+                pass
+
+        app_mod = types.ModuleType("insightface.app")
+        app_mod.FaceAnalysis = FakeFaceAnalysis  # type: ignore[attr-defined]
+        pkg = sys.modules.get("insightface") or types.ModuleType("insightface")
+        monkeypatch.setitem(sys.modules, "insightface", pkg)
+        monkeypatch.setitem(sys.modules, "insightface.app", app_mod)
+
+        face_analyser._get_shared_face_analysis(
+            ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        )
+        assert captured["providers"] == [
+            "CUDAExecutionProvider",
+            "CPUExecutionProvider",
+        ]
+        assert captured["provider_options"][0]["cudnn_conv_algo_search"] == "EXHAUSTIVE"
+        assert captured["provider_options"][1] == {}

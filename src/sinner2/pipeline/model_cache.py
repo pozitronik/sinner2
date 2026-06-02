@@ -109,6 +109,57 @@ REQUIRED_MODELS: tuple[str, ...] = (
 
 _DEFAULT_PROVIDERS: tuple[str, ...] = ("CUDAExecutionProvider", "CPUExecutionProvider")
 
+# Tuned CUDA execution-provider options, applied to EVERY ONNX session we build
+# (swapper, detector, codeformer, the crossface converters). Centralized here so
+# the whole pipeline is tuned identically, and so this stays the single seam a
+# TensorRT EP later slots its engine-cache options into.
+#   - cudnn_conv_algo_search=EXHAUSTIVE: benchmark cuDNN conv algorithms once and
+#     reuse the fastest. The inswapper/SCRFD/codeformer nets are fixed-shape, so
+#     the one-time search at first inference amortizes across the whole session /
+#     batch — typically a few-to-15% steady-state win on the conv-heavy models.
+#   - arena_extend_strategy=kSameAsRequested: grow the device arena by exactly
+#     what's requested instead of rounding up to the next power of two — lower
+#     peak VRAM and steadier arena growth (matters with the per-worker footprint
+#     and the arena jitter seen across session swaps).
+# Strings (ORT parses provider-option values as strings). Override here, not at
+# call sites, so every model stays consistent.
+_CUDA_PROVIDER_OPTIONS: dict[str, str] = {
+    "cudnn_conv_algo_search": "EXHAUSTIVE",
+    "arena_extend_strategy": "kSameAsRequested",
+}
+
+
+def build_provider_options(providers: list[str]) -> list[dict[str, str]]:
+    """Per-provider options aligned 1:1 with ``providers``.
+
+    CUDA gets the tuned options above; every other EP (CPU, and TensorRT until
+    its options are wired) gets an empty dict. ORT requires provider_options to
+    be the same length as providers when supplied, hence the 1:1 mapping.
+    """
+    return [
+        dict(_CUDA_PROVIDER_OPTIONS) if p == "CUDAExecutionProvider" else {}
+        for p in providers
+    ]
+
+
+def build_session_options() -> "ort.SessionOptions":
+    """Tuned SessionOptions for a direct InferenceSession (codeformer / generic
+    swappers / converters).
+
+    Graph optimization at ALL (operator fusion + constant folding) and memory-
+    pattern planning on. insightface builds its OWN sessions and forwards only
+    provider options (not sess_options), so the swap/detect models get the
+    provider tuning above plus ORT's default SessionOptions — which already
+    defaults graph optimization to ALL, so they lose nothing meaningful.
+    """
+    import onnxruntime as ort
+
+    so = ort.SessionOptions()
+    so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    so.enable_mem_pattern = True
+    return so
+
+
 _session_cache: dict[Path, "ort.InferenceSession"] = {}
 # Cached insightface swap models (inswapper / reswapper), keyed by
 # (path, providers). insightface.model_zoo.get_model builds a BRAND-NEW ORT
@@ -348,13 +399,16 @@ def get_onnx_session(
     import onnxruntime as ort
 
     path = get_model_path(name, on_progress=on_progress)
+    names = list(providers) if providers else list(_DEFAULT_PROVIDERS)
     with _session_lock:
         cached = _session_cache.get(path)
         if cached is not None:
             return cached
         session = ort.InferenceSession(
             str(path),
-            providers=list(providers) if providers else list(_DEFAULT_PROVIDERS),
+            sess_options=build_session_options(),
+            providers=names,
+            provider_options=build_provider_options(names),
         )
         _session_cache[path] = session
         return session
@@ -406,7 +460,15 @@ def get_insightface_swap_model(
         cached = _insightface_cache.get(key)
         if cached is not None:
             return cached
-        model = get_model(str(path), providers=list(eps))
+        # insightface forwards providers + provider_options straight to ORT's
+        # InferenceSession, so the inswapper gets the same CUDA tuning as every
+        # other model (sess_options aren't forwarded, but ORT's default already
+        # optimizes the graph at ALL).
+        model = get_model(
+            str(path),
+            providers=list(eps),
+            provider_options=build_provider_options(list(eps)),
+        )
         _insightface_cache[key] = model
         return model
 
