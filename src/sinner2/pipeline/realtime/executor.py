@@ -652,12 +652,20 @@ class RealtimeExecutor:
         if self._stop_event.is_set():
             return
         self._drain_work_queue()
+        old_chain = self._chain
+        # Set up the NEW processors BEFORE exposing the chain. Workers read
+        # self._chain WITHOUT the state lock, so assigning it first would let a
+        # worker call process() on a processor whose model/session is still None
+        # (RuntimeError → fatal worker error → whole-executor teardown). Setup
+        # also runs OUTSIDE the state lock so the slow model load doesn't block
+        # workers marking frames complete. The old chain stays live during setup.
+        for p in chain:
+            if self._stop_event.is_set():
+                return
+            if p not in old_chain:
+                p.setup()
         with self._state_lock:
-            old_chain = self._chain
             self._chain = chain
-            for p in chain:
-                if p not in old_chain:
-                    p.setup()
             to_release = [p for p in old_chain if p not in chain]
         # Wait for any worker mid-_apply_chain to finish before releasing
         # the dropped processors. Without this, release() can null internal

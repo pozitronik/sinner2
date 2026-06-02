@@ -1427,3 +1427,45 @@ class TestReconfigureFrom:
         finally:
             new_we.shutdown(wait=True)
             unstarted._reader_pool.shutdown()  # noqa: SLF001
+
+
+class TestSetChainSetupOrdering:
+    """_handle_set_chain must fully setup() new processors BEFORE assigning them
+    to self._chain — workers read self._chain WITHOUT the state lock, so exposing
+    an un-set-up processor lets a worker call process() on it (RuntimeError ->
+    fatal worker error -> whole-executor teardown)."""
+
+    class _OrderSpy:
+        name = "spy"
+
+        def __init__(self, executor):
+            self._ex = executor
+            self.in_chain_at_setup = None
+            self.setup_calls = 0
+
+        def setup(self):
+            self.setup_calls += 1
+            # Has the executor already published us to workers?
+            self.in_chain_at_setup = self in self._ex._chain  # noqa: SLF001
+
+        def process(self, frame):
+            return frame
+
+        def release(self):
+            pass
+
+    def test_set_chain_sets_up_before_exposing(self, buffer_setup):
+        buffer, timeline, _ = buffer_setup
+        old = _CountingProcessor()
+        ex = RealtimeExecutor(
+            reader_pool=_pool_for(_MultiFrameReader(1)),
+            buffer=buffer, timeline=timeline, chain=[old],
+            strategy=BestEffortStrategy(),
+        )
+        ex._setup_done_event.set()  # noqa: SLF001  pretend initial setup finished
+        spy = self._OrderSpy(ex)
+        ex._handle_set_chain((spy,))  # noqa: SLF001
+        assert spy.setup_calls == 1
+        assert spy.in_chain_at_setup is False  # set up BEFORE the chain swap
+        assert ex._chain == (spy,)  # noqa: SLF001
+        assert old.release_calls == 1  # dropped processor released
