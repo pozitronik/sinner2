@@ -1047,6 +1047,23 @@ class PlayerController(QObject):
         if self._audio_backend is not None and self._audio_backend.is_loaded():
             self._audio_backend.pause()
 
+    def toggle_playback(self) -> None:
+        """Audio-aware play/pause toggle. The spacebar shortcut routes through
+        here (not executor.play/pause directly) so audio stays in lock-step with
+        the video exactly like the transport button — otherwise pausing left the
+        audio playing whenever the button didn't have keyboard focus."""
+        if self._executor is None:
+            return
+        if self._executor.is_playing.get():
+            self._on_pause()
+        else:
+            self._on_play()
+
+    def seek_to(self, frame: int) -> None:
+        """Audio-aware seek. The arrow / Home / End shortcuts route through here
+        so the audio backend follows the seek instead of desyncing."""
+        self._on_seek(frame)
+
     def _on_seek(self, frame: int) -> None:
         if self._executor is not None:
             self._executor.seek(frame)

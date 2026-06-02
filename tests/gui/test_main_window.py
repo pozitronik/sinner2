@@ -318,6 +318,10 @@ class TestSeekAndQueueShortcuts:
         monkeypatch.setattr(
             window._controller, "executor", lambda: ex  # noqa: SLF001
         )
+        # The seek shortcuts now route through controller.seek_to() -> _on_seek,
+        # which uses the controller's _executor attribute (same object as the
+        # accessor in the real app), so the mock must back both.
+        monkeypatch.setattr(window._controller, "_executor", ex)  # noqa: SLF001
         return ex
 
     def test_home_seeks_to_start(self, window, monkeypatch):
@@ -655,3 +659,43 @@ class TestProviderHighlightDeferred:
                             lambda s: marked.append(set(s)))
         window._schedule_provider_highlight_refresh()  # noqa: SLF001
         assert marked == [set()]  # immediate, no deferral
+
+
+class TestKeyboardTransportIsAudioAware:
+    """Spacebar / arrows / Home / End must route through the controller's
+    audio-aware methods, not the executor directly (else audio desyncs)."""
+
+    def _press(self, window, key):
+        from PySide6.QtCore import Qt as _Qt
+        from PySide6.QtGui import QKeyEvent
+
+        ev = QKeyEvent(
+            QKeyEvent.Type.KeyPress, key, _Qt.KeyboardModifier.NoModifier
+        )
+        window.keyPressEvent(ev)
+
+    def test_space_routes_through_toggle_playback(self, window, monkeypatch):
+        from unittest.mock import MagicMock
+        from PySide6.QtCore import Qt as _Qt
+
+        monkeypatch.setattr(window._controller, "executor", lambda: MagicMock())  # noqa: SLF001,E501
+        called = []
+        monkeypatch.setattr(  # noqa: SLF001
+            window._controller, "toggle_playback", lambda: called.append(True)
+        )
+        self._press(window, _Qt.Key.Key_Space)
+        assert called == [True]
+
+    def test_arrow_routes_through_seek_to(self, window, monkeypatch):
+        from unittest.mock import MagicMock
+        from PySide6.QtCore import Qt as _Qt
+
+        ex = MagicMock()
+        ex.current_frame.get.return_value = 10
+        monkeypatch.setattr(window._controller, "executor", lambda: ex)  # noqa: SLF001
+        seeks = []
+        monkeypatch.setattr(  # noqa: SLF001
+            window._controller, "seek_to", lambda f: seeks.append(f)
+        )
+        self._press(window, _Qt.Key.Key_Right)
+        assert seeks == [11]

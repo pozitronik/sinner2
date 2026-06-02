@@ -874,23 +874,24 @@ class SinnerMainWindow(QMainWindow):
         if executor is None:
             super().keyPressEvent(event)
             return
+        # Route through the controller's audio-aware methods (NOT the executor
+        # directly) so audio stays in lock-step — the transport buttons do the
+        # same. Driving the executor directly paused/seeked the video but left
+        # audio playing / desynced whenever the button lacked keyboard focus.
         if key == Qt.Key.Key_Space:
-            if executor.is_playing.get():
-                executor.pause()
-            else:
-                executor.play()
+            self._controller.toggle_playback()
             return
         if key == Qt.Key.Key_Left:
-            executor.seek(max(0, executor.current_frame.get() - 1))
+            self._controller.seek_to(max(0, executor.current_frame.get() - 1))
             return
         if key == Qt.Key.Key_Right:
-            executor.seek(executor.current_frame.get() + 1)
+            self._controller.seek_to(executor.current_frame.get() + 1)
             return
         if key == Qt.Key.Key_Home:
-            executor.seek(0)
+            self._controller.seek_to(0)
             return
         if key == Qt.Key.Key_End:
-            executor.seek(max(0, executor.frame_count() - 1))
+            self._controller.seek_to(max(0, executor.frame_count() - 1))
             return
         super().keyPressEvent(event)
 
