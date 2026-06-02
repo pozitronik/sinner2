@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QElapsedTimer, Qt, QThread, QTimer, Signal
@@ -56,6 +57,27 @@ from sinner2.gui.widgets.source_target_panel import QSourceTargetPanel
 from sinner2.gui.widgets.status_action_bar import QStatusActionBar
 from sinner2.gui.widgets.transport_controls import QTransportControls
 from sinner2.types import Frame
+
+_log = logging.getLogger(__name__)
+
+# Detection-probe thread join budget at close. The first detection lazily
+# builds the buffalo_l pack (5 ONNX models + prepare(), can exceed 2s and may
+# download), so a single wait(2000) can time out and destroy a running thread.
+_THREAD_JOIN_WAIT_MS = 2000
+_THREAD_JOIN_MAX_WAITS = 15  # ~30s worst case before giving up and logging
+
+
+def _join_qthread(thread, per_wait_ms: int, max_waits: int) -> bool:  # type: ignore[no-untyped-def]
+    """Quit a QThread and block until it actually finishes, in bounded
+    increments. Returns True if it stopped, False if it's still running after
+    `max_waits` attempts — in which case the caller should log rather than
+    destroy a running thread (which crashes on exit)."""
+    thread.quit()
+    waits = 0
+    while thread.isRunning() and waits < max_waits:
+        thread.wait(per_wait_ms)
+        waits += 1
+    return not thread.isRunning()
 
 
 def _fmt_size(b: int) -> str:
@@ -1142,9 +1164,19 @@ class SinnerMainWindow(QMainWindow):
         self._batch_queue.stop()
         self._controller.shutdown()
         # Stop the detection probe thread (debug overlay) so it doesn't
-        # outlive Qt during shutdown.
-        self._detection_thread.quit()
-        self._detection_thread.wait(2000)
+        # outlive Qt during shutdown. Wait in bounded increments rather than a
+        # single wait(2000): the first detection can be lazily building the
+        # buffalo_l pack, which exceeds 2s — destroying the thread mid-load
+        # crashes on exit ('QThread: Destroyed while thread is still running').
+        if not _join_qthread(
+            self._detection_thread, _THREAD_JOIN_WAIT_MS, _THREAD_JOIN_MAX_WAITS
+        ):
+            _log.warning(
+                "detection thread still running at close after %d×%dms; "
+                "proceeding without destroying it",
+                _THREAD_JOIN_MAX_WAITS,
+                _THREAD_JOIN_WAIT_MS,
+            )
         # Stop the thumbnail thread pool; without this the daemon
         # workers occasionally outlive Qt and emit GUI-warning noise
         # during interpreter shutdown.
