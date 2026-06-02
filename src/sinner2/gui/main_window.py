@@ -606,6 +606,11 @@ class SinnerMainWindow(QMainWindow):
         ):
             self._processors.set_enhancer_model(EnhancerModel.GFPGAN.value)
 
+        # TensorRT fp16 is read when a TRT session builds; push it before the
+        # chain rebuild so a providers change that turns TRT on picks it up.
+        from sinner2.pipeline import model_cache
+        model_cache.set_tensorrt_fp16(self._processors.tensorrt_fp16())
+
         self._controller.apply_session_config(
             swapper_params=self._processors.swapper_params(),
             enhancer_params=self._processors.enhancer_params(),
@@ -1102,12 +1107,19 @@ class SinnerMainWindow(QMainWindow):
             processing_scale=self._settings.processing_scale,
             synced_max_lag_frames=self._settings.synced_max_lag_frames,
             swapper_providers=self._settings.swapper_providers,
+            tensorrt_fp16=self._settings.tensorrt_fp16,
             enhancer_device=self._settings.enhancer_device,
             upscaler_enabled=self._settings.upscaler_enabled,
             upscaler_model=self._settings.upscaler_model,
             upscaler_tile=self._settings.upscaler_tile,
             upscaler_fp16=self._settings.upscaler_fp16,
             upscaler_device=self._settings.upscaler_device,
+        )
+        # Push the persisted TensorRT fp16 choice into model_cache before any
+        # session builds (the value is read when a TRT session is constructed).
+        from sinner2.pipeline import model_cache
+        model_cache.set_tensorrt_fp16(
+            self._settings.tensorrt_fp16 if self._settings.tensorrt_fp16 is not None else True
         )
 
     def _persist_processor_settings(self) -> None:
@@ -1147,6 +1159,7 @@ class SinnerMainWindow(QMainWindow):
             processing_scale=self._processors.processing_scale(),
             synced_max_lag_frames=self._processors.synced_max_lag_frames(),
             swapper_providers=self._processors.swapper_providers(),
+            tensorrt_fp16=self._processors.tensorrt_fp16(),
             enhancer_device=self._processors.enhancer_device(),
             upscaler_enabled=self._processors.upscaler_enabled(),
             upscaler_model=self._processors.upscaler_params().model.value,

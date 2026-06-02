@@ -71,6 +71,14 @@ def ort_gpu_reinstall_command(uv: str, py: Path) -> list[str]:
     return [uv, "pip", "install", "--python", str(py), "--reinstall", "--no-deps", "onnxruntime-gpu"]
 
 
+def tensorrt_install_command(uv: str, py: Path) -> list[str]:
+    # Optional ~2-3x speedup for the ONNX swapper + detector. Pin the TensorRT
+    # 10.x major: onnxruntime-gpu 1.20+'s TRT EP links nvinfer_10.dll, so the
+    # 11.x line (nvinfer_11) would fail to load and silently fall back to CUDA.
+    # 10.x also has Blackwell (RTX 50xx) support. ~tilde keeps it within 10.x.
+    return [uv, "pip", "install", "--python", str(py), "tensorrt-cu12~=10.0"]
+
+
 # ---- basicsr patch (pure file op) ----
 
 def find_basicsr_degradations(site_packages: Path) -> Path | None:

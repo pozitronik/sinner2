@@ -62,6 +62,22 @@ class TestBuildInstallPlan:
         plan_steps = build_install_plan("uv", tmp_path / ".venv", "cpu", "linux")
         assert not any("ONNX Runtime" in s.label for s in plan_steps)
 
+    def test_tensorrt_step_only_when_opted_in(self, tmp_path):
+        without = build_install_plan("uv", tmp_path / ".venv", "cuda", "linux")
+        assert not any("TensorRT" in s.label for s in without)
+        with_trt = build_install_plan(
+            "uv", tmp_path / ".venv", "cuda", "linux", with_tensorrt=True
+        )
+        trt_step = next(s for s in with_trt if "TensorRT" in s.label)
+        assert "tensorrt-cu12~=10.0" in trt_step.command
+
+    def test_tensorrt_ignored_on_cpu_build(self, tmp_path):
+        # No GPU → no TensorRT step even if the flag is set.
+        plan_steps = build_install_plan(
+            "uv", tmp_path / ".venv", "cpu", "linux", with_tensorrt=True
+        )
+        assert not any("TensorRT" in s.label for s in plan_steps)
+
     def test_macarm_torch_has_no_index(self, tmp_path):
         plan_steps = build_install_plan("uv", tmp_path / ".venv", "mac-arm", "macos")
         torch_step = next(s for s in plan_steps if "PyTorch" in s.label)

@@ -31,14 +31,17 @@ What the pipeline already does well, so we don't redo it:
 
 ### High payoff
 
-- **TensorRT execution provider** for the swapper + detector. Today the ORT
-  session is created with only a providers list — no `session_options`, fp16,
-  IO binding, CUDA graph, or cudnn algo search (`face_swapper.py` ~L70–79,
-  `face_analyser.py` ~L30–38). inswapper_128 + SCRFD/buffalo_l are fixed-shape
-  small-conv models → typically 1.5–3× over CUDA EP. Cost: first-run engine
-  build (cache it with `trt_engine_cache_enable`). Slots into the existing
-  providers list (`["TensorrtExecutionProvider", "CUDAExecutionProvider",
-  "CPUExecutionProvider"]`). **Likely the single biggest realtime lever.**
+- ~~**TensorRT execution provider** for the swapper + detector.~~ **✅ DONE.**
+  Selecting `TensorrtExecutionProvider` in the swapper's ONNX providers routes
+  the inswapper + buffalo_l through TensorRT; `model_cache.build_provider_options`
+  attaches a persistent engine cache (`<models>/trt_engines/`) + fp16, and
+  `_preload_tensorrt_libs` registers the TRT runtime DLLs so the EP actually
+  loads (else ORT silently falls back to CUDA). **Measured ~3.06× on inswapper
+  (11.9 → 3.9 ms) on an RTX 5090**, one-time 25 s engine build (then ~3 s cached
+  load). Needs the TRT 10.x runtime (the installer offers it; `nvinfer_10` —
+  the 11.x line is incompatible with onnxruntime-gpu 1.20+). fp16 toggle in the
+  realtime panel + settings. Remaining TRT follow-ups: int8, CUDA-graph, and
+  wiring engine cache for CodeFormer/upscaler.
 
 - ~~**FP16 for GFPGAN.**~~ **✅ DONE.** `FaceEnhancerParams.fp16` (default on,
   CUDA only) half()s the GFPGAN generator and wraps `restorer.enhance` in
@@ -170,9 +173,9 @@ a model entry. Roughly in value order:
 
 ## Suggested sequencing
 
-1. **Speed:** ~~GFPGAN fp16~~, ~~ORT session tuning~~ (✅ done) → **TensorRT EP +
-   engine cache** is now the biggest remaining realtime lever (needs the TRT
-   runtime installed; the provider-options seam is already in place).
+1. **Speed:** ~~GFPGAN fp16~~, ~~ORT session tuning~~, ~~TensorRT EP + engine
+   cache~~ (✅ done, ~3× on the swapper) → next: IO binding, or extend the TRT
+   engine cache to CodeFormer/upscaler; int8 is a quality trade-off.
 2. **Quality:** ~~enhancer-as-a-choice (CodeFormer) + occlusion masking~~
    (✅ done) → GPEN / RestoreFormer++ for higher-detail restoration.
 3. **Hardware:** treat the provider list as the seam to later experiment with

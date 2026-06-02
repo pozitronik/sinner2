@@ -60,6 +60,12 @@ class TestCommandBuilders:
         assert "--reinstall" in cmd and "--no-deps" in cmd
         assert cmd[-1] == "onnxruntime-gpu"
 
+    def test_tensorrt_install_pins_10x(self):
+        cmd = steps.tensorrt_install_command("uv", Path("py"))
+        # Must pin the 10.x major — onnxruntime's TRT EP links nvinfer_10.
+        assert cmd[-1] == "tensorrt-cu12~=10.0"
+        assert "pip" in cmd and "install" in cmd
+
 
 class TestBasicsrPatch:
     _OLD = "from torchvision.transforms.functional_tensor import rgb_to_grayscale"

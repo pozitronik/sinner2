@@ -129,17 +129,133 @@ _CUDA_PROVIDER_OPTIONS: dict[str, str] = {
 }
 
 
+# TensorRT engine builds in fp16 by default (≈2× tensor-core throughput,
+# negligible quality cost for the swap/detect models). Toggled at runtime by the
+# GUI via set_tensorrt_fp16 — the value is baked into the built engine, so a
+# change only takes effect once the engine cache is cleared / rebuilt.
+_tensorrt_fp16 = True
+_tensorrt_preloaded = False
+
+
+def set_tensorrt_fp16(enabled: bool) -> None:
+    """In-app toggle for TensorRT fp16. Affects engines built AFTER the change
+    (the flag is compiled into the engine); existing cached engines keep their
+    precision until the cache directory is cleared."""
+    global _tensorrt_fp16
+    _tensorrt_fp16 = bool(enabled)
+
+
+def get_trt_cache_dir() -> Path:
+    """Directory for compiled TensorRT engines + the timing cache.
+
+    Persistent so the slow first-run engine build is paid ONCE — later launches
+    load the cached engine in ~1s. `SINNER2_TRT_CACHE_DIR` overrides; defaults to
+    `<models>/trt_engines/`. Engines are GPU / driver / TRT-version specific;
+    ORT rebuilds them automatically (and re-caches) when any of those change.
+    """
+    env = os.environ.get("SINNER2_TRT_CACHE_DIR")
+    if env:
+        return Path(env)
+    return get_models_dir() / "trt_engines"
+
+
+def _tensorrt_libs_dir() -> Path | None:
+    """Locate the `tensorrt_libs` package dir (where the `tensorrt-cu12` wheel
+    drops nvinfer_10.dll etc.) WITHOUT importing it (find_spec doesn't run the
+    package __init__, which loads the heavy bindings)."""
+    import importlib.util
+
+    try:
+        spec = importlib.util.find_spec("tensorrt_libs")
+    except (ImportError, ValueError):
+        return None
+    if spec is None:
+        return None
+    if spec.submodule_search_locations:
+        return Path(next(iter(spec.submodule_search_locations)))
+    if spec.origin:
+        return Path(spec.origin).parent
+    return None
+
+
+def _preload_tensorrt_libs() -> None:
+    """Make the TensorRT runtime DLLs loadable by ORT's TensorRT EP.
+
+    ORT's onnxruntime_providers_tensorrt.dll depends on nvinfer_10.dll, which in
+    turn depends on the CUDA runtime (cudart/cuBLAS/cuDNN). Two things must be on
+    the loader's search path before the EP loads, or it fails with "nvinfer_10.dll
+    missing" (Error 126 — really a transitive-dependency miss) and ORT silently
+    falls back to CUDA:
+      1. the CUDA runtime — handled by _preload_bundled_cuda_libs (torch/lib),
+      2. the TensorRT libs — registered by importing `tensorrt`, which is how the
+         NVIDIA wheel wires its own DLL directory (a bare os.add_dll_directory of
+         tensorrt_libs isn't enough — nvinfer still can't find cudart).
+    Importing tensorrt is heavier than a path tweak, but it only happens when the
+    user has actually selected the TRT provider. No-op when TensorRT isn't
+    installed.
+    """
+    global _tensorrt_preloaded
+    if _tensorrt_preloaded:
+        return
+    _tensorrt_preloaded = True
+    # CUDA runtime first — nvinfer links it.
+    _preload_bundled_cuda_libs()
+    try:
+        import tensorrt  # noqa: F401  registers tensorrt_libs with the loader
+        return
+    except ImportError:
+        pass
+    # Fallback if the bindings can't import but the libs are present.
+    if sys.platform == "win32":
+        libs = _tensorrt_libs_dir()
+        if libs is not None and libs.is_dir():
+            try:
+                os.add_dll_directory(str(libs))
+            except (OSError, AttributeError):
+                pass
+
+
+def _tensorrt_provider_options() -> dict[str, str]:
+    """Engine-cache + precision options for the TensorRT EP. Builds (once) a
+    persistent engine + timing cache so the slow compile is one-time, and
+    enables fp16 unless the GUI toggled it off. Also ensures the TRT DLLs are on
+    the loader path (so the EP actually engages instead of falling back)."""
+    _preload_tensorrt_libs()
+    cache = get_trt_cache_dir()
+    try:
+        cache.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    # ORT's TensorRT EP parses boolean options as the strings "True"/"False"
+    # (NOT "1"/"0") — a "1" is rejected and the whole EP fails to construct,
+    # falling back to CUDA.
+    opts = {
+        "trt_engine_cache_enable": "True",
+        "trt_engine_cache_path": str(cache),
+        "trt_timing_cache_enable": "True",
+    }
+    if _tensorrt_fp16:
+        opts["trt_fp16_enable"] = "True"
+    return opts
+
+
 def build_provider_options(providers: list[str]) -> list[dict[str, str]]:
     """Per-provider options aligned 1:1 with ``providers``.
 
-    CUDA gets the tuned options above; every other EP (CPU, and TensorRT until
-    its options are wired) gets an empty dict. ORT requires provider_options to
-    be the same length as providers when supplied, hence the 1:1 mapping.
+    CUDA gets the tuned cuDNN/arena options; TensorRT gets engine-cache + fp16
+    options (and triggers the DLL preload); every other EP (CPU) gets an empty
+    dict. ORT requires provider_options to be the same length as providers when
+    supplied, hence the 1:1 mapping.
     """
-    return [
-        dict(_CUDA_PROVIDER_OPTIONS) if p == "CUDAExecutionProvider" else {}
-        for p in providers
-    ]
+    out: list[dict[str, str]] = []
+    for p in providers:
+        if p == "CUDAExecutionProvider":
+            out.append(dict(_CUDA_PROVIDER_OPTIONS))
+        elif p == "TensorrtExecutionProvider":
+            out.append(_tensorrt_provider_options())
+        else:
+            out.append({})
+    return out
 
 
 def build_session_options() -> "ort.SessionOptions":

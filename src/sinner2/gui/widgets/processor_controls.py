@@ -277,18 +277,41 @@ class QProcessorControls(QWidget):
         default_active = set(DEFAULT_ONNX_PROVIDERS)
         for prov in available:
             cb = QCheckBox(prov)
-            cb.setToolTip(
-                "ONNX execution provider. Multiple may be checked; ORT\n"
-                "tries them in the order shown. If you uncheck everything,\n"
-                "the system falls back to the platform defaults (CUDA + CPU)\n"
-                "so inference still works. Applies immediately — rebuilds\n"
-                "the session (chain reloads)."
-            )
+            if prov == "TensorrtExecutionProvider":
+                cb.setToolTip(
+                    "TensorRT: compiles a GPU-specific engine for the swapper +\n"
+                    "detector — typically 2–3× faster than plain CUDA. The FIRST\n"
+                    "run after enabling builds the engine (tens of seconds,\n"
+                    "one-time) and caches it to disk; later runs load it fast.\n"
+                    "Needs the TensorRT runtime (the installer offers it); falls\n"
+                    "back to CUDA if it's missing."
+                )
+            else:
+                cb.setToolTip(
+                    "ONNX execution provider. Multiple may be checked; ORT\n"
+                    "tries them in the order shown. If you uncheck everything,\n"
+                    "the system falls back to the platform defaults (CUDA + CPU)\n"
+                    "so inference still works. Applies immediately — rebuilds\n"
+                    "the session (chain reloads)."
+                )
             cb.setChecked(prov in default_active)
             cb.toggled.connect(self.configChanged)
             providers_layout.addWidget(cb)
             self._provider_checkboxes[prov] = cb
         swapper_form.addRow("ONNX providers", providers_box)
+        # fp16 for TensorRT engine builds. Only affects the TensorRT provider
+        # (greyed-out value otherwise); kept next to the provider list since
+        # that's where TRT is enabled.
+        self._tensorrt_fp16 = QCheckBox()
+        self._tensorrt_fp16.setChecked(True)
+        self._tensorrt_fp16.setToolTip(
+            "Build TensorRT engines in fp16 (≈2× faster, negligible quality\n"
+            "cost). Only matters when the TensorRT provider is enabled. Changing\n"
+            "it rebuilds the engine on the next session (engines are precision-\n"
+            "specific). Disable if you see fp16 artifacts."
+        )
+        self._tensorrt_fp16.toggled.connect(self.configChanged)
+        swapper_form.addRow("TensorRT fp16", self._tensorrt_fp16)
 
         enhancer_box = QGroupBox("FaceEnhancer")
         enhancer_box.setCheckable(True)
@@ -1094,6 +1117,11 @@ class QProcessorControls(QWidget):
             if cb.isChecked()
         ]
 
+    def tensorrt_fp16(self) -> bool:
+        """Whether TensorRT engines should be built in fp16 (only relevant when
+        the TensorRT provider is enabled)."""
+        return self._tensorrt_fp16.isChecked()
+
     def enhancer_device(self) -> str:
         """Selected torch device token for the realtime enhancer
         ("auto" / "cpu" / "cuda:N")."""
@@ -1178,6 +1206,7 @@ class QProcessorControls(QWidget):
         processing_scale: float | None,
         synced_max_lag_frames: int | None,
         swapper_providers: list[str] | None,
+        tensorrt_fp16: bool | None = None,
         enhancer_device: str | None,
         upscaler_enabled: bool | None = None,
         upscaler_model: str | None = None,
@@ -1228,6 +1257,7 @@ class QProcessorControls(QWidget):
             self._reader_pool_size,
             self._scale_slider,
             self._synced_max_lag_frames,
+            self._tensorrt_fp16,
             *self._provider_checkboxes.values(),
         )
         for w in widgets:
@@ -1353,6 +1383,8 @@ class QProcessorControls(QWidget):
                 wanted = set(swapper_providers)
                 for name, cb in self._provider_checkboxes.items():
                     cb.setChecked(name in wanted)
+            if tensorrt_fp16 is not None:
+                self._tensorrt_fp16.setChecked(tensorrt_fp16)
         finally:
             for w in widgets:
                 w.blockSignals(False)

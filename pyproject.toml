@@ -39,6 +39,13 @@ mac-arm = [
 gui = [
     "PySide6>=6.8",
 ]
+# Optional ~2-3x faster ONNX swap+detect via the TensorRT EP. Pin the 10.x major:
+# onnxruntime-gpu's TRT EP links nvinfer_10 (the 11.x line would fail to load and
+# fall back to CUDA). 10.x covers Blackwell (RTX 50xx). Only useful on a `cuda`
+# build; the installer offers it as an opt-in step.
+tensorrt = [
+    "tensorrt-cu12~=10.0",
+]
 dev = [
     "pytest>=8",
     "pytest-mock",

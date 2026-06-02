@@ -171,13 +171,41 @@ class TestSessionTuning:
         assert opts[0]["arena_extend_strategy"] == "kSameAsRequested"
         assert opts[1] == {}  # CPU EP: no options
 
-    def test_non_cuda_providers_get_empty_options(self):
-        # TensorRT options aren't wired yet → empty; CUDA still tuned.
+    def test_cpu_only_gets_empty_options(self):
+        opts = build_provider_options(["CPUExecutionProvider"])
+        assert opts == [{}]
+
+    def test_tensorrt_gets_engine_cache_options(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        from sinner2.pipeline.model_cache import set_tensorrt_fp16
+
+        # Keep the engine cache out of the repo's models/ dir during tests.
+        monkeypatch.setenv("SINNER2_TRT_CACHE_DIR", str(tmp_path / "trt"))
+        set_tensorrt_fp16(True)
         opts = build_provider_options(
             ["TensorrtExecutionProvider", "CUDAExecutionProvider"]
         )
-        assert opts[0] == {}
+        # ORT's TRT EP wants "True"/"False" strings (not "1"/"0").
+        assert opts[0]["trt_engine_cache_enable"] == "True"
+        assert opts[0]["trt_timing_cache_enable"] == "True"
+        assert opts[0]["trt_fp16_enable"] == "True"
+        assert opts[0]["trt_engine_cache_path"] == str(tmp_path / "trt")
+        # CUDA still tuned in the same list.
         assert opts[1]["cudnn_conv_algo_search"] == "EXHAUSTIVE"
+
+    def test_tensorrt_fp16_toggle(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        from sinner2.pipeline.model_cache import set_tensorrt_fp16
+
+        monkeypatch.setenv("SINNER2_TRT_CACHE_DIR", str(tmp_path / "trt"))
+        try:
+            set_tensorrt_fp16(False)
+            opts = build_provider_options(["TensorrtExecutionProvider"])
+            assert "trt_fp16_enable" not in opts[0]  # fp16 off → flag omitted
+        finally:
+            set_tensorrt_fp16(True)  # restore module default for other tests
 
     def test_options_are_fresh_copies(self):
         # Each call returns independent dicts — mutating one must not corrupt

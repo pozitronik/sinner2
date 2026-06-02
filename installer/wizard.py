@@ -72,7 +72,12 @@ def existing_install(venv_dir: Path, os: str) -> bool:
 
 
 def build_install_plan(
-    uv: str, venv_dir: Path, variant: str, os: str, project_dir: str = "."
+    uv: str,
+    venv_dir: Path,
+    variant: str,
+    os: str,
+    project_dir: str = ".",
+    with_tensorrt: bool = False,
 ) -> list[Step]:
     py = steps.venv_python(venv_dir, os)
     plan_steps = [
@@ -85,6 +90,15 @@ def build_install_plan(
         plan_steps.append(
             Step("Ensure GPU ONNX Runtime wins", steps.ort_gpu_reinstall_command(uv, py))
         )
+        # TensorRT only makes sense on a GPU build, and only if the user opted in
+        # (it's a large download + a one-time engine build on first use).
+        if with_tensorrt:
+            plan_steps.append(
+                Step(
+                    "Install TensorRT runtime (optional ~2-3x speedup)",
+                    steps.tensorrt_install_command(uv, py),
+                )
+            )
     return plan_steps
 
 
@@ -143,6 +157,7 @@ class Wizard:
 
     def _install(self, variant: str | None = None) -> int:
         info = detect.detect()
+        with_tensorrt = False
         if variant is None:
             rec = plan.recommend(info)
             variant = self._select_variant(rec)
@@ -150,7 +165,9 @@ class Wizard:
             if variant is None:
                 self.say("Aborted.")
                 return 1
-        if not self._execute_plan(variant):
+            if steps.is_gpu_variant(variant):
+                with_tensorrt = self._ask_tensorrt()
+        if not self._execute_plan(variant, with_tensorrt):
             return 1
         ok = self._doctor(variant)
         scripts = write_run_scripts(self.ctx.project_dir, self.ctx.os)
@@ -199,9 +216,21 @@ class Wizard:
             elif choice.startswith("a"):
                 return None
 
-    def _execute_plan(self, variant: str) -> bool:
+    def _ask_tensorrt(self) -> bool:
+        self.say(
+            "\nTensorRT gives a ~2-3x faster face swap + detection on NVIDIA GPUs,"
+            "\nbut it's a large download (~2 GB) and compiles a one-time engine the"
+            "\nfirst time you enable it in the app. You can also add it later."
+        )
+        return self.ask("Install TensorRT support? [y/N] ").strip().lower() in (
+            "y",
+            "yes",
+        )
+
+    def _execute_plan(self, variant: str, with_tensorrt: bool = False) -> bool:
         for step in build_install_plan(
-            self.ctx.uv, self.ctx.venv_dir, variant, self.ctx.os
+            self.ctx.uv, self.ctx.venv_dir, variant, self.ctx.os,
+            with_tensorrt=with_tensorrt,
         ):
             self.say(f"\n→ {step.label}")
             if step.command is None:
