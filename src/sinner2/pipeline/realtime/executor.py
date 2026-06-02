@@ -600,6 +600,12 @@ class RealtimeExecutor:
 
     def _handle_seek(self, target: FrameIndex) -> None:
         self._drain_work_queue()
+        # A seek is a discontinuity: tell chain processors to drop per-stream
+        # caches (notably the swapper's interval-based face-detection cache).
+        # Otherwise the first frame at the new position reuses a face box
+        # detected at the OLD position, so the new face is swapped in the wrong
+        # place — it shows up unswapped until the next re-detection.
+        self._reset_chain_stream_state()
         with self._state_lock:
             self._timeline.seek(target)
             self._last_submitted = target - 1
@@ -631,6 +637,21 @@ class RealtimeExecutor:
         # Wake playback so a seek-while-paused tick processes the new
         # target immediately rather than waiting on an indefinite block.
         self._playback_wake.set()
+
+    def _reset_chain_stream_state(self) -> None:
+        """Drop per-stream caches on chain processors that expose an on_seek()
+        hook (e.g. FaceSwapper's interval-based detection cache). Called on a
+        seek so the new position re-detects rather than reusing stale state."""
+        with self._state_lock:
+            chain = self._chain
+        for p in chain:
+            hook = getattr(p, "on_seek", None)
+            if hook is None:
+                continue
+            try:
+                hook()
+            except Exception as e:  # noqa: BLE001
+                self.status.set(f"on_seek error: {e}")
 
     def _handle_rerender(self) -> None:
         # Reprocess from the playhead forward through the current chain. Same

@@ -618,3 +618,20 @@ class TestReleaseFreesMasker:
         fs.release()
         masker.release.assert_called_once()
         assert fs._masker is None  # noqa: SLF001
+
+
+class TestOnSeekResetsDetectionCache:
+    """A seek is a discontinuity — the interval-based detection cache from the
+    old position must be dropped so the new position re-detects (else the swap
+    lands at the old face box and the new face shows unswapped)."""
+
+    def test_on_seek_resets_analyser_cache(self):
+        fs = object.__new__(FaceSwapper)
+        fs._analyser = MagicMock()  # noqa: SLF001
+        fs.on_seek()
+        fs._analyser.reset_cache.assert_called_once()  # noqa: SLF001
+
+    def test_on_seek_without_analyser_is_noop(self):
+        fs = object.__new__(FaceSwapper)
+        fs._analyser = None  # noqa: SLF001
+        fs.on_seek()  # must not raise

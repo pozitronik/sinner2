@@ -331,6 +331,16 @@ class FaceSwapper:
             return TargetSex.FEMALE
         return TargetSex.BOTH
 
+    def on_seek(self) -> None:
+        """Drop the interval-based face-detection cache so the first frame after
+        a seek re-detects at the new position. Without this, a detection cached
+        at the old position (when detection_interval > 1) is reused, swapping at
+        the wrong place and leaving the new face unswapped until the next
+        scheduled re-detection."""
+        analyser = self._analyser
+        if analyser is not None:
+            analyser.reset_cache()
+
     def release(self) -> None:
         # Generic ONNX backends (ghost/simswap/uniface) own a cached session;
         # ask them to evict it so disabling/switching the swapper frees VRAM.

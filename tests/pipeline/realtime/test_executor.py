@@ -1752,3 +1752,42 @@ class TestProcessingFpsStallDecay:
         fps = self._refresh(completion_times=[now], last_completion_time=now,
                             last_fps=0.0)
         assert fps <= 120.0
+
+
+class TestSeekResetsChainStreamState:
+    """A seek must call on_seek() on chain processors that expose it, so the
+    swapper drops its stale interval-based detection cache."""
+
+    def test_seek_calls_on_seek_hook(self, buffer_setup):
+        buffer, _timeline, _ = buffer_setup
+        seeks: list[int] = []
+
+        class _SeekAware:
+            name = "seekaware"
+
+            def setup(self) -> None:
+                pass
+
+            def process(self, frame):  # type: ignore[no-untyped-def]
+                return frame
+
+            def release(self) -> None:
+                pass
+
+            def on_seek(self) -> None:
+                seeks.append(1)
+
+        ex = RealtimeExecutor(
+            reader_pool=_pool_for(_MultiFrameReader(100)),
+            buffer=buffer,
+            timeline=Timeline(fps=30.0),
+            chain=[_SeekAware()],
+            strategy=BestEffortStrategy(),
+        )
+        try:
+            ex.start()
+            assert ex.wait_until_ready(timeout=2.0)
+            ex.seek(50)
+            assert _wait_until(lambda: len(seeks) >= 1, timeout=2.0)
+        finally:
+            ex.stop()
