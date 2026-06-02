@@ -58,6 +58,17 @@ class TestCommandBuilders:
     def test_ort_gpu_reinstall(self):
         cmd = steps.ort_gpu_reinstall_command("uv", Path("py"))
         assert "--reinstall" in cmd and "--no-deps" in cmd
+        assert cmd[-1] == "onnxruntime-gpu"  # default (cuda): latest CUDA-12 build
+
+    def test_ort_gpu_reinstall_pins_for_cuda118(self):
+        # The reinstall must honour the cuda118 extra's pin — an unpinned
+        # reinstall grabs the latest (CUDA-12) build, overriding the CUDA-11.8
+        # pin and silently falling back to CPU on older GPUs.
+        cmd = steps.ort_gpu_reinstall_command("uv", Path("py"), "cuda118")
+        assert cmd[-1] == "onnxruntime-gpu>=1.18,<1.19"
+
+    def test_ort_gpu_reinstall_unpinned_for_cuda(self):
+        cmd = steps.ort_gpu_reinstall_command("uv", Path("py"), "cuda")
         assert cmd[-1] == "onnxruntime-gpu"
 
     def test_tensorrt_install_pins_10x(self):

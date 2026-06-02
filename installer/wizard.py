@@ -88,7 +88,10 @@ def build_install_plan(
     ]
     if steps.is_gpu_variant(variant):
         plan_steps.append(
-            Step("Ensure GPU ONNX Runtime wins", steps.ort_gpu_reinstall_command(uv, py))
+            Step(
+                "Ensure GPU ONNX Runtime wins",
+                steps.ort_gpu_reinstall_command(uv, py, variant),
+            )
         )
         # TensorRT only makes sense on a GPU build, and only if the user opted in
         # (it's a large download + a one-time engine build on first use).

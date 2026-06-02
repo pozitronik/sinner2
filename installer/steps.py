@@ -65,10 +65,14 @@ def app_install_command(
     return [uv, "pip", "install", "--python", str(py), "-e", f"{project_dir}[{variant},gui]"]
 
 
-def ort_gpu_reinstall_command(uv: str, py: Path) -> list[str]:
+def ort_gpu_reinstall_command(uv: str, py: Path, variant: str = "cuda") -> list[str]:
     # insightface pulls plain onnxruntime over onnxruntime-gpu (same import
-    # name → last one wins). Force the GPU build to win.
-    return [uv, "pip", "install", "--python", str(py), "--reinstall", "--no-deps", "onnxruntime-gpu"]
+    # name → last one wins). Force the GPU build to win. MUST honour the
+    # variant's pin: an unpinned reinstall grabs the latest onnxruntime-gpu,
+    # which is a CUDA-12 build — on a cuda118 install that overrides the
+    # `<1.19` (CUDA-11.8) pin and the GPU EP then silently falls back to CPU.
+    spec = "onnxruntime-gpu>=1.18,<1.19" if variant == "cuda118" else "onnxruntime-gpu"
+    return [uv, "pip", "install", "--python", str(py), "--reinstall", "--no-deps", spec]
 
 
 def tensorrt_install_command(uv: str, py: Path) -> list[str]:
