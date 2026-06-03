@@ -164,6 +164,43 @@ class TestAltEnterFullscreen:
         assert window._status_bar.fullscreen_button.isChecked() is True  # noqa: SLF001
 
 
+class TestFullscreenControlBar:
+    """In fullscreen the transport row is moved into the auto-hiding bottom
+    bar (so playback stays reachable) and handed back on exit."""
+
+    @staticmethod
+    def _stub_show(window, monkeypatch):
+        monkeypatch.setattr(window, "isMaximized", lambda: False)
+        monkeypatch.setattr(window, "showFullScreen", lambda: None)
+        monkeypatch.setattr(window, "showNormal", lambda: None)
+        monkeypatch.setattr(window, "showMaximized", lambda: None)
+
+    def test_enter_moves_transport_into_bar(self, window, monkeypatch):
+        self._stub_show(window, monkeypatch)
+        window._status_bar.fullscreen_button.toggle()  # noqa: SLF001  enter
+        assert (
+            window._transport.parentWidget() is window._fs_controls  # noqa: SLF001
+        )
+
+    def test_exit_returns_transport_to_main_layout(self, window, monkeypatch):
+        self._stub_show(window, monkeypatch)
+        window._status_bar.fullscreen_button.toggle()  # noqa: SLF001  enter
+        window._status_bar.fullscreen_button.toggle()  # noqa: SLF001  exit
+        # Back under the central widget, and present in the central layout.
+        assert (
+            window._transport.parentWidget() is window.centralWidget()  # noqa: SLF001
+        )
+        layout = window._central_layout  # noqa: SLF001
+        widgets = {layout.itemAt(i).widget() for i in range(layout.count())}
+        assert window._transport in widgets  # noqa: SLF001
+        assert window._transport.isVisible() or not window.isVisible()  # noqa: SLF001
+
+    def test_bar_starts_hidden_on_enter(self, window, monkeypatch):
+        self._stub_show(window, monkeypatch)
+        window._status_bar.fullscreen_button.toggle()  # noqa: SLF001  enter
+        assert window._fs_controls.is_revealed() is False  # noqa: SLF001
+
+
 class TestStatusActionButtons:
     """The bottom-bar buttons drive the same actions as the shortcuts and stay
     in sync with them."""

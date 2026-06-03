@@ -46,6 +46,7 @@ from sinner2.gui.widgets.batch_task_dialog import QBatchTaskDialog
 from sinner2.gui.widgets.batch_view import QBatchView
 from sinner2.gui.widgets.face_detection_overlay import QFaceDetectionOverlay
 from sinner2.gui.widgets.frame_display import QFrameDisplayWidget
+from sinner2.gui.widgets.fullscreen_control_bar import FullscreenControlBar
 from sinner2.gui.widgets.metrics_overlay import (
     CumulativeRateTracker,
     MetricsSample,
@@ -187,6 +188,11 @@ class SinnerMainWindow(QMainWindow):
         self._last_displayed_frame: Frame | None = None
         self._face_overlay = QFaceDetectionOverlay(parent=self._display)
         self._display.set_face_overlay(self._face_overlay)
+        # Auto-hiding playback bar for fullscreen. A child of the display so
+        # it floats over the frame; it takes custody of the transport row
+        # while fullscreen is active and reveals when the cursor nears the
+        # bottom edge. Idle (timer stopped) outside fullscreen.
+        self._fs_controls = FullscreenControlBar(self._display)
         # When the swapper is running, the overlay shows ITS pre-swap
         # detections (published to this sink) rather than re-detecting the
         # swapped output. A timer polls the sink while the overlay is on.
@@ -227,6 +233,9 @@ class SinnerMainWindow(QMainWindow):
         layout.addWidget(self._top_splitter, stretch=1)
         layout.addWidget(self._transport)
         layout.addWidget(self._pickers)
+        # Kept so exit-fullscreen can re-home the transport into its slot
+        # (index 1: between the display splitter and the pickers row).
+        self._central_layout = layout
 
         # Custom bottom status bar: view/window action buttons (left), status
         # message (middle), persistent indicators (right). Replaces
@@ -1004,10 +1013,10 @@ class SinnerMainWindow(QMainWindow):
     def _enter_fullscreen(self) -> None:
         # Snapshot visibility of every chrome widget — the custom status bar
         # included (it's a normal widget in the central layout now) — so
-        # exit_fullscreen can restore exactly what was showing.
+        # exit_fullscreen can restore exactly what was showing. The transport
+        # is NOT hidden: it's moved into the auto-hiding fullscreen bar below.
         chrome: list[QWidget] = [
             self._side_panel,
-            self._transport,
             self._pickers,
             self._status_bar,
         ]
@@ -1017,10 +1026,24 @@ class SinnerMainWindow(QMainWindow):
         self._pre_fullscreen_maximized = self.isMaximized()
         for w in chrome:
             w.setVisible(False)
+        # Hand the transport to the fullscreen bar so the playback controls
+        # stay reachable (revealed on cursor-near-bottom) without permanently
+        # covering the frame. removeWidget first so the central layout drops
+        # its slot cleanly before the bar reparents it.
+        self._central_layout.removeWidget(self._transport)
+        self._fs_controls.attach(self._transport)
         self._is_fullscreen = True
         self.showFullScreen()
+        self._fs_controls.begin()
 
     def _exit_fullscreen(self) -> None:
+        # Stop the cursor watch, take the transport back out of the bar, and
+        # re-home it into its normal slot (index 1: below the display
+        # splitter, above the pickers row).
+        self._fs_controls.end()
+        self._fs_controls.detach(self._transport)
+        self._central_layout.insertWidget(1, self._transport)
+        self._transport.show()
         for w, was_visible in self._pre_fullscreen_visibility.items():
             w.setVisible(was_visible)
         self._pre_fullscreen_visibility = {}
@@ -1099,6 +1122,10 @@ class SinnerMainWindow(QMainWindow):
         super().resizeEvent(event)
         if self._metrics_overlay.isVisible():
             self._reposition_metrics_overlay()
+        if self._is_fullscreen:
+            # Keep the playback bar pinned to the bottom edge as the
+            # fullscreen surface settles to its final size.
+            self._fs_controls.reposition()
 
     # ---- Face-detection overlay ----
 
