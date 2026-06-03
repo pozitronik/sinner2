@@ -49,6 +49,20 @@ class TestSinnerMainWindow:
         assert window._controller.executor() is None  # noqa: SLF001
 
 
+class TestModelsTab:
+    def test_side_panel_has_models_tab(self, window):
+        panel = window._side_panel  # noqa: SLF001
+        titles = [panel.tabText(i) for i in range(panel.count())]
+        assert "Models" in titles
+
+    def test_models_view_wired(self, window):
+        assert window._side_panel.models_view() is window._models_view  # noqa: SLF001
+        # The catalog is fully listed.
+        from sinner2.pipeline.models_catalog import MODEL_CATALOG
+
+        assert window._models_view._model.rowCount() == len(MODEL_CATALOG)  # noqa: SLF001
+
+
 class TestStaysOnTop:
     def test_f12_toggles_window_stays_on_top_flag(self, window):
         from PySide6.QtCore import Qt

@@ -34,6 +34,7 @@ class QSidePanel(QTabWidget):
         *,
         processors: QProcessorControls | None = None,
         batch_view: QBatchView | None = None,
+        models_view: QWidget | None = None,
         thumb_extract_dim: int = 384,
         thumb_display_dim: int = 128,
         sources_display_dim: int | None = None,
@@ -70,15 +71,18 @@ class QSidePanel(QTabWidget):
             display_dim=targets_display_dim or thumb_display_dim,
         )
         self._batch_view = batch_view
+        self._models_view = models_view
 
         # Order: settings first (most-used during initial setup), then
         # libraries for ongoing source/target switching, then batch
-        # (queue management).
+        # (queue management), then models (occasional management).
         self.addTab(self._processors, "Settings")
         self.addTab(self._sources_library, "Sources")
         self.addTab(self._targets_library, "Targets")
         if self._batch_view is not None:
             self.addTab(self._batch_view, "Batch")
+        if self._models_view is not None:
+            self.addTab(self._models_view, "Models")
 
     # ---- Accessors ----
 
@@ -93,6 +97,9 @@ class QSidePanel(QTabWidget):
 
     def batch_view(self) -> QBatchView | None:
         return self._batch_view
+
+    def models_view(self) -> QWidget | None:
+        return self._models_view
 
     def set_editing_locked(self, locked: bool) -> None:
         """Lock the editing tabs (Settings + both libraries) during a batch

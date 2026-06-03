@@ -45,6 +45,7 @@ from sinner2.pipeline.processors.upscaler import model_filename
 from sinner2.gui.player_controller import PlayerController, default_cache_root
 from sinner2.gui.widgets.batch_task_dialog import QBatchTaskDialog
 from sinner2.gui.widgets.batch_view import QBatchView
+from sinner2.gui.widgets.models_view import QModelsView
 from sinner2.gui.widgets.face_detection_overlay import QFaceDetectionOverlay
 from sinner2.gui.widgets.frame_display import QFrameDisplayWidget
 from sinner2.gui.widgets.fullscreen_control_bar import FullscreenControlBar
@@ -158,12 +159,14 @@ class SinnerMainWindow(QMainWindow):
             queue=self._batch_queue,
             global_output_dir_resolver=self._global_output_dir,
         )
+        self._models_view = QModelsView()
         # Per-panel zoom: fall back to the legacy shared value, then 128.
         _legacy_dim = self._settings.library_display_dim or 128
         self._side_panel = QSidePanel(
             thumbnail_cache_dir=default_cache_root() / "thumbnails",
             processors=self._processors,
             batch_view=self._batch_view,
+            models_view=self._models_view,
             sources_display_dim=self._settings.library_sources_display_dim or _legacy_dim,
             targets_display_dim=self._settings.library_targets_display_dim or _legacy_dim,
         )
@@ -1279,6 +1282,8 @@ class SinnerMainWindow(QMainWindow):
                 _THREAD_JOIN_MAX_WAITS,
                 _THREAD_JOIN_WAIT_MS,
             )
+        # Cancel any in-flight model download + join its thread.
+        self._models_view.shutdown()
         # Stop the thumbnail thread pool; without this the daemon
         # workers occasionally outlive Qt and emit GUI-warning noise
         # during interpreter shutdown.

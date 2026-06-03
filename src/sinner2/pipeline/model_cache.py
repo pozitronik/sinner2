@@ -523,6 +523,31 @@ def missing_models() -> list[str]:
     return [name for name in REQUIRED_MODELS if not _model_present(name)]
 
 
+def model_size_on_disk(name: str) -> int:
+    """Bytes the installed model occupies, or 0 if it isn't present."""
+    path = get_models_dir() / name
+    try:
+        return path.stat().st_size if path.is_file() else 0
+    except OSError:
+        return 0
+
+
+def delete_model(name: str) -> bool:
+    """Delete a model's file from the models dir. Returns True if a file was
+    removed (False if it wasn't there). Also evicts any cached ONNX session so
+    a re-download re-loads cleanly. The caller is responsible for confirming —
+    especially for REQUIRED models, which the app needs to run."""
+    release_onnx_session(name)
+    path = get_models_dir() / name
+    try:
+        if path.is_file():
+            path.unlink()
+            return True
+    except OSError:
+        pass
+    return False
+
+
 def download_model(
     name: str,
     on_progress: ProgressCallback | None = None,
