@@ -65,7 +65,8 @@ class _StubOnnxUpscaleSession:
         self._scale = scale
 
     def get_inputs(self):
-        return [SimpleNamespace(name="input")]
+        # Dynamic spatial dims → not a fixed-size model.
+        return [SimpleNamespace(name="input", shape=["batch", 3, "h", "w"])]
 
     def get_outputs(self):
         return [SimpleNamespace(name="output")]
@@ -119,6 +120,118 @@ class TestOnnxUpscale:
         assert np.array_equal(whole, tiled)
 
 
+class _AlignRequiredNet:
+    """Like SwinIR: errors unless H,W are a multiple of `align` (its window)."""
+
+    def __init__(self, scale: int, align: int) -> None:
+        self._scale = scale
+        self._align = align
+        self.seen: list = []
+
+    def __call__(self, t):
+        self.seen.append((int(t.shape[2]), int(t.shape[3])))
+        if t.shape[2] % self._align or t.shape[3] % self._align:
+            raise RuntimeError("window reshape: input not aligned")
+        return F.interpolate(t, scale_factor=self._scale, mode="nearest")
+
+    def eval(self):
+        return self
+
+    def half(self):
+        return self
+
+    def to(self, _device):
+        return self
+
+
+class _FixedSizeOnnxSession:
+    """Like HAT: only accepts an exact `size`x`size` input (errors otherwise)."""
+
+    def __init__(self, size: int, scale: int) -> None:
+        self._size = size
+        self._scale = scale
+        self.seen: list = []
+
+    def get_inputs(self):
+        return [SimpleNamespace(name="input", shape=[1, 3, self._size, self._size])]
+
+    def get_outputs(self):
+        return [SimpleNamespace(name="output")]
+
+    def run(self, _names, feeds):
+        x = feeds["input"]
+        self.seen.append((x.shape[2], x.shape[3]))
+        if x.shape[2] != self._size or x.shape[3] != self._size:
+            raise RuntimeError("INVALID_ARGUMENT: fixed input size")
+        up = np.repeat(np.repeat(x, self._scale, axis=2), self._scale, axis=3)
+        return [up]
+
+
+class TestInputAlignmentRegression:
+    """SwinIR (window attention) and HAT (fixed 256 input) both crash on
+    arbitrary frame sizes — the reported 'frame doesn't change' bug. The torch
+    path pads to a multiple of the window; the ONNX path tiles at the fixed
+    size."""
+
+    def test_torch_align_pads_and_crops(self):
+        net = _AlignRequiredNet(2, 8)
+        frame = np.random.randint(0, 255, (6, 10, 3), np.uint8)  # not /8
+        out = _upscale(net, frame, scale=2, device=_CPU, fp16=False, tile=0, align=8)
+        assert out.shape == (12, 20, 3)             # cropped to 6*2 x 10*2
+        assert net.seen[0][0] % 8 == 0 and net.seen[0][1] % 8 == 0  # net saw /8
+
+    def test_torch_align_tiled_also_pads(self):
+        net = _AlignRequiredNet(2, 8)
+        frame = np.random.randint(0, 255, (20, 20, 3), np.uint8)
+        out = _upscale(net, frame, scale=2, device=_CPU, fp16=False, tile=7, align=8)
+        assert out.shape == (40, 40, 3)
+        assert all(h % 8 == 0 and w % 8 == 0 for h, w in net.seen)
+
+    def test_onnx_fixed_size_tiles_at_exact_size(self):
+        s = _FixedSizeOnnxSession(4, 4)
+        frame = np.random.randint(0, 255, (6, 10, 3), np.uint8)
+        out = _onnx_upscale(
+            s, frame, scale=4, tile=0, in_name="input", out_name="output",
+            fixed_size=4,
+        )
+        assert out.shape == (24, 40, 3)              # 6*4 x 10*4
+        assert all(sh == (4, 4) for sh in s.seen)    # every call exactly 4x4
+
+
+class TestFp16Gating:
+    def test_swinir_forces_fp32(self, monkeypatch):
+        # SwinIR's attention errors in half precision — fp16 must be forced off
+        # even when the user requested it.
+        seen = {}
+
+        def fake_load(spec, device, fp16):
+            seen["fp16"] = fp16
+            return _StubNet(spec.scale)
+
+        monkeypatch.setattr(upscaler, "_load_model", fake_load)
+        up = Upscaler(
+            params=UpscalerParams(model=UpscalerModel.SWINIR_M, fp16=True),
+            device="cpu",
+        )
+        up.setup()
+        assert seen["fp16"] is False
+
+    def test_realesrgan_keeps_fp16(self, monkeypatch):
+        seen = {}
+
+        def fake_load(spec, device, fp16):
+            seen["fp16"] = fp16
+            return _StubNet(spec.scale)
+
+        monkeypatch.setattr(upscaler, "_load_model", fake_load)
+        up = Upscaler(
+            params=UpscalerParams(model=UpscalerModel.X4PLUS, fp16=True),
+            device="cpu",
+        )
+        up.setup()
+        assert seen["fp16"] is True
+
+
 class TestUpscalerProcessor:
     def test_not_thread_safe(self):
         assert Upscaler.thread_safe is False
@@ -155,7 +268,20 @@ class TestUpscalerProcessor:
             upscaler, "get_onnx_session",
             lambda filename, providers: _StubOnnxUpscaleSession(4),
         )
-        up = Upscaler(params=UpscalerParams(model=UpscalerModel.HAT_X4), device="cpu")
+        up = Upscaler(params=UpscalerParams(model=UpscalerModel.ULTRASHARP_X4), device="cpu")
         up.setup()
         out = up.process(np.zeros((5, 5, 3), np.uint8))
         assert out.shape == (20, 20, 3)  # x4 via the ONNX path
+
+    def test_fixed_size_onnx_model_tiles_through_processor(self, monkeypatch):
+        # HAT has a fixed 256 input; setup detects it from the session shape and
+        # process() tiles at that size (here 4 via the stub) instead of crashing.
+        monkeypatch.setattr(
+            upscaler, "get_onnx_session",
+            lambda filename, providers: _FixedSizeOnnxSession(4, 4),
+        )
+        up = Upscaler(params=UpscalerParams(model=UpscalerModel.HAT_X4), device="cpu")
+        up.setup()
+        assert up._onnx_fixed_size == 4  # noqa: SLF001
+        out = up.process(np.zeros((6, 10, 3), np.uint8))
+        assert out.shape == (24, 40, 3)  # x4, tiled — no INVALID_ARGUMENT

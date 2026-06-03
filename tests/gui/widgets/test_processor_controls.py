@@ -678,14 +678,14 @@ class TestUpscalerModels:
         self._select(widget, UpscalerModel.HAT_X4.value)
         assert widget.upscaler_params().model is UpscalerModel.HAT_X4
 
-    def test_fp16_greyed_for_onnx_enabled_for_torch(self, widget):
+    def test_fp16_greyed_unless_model_supports_it(self, widget):
         from sinner2.pipeline.processors.upscaler import UpscalerModel
 
-        self._select(widget, UpscalerModel.HAT_X4.value)  # ONNX
+        self._select(widget, UpscalerModel.HAT_X4.value)  # ONNX → n/a
         assert widget._upscaler_fp16.isEnabled() is False  # noqa: SLF001
-        self._select(widget, UpscalerModel.X4PLUS.value)  # torch
-        assert widget._upscaler_fp16.isEnabled() is True  # noqa: SLF001
-        self._select(widget, UpscalerModel.SWINIR_M.value)  # torch
+        self._select(widget, UpscalerModel.SWINIR_M.value)  # torch but no fp16
+        assert widget._upscaler_fp16.isEnabled() is False  # noqa: SLF001
+        self._select(widget, UpscalerModel.X4PLUS.value)  # Real-ESRGAN → fp16 ok
         assert widget._upscaler_fp16.isEnabled() is True  # noqa: SLF001
 
 

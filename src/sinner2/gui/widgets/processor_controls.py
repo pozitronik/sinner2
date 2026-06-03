@@ -36,7 +36,7 @@ from sinner2.pipeline.processors.occlusion import FaceParser
 from sinner2.pipeline.processors.upscaler import (
     UpscalerModel,
     UpscalerParams,
-    model_runtime,
+    model_supports_fp16,
 )
 from sinner2.pipeline.detectors import DetectorModel
 from sinner2.pipeline.processors.face_swapper import (
@@ -1112,12 +1112,12 @@ class QProcessorControls(QWidget):
         self._target_sex.setEnabled(full_pack)
 
     def _update_upscaler_rows(self) -> None:
-        """fp16 (torch half-precision) has no effect on the ONNX upscalers —
-        gray it out for those."""
-        is_torch = (
-            model_runtime(UpscalerModel(self._upscaler_model.currentData())) == "torch"
+        """Gray the fp16 knob for models it doesn't apply to — the ONNX
+        upscalers (no effect) and SwinIR (its attention can't run in half)."""
+        supported = model_supports_fp16(
+            UpscalerModel(self._upscaler_model.currentData())
         )
-        self._upscaler_fp16.setEnabled(is_torch)
+        self._upscaler_fp16.setEnabled(supported)
 
     def _couple_comparison_to_overlay(self, on: bool) -> None:
         """The comparison thumbnails draw on the detection overlay, so enabling

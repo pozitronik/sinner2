@@ -47,6 +47,8 @@ class _ModelSpec:
     scale: int
     runtime: str  # "torch" (basicsr arch + .pth) | "onnx"
     build: Callable[[], Any] | None = None  # torch arch builder; None for onnx
+    align: int = 1  # input H,W must be a multiple of this (SwinIR window = 8)
+    fp16_ok: bool = True  # SwinIR's attention errors in half precision → False
 
 
 def _build_srvgg_x4v3() -> Any:
@@ -92,7 +94,7 @@ _MODEL_SPECS: dict[UpscalerModel, _ModelSpec] = {
         "RealESRGAN_x2plus.pth", 2, "torch", lambda: _build_rrdb(2)
     ),
     UpscalerModel.SWINIR_M: _ModelSpec(
-        "swinir_realsr_m_x4.pth", 4, "torch", _build_swinir
+        "swinir_realsr_m_x4.pth", 4, "torch", _build_swinir, align=8, fp16_ok=False
     ),
     UpscalerModel.HAT_X4: _ModelSpec("real_hatgan_x4.onnx", 4, "onnx"),
     UpscalerModel.ULTRASHARP_X4: _ModelSpec("ultra_sharp_x4.onnx", 4, "onnx"),
@@ -116,9 +118,16 @@ def model_filename(model: UpscalerModel) -> str:
 
 
 def model_runtime(model: UpscalerModel) -> str:
-    """'torch' or 'onnx' — the GUI greys the fp16 knob for ONNX models (where
-    it has no effect)."""
+    """'torch' or 'onnx'."""
     return _MODEL_SPECS[model].runtime
+
+
+def model_supports_fp16(model: UpscalerModel) -> bool:
+    """Whether the fp16 knob does anything for this model — only torch models
+    that tolerate half precision (Real-ESRGAN yes; SwinIR no; ONNX n/a). The
+    GUI greys the knob when False."""
+    spec = _MODEL_SPECS[model]
+    return spec.runtime == "torch" and spec.fp16_ok
 
 
 def _load_state_dict(path: Any, device: Any) -> dict:
@@ -150,7 +159,22 @@ def _load_model(spec: _ModelSpec, device: Any, fp16: bool) -> Any:
     return net.to(device)
 
 
-def _tiled_forward(model: Any, t: Any, scale: int, tile: int, pad: int = 10) -> Any:
+def _run_aligned(model: Any, patch: Any, scale: int, align: int) -> Any:
+    """Run `model` on `patch` (1,C,h,w), padding h,w up to a multiple of `align`
+    first (SwinIR's window attention requires it) and cropping the scaled output
+    back. align=1 is a no-op."""
+    import torch.nn.functional as F
+
+    h, w = patch.shape[2], patch.shape[3]
+    ah, aw = (align - h % align) % align, (align - w % align) % align
+    if ah or aw:
+        patch = F.pad(patch, (0, aw, 0, ah), mode="replicate")
+    return model(patch)[:, :, : h * scale, : w * scale]
+
+
+def _tiled_forward(
+    model: Any, t: Any, scale: int, tile: int, pad: int = 10, align: int = 1
+) -> Any:
     """Run `model` over `t` (1,C,H,W) in `tile`-sized patches with `pad` overlap,
     stitching the upscaled result — keeps peak VRAM bounded for large frames."""
     import torch
@@ -164,7 +188,7 @@ def _tiled_forward(model: Any, t: Any, scale: int, tile: int, pad: int = 10) -> 
             y1, x1 = min(y0 + tile, h), min(x0 + tile, w)
             yp0, yp1 = max(y0 - pad, 0), min(y1 + pad, h)
             xp0, xp1 = max(x0 - pad, 0), min(x1 + pad, w)
-            up = model(t[:, :, yp0:yp1, xp0:xp1])
+            up = _run_aligned(model, t[:, :, yp0:yp1, xp0:xp1], scale, align)
             oy0, ox0 = (y0 - yp0) * scale, (x0 - xp0) * scale
             oh, ow = (y1 - y0) * scale, (x1 - x0) * scale
             out[:, :, y0 * scale:y1 * scale, x0 * scale:x1 * scale] = (
@@ -174,7 +198,8 @@ def _tiled_forward(model: Any, t: Any, scale: int, tile: int, pad: int = 10) -> 
 
 
 def _upscale(
-    model: Any, bgr: Frame, *, scale: int, device: Any, fp16: bool, tile: int
+    model: Any, bgr: Frame, *, scale: int, device: Any, fp16: bool, tile: int,
+    align: int = 1,
 ) -> Frame:
     import torch
 
@@ -183,7 +208,10 @@ def _upscale(
     if fp16 and device.type == "cuda":
         t = t.half()
     with torch.no_grad():
-        out = _tiled_forward(model, t, scale, tile) if tile > 0 else model(t)
+        if tile > 0:
+            out = _tiled_forward(model, t, scale, tile, align=align)
+        else:
+            out = _run_aligned(model, t, scale, align)
     arr = (
         out.clamp(0.0, 1.0).squeeze(0).permute(1, 2, 0)
         .mul(255.0).round().to(torch.uint8).cpu().numpy()
@@ -217,14 +245,40 @@ def _onnx_tiled(
     return out
 
 
+def _onnx_fixed_tile(
+    session: Any, chw: np.ndarray, scale: int, size: int, in_name: str, out_name: str
+) -> np.ndarray:
+    """For ONNX models with a FIXED square input (e.g. HAT = 256x256): split the
+    frame into exact `size`x`size` tiles, edge-pad partial/edge tiles up to the
+    full size, run each, and stitch the (cropped) scaled outputs."""
+    _, c, h, w = chw.shape
+    out = np.zeros((1, c, h * scale, w * scale), np.float32)
+    for y0 in range(0, h, size):
+        for x0 in range(0, w, size):
+            y1, x1 = min(y0 + size, h), min(x0 + size, w)
+            patch = chw[:, :, y0:y1, x0:x1]
+            ph, pw = size - (y1 - y0), size - (x1 - x0)
+            if ph or pw:
+                patch = np.pad(patch, ((0, 0), (0, 0), (0, ph), (0, pw)), mode="edge")
+            up = _onnx_run(session, patch, in_name, out_name)
+            oh, ow = (y1 - y0) * scale, (x1 - x0) * scale
+            out[:, :, y0 * scale:y1 * scale, x0 * scale:x1 * scale] = up[:, :, :oh, :ow]
+    return out
+
+
 def _onnx_upscale(
-    session: Any, bgr: Frame, *, scale: int, tile: int, in_name: str, out_name: str
+    session: Any, bgr: Frame, *, scale: int, tile: int, in_name: str, out_name: str,
+    fixed_size: int | None = None,
 ) -> Frame:
     """ONNX whole-frame upscale. Same RGB/255 [0,1] contract as _upscale
-    (verified against the facefusion upscaler models), output clamped to [0,1]."""
+    (verified against the facefusion upscaler models), output clamped to [0,1].
+    `fixed_size` set → the model only accepts that exact square input, so tile
+    at it (HAT). Otherwise dynamic-shape: whole-frame, or the user's tile."""
     rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
     chw = np.ascontiguousarray(rgb.transpose(2, 0, 1)[None])
-    if tile > 0:
+    if fixed_size:
+        out = _onnx_fixed_tile(session, chw, scale, fixed_size, in_name, out_name)
+    elif tile > 0:
         out = _onnx_tiled(session, chw, scale, tile, in_name, out_name)
     else:
         out = _onnx_run(session, chw, in_name, out_name)
@@ -246,6 +300,9 @@ class Upscaler:
         self._in_name = "input"
         self._out_name = "output"
         self._runtime = "torch"
+        self._align = 1  # torch input alignment (SwinIR = 8)
+        self._fp16 = False  # effective fp16 (off for models that can't do half)
+        self._onnx_fixed_size: int | None = None  # fixed square ONNX input (HAT)
         self._device: Any = None
         self._scale = 1
         self._device_is_cuda = False
@@ -274,10 +331,23 @@ class Upscaler:
                 else ["CPUExecutionProvider"]
             )
             self._session = get_onnx_session(spec.filename, providers=providers)
-            self._in_name = self._session.get_inputs()[0].name
+            inp = self._session.get_inputs()[0]
+            self._in_name = inp.name
             self._out_name = self._session.get_outputs()[0].name
+            # A fixed (non-dynamic) square input means the model only accepts
+            # that exact size — tile at it (e.g. HAT = 256). Dynamic → None.
+            shape = inp.shape
+            if (
+                isinstance(shape, (list, tuple)) and len(shape) == 4
+                and isinstance(shape[2], int) and isinstance(shape[3], int)
+                and shape[2] > 0 and shape[2] == shape[3]
+            ):
+                self._onnx_fixed_size = shape[2]
         else:
-            self._model = _load_model(spec, device, self._params.fp16)
+            self._align = spec.align
+            # Honour fp16 only when the arch tolerates it (SwinIR doesn't).
+            self._fp16 = self._params.fp16 and spec.fp16_ok
+            self._model = _load_model(spec, device, self._fp16)
 
     def process(self, frame: Frame) -> Frame:
         if self._runtime == "onnx":
@@ -287,7 +357,7 @@ class Upscaler:
                 return _onnx_upscale(
                     self._session, frame, scale=self._scale,
                     tile=self._params.tile, in_name=self._in_name,
-                    out_name=self._out_name,
+                    out_name=self._out_name, fixed_size=self._onnx_fixed_size,
                 )
         model = self._model
         if model is None:
@@ -296,7 +366,7 @@ class Upscaler:
             return _upscale(
                 model, frame,
                 scale=self._scale, device=self._device,
-                fp16=self._params.fp16, tile=self._params.tile,
+                fp16=self._fp16, tile=self._params.tile, align=self._align,
             )
 
     def release(self) -> None:
