@@ -249,6 +249,8 @@ class QBatchTaskDialog(QDialog):
         for value, label in (
             ("gfpgan", "GFPGAN (whole-frame, Upscale knob)"),
             ("codeformer", "CodeFormer (ONNX, fidelity knob)"),
+            ("gpen_512", "GPEN-512 (ONNX, more detail)"),
+            ("restoreformer_pp", "RestoreFormer++ (ONNX)"),
         ):
             self._enhancer_model.addItem(label, value)
             if value == task.enhancer_model:
@@ -474,10 +476,10 @@ class QBatchTaskDialog(QDialog):
 
     def _update_enhancer_rows(self) -> None:
         """Enable only the knob the selected enhancer model uses — Upscale for
-        GFPGAN, Fidelity for CodeFormer."""
-        is_codeformer = self._enhancer_model.currentData() == "codeformer"
-        self._upscale.setEnabled(not is_codeformer)
-        self._enhancer_fidelity.setEnabled(is_codeformer)
+        GFPGAN, Fidelity for CodeFormer; GPEN / RestoreFormer++ have neither."""
+        model = self._enhancer_model.currentData()
+        self._upscale.setEnabled(model == "gfpgan")
+        self._enhancer_fidelity.setEnabled(model == "codeformer")
 
     @classmethod
     def from_task(

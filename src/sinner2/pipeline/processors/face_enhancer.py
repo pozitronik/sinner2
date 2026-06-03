@@ -10,7 +10,9 @@ from pydantic import Field
 from sinner2.config.base import SinnerBaseModel
 from sinner2.pipeline.face_analyser import FaceAnalyser
 from sinner2.pipeline.model_cache import get_model_path
+from sinner2.pipeline.processors.bfr_onnx import PlainBfrBackend
 from sinner2.pipeline.processors.codeformer import CodeFormerBackend
+from sinner2.pipeline.processors.codeformer import MODEL_FILE as _CODEFORMER_FILE
 from sinner2.pipeline.processors.face_swapper_types import RotationAngleSource
 from sinner2.pipeline.processors.rotation_compensation import (
     compute_roll,
@@ -24,6 +26,25 @@ class EnhancerModel(str, Enum):
 
     GFPGAN = "gfpgan"          # whole-frame restore; an Upscale knob
     CODEFORMER = "codeformer"  # ONNX; a fidelity (w) knob, no upscale
+    GPEN_512 = "gpen_512"      # ONNX; plain BFR-512, no knobs (more detail)
+    RESTOREFORMER_PP = "restoreformer_pp"  # ONNX; transformer restorer, no knobs
+
+
+# Plain BFR ONNX restorers (no fidelity knob) → their model filenames. Driven by
+# the shared PlainBfrBackend.
+_BFR_MODEL_FILES: dict[EnhancerModel, str] = {
+    EnhancerModel.GPEN_512: "gpen_bfr_512.onnx",
+    EnhancerModel.RESTOREFORMER_PP: "restoreformer_plus_plus.onnx",
+}
+
+
+def enhancer_onnx_model_file(model: EnhancerModel) -> str | None:
+    """The ONNX weight file an enhancer needs, or None for GFPGAN (a .pth that
+    ships with the required-models set). Used by the GUI to confirm/download the
+    weight before the ONNX enhancer is enabled."""
+    if model is EnhancerModel.CODEFORMER:
+        return _CODEFORMER_FILE
+    return _BFR_MODEL_FILES.get(model)
 
 
 class FaceEnhancerParams(SinnerBaseModel):
@@ -101,6 +122,8 @@ class FaceEnhancer:
         self._restorer: Any = None
         # CodeFormer backend (ONNX) when that model is selected; None for GFPGAN.
         self._codeformer: CodeFormerBackend | None = None
+        # Plain BFR backend (ONNX) for GPEN / RestoreFormer++; None otherwise.
+        self._bfr: PlainBfrBackend | None = None
         # Detector for rotation compensation (finds tilted faces to upright).
         # Built in setup(); reuses the shared insightface model.
         self._analyser: FaceAnalyser | None = None
@@ -127,6 +150,10 @@ class FaceEnhancer:
                 fidelity=self._params.codeformer_fidelity
             )
             self._codeformer.setup()
+        elif self._params.model in _BFR_MODEL_FILES:
+            # GPEN / RestoreFormer++ — plain BFR ONNX (no knobs), shared session.
+            self._bfr = PlainBfrBackend(_BFR_MODEL_FILES[self._params.model])
+            self._bfr.setup()
         else:
             # GFPGAN is PyTorch, so its device is torch's CUDA — independent of
             # the swapper's ONNX providers. A CPU fallback is far slower, so
@@ -169,12 +196,15 @@ class FaceEnhancer:
         # local ref keeps the active backend alive for this call.
         restorer = self._restorer
         codeformer = self._codeformer
-        if restorer is None and codeformer is None:
+        bfr = self._bfr
+        if restorer is None and codeformer is None and bfr is None:
             raise RuntimeError("FaceEnhancer.process called before setup()")
 
         def enhance_image(img: Frame, only_center: bool) -> Frame:
             if codeformer is not None:
                 return codeformer.enhance(img)  # ONNX session is thread-safe
+            if bfr is not None:
+                return bfr.enhance(img)  # ONNX session is thread-safe
             with self._enhance_lock, self._gfpgan_autocast():
                 _, _, out = restorer.enhance(
                     img,
@@ -209,6 +239,9 @@ class FaceEnhancer:
             # the cache eviction) rather than just dropping our reference.
             self._codeformer.release()
             self._codeformer = None
+        if self._bfr is not None:
+            self._bfr.release()
+            self._bfr = None
         self._analyser = None
         # Hand the model's VRAM back to the driver. Torch's caching allocator
         # otherwise keeps the freed blocks reserved, so a realtime worker-count

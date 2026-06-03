@@ -56,6 +56,17 @@ MODEL_SOURCES: dict[str, str] = {
         "https://github.com/facefusion/facefusion-assets/releases/download/"
         "models-3.0.0/codeformer.onnx"
     ),
+    # GPEN-BFR-512 + RestoreFormer++ — plain ONNX face restorers (no knobs),
+    # higher detail than GFPGAN-512. facefusion-assets, verified. Single image
+    # input/output in [-1,1]; driven by PlainBfrBackend. Lazy on selection.
+    "gpen_bfr_512.onnx": (
+        "https://github.com/facefusion/facefusion-assets/releases/download/"
+        "models-3.0.0/gpen_bfr_512.onnx"
+    ),
+    "restoreformer_plus_plus.onnx": (
+        "https://github.com/facefusion/facefusion-assets/releases/download/"
+        "models-3.0.0/restoreformer_plus_plus.onnx"
+    ),
     # ---- Alternative face-swap models (optional; lazy on selection) ----
     # ReSwapper: clean-room reproduction of inswapper, drop-in via insightface's
     # INSwapper class (same ArcFace embedding contract). Saved under our own

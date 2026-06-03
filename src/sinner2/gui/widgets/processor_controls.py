@@ -99,6 +99,8 @@ _SWAPPER_MODELS: list[tuple[str, str]] = [
 _ENHANCER_MODELS: list[tuple[str, str]] = [
     (EnhancerModel.GFPGAN.value, "GFPGAN (whole-frame, Upscale knob)"),
     (EnhancerModel.CODEFORMER.value, "CodeFormer (ONNX, fidelity knob)"),
+    (EnhancerModel.GPEN_512.value, "GPEN-512 (ONNX, more detail)"),
+    (EnhancerModel.RESTOREFORMER_PP.value, "RestoreFormer++ (ONNX)"),
 ]
 
 _UPSCALER_MODELS: list[tuple[str, str]] = [
@@ -951,14 +953,14 @@ class QProcessorControls(QWidget):
 
     def _update_enhancer_model_rows(self) -> None:
         """Enable only the knob that applies to the selected enhancer model —
-        Upscale for GFPGAN, Fidelity for CodeFormer."""
-        is_codeformer = (
-            self._enhancer_model.currentData() == EnhancerModel.CODEFORMER.value
-        )
-        self._upscale.setEnabled(not is_codeformer)
-        self._enhancer_fidelity.setEnabled(is_codeformer)
-        # fp16 is a GFPGAN-only knob (CodeFormer is ONNX) — gray it out for CF.
-        self._enhancer_fp16.setEnabled(not is_codeformer)
+        Upscale for GFPGAN, Fidelity for CodeFormer; GPEN / RestoreFormer++
+        have neither."""
+        model = self._enhancer_model.currentData()
+        is_gfpgan = model == EnhancerModel.GFPGAN.value
+        self._upscale.setEnabled(is_gfpgan)
+        self._enhancer_fidelity.setEnabled(model == EnhancerModel.CODEFORMER.value)
+        # fp16 is a GFPGAN-only knob (the ONNX restorers don't use it).
+        self._enhancer_fp16.setEnabled(is_gfpgan)
 
     def enhancer_model(self) -> str:
         return self._enhancer_model.currentData()

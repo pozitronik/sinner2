@@ -371,3 +371,74 @@ class TestCodeFormerBackend:
         fe.release()
         assert released == [1]  # backend.release() ran (evicts the ONNX session)
         assert fe._codeformer is None  # noqa: SLF001
+
+
+class TestPlainBfrBackends:
+    """GPEN-512 and RestoreFormer++ route through the shared PlainBfrBackend."""
+
+    class _StubBackend:
+        instances: list = []
+
+        def __init__(self, model_file, *a, **k):
+            self.model_file = model_file
+            self.released = 0
+            TestPlainBfrBackends._StubBackend.instances.append(self)
+
+        def setup(self):
+            pass
+
+        def enhance(self, img):
+            return img
+
+        def release(self):
+            self.released += 1
+
+    @pytest.mark.parametrize(
+        "model, expected_file",
+        [
+            (EnhancerModel.GPEN_512, "gpen_bfr_512.onnx"),
+            (EnhancerModel.RESTOREFORMER_PP, "restoreformer_plus_plus.onnx"),
+        ],
+    )
+    def test_model_uses_bfr_backend_with_right_file(
+        self, models_dir, stub_face_detection, monkeypatch, model, expected_file
+    ):
+        self._StubBackend.instances = []
+        monkeypatch.setattr(face_enhancer, "PlainBfrBackend", self._StubBackend)
+        fe = FaceEnhancer(
+            params=FaceEnhancerParams(model=model, rotation_compensation=False)
+        )
+        fe.setup()
+        assert fe._bfr is not None  # noqa: SLF001
+        assert fe._codeformer is None  # noqa: SLF001
+        assert self._StubBackend.instances[-1].model_file == expected_file
+        out = fe.process(_blank())
+        assert out.shape == _blank().shape
+
+    def test_release_evicts_bfr_session(
+        self, models_dir, stub_face_detection, monkeypatch
+    ):
+        self._StubBackend.instances = []
+        monkeypatch.setattr(face_enhancer, "PlainBfrBackend", self._StubBackend)
+        fe = FaceEnhancer(
+            params=FaceEnhancerParams(
+                model=EnhancerModel.GPEN_512, rotation_compensation=False
+            )
+        )
+        fe.setup()
+        backend = self._StubBackend.instances[-1]
+        fe.release()
+        assert backend.released == 1
+        assert fe._bfr is None  # noqa: SLF001
+
+
+def test_enhancer_onnx_model_file_mapping():
+    from sinner2.pipeline.processors.face_enhancer import enhancer_onnx_model_file
+
+    assert enhancer_onnx_model_file(EnhancerModel.GFPGAN) is None
+    assert enhancer_onnx_model_file(EnhancerModel.CODEFORMER) == "codeformer.onnx"
+    assert enhancer_onnx_model_file(EnhancerModel.GPEN_512) == "gpen_bfr_512.onnx"
+    assert (
+        enhancer_onnx_model_file(EnhancerModel.RESTOREFORMER_PP)
+        == "restoreformer_plus_plus.onnx"
+    )

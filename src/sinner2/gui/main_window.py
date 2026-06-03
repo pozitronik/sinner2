@@ -31,10 +31,10 @@ from sinner2.config.execution import OnnxExecution, TorchExecution
 from sinner2.gui.face_detection_probe import FaceDetectionProbe, FaceDetectionSink
 from sinner2.gui.icon import app_icon
 from sinner2.gui.model_download import ensure_models
-from sinner2.pipeline.processors.codeformer import (
-    MODEL_FILE as CODEFORMER_MODEL_FILE,
+from sinner2.pipeline.processors.face_enhancer import (
+    EnhancerModel,
+    enhancer_onnx_model_file,
 )
-from sinner2.pipeline.processors.face_enhancer import EnhancerModel
 from sinner2.pipeline.processors.face_swapper import SwapperModel
 from sinner2.pipeline.processors.occlusion import parser_model_file
 from sinner2.pipeline.processors.swapper_models import (
@@ -687,15 +687,16 @@ class SinnerMainWindow(QMainWindow):
             self, [parser_model_file(swapper_cfg.occlusion_parser)]
         ):
             self._processors.set_occlusion_checked(False)
-        # CodeFormer enhancer is ONNX with its own ~377 MB weight — confirm the
-        # download when it's selected (and the enhancer's on); decline reverts
-        # to GFPGAN so the chain isn't rebuilt against a missing model.
-        if (
-            self._processors.enhancer_enabled()
-            and self._processors.enhancer_model() == EnhancerModel.CODEFORMER.value
-            and not ensure_models(self, [CODEFORMER_MODEL_FILE])
-        ):
-            self._processors.set_enhancer_model(EnhancerModel.GFPGAN.value)
+        # ONNX enhancers (CodeFormer / GPEN-512 / RestoreFormer++) each need
+        # their own weight — confirm the download when one is selected (and the
+        # enhancer's on); decline reverts to GFPGAN so the chain isn't rebuilt
+        # against a missing model.
+        if self._processors.enhancer_enabled():
+            onnx_file = enhancer_onnx_model_file(
+                EnhancerModel(self._processors.enhancer_model())
+            )
+            if onnx_file is not None and not ensure_models(self, [onnx_file]):
+                self._processors.set_enhancer_model(EnhancerModel.GFPGAN.value)
 
         self._controller.apply_session_config(
             swapper_params=self._processors.swapper_params(),

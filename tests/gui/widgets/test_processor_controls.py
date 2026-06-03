@@ -131,6 +131,24 @@ class TestQProcessorControls:
         assert widget._upscale.isEnabled() is True  # noqa: SLF001
         assert widget._enhancer_fidelity.isEnabled() is False  # noqa: SLF001
 
+    def test_plain_bfr_models_disable_both_knobs(self, widget):
+        from sinner2.pipeline.processors.face_enhancer import EnhancerModel
+
+        for model in (EnhancerModel.GPEN_512, EnhancerModel.RESTOREFORMER_PP):
+            widget.set_enhancer_model(model.value)
+            assert widget._upscale.isEnabled() is False  # noqa: SLF001
+            assert widget._enhancer_fidelity.isEnabled() is False  # noqa: SLF001
+            assert widget.enhancer_params().model is model
+
+    def test_enhancer_combo_lists_all_models(self, widget):
+        from sinner2.pipeline.processors.face_enhancer import EnhancerModel
+
+        values = {
+            widget._enhancer_model.itemData(i)  # noqa: SLF001
+            for i in range(widget._enhancer_model.count())  # noqa: SLF001
+        }
+        assert {m.value for m in EnhancerModel} <= values
+
     def test_set_enhancer_model_does_not_emit_config_changed(self, widget, qtbot):
         # Revert path (declined download) must not re-trigger a chain rebuild.
         from sinner2.pipeline.processors.face_enhancer import EnhancerModel
