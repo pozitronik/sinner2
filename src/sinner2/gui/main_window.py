@@ -841,6 +841,14 @@ class SinnerMainWindow(QMainWindow):
         if key == Qt.Key.Key_F11:
             self._status_bar.fullscreen_button.toggle()
             return
+        if (
+            key in (Qt.Key.Key_Return, Qt.Key.Key_Enter)
+            and event.modifiers() & Qt.KeyboardModifier.AltModifier
+        ):
+            # Alt+Enter mirrors F11 — toggle fullscreen via the same action
+            # button so button state / shortcut / persisted view stay in sync.
+            self._status_bar.fullscreen_button.toggle()
+            return
         if key == Qt.Key.Key_F12:
             self._status_bar.on_top_button.toggle()
             return

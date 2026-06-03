@@ -125,6 +125,45 @@ class TestFullscreenRestore:
         assert "max" not in calls
 
 
+class TestAltEnterFullscreen:
+    """Alt+Enter toggles fullscreen, same as F11 / the corner button."""
+
+    @staticmethod
+    def _alt_enter(window):
+        from PySide6.QtCore import QEvent, Qt
+        from PySide6.QtGui import QKeyEvent
+
+        window.keyPressEvent(
+            QKeyEvent(
+                QEvent.Type.KeyPress,
+                Qt.Key.Key_Return,
+                Qt.KeyboardModifier.AltModifier,
+            )
+        )
+
+    def test_alt_enter_enters_and_exits_fullscreen(self, window, monkeypatch):
+        # Don't actually flip real window state in the test env.
+        monkeypatch.setattr(window, "isMaximized", lambda: False)
+        monkeypatch.setattr(window, "showFullScreen", lambda: None)
+        monkeypatch.setattr(window, "showNormal", lambda: None)
+        monkeypatch.setattr(window, "showMaximized", lambda: None)
+
+        assert window._is_fullscreen is False  # noqa: SLF001
+        self._alt_enter(window)
+        assert window._is_fullscreen is True  # noqa: SLF001
+        self._alt_enter(window)
+        assert window._is_fullscreen is False  # noqa: SLF001
+
+    def test_alt_enter_keeps_fullscreen_button_in_sync(self, window, monkeypatch):
+        monkeypatch.setattr(window, "showFullScreen", lambda: None)
+        monkeypatch.setattr(window, "showNormal", lambda: None)
+        monkeypatch.setattr(window, "showMaximized", lambda: None)
+        monkeypatch.setattr(window, "isMaximized", lambda: False)
+
+        self._alt_enter(window)
+        assert window._status_bar.fullscreen_button.isChecked() is True  # noqa: SLF001
+
+
 class TestStatusActionButtons:
     """The bottom-bar buttons drive the same actions as the shortcuts and stay
     in sync with them."""
