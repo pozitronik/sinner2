@@ -166,8 +166,10 @@ class ScrfdDetector:
     def setup(self) -> None:
         from insightface.model_zoo import get_model
 
+        # insightface's get_model does `name.endswith('.onnx')`, so it needs a
+        # str — get_model_path returns a Path (would raise AttributeError).
         self._det = get_model(
-            get_model_path(self._model_file), providers=self._providers
+            str(get_model_path(self._model_file)), providers=self._providers
         )
         self._det.prepare(ctx_id=0, input_size=(self._size, self._size))
 

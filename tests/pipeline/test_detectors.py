@@ -100,6 +100,34 @@ class TestScrfdMapping:
         assert abs(faces[0].det_score - 0.88) < 1e-5
 
 
+class TestScrfdSetup:
+    def test_passes_str_path_not_pathlib(self, monkeypatch):
+        # Regression: insightface.get_model does name.endswith('.onnx'), so the
+        # model path must be a str — get_model_path returns a Path, which raised
+        # AttributeError('WindowsPath' object has no attribute 'endswith').
+        import sys
+        import types
+        from pathlib import Path
+
+        from sinner2.pipeline import detectors
+
+        captured = {}
+
+        def fake_get_model(name, **_kw):
+            captured["name"] = name
+            return SimpleNamespace(prepare=lambda **_k: None)
+
+        mz = types.ModuleType("insightface.model_zoo")
+        mz.get_model = fake_get_model  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "insightface.model_zoo", mz)
+        monkeypatch.setattr(
+            detectors, "get_model_path", lambda f: Path("/models") / f
+        )
+        ScrfdDetector("scrfd_2.5g.onnx").setup()
+        assert isinstance(captured["name"], str)
+        assert captured["name"].endswith(".onnx")
+
+
 class TestFactory:
     def test_build_yoloface(self):
         d = build_detector(DetectorModel.YOLOFACE)
