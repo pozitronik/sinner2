@@ -37,6 +37,26 @@ MODEL_SOURCES: dict[str, str] = {
         "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/"
         "RealESRGAN_x2plus.pth"
     ),
+    # SwinIR real-SR "M" x4 (torch/.pth via basicsr swinir_arch). Verified to
+    # load strict against the _build_swinir config. ~64 MB.
+    "swinir_realsr_m_x4.pth": (
+        "https://github.com/JingyunLiang/SwinIR/releases/download/v0.0/"
+        "003_realSR_BSRGAN_DFO_s64w8_SwinIR-M_x4_GAN.pth"
+    ),
+    # ONNX whole-frame upscalers (facefusion-assets) — HAT + community ESRGAN
+    # models. Single dynamic image input/output, RGB [0,1] (verified). Lazy.
+    "real_hatgan_x4.onnx": (
+        "https://github.com/facefusion/facefusion-assets/releases/download/"
+        "models-3.0.0/real_hatgan_x4.onnx"
+    ),
+    "ultra_sharp_x4.onnx": (
+        "https://github.com/facefusion/facefusion-assets/releases/download/"
+        "models-3.0.0/ultra_sharp_x4.onnx"
+    ),
+    "span_kendata_x4.onnx": (
+        "https://github.com/facefusion/facefusion-assets/releases/download/"
+        "models-3.0.0/span_kendata_x4.onnx"
+    ),
     # BiSeNet face-parser for occlusion-aware masking. URL taken verbatim from
     # facexlib's parsing/__init__.py (the bisenet weight is on the v0.2.0 tag —
     # NOT v0.2.2, which hosts the parsenet variant).

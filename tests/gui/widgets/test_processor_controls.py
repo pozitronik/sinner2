@@ -654,6 +654,41 @@ class TestGroupOrganization:
         )
 
 
+class TestUpscalerModels:
+    @staticmethod
+    def _select(widget, value):
+        combo = widget._upscaler_model  # noqa: SLF001
+        for i in range(combo.count()):
+            if combo.itemData(i) == value:
+                combo.setCurrentIndex(i)
+                return
+
+    def test_combo_lists_all_upscaler_models(self, widget):
+        from sinner2.pipeline.processors.upscaler import UpscalerModel
+
+        values = {
+            widget._upscaler_model.itemData(i)  # noqa: SLF001
+            for i in range(widget._upscaler_model.count())  # noqa: SLF001
+        }
+        assert {m.value for m in UpscalerModel} <= values
+
+    def test_model_flows_to_params(self, widget):
+        from sinner2.pipeline.processors.upscaler import UpscalerModel
+
+        self._select(widget, UpscalerModel.HAT_X4.value)
+        assert widget.upscaler_params().model is UpscalerModel.HAT_X4
+
+    def test_fp16_greyed_for_onnx_enabled_for_torch(self, widget):
+        from sinner2.pipeline.processors.upscaler import UpscalerModel
+
+        self._select(widget, UpscalerModel.HAT_X4.value)  # ONNX
+        assert widget._upscaler_fp16.isEnabled() is False  # noqa: SLF001
+        self._select(widget, UpscalerModel.X4PLUS.value)  # torch
+        assert widget._upscaler_fp16.isEnabled() is True  # noqa: SLF001
+        self._select(widget, UpscalerModel.SWINIR_M.value)  # torch
+        assert widget._upscaler_fp16.isEnabled() is True  # noqa: SLF001
+
+
 class TestDetectorControl:
     def test_detector_flows_to_swapper_params(self, widget):
         from sinner2.pipeline.detectors import DetectorModel

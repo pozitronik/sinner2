@@ -33,7 +33,11 @@ from sinner2.pipeline.processors.face_enhancer import (
     FaceEnhancerParams,
 )
 from sinner2.pipeline.processors.occlusion import FaceParser
-from sinner2.pipeline.processors.upscaler import UpscalerModel, UpscalerParams
+from sinner2.pipeline.processors.upscaler import (
+    UpscalerModel,
+    UpscalerParams,
+    model_runtime,
+)
 from sinner2.pipeline.detectors import DetectorModel
 from sinner2.pipeline.processors.face_swapper import (
     FaceSwapperParams,
@@ -113,9 +117,13 @@ _ENHANCER_MODELS: list[tuple[str, str]] = [
 ]
 
 _UPSCALER_MODELS: list[tuple[str, str]] = [
-    (UpscalerModel.GENERAL_X4V3.value, "General x4 v3 (fast, small)"),
-    (UpscalerModel.X4PLUS.value, "x4plus (higher quality, heavy)"),
-    (UpscalerModel.X2PLUS.value, "x2plus"),
+    (UpscalerModel.GENERAL_X4V3.value, "Real-ESRGAN general x4 v3 (fast, small)"),
+    (UpscalerModel.X4PLUS.value, "Real-ESRGAN x4plus (higher quality, heavy)"),
+    (UpscalerModel.X2PLUS.value, "Real-ESRGAN x2plus"),
+    (UpscalerModel.SWINIR_M.value, "SwinIR x4 (transformer, sharp, slow)"),
+    (UpscalerModel.HAT_X4.value, "HAT x4 (ONNX, high detail)"),
+    (UpscalerModel.ULTRASHARP_X4.value, "4x-UltraSharp (ONNX)"),
+    (UpscalerModel.SPAN_X4.value, "SPAN x4 (ONNX, fast)"),
 ]
 
 _OCCLUSION_PARSERS: list[tuple[str, str]] = [
@@ -396,6 +404,7 @@ class QProcessorControls(QWidget):
                     self._upscaler_model.count() - 1
                 )
         self._upscaler_model.currentIndexChanged.connect(self.configChanged)
+        self._upscaler_model.currentIndexChanged.connect(self._update_upscaler_rows)
         upscaler_form.addRow("Model", self._upscaler_model)
         self._upscaler_tile = QSpinBox()
         self._upscaler_tile.setRange(0, 2048)
@@ -545,6 +554,7 @@ class QProcessorControls(QWidget):
         self._face_box = face_box
         self._update_rotation_rows()  # reflect the default rotation-on state
         self._update_detector_rows()  # gray gender filter for detection-only
+        self._update_upscaler_rows()  # gray fp16 for ONNX upscalers
 
         execution_box = QGroupBox("Execution")
         execution_form = QFormLayout(execution_box)
@@ -1101,6 +1111,14 @@ class QProcessorControls(QWidget):
         full_pack = self._detector.currentData() == DetectorModel.BUFFALO_L.value
         self._target_sex.setEnabled(full_pack)
 
+    def _update_upscaler_rows(self) -> None:
+        """fp16 (torch half-precision) has no effect on the ONNX upscalers —
+        gray it out for those."""
+        is_torch = (
+            model_runtime(UpscalerModel(self._upscaler_model.currentData())) == "torch"
+        )
+        self._upscaler_fp16.setEnabled(is_torch)
+
     def _couple_comparison_to_overlay(self, on: bool) -> None:
         """The comparison thumbnails draw on the detection overlay, so enabling
         comparison must enable the overlay too (otherwise the toggle looks
@@ -1475,4 +1493,5 @@ class QProcessorControls(QWidget):
         self._update_enhancer_model_rows()  # reflect a restored enhancer model
         self._update_rotation_rows()  # reflect a restored rotation-compensation state
         self._update_detector_rows()  # reflect a restored detector choice
+        self._update_upscaler_rows()  # reflect a restored upscaler model
         self.configChanged.emit()

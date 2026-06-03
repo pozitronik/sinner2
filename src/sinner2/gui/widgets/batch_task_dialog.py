@@ -337,9 +337,13 @@ class QBatchTaskDialog(QDialog):
         up_form = QFormLayout(up_box)
         self._upscaler_model = QComboBox()
         for value, label in (
-            ("general-x4v3", "General x4 v3 (fast)"),
-            ("x4plus", "x4plus (higher quality)"),
-            ("x2plus", "x2plus"),
+            ("general-x4v3", "Real-ESRGAN general x4 v3 (fast)"),
+            ("x4plus", "Real-ESRGAN x4plus (higher quality)"),
+            ("x2plus", "Real-ESRGAN x2plus"),
+            ("swinir-m", "SwinIR x4 (sharp, slow)"),
+            ("hat-x4", "HAT x4 (ONNX)"),
+            ("ultrasharp-x4", "4x-UltraSharp (ONNX)"),
+            ("span-x4", "SPAN x4 (ONNX, fast)"),
         ):
             self._upscaler_model.addItem(label, value)
             if value == task.upscaler_model:

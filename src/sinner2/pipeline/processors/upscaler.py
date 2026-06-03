@@ -18,26 +18,35 @@ from enum import Enum
 from typing import Any, Callable
 
 import cv2
+import numpy as np
 from pydantic import Field
 
 from sinner2.config.base import SinnerBaseModel
-from sinner2.pipeline.model_cache import get_model_path
+from sinner2.pipeline.model_cache import get_model_path, get_onnx_session
 from sinner2.types import Frame
 
 
 class UpscalerModel(str, Enum):
-    """Selectable Real-ESRGAN models (tokens round-trip via str-Enum)."""
+    """Selectable whole-frame upscaler models (tokens round-trip via str-Enum).
+
+    The first three are Real-ESRGAN on basicsr archs (torch/.pth); SwinIR is
+    also torch/.pth; HAT / UltraSharp / SPAN run as ONNX. All x4 except x2plus."""
 
     GENERAL_X4V3 = "general-x4v3"  # SRVGGNetCompact — small, fast, general x4
     X4PLUS = "x4plus"             # RRDBNet — higher quality x4, heavier
     X2PLUS = "x2plus"             # RRDBNet — x2
+    SWINIR_M = "swinir-m"         # SwinIR real-SR M — transformer, sharp, slow
+    HAT_X4 = "hat-x4"             # HAT (ONNX) — high detail
+    ULTRASHARP_X4 = "ultrasharp-x4"  # 4x-UltraSharp (ONNX) — community favourite
+    SPAN_X4 = "span-x4"           # SPAN (ONNX) — tiny + fast
 
 
 @dataclass(frozen=True)
 class _ModelSpec:
     filename: str
     scale: int
-    build: Callable[[], Any]  # lazily constructs the (un-loaded) network
+    runtime: str  # "torch" (basicsr arch + .pth) | "onnx"
+    build: Callable[[], Any] | None = None  # torch arch builder; None for onnx
 
 
 def _build_srvgg_x4v3() -> Any:
@@ -58,16 +67,36 @@ def _build_rrdb(scale: int) -> Any:
     )
 
 
+def _build_swinir() -> Any:
+    # SwinIR real-SR "M" x4 config — matches the upstream
+    # 003_realSR_BSRGAN_DFO_s64w8_SwinIR-M_x4_GAN weights (verified to load
+    # strict). img_range 1.0 → [0,1] input, same as the Real-ESRGAN path.
+    from basicsr.archs.swinir_arch import SwinIR
+
+    return SwinIR(
+        upscale=4, in_chans=3, img_size=64, window_size=8, img_range=1.0,
+        depths=[6, 6, 6, 6, 6, 6], embed_dim=180,
+        num_heads=[6, 6, 6, 6, 6, 6], mlp_ratio=2,
+        upsampler="nearest+conv", resi_connection="1conv",
+    )
+
+
 _MODEL_SPECS: dict[UpscalerModel, _ModelSpec] = {
     UpscalerModel.GENERAL_X4V3: _ModelSpec(
-        "realesr-general-x4v3.pth", 4, _build_srvgg_x4v3
+        "realesr-general-x4v3.pth", 4, "torch", _build_srvgg_x4v3
     ),
     UpscalerModel.X4PLUS: _ModelSpec(
-        "RealESRGAN_x4plus.pth", 4, lambda: _build_rrdb(4)
+        "RealESRGAN_x4plus.pth", 4, "torch", lambda: _build_rrdb(4)
     ),
     UpscalerModel.X2PLUS: _ModelSpec(
-        "RealESRGAN_x2plus.pth", 2, lambda: _build_rrdb(2)
+        "RealESRGAN_x2plus.pth", 2, "torch", lambda: _build_rrdb(2)
     ),
+    UpscalerModel.SWINIR_M: _ModelSpec(
+        "swinir_realsr_m_x4.pth", 4, "torch", _build_swinir
+    ),
+    UpscalerModel.HAT_X4: _ModelSpec("real_hatgan_x4.onnx", 4, "onnx"),
+    UpscalerModel.ULTRASHARP_X4: _ModelSpec("ultra_sharp_x4.onnx", 4, "onnx"),
+    UpscalerModel.SPAN_X4: _ModelSpec("span_kendata_x4.onnx", 4, "onnx"),
 }
 
 
@@ -84,6 +113,12 @@ def model_filename(model: UpscalerModel) -> str:
     """The weights filename for a model (so the GUI can ensure it's present
     — with a download confirmation — before the processor needs it)."""
     return _MODEL_SPECS[model].filename
+
+
+def model_runtime(model: UpscalerModel) -> str:
+    """'torch' or 'onnx' — the GUI greys the fp16 knob for ONNX models (where
+    it has no effect)."""
+    return _MODEL_SPECS[model].runtime
 
 
 def _load_state_dict(path: Any, device: Any) -> dict:
@@ -156,6 +191,47 @@ def _upscale(
     return cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
 
 
+def _onnx_run(session: Any, chw: np.ndarray, in_name: str, out_name: str) -> np.ndarray:
+    return session.run([out_name], {in_name: chw.astype(np.float32)})[0]
+
+
+def _onnx_tiled(
+    session: Any, chw: np.ndarray, scale: int, tile: int,
+    in_name: str, out_name: str, pad: int = 10,
+) -> np.ndarray:
+    """Tile an (1,C,H,W) [0,1] array through the ONNX session — numpy twin of
+    _tiled_forward, keeping peak memory bounded for large frames."""
+    _, c, h, w = chw.shape
+    out = np.zeros((1, c, h * scale, w * scale), np.float32)
+    for y0 in range(0, h, tile):
+        for x0 in range(0, w, tile):
+            y1, x1 = min(y0 + tile, h), min(x0 + tile, w)
+            yp0, yp1 = max(y0 - pad, 0), min(y1 + pad, h)
+            xp0, xp1 = max(x0 - pad, 0), min(x1 + pad, w)
+            up = _onnx_run(session, chw[:, :, yp0:yp1, xp0:xp1], in_name, out_name)
+            oy0, ox0 = (y0 - yp0) * scale, (x0 - xp0) * scale
+            oh, ow = (y1 - y0) * scale, (x1 - x0) * scale
+            out[:, :, y0 * scale:y1 * scale, x0 * scale:x1 * scale] = (
+                up[:, :, oy0:oy0 + oh, ox0:ox0 + ow]
+            )
+    return out
+
+
+def _onnx_upscale(
+    session: Any, bgr: Frame, *, scale: int, tile: int, in_name: str, out_name: str
+) -> Frame:
+    """ONNX whole-frame upscale. Same RGB/255 [0,1] contract as _upscale
+    (verified against the facefusion upscaler models), output clamped to [0,1]."""
+    rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+    chw = np.ascontiguousarray(rgb.transpose(2, 0, 1)[None])
+    if tile > 0:
+        out = _onnx_tiled(session, chw, scale, tile, in_name, out_name)
+    else:
+        out = _onnx_run(session, chw, in_name, out_name)
+    arr = (np.clip(out[0], 0.0, 1.0).transpose(1, 2, 0) * 255.0).round().astype(np.uint8)
+    return cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+
+
 class Upscaler:
     name = "Upscaler"
     thread_safe = False  # torch model — each worker needs its own instance
@@ -166,6 +242,10 @@ class Upscaler:
         self._params = params or UpscalerParams()
         self._device_str = device
         self._model: Any = None
+        self._session: Any = None  # ONNX runtime models
+        self._in_name = "input"
+        self._out_name = "output"
+        self._runtime = "torch"
         self._device: Any = None
         self._scale = 1
         self._device_is_cuda = False
@@ -179,15 +259,36 @@ class Upscaler:
         self._device_is_cuda = device.type == "cuda"
         if device.type != "cuda":
             print(
-                "[sinner2] WARNING: Upscaler (Real-ESRGAN) running on CPU "
+                "[sinner2] WARNING: Upscaler running on CPU "
                 f"(requested device={self._device_str!r}) — very slow.",
                 file=sys.stderr,
             )
         spec = _MODEL_SPECS[self._params.model]
         self._scale = spec.scale
-        self._model = _load_model(spec, device, self._params.fp16)
+        self._runtime = spec.runtime
+        if spec.runtime == "onnx":
+            # ONNX models run through onnxruntime; map the torch device to EPs.
+            providers = (
+                ["CUDAExecutionProvider", "CPUExecutionProvider"]
+                if self._device_is_cuda
+                else ["CPUExecutionProvider"]
+            )
+            self._session = get_onnx_session(spec.filename, providers=providers)
+            self._in_name = self._session.get_inputs()[0].name
+            self._out_name = self._session.get_outputs()[0].name
+        else:
+            self._model = _load_model(spec, device, self._params.fp16)
 
     def process(self, frame: Frame) -> Frame:
+        if self._runtime == "onnx":
+            if self._session is None:
+                raise RuntimeError("Upscaler.process called before setup()")
+            with self._lock:
+                return _onnx_upscale(
+                    self._session, frame, scale=self._scale,
+                    tile=self._params.tile, in_name=self._in_name,
+                    out_name=self._out_name,
+                )
         model = self._model
         if model is None:
             raise RuntimeError("Upscaler.process called before setup()")
@@ -200,6 +301,11 @@ class Upscaler:
 
     def release(self) -> None:
         self._model = None
+        if self._session is not None:
+            from sinner2.pipeline.model_cache import release_onnx_session
+
+            self._session = None
+            release_onnx_session(_MODEL_SPECS[self._params.model].filename)
         if self._device_is_cuda:
             import torch
 

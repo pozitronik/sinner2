@@ -60,6 +60,10 @@ class TestModelSources:
             "restoreformer_plus_plus.onnx",
             "yoloface_8n.onnx",
             "scrfd_2.5g.onnx",
+            "swinir_realsr_m_x4.pth",
+            "real_hatgan_x4.onnx",
+            "ultra_sharp_x4.onnx",
+            "span_kendata_x4.onnx",
         ):
             assert name in model_cache.MODEL_SOURCES
             assert name not in model_cache.REQUIRED_MODELS
