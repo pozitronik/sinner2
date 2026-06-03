@@ -167,6 +167,89 @@ class TestActivation:
         assert blocker.args == [img]
 
 
+class TestArrowNavigationApplies:
+    """Arrow-key navigation applies the file under the cursor immediately —
+    no Enter press needed (sinner1 parity). Only a real cursor move fires;
+    edge-of-grid presses, non-nav keys, and programmatic population stay
+    silent so nothing auto-loads behind the user's back."""
+
+    def test_arrow_move_emits_navigated(self, qtbot):
+        from PySide6.QtCore import QEvent, Qt
+        from PySide6.QtGui import QKeyEvent, QStandardItem, QStandardItemModel
+
+        from sinner2.gui.widgets.library_view import _NavigatingListView
+
+        lst = _NavigatingListView()
+        model = QStandardItemModel()
+        for n in ("a", "b", "c"):
+            model.appendRow(QStandardItem(n))
+        lst.setModel(model)
+        qtbot.addWidget(lst)
+        lst.show()
+        qtbot.waitExposed(lst)
+        # Start on row 0; a Down press must move to row 1 and emit it.
+        lst.setCurrentIndex(model.index(0, 0))
+        with qtbot.waitSignal(lst.navigated, timeout=1000) as blocker:
+            lst.keyPressEvent(
+                QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Down, Qt.KeyboardModifier.NoModifier)
+            )
+        assert blocker.args[0].row() == 1
+
+    def test_no_move_at_edge_is_silent(self, qtbot):
+        from PySide6.QtCore import QEvent, Qt
+        from PySide6.QtGui import QKeyEvent, QStandardItem, QStandardItemModel
+
+        from sinner2.gui.widgets.library_view import _NavigatingListView
+
+        lst = _NavigatingListView()
+        model = QStandardItemModel()
+        for n in ("a", "b"):
+            model.appendRow(QStandardItem(n))
+        lst.setModel(model)
+        qtbot.addWidget(lst)
+        lst.show()
+        qtbot.waitExposed(lst)
+        # Already on the last row — Down can't move, so nothing fires.
+        lst.setCurrentIndex(model.index(1, 0))
+        with qtbot.assertNotEmitted(lst.navigated, wait=100):
+            lst.keyPressEvent(
+                QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Down, Qt.KeyboardModifier.NoModifier)
+            )
+
+    def test_non_nav_key_is_silent(self, qtbot):
+        from PySide6.QtCore import QEvent, Qt
+        from PySide6.QtGui import QKeyEvent, QStandardItem, QStandardItemModel
+
+        from sinner2.gui.widgets.library_view import _NavigatingListView
+
+        lst = _NavigatingListView()
+        model = QStandardItemModel()
+        model.appendRow(QStandardItem("a"))
+        lst.setModel(model)
+        qtbot.addWidget(lst)
+        lst.setCurrentIndex(model.index(0, 0))
+        with qtbot.assertNotEmitted(lst.navigated, wait=100):
+            lst.keyPressEvent(
+                QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_A, Qt.KeyboardModifier.NoModifier)
+            )
+
+    def test_navigated_applies_path_immediately(self, view, qtbot, tmp_path):
+        # Integration: the view wires `navigated` to the same path-apply path
+        # as click/Enter — emitting it yields pathSelected for the new tile.
+        imgs = [_make_image(tmp_path / f"{n}.png") for n in ("a", "b")]
+        view.add_paths(imgs)
+        proxy_index = view._list.model().index(1, 0)  # noqa: SLF001
+        with qtbot.waitSignal(view.pathSelected, timeout=1000) as blocker:
+            view._list.navigated.emit(proxy_index)  # noqa: SLF001
+        assert blocker.args == [imgs[1]]
+
+    def test_population_does_not_auto_apply(self, view, qtbot, tmp_path):
+        # Adding paths to the model must NOT emit pathSelected — only an
+        # explicit user action (click/Enter/arrow) applies a file.
+        with qtbot.assertNotEmitted(view.pathSelected, wait=100):
+            view.add_paths([_make_image(tmp_path / "a.png")])
+
+
 class TestDragDrop:
     def test_drop_event_ingests_files(self, view, qtbot, tmp_path):
         # Build a synthetic QDropEvent payload with file URLs.

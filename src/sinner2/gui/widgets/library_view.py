@@ -20,7 +20,13 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, QSize, Qt, QThread, Signal
-from PySide6.QtGui import QAction, QDragEnterEvent, QDropEvent, QWheelEvent
+from PySide6.QtGui import (
+    QAction,
+    QDragEnterEvent,
+    QDropEvent,
+    QKeyEvent,
+    QWheelEvent,
+)
 from PySide6.QtWidgets import (
     QComboBox,
     QFileDialog,
@@ -68,6 +74,49 @@ _SCAN_BATCH_SIZE = 64
 _DISPLAY_DIM_MIN = 64
 _DISPLAY_DIM_STEP = 32
 _DISPLAY_DIM_DEFAULT = 128
+
+
+# Keys that relocate the grid cursor. A press of one of these that actually
+# moves the current item applies the file under it immediately (sinner1
+# parity — no Enter needed). Enter and mouse clicks still apply via the
+# view's activated/clicked signals.
+_NAV_KEYS = frozenset(
+    {
+        Qt.Key.Key_Up,
+        Qt.Key.Key_Down,
+        Qt.Key.Key_Left,
+        Qt.Key.Key_Right,
+        Qt.Key.Key_Home,
+        Qt.Key.Key_End,
+        Qt.Key.Key_PageUp,
+        Qt.Key.Key_PageDown,
+    }
+)
+
+
+class _NavigatingListView(QListView):
+    """QListView that emits `navigated` whenever an arrow/page/home/end key
+    actually moves the current item.
+
+    The caller wires this to its apply-the-current-file action so keyboard
+    navigation loads the tile under the cursor live. We compare the current
+    index before and after letting the base class move the cursor and only
+    emit when it genuinely changed — so a key pressed against a grid edge
+    (no movement), a non-navigation key, and any programmatic model change
+    all stay silent and never auto-load a file the user didn't pick.
+    """
+
+    navigated = Signal(object)  # the new current QModelIndex (proxy index)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.key() not in _NAV_KEYS:
+            super().keyPressEvent(event)
+            return
+        before = self.currentIndex()
+        super().keyPressEvent(event)
+        after = self.currentIndex()
+        if after.isValid() and after != before:
+            self.navigated.emit(after)
 
 
 class _FolderScanWorker(QObject):
@@ -260,7 +309,7 @@ class QLibraryView(QWidget):
         controls.addWidget(self._clear_button)
 
         # The grid itself.
-        self._list = QListView()
+        self._list = _NavigatingListView()
         self._list.setModel(self._proxy)
         self._list.setViewMode(QListView.ViewMode.IconMode)
         self._list.setResizeMode(QListView.ResizeMode.Adjust)
@@ -271,6 +320,9 @@ class QLibraryView(QWidget):
         self._list.setSelectionMode(QListView.SelectionMode.SingleSelection)
         self._list.activated.connect(self._on_activated)
         self._list.clicked.connect(self._on_activated)
+        # Arrow-key navigation applies the tile under the cursor immediately,
+        # routing through the same handler as click/Enter.
+        self._list.navigated.connect(self._on_activated)
         # Apply current display_dim to icon + grid sizes. Same helper
         # called by set_display_dim later so resize is just a config
         # change — Qt re-renders the cached QPixmap at the new size on
