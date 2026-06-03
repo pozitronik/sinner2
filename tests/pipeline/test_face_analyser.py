@@ -79,6 +79,68 @@ class TestFaceAnalyser:
         assert a.analyse(_blank_frame()) == [face]
 
 
+class TestDetectionSize:
+    """The face-detector input size (det_size) is configurable: smaller =
+    faster detection (may miss small/distant faces). It threads from the
+    swapper params through FaceAnalyser into insightface's prepare(), and is
+    aligned to a multiple of 32 (SCRFD's strides)."""
+
+    def _capture_det_size(self, monkeypatch: pytest.MonkeyPatch) -> dict:
+        import sys
+        import types
+
+        captured: dict = {}
+
+        class FakeFaceAnalysis:
+            def __init__(self, name=None, providers=None, provider_options=None, **kw):
+                pass
+
+            def prepare(self, ctx_id=0, det_size=None):  # noqa: ARG002
+                captured["det_size"] = det_size
+
+        app_mod = types.ModuleType("insightface.app")
+        app_mod.FaceAnalysis = FakeFaceAnalysis  # type: ignore[attr-defined]
+        pkg = sys.modules.get("insightface") or types.ModuleType("insightface")
+        monkeypatch.setitem(sys.modules, "insightface", pkg)
+        monkeypatch.setitem(sys.modules, "insightface.app", app_mod)
+        return captured
+
+    def test_default_det_size_is_640(self, monkeypatch: pytest.MonkeyPatch):
+        captured = self._capture_det_size(monkeypatch)
+        face_analyser._get_shared_face_analysis(None)
+        assert captured["det_size"] == (640, 640)
+
+    def test_custom_det_size_forwarded(self, monkeypatch: pytest.MonkeyPatch):
+        captured = self._capture_det_size(monkeypatch)
+        face_analyser._get_shared_face_analysis(None, det_size=320)
+        assert captured["det_size"] == (320, 320)
+
+    def test_det_size_aligned_to_multiple_of_32(self, monkeypatch: pytest.MonkeyPatch):
+        captured = self._capture_det_size(monkeypatch)
+        face_analyser._get_shared_face_analysis(None, det_size=300)
+        assert captured["det_size"] == (288, 288)
+
+    def test_tiny_det_size_clamped_to_minimum(self, monkeypatch: pytest.MonkeyPatch):
+        captured = self._capture_det_size(monkeypatch)
+        face_analyser._get_shared_face_analysis(None, det_size=1)
+        assert captured["det_size"] == (32, 32)
+
+    def test_face_analyser_threads_det_size_into_shared_build(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        captured: dict = {}
+
+        def fake_shared(providers=None, det_size=640):
+            captured["det_size"] = det_size
+            stub = MagicMock()
+            stub.get = MagicMock(return_value=[])
+            return stub
+
+        monkeypatch.setattr(face_analyser, "_get_shared_face_analysis", fake_shared)
+        FaceAnalyser(detection_interval=1, detection_size=256).analyse(_blank_frame())
+        assert captured["det_size"] == 256
+
+
 class TestSharedFaceAnalysisProviders:
     """The shared insightface detector is built with the same tuned CUDA
     provider options as the swapper (FaceAnalysis forwards provider_options to

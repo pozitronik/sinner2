@@ -92,10 +92,12 @@ class FaceDetectionProbe(QObject):
         detect_fn: DetectFn | None = None,
         providers: list[str] | None = None,
         parent: QObject | None = None,
+        detection_size: int = 640,
     ) -> None:
         super().__init__(parent)
         self._detect_fn = detect_fn
         self._providers = list(providers) if providers else None
+        self._detection_size = detection_size
         self._analyser: Any = None
 
     @Slot(object, int, int)
@@ -117,5 +119,7 @@ class FaceDetectionProbe(QObject):
         if self._analyser is None:
             from sinner2.pipeline.face_analyser import FaceAnalyser
 
-            self._analyser = FaceAnalyser(providers=self._providers)
+            self._analyser = FaceAnalyser(
+                providers=self._providers, detection_size=self._detection_size
+            )
         return self._analyser.analyse_uncached(frame)

@@ -167,6 +167,7 @@ _FULL_RESTORE_KWARGS = dict(
     enhancer_enabled=False,
     swapper_model="ghost_2_256",
     swapper_detection_interval=3,
+    swapper_detection_size=320,
     swapper_many_faces=False,
     swapper_target_sex="F",
     swapper_occlusion_mask=True,
@@ -200,6 +201,7 @@ _NONE_RESTORE_KWARGS = dict(
     enhancer_enabled=None,
     swapper_model=None,
     swapper_detection_interval=None,
+    swapper_detection_size=None,
     swapper_many_faces=None,
     swapper_target_sex=None,
     swapper_occlusion_mask=None,
@@ -508,6 +510,7 @@ class TestSettingsEndToEnd:
                 enhancer_enabled=first.enhancer_enabled(),
                 swapper_model=swapper.model.value,
                 swapper_detection_interval=swapper.detection_interval,
+                swapper_detection_size=swapper.detection_size,
                 swapper_many_faces=swapper.many_faces,
                 swapper_target_sex=swapper.target_sex.value,
                 swapper_occlusion_mask=swapper.occlusion_mask,
@@ -546,6 +549,7 @@ class TestSettingsEndToEnd:
             enhancer_enabled=reloaded.enhancer_enabled,
             swapper_model=reloaded.swapper_model,
             swapper_detection_interval=reloaded.swapper_detection_interval,
+            swapper_detection_size=reloaded.swapper_detection_size,
             swapper_many_faces=reloaded.swapper_many_faces,
             swapper_target_sex=reloaded.swapper_target_sex,
             swapper_occlusion_mask=reloaded.swapper_occlusion_mask,
@@ -591,6 +595,21 @@ class TestSettingsEndToEnd:
         assert second.synced_max_lag_frames() == first.synced_max_lag_frames()
         assert second.swapper_providers() == first.swapper_providers()
         assert second.enhancer_device() == first.enhancer_device()
+
+
+class TestDetectionSizeControl:
+    def test_detection_size_flows_to_swapper_params(self, widget):
+        widget._detection_size.setValue(320)  # noqa: SLF001
+        assert widget.swapper_params().detection_size == 320
+
+    def test_default_detection_size_is_640(self, widget):
+        assert widget.swapper_params().detection_size == 640
+
+    def test_restore_sets_detection_size(self, widget):
+        widget.apply_restored_settings(
+            **{**_NONE_RESTORE_KWARGS, "swapper_detection_size": 256}
+        )
+        assert widget._detection_size.value() == 256  # noqa: SLF001
 
 
 class TestFaceDetectorGroup:

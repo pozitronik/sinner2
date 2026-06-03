@@ -80,6 +80,79 @@ def _apply(ctrl: PlayerController, *, enhancer_enabled: bool) -> None:
     )
 
 
+class TestDetectionSizeResetsSharedDetector:
+    """det_size is baked into the shared insightface detector at build time,
+    so changing it must drop the singleton (like a providers change) — else
+    the rebuilt chain reuses a detector still prepared at the old size."""
+
+    def test_det_size_change_resets_shared_detector(
+        self, widgets, fake_source_path, monkeypatch
+    ):
+        from sinner2.pipeline import face_analyser
+
+        ctrl = _make_controller(widgets)
+        fake = _attach_fake_session(
+            ctrl,
+            playing=True,
+            current_frame=10,
+            source_path=fake_source_path,
+            monkeypatch=monkeypatch,
+        )
+        # Isolate det_size as the trigger: stored providers match the default
+        # arg so providers_changed stays False.
+        ctrl._swapper_providers = ()  # noqa: SLF001
+        ctrl._swapper_params = FaceSwapperParams(detection_size=640)  # noqa: SLF001
+        calls: list[int] = []
+        monkeypatch.setattr(
+            face_analyser, "reset_shared_face_analysis", lambda: calls.append(1)
+        )
+        ctrl.apply_session_config(
+            swapper_params=FaceSwapperParams(detection_size=320),
+            enhancer_params=FaceEnhancerParams(),
+            enhancer_enabled=ctrl._enhancer_enabled,  # noqa: SLF001
+            strategy=BestEffortStrategy(),
+            worker_count=1,
+            playback_mode=PlaybackMode.FIXED_30,
+            cache_settings=_DEFAULT_CACHE_SETTINGS,
+        )
+        assert calls == [1]
+        fake.set_chain.assert_called_once()
+        ctrl.shutdown()
+
+    def test_same_det_size_does_not_reset(
+        self, widgets, fake_source_path, monkeypatch
+    ):
+        from sinner2.pipeline import face_analyser
+
+        ctrl = _make_controller(widgets)
+        _attach_fake_session(
+            ctrl,
+            playing=True,
+            current_frame=10,
+            source_path=fake_source_path,
+            monkeypatch=monkeypatch,
+        )
+        ctrl._swapper_providers = ()  # noqa: SLF001
+        ctrl._swapper_params = FaceSwapperParams(detection_size=640)  # noqa: SLF001
+        calls: list[int] = []
+        monkeypatch.setattr(
+            face_analyser, "reset_shared_face_analysis", lambda: calls.append(1)
+        )
+        # Force a chain rebuild via enhancer toggle WITHOUT touching det_size —
+        # the detector reset must NOT fire for an unrelated chain change.
+        ctrl.apply_session_config(
+            swapper_params=FaceSwapperParams(detection_size=640),
+            enhancer_params=FaceEnhancerParams(),
+            enhancer_enabled=not ctrl._enhancer_enabled,  # noqa: SLF001
+            strategy=BestEffortStrategy(),
+            worker_count=1,
+            playback_mode=PlaybackMode.FIXED_30,
+            cache_settings=_DEFAULT_CACHE_SETTINGS,
+        )
+        assert calls == []
+        ctrl.shutdown()
+
+
 class TestPausedChainRefresh:
     def test_paused_chain_change_seeks_current_frame(
         self, widgets, fake_source_path, monkeypatch

@@ -130,6 +130,10 @@ class TestExtendedFieldsRoundtrip:
         settings.save(settings.Settings(swapper_detection_interval=7))
         assert settings.load().swapper_detection_interval == 7
 
+    def test_swapper_detection_size(self):
+        settings.save(settings.Settings(swapper_detection_size=320))
+        assert settings.load().swapper_detection_size == 320
+
     @pytest.mark.parametrize("value", [True, False])
     def test_swapper_many_faces(self, value: bool):
         settings.save(settings.Settings(swapper_many_faces=value))

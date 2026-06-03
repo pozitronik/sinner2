@@ -43,6 +43,7 @@ class TestPrefill:
             output_path=tmp_path / "custom.mp4",
             output_format=BatchOutputFormat.FRAMES,
             swapper_detection_interval=5,
+            swapper_detection_size=320,
             swapper_many_faces=False,
             swapper_target_sex="F",
             enhancer_enabled=False,
@@ -66,6 +67,8 @@ class TestPrefill:
         assert dlg._output_edit.text() == str(t.output_path)  # noqa: SLF001
         assert dlg._format_combo.currentData() == "frames"  # noqa: SLF001
         assert dlg._detection_interval.value() == 5  # noqa: SLF001
+        assert dlg._detection_size.value() == 320  # noqa: SLF001
+        assert dlg.to_task().swapper_detection_size == 320  # round-trips back out
         assert dlg._many_faces.isChecked() is False  # noqa: SLF001
         assert dlg._target_sex.currentData() == "F"  # noqa: SLF001
         assert dlg._enhancer_box.isChecked() is False  # noqa: SLF001

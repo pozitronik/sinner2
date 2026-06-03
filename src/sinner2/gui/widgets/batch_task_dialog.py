@@ -149,6 +149,16 @@ class QBatchTaskDialog(QDialog):
         self._detection_interval.setRange(1, 30)
         self._detection_interval.setValue(task.swapper_detection_interval)
         swap_form.addRow("Detection interval:", self._detection_interval)
+        self._detection_size = QSpinBox()
+        # Multiples of 32 (SCRFD strides); 640 default, smaller = faster.
+        self._detection_size.setRange(128, 1280)
+        self._detection_size.setSingleStep(32)
+        self._detection_size.setValue(task.swapper_detection_size)
+        self._detection_size.setToolTip(
+            "Face-detector input size (px). Smaller = faster detection but may "
+            "miss small or distant faces. 640 default; multiples of 32."
+        )
+        swap_form.addRow("Detection size:", self._detection_size)
         self._many_faces = QCheckBox()
         self._many_faces.setChecked(task.swapper_many_faces)
         swap_form.addRow("Many faces:", self._many_faces)
@@ -501,6 +511,7 @@ class QBatchTaskDialog(QDialog):
                 "swapper_enabled": self._swapper_box.isChecked(),
                 "swapper_model": self._swapper_model.currentData(),
                 "swapper_detection_interval": self._detection_interval.value(),
+                "swapper_detection_size": self._detection_size.value(),
                 "swapper_many_faces": self._many_faces.isChecked(),
                 "swapper_target_sex": self._target_sex.currentData(),
                 "swapper_rotation_compensation": self._rotation_enabled.isChecked(),

@@ -736,6 +736,13 @@ class PlayerController(QObject):
         swapper_providers = tuple(swapper_providers)
         upscaler_params = upscaler_params or UpscalerParams()
         providers_changed = swapper_providers != self._swapper_providers
+        # det_size is baked into the shared insightface detector at build time
+        # (like providers), so a change needs the singleton dropped + rebuilt.
+        detection_size_changed = (
+            self._swapper_params is not None
+            and swapper_params is not None
+            and swapper_params.detection_size != self._swapper_params.detection_size
+        )
         chain_changed = (
             swapper_params != self._swapper_params
             or enhancer_params != self._enhancer_params
@@ -777,13 +784,15 @@ class PlayerController(QObject):
         if self._executor is None or self._current_source is None:
             return
         if chain_changed:
-            if providers_changed:
-                # The shared insightface model + any cached ONNX sessions were
-                # built with the OLD providers; drop them so the rebuilt chain
-                # re-creates them on the new EP list.
+            if providers_changed or detection_size_changed:
+                # The shared insightface detector was built with the OLD
+                # providers + det_size; drop it (and, on a provider change, the
+                # ONNX session cache too, since those sessions are bound to the
+                # EP list) so the rebuilt chain re-creates them.
                 from sinner2.pipeline import face_analyser, model_cache
 
-                model_cache.clear_session_cache()
+                if providers_changed:
+                    model_cache.clear_session_cache()
                 face_analyser.reset_shared_face_analysis()
             try:
                 new_chain = self._build_chain(self._current_source)

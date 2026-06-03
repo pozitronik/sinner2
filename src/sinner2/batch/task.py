@@ -115,6 +115,7 @@ class BatchTask(SinnerBaseModel):
     swapper_enabled: bool = True
     swapper_model: str = "inswapper_128"  # see SwapperModel
     swapper_detection_interval: int = 1
+    swapper_detection_size: int = 640
     swapper_many_faces: bool = True
     swapper_target_sex: str = "B"  # M/F/B/I (matches FaceSwapperParams)
     # Rotation compensation (shared by the swapper AND the enhancer stages).

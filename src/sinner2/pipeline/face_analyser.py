@@ -4,13 +4,25 @@ from typing import Any
 from sinner2.types import Frame
 
 _FACE_MODEL_NAME = "buffalo_l"
-_DET_SIZE = (640, 640)
+_DEFAULT_DET_SIZE = 640
+# SCRFD (the buffalo_l detector) downsamples by strides 8/16/32, so its input
+# must be a multiple of 32. Align any requested det_size down to the nearest
+# multiple and never below one stride tile.
+_DET_SIZE_ALIGN = 32
+
+
+def _normalize_det_size(size: int) -> tuple[int, int]:
+    aligned = max(_DET_SIZE_ALIGN, (int(size) // _DET_SIZE_ALIGN) * _DET_SIZE_ALIGN)
+    return (aligned, aligned)
+
 
 _shared_app: Any = None
 _shared_lock = threading.RLock()
 
 
-def _get_shared_face_analysis(providers: list[str] | None = None) -> Any:
+def _get_shared_face_analysis(
+    providers: list[str] | None = None, det_size: int = _DEFAULT_DET_SIZE
+) -> Any:
     """Lazily load and cache the insightface FaceAnalysis singleton.
 
     The insightface model itself is expensive — load once and share across
@@ -20,9 +32,9 @@ def _get_shared_face_analysis(providers: list[str] | None = None) -> Any:
     Providers are passed in by the caller (FaceAnalyser, from its owning
     processor's execution profile); None falls back to the platform-default
     EP order. The model is a process-wide singleton, so it picks up the
-    FIRST caller's providers — changing providers requires calling
-    `reset_shared_face_analysis()` so the next call rebuilds with the new
-    list (insightface picks providers at construction time).
+    FIRST caller's providers AND det_size — changing either requires calling
+    `reset_shared_face_analysis()` so the next call rebuilds (insightface
+    picks providers + prepares det_size at construction time).
     """
     global _shared_app
     with _shared_lock:
@@ -54,7 +66,7 @@ def _get_shared_face_analysis(providers: list[str] | None = None) -> Any:
                 providers=eps,
                 provider_options=build_provider_options(eps),
             )
-            app.prepare(ctx_id=0, det_size=_DET_SIZE)
+            app.prepare(ctx_id=0, det_size=_normalize_det_size(det_size))
             _shared_app = app
         return _shared_app
 
@@ -77,11 +89,15 @@ class FaceAnalyser:
     """
 
     def __init__(
-        self, detection_interval: int = 1, providers: list[str] | None = None
+        self,
+        detection_interval: int = 1,
+        providers: list[str] | None = None,
+        detection_size: int = _DEFAULT_DET_SIZE,
     ) -> None:
         if detection_interval < 1:
             raise ValueError(f"detection_interval must be >= 1; got {detection_interval}")
         self._detection_interval = detection_interval
+        self._detection_size = detection_size
         # Preserve an explicit empty list (user selected no providers) — only
         # None means "unspecified" (→ platform default in _get_shared_face_analysis).
         self._providers = list(providers) if providers is not None else None
@@ -104,13 +120,15 @@ class FaceAnalyser:
             cached = self._cached_faces
         if not cache_miss:
             return list(cached or [])
-        faces = _get_shared_face_analysis(self._providers).get(frame)
+        faces = _get_shared_face_analysis(self._providers, self._detection_size).get(frame)
         with self._lock:
             self._cached_faces = faces
         return list(faces or [])
 
     def analyse_uncached(self, frame: Frame) -> list[Any]:
-        return list(_get_shared_face_analysis(self._providers).get(frame))
+        return list(
+            _get_shared_face_analysis(self._providers, self._detection_size).get(frame)
+        )
 
     def reset_cache(self) -> None:
         with self._lock:

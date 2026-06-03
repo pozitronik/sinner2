@@ -201,7 +201,8 @@ class SinnerMainWindow(QMainWindow):
         self._overlay_timer.setInterval(int(self._PROBE_INTERVAL_S * 1000))
         self._overlay_timer.timeout.connect(self._overlay_tick)
         self._detection_probe = FaceDetectionProbe(
-            providers=self._settings.swapper_providers
+            providers=self._settings.swapper_providers,
+            detection_size=self._settings.swapper_detection_size or 640,
         )
         self._detection_thread = QThread(self)
         self._detection_probe.moveToThread(self._detection_thread)
@@ -1284,6 +1285,7 @@ class SinnerMainWindow(QMainWindow):
             swapper_enabled=self._settings.swapper_enabled,
             swapper_model=self._settings.swapper_model,
             swapper_detection_interval=self._settings.swapper_detection_interval,
+            swapper_detection_size=self._settings.swapper_detection_size,
             swapper_many_faces=self._settings.swapper_many_faces,
             swapper_target_sex=self._settings.swapper_target_sex,
             swapper_rotation_compensation=self._settings.swapper_rotation_compensation,
@@ -1327,6 +1329,7 @@ class SinnerMainWindow(QMainWindow):
             swapper_enabled=self._processors.swapper_enabled(),
             swapper_model=swapper.model.value,
             swapper_detection_interval=swapper.detection_interval,
+            swapper_detection_size=swapper.detection_size,
             swapper_many_faces=swapper.many_faces,
             # str-Enum .value is the single-letter token, kept stable
             # for settings round-trip and sinner1 compatibility.
@@ -1500,6 +1503,7 @@ class SinnerMainWindow(QMainWindow):
             swapper_enabled=self._processors.swapper_enabled(),
             swapper_model=swapper.model.value,
             swapper_detection_interval=swapper.detection_interval,
+            swapper_detection_size=swapper.detection_size,
             swapper_many_faces=swapper.many_faces,
             swapper_target_sex=swapper.target_sex.value,
             swapper_rotation_compensation=swapper.rotation_compensation,

@@ -343,6 +343,7 @@ class BatchDriver:
             swapper_params = FaceSwapperParams(
                 model=SwapperModel(task.swapper_model),
                 detection_interval=task.swapper_detection_interval,
+                detection_size=task.swapper_detection_size,
                 many_faces=task.swapper_many_faces,
                 target_sex=TargetSex(task.swapper_target_sex),
                 rotation_compensation=task.swapper_rotation_compensation,

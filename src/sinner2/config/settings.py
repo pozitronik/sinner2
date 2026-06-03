@@ -43,6 +43,7 @@ class Settings(SinnerBaseModel):
     swapper_enabled: bool | None = None
     swapper_model: str | None = None  # inswapper_128 | reswapper_128 | ghost_* | simswap_256 | uniface_256
     swapper_detection_interval: int | None = None
+    swapper_detection_size: int | None = None
     swapper_many_faces: bool | None = None
     swapper_target_sex: str | None = None  # "M"/"F"/"B"/"I"
     enhancer_model: str | None = None  # gfpgan | codeformer

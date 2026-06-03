@@ -203,6 +203,19 @@ class QProcessorControls(QWidget):
         self._detection_interval.setValue(swapper_defaults.detection_interval)
         self._detection_interval.valueChanged.connect(self.configChanged)
         swapper_form.addRow("Detection interval", self._detection_interval)
+        self._detection_size = QSpinBox()
+        # SCRFD strides are 8/16/32, so the detector input must be a multiple
+        # of 32. Step by 32 so every value is valid; 640 is insightface's
+        # default, smaller trades reach for speed.
+        self._detection_size.setRange(128, 1280)
+        self._detection_size.setSingleStep(32)
+        self._detection_size.setValue(swapper_defaults.detection_size)
+        self._detection_size.setToolTip(
+            "Face-detector input size (px). Smaller = faster detection but may "
+            "miss small or distant faces. 640 is the default; multiples of 32."
+        )
+        self._detection_size.valueChanged.connect(self.configChanged)
+        swapper_form.addRow("Detection size", self._detection_size)
         self._many_faces = QCheckBox()
         self._many_faces.setChecked(swapper_defaults.many_faces)
         self._many_faces.toggled.connect(self.configChanged)
@@ -905,6 +918,7 @@ class QProcessorControls(QWidget):
         return FaceSwapperParams(
             model=SwapperModel(self._swapper_model.currentData()),
             detection_interval=self._detection_interval.value(),
+            detection_size=self._detection_size.value(),
             many_faces=self._many_faces.isChecked(),
             target_sex=self._target_sex.currentData(),
             rotation_compensation=self._rotation_enabled.isChecked(),
@@ -1182,6 +1196,7 @@ class QProcessorControls(QWidget):
         swapper_enabled: bool | None = None,
         swapper_model: str | None = None,
         swapper_detection_interval: int | None,
+        swapper_detection_size: int | None,
         swapper_many_faces: bool | None,
         swapper_target_sex: str | None,
         swapper_occlusion_mask: bool | None,
@@ -1224,6 +1239,7 @@ class QProcessorControls(QWidget):
             self._swapper_box,
             self._swapper_model,
             self._detection_interval,
+            self._detection_size,
             self._many_faces,
             self._target_sex,
             self._occlusion_mask,
@@ -1264,6 +1280,8 @@ class QProcessorControls(QWidget):
         try:
             if swapper_detection_interval is not None:
                 self._detection_interval.setValue(swapper_detection_interval)
+            if swapper_detection_size is not None:
+                self._detection_size.setValue(swapper_detection_size)
             if swapper_many_faces is not None:
                 self._many_faces.setChecked(swapper_many_faces)
             if swapper_target_sex is not None:

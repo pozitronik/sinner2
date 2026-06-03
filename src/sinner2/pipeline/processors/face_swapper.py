@@ -53,6 +53,12 @@ class FaceSwapperParams(SinnerBaseModel):
     detection_interval: int = Field(
         default=1, ge=1, description="Detect faces every Nth frame; >=1"
     )
+    detection_size: int = Field(
+        default=640,
+        ge=64,
+        description="Face-detector input size (square, px); smaller = faster "
+        "detection but may miss small/distant faces. Aligned to a multiple of 32.",
+    )
     many_faces: bool = Field(
         default=True, description="Swap all detected faces (otherwise first only)"
     )
@@ -198,6 +204,7 @@ class FaceSwapper:
         self._analyser = FaceAnalyser(
             detection_interval=self._params.detection_interval,
             providers=providers,
+            detection_size=self._params.detection_size,
         )
         spec = get_spec(self._params.model)
         # insightface-compatible models (inswapper / reswapper) load through the
