@@ -14,6 +14,8 @@ import pytest
 
 from sinner2.pipeline.processors.bfr_onnx import (
     PlainBfrBackend,
+    _derive_align_size,
+    _feather_mask,
     _paste_face,
     _restore_aligned,
 )
@@ -61,10 +63,57 @@ def test_paste_face_blends_center_keeps_corners():
     frame = np.full((100, 100, 3), 50, np.uint8)
     restored = np.full((512, 512, 3), 200, np.uint8)
     m = np.array([[5.12, 0, 0], [0, 5.12, 0]], np.float32)  # frame→512 scale
-    out = _paste_face(frame, restored, m)
+    out = _paste_face(frame, restored, m, _feather_mask(512))
     assert out.shape == (100, 100, 3)
     assert out.max() > 50   # restored blended into the center
     assert out.min() == 50  # corners untouched (feather mask is 0 there)
+
+
+def test_feather_mask_matches_requested_size():
+    assert _feather_mask(1024).shape == (1024, 1024)
+    assert _feather_mask(512).shape == (512, 512)
+
+
+class TestDeriveAlignSize:
+    def test_static_square_input_drives_size(self):
+        assert _derive_align_size([1, 3, 1024, 1024], default=512) == 1024
+        assert _derive_align_size([1, 3, 2048, 2048], default=512) == 2048
+
+    def test_dynamic_dims_fall_back_to_default(self):
+        assert _derive_align_size(["batch", 3, "h", "w"], default=512) == 512
+
+    def test_non_square_falls_back_to_default(self):
+        assert _derive_align_size([1, 3, 512, 640], default=512) == 512
+
+    def test_malformed_shape_falls_back(self):
+        assert _derive_align_size([1, 3], default=512) == 512
+
+
+def test_enhance_aligns_at_configured_size():
+    # The backend aligns to its derived size, so the session sees that
+    # resolution (1024 here, not the 512 default).
+    captured = {}
+
+    class _ShapeCapturingSession:
+        def run(self, _names, feeds):
+            captured["shape"] = feeds["input"].shape
+            return [feeds["input"]]
+
+    backend = PlainBfrBackend("gpen_bfr_1024.onnx")
+    backend._session = _ShapeCapturingSession()  # noqa: SLF001
+    backend._align_size = 1024  # noqa: SLF001
+    backend._mask = _feather_mask(1024)  # noqa: SLF001
+    backend._analyser = SimpleNamespace(  # noqa: SLF001
+        analyse=lambda _img: [
+            SimpleNamespace(
+                kps=np.array(
+                    [[40, 45], [60, 45], [50, 55], [42, 62], [58, 62]], np.float32
+                )
+            )
+        ]
+    )
+    backend.enhance(np.full((200, 200, 3), 80, np.uint8))
+    assert captured["shape"] == (1, 3, 1024, 1024)
 
 
 def test_enhance_restores_each_detected_face():

@@ -27,13 +27,18 @@ class EnhancerModel(str, Enum):
     GFPGAN = "gfpgan"          # whole-frame restore; an Upscale knob
     CODEFORMER = "codeformer"  # ONNX; a fidelity (w) knob, no upscale
     GPEN_512 = "gpen_512"      # ONNX; plain BFR-512, no knobs (more detail)
+    GPEN_1024 = "gpen_1024"    # ONNX; plain BFR-1024 (higher-res restore)
+    GPEN_2048 = "gpen_2048"    # ONNX; plain BFR-2048 (highest-res; heavy)
     RESTOREFORMER_PP = "restoreformer_pp"  # ONNX; transformer restorer, no knobs
 
 
 # Plain BFR ONNX restorers (no fidelity knob) → their model filenames. Driven by
-# the shared PlainBfrBackend.
+# the shared PlainBfrBackend, which derives the alignment resolution from each
+# model's own declared input shape (512 / 1024 / 2048).
 _BFR_MODEL_FILES: dict[EnhancerModel, str] = {
     EnhancerModel.GPEN_512: "gpen_bfr_512.onnx",
+    EnhancerModel.GPEN_1024: "gpen_bfr_1024.onnx",
+    EnhancerModel.GPEN_2048: "gpen_bfr_2048.onnx",
     EnhancerModel.RESTOREFORMER_PP: "restoreformer_plus_plus.onnx",
 }
 

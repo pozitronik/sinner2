@@ -250,6 +250,8 @@ class QBatchTaskDialog(QDialog):
             ("gfpgan", "GFPGAN (whole-frame, Upscale knob)"),
             ("codeformer", "CodeFormer (ONNX, fidelity knob)"),
             ("gpen_512", "GPEN-512 (ONNX, more detail)"),
+            ("gpen_1024", "GPEN-1024 (ONNX, higher-res)"),
+            ("gpen_2048", "GPEN-2048 (ONNX, highest-res; heavy)"),
             ("restoreformer_pp", "RestoreFormer++ (ONNX)"),
         ):
             self._enhancer_model.addItem(label, value)

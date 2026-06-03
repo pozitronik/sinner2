@@ -53,7 +53,12 @@ class TestModelSources:
     def test_onnx_enhancer_models_registered_lazy(self):
         # GPEN-512 + RestoreFormer++ are optional (download on selection), like
         # CodeFormer — registered with URLs but not in the required set.
-        for name in ("gpen_bfr_512.onnx", "restoreformer_plus_plus.onnx"):
+        for name in (
+            "gpen_bfr_512.onnx",
+            "gpen_bfr_1024.onnx",
+            "gpen_bfr_2048.onnx",
+            "restoreformer_plus_plus.onnx",
+        ):
             assert name in model_cache.MODEL_SOURCES
             assert name not in model_cache.REQUIRED_MODELS
 

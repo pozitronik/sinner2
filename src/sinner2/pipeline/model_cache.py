@@ -63,6 +63,14 @@ MODEL_SOURCES: dict[str, str] = {
         "https://github.com/facefusion/facefusion-assets/releases/download/"
         "models-3.0.0/gpen_bfr_512.onnx"
     ),
+    "gpen_bfr_1024.onnx": (
+        "https://github.com/facefusion/facefusion-assets/releases/download/"
+        "models-3.0.0/gpen_bfr_1024.onnx"
+    ),
+    "gpen_bfr_2048.onnx": (
+        "https://github.com/facefusion/facefusion-assets/releases/download/"
+        "models-3.0.0/gpen_bfr_2048.onnx"
+    ),
     "restoreformer_plus_plus.onnx": (
         "https://github.com/facefusion/facefusion-assets/releases/download/"
         "models-3.0.0/restoreformer_plus_plus.onnx"

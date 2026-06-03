@@ -14,6 +14,7 @@ them. Best-effort per face: a failure leaves that face untouched.
 """
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Any
 
 import cv2
@@ -27,14 +28,27 @@ from sinner2.types import Frame
 _ALIGN_SIZE = 512
 
 
-def _make_feather_mask(size: int = _ALIGN_SIZE, pad_frac: float = 0.08) -> np.ndarray:
+@lru_cache(maxsize=8)
+def _feather_mask(size: int, pad_frac: float = 0.08) -> np.ndarray:
+    """Feathered square face mask at `size` (cached — one per resolution, so the
+    GPEN-512/1024/2048 + RestoreFormer++ models each reuse theirs)."""
     m = np.zeros((size, size), np.float32)
     pad = int(size * pad_frac)
     m[pad:size - pad, pad:size - pad] = 1.0
     return cv2.GaussianBlur(m, (0, 0), sigmaX=size * 0.02)
 
 
-_FEATHER_MASK = _make_feather_mask()
+def _derive_align_size(input_shape: Any, default: int = _ALIGN_SIZE) -> int:
+    """Read the model's expected square input size from its declared input shape
+    (e.g. [1, 3, 512, 512] → 512). GPEN/RestoreFormer export static shapes, so
+    the model self-describes its resolution. Falls back to `default` for dynamic
+    / non-square / malformed shapes."""
+    if not isinstance(input_shape, (list, tuple)) or len(input_shape) != 4:
+        return default
+    h, w = input_shape[2], input_shape[3]
+    if isinstance(h, int) and isinstance(w, int) and h > 0 and h == w:
+        return h
+    return default
 
 
 def _restore_aligned(
@@ -55,13 +69,13 @@ def _restore_aligned(
     return cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
 
 
-def _paste_face(frame: Frame, restored: Frame, m: np.ndarray) -> Frame:
+def _paste_face(frame: Frame, restored: Frame, m: np.ndarray, mask: np.ndarray) -> Frame:
     """Warp a restored aligned face back by the inverse of `m` and blend it in
-    with the feathered face mask."""
+    with the feathered face mask (sized to match `restored`)."""
     h, w = frame.shape[:2]
     m_inv = cv2.invertAffineTransform(m)
     back = cv2.warpAffine(restored, m_inv, (w, h)).astype(np.float32)
-    alpha = cv2.warpAffine(_FEATHER_MASK, m_inv, (w, h))[..., None]
+    alpha = cv2.warpAffine(mask, m_inv, (w, h))[..., None]
     return (frame.astype(np.float32) * (1.0 - alpha) + back * alpha).astype(np.uint8)
 
 
@@ -79,13 +93,21 @@ class PlainBfrBackend:
         # GPEN's verified names and keep the unit tests' stub session simple.
         self._in_name = "input"
         self._out_name = "output"
+        # Alignment resolution — derived from the model's declared input shape at
+        # setup() (512 / 1024 / 2048 across the GPEN family). Default + mask kept
+        # so stub-session tests that bypass setup() still work.
+        self._align_size = _ALIGN_SIZE
+        self._mask = _feather_mask(_ALIGN_SIZE)
 
     def setup(self) -> None:
         # get_onnx_session raises if the model is missing — the GUI ensures it
         # (with a download confirmation) before enabling the enhancer.
         self._session = get_onnx_session(self._model_file, providers=self._providers)
-        self._in_name = self._session.get_inputs()[0].name
+        inp = self._session.get_inputs()[0]
+        self._in_name = inp.name
         self._out_name = self._session.get_outputs()[0].name
+        self._align_size = _derive_align_size(inp.shape)
+        self._mask = _feather_mask(self._align_size)
         self._analyser = FaceAnalyser(providers=self._providers)
 
     def enhance(self, img: Frame) -> Frame:
@@ -96,16 +118,15 @@ class PlainBfrBackend:
         result = img
         from insightface.utils import face_align
 
+        size = self._align_size
         for face in self._analyser.analyse(img):
             try:
-                m = face_align.estimate_norm(
-                    np.asarray(face.kps, np.float32), _ALIGN_SIZE
-                )
-                aligned = cv2.warpAffine(result, m, (_ALIGN_SIZE, _ALIGN_SIZE))
+                m = face_align.estimate_norm(np.asarray(face.kps, np.float32), size)
+                aligned = cv2.warpAffine(result, m, (size, size))
                 restored = _restore_aligned(
                     self._session, aligned, self._in_name, self._out_name
                 )
-                result = _paste_face(result, restored, m)
+                result = _paste_face(result, restored, m, self._mask)
             except Exception:
                 continue
         return result

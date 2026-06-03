@@ -397,6 +397,8 @@ class TestPlainBfrBackends:
         "model, expected_file",
         [
             (EnhancerModel.GPEN_512, "gpen_bfr_512.onnx"),
+            (EnhancerModel.GPEN_1024, "gpen_bfr_1024.onnx"),
+            (EnhancerModel.GPEN_2048, "gpen_bfr_2048.onnx"),
             (EnhancerModel.RESTOREFORMER_PP, "restoreformer_plus_plus.onnx"),
         ],
     )
@@ -438,6 +440,8 @@ def test_enhancer_onnx_model_file_mapping():
     assert enhancer_onnx_model_file(EnhancerModel.GFPGAN) is None
     assert enhancer_onnx_model_file(EnhancerModel.CODEFORMER) == "codeformer.onnx"
     assert enhancer_onnx_model_file(EnhancerModel.GPEN_512) == "gpen_bfr_512.onnx"
+    assert enhancer_onnx_model_file(EnhancerModel.GPEN_1024) == "gpen_bfr_1024.onnx"
+    assert enhancer_onnx_model_file(EnhancerModel.GPEN_2048) == "gpen_bfr_2048.onnx"
     assert (
         enhancer_onnx_model_file(EnhancerModel.RESTOREFORMER_PP)
         == "restoreformer_plus_plus.onnx"
