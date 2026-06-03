@@ -619,6 +619,41 @@ class TestSettingsEndToEnd:
         assert second.enhancer_device() == first.enhancer_device()
 
 
+class TestGroupOrganization:
+    """Detection and swapping options are split into separate group boxes, with
+    the Face detector group first (detection precedes the swap)."""
+
+    def test_group_titles_are_consistent(self, widget):
+        assert widget._face_box.title() == "Face detector"  # noqa: SLF001
+        assert widget._swapper_box.title() == "Face swapper"  # noqa: SLF001
+        assert widget._enhancer_box.title() == "Face enhancer"  # noqa: SLF001
+
+    def test_detection_knobs_live_in_detector_group(self, widget):
+        for w in (
+            widget._detector,  # noqa: SLF001
+            widget._detection_size,  # noqa: SLF001
+            widget._detection_interval,  # noqa: SLF001
+        ):
+            assert widget._face_box.isAncestorOf(w)  # noqa: SLF001
+            assert not widget._swapper_box.isAncestorOf(w)  # noqa: SLF001
+
+    def test_swap_knobs_stay_in_swapper_group(self, widget):
+        for w in (
+            widget._swapper_model,  # noqa: SLF001
+            widget._many_faces,  # noqa: SLF001
+            widget._target_sex,  # noqa: SLF001
+            widget._occlusion_mask,  # noqa: SLF001
+        ):
+            assert widget._swapper_box.isAncestorOf(w)  # noqa: SLF001
+
+    def test_detector_group_precedes_swapper(self, widget):
+        inner = widget._face_box.parent()  # noqa: SLF001
+        layout = inner.layout()
+        assert layout.indexOf(widget._face_box) < layout.indexOf(  # noqa: SLF001
+            widget._swapper_box  # noqa: SLF001
+        )
+
+
 class TestDetectorControl:
     def test_detector_flows_to_swapper_params(self, widget):
         from sinner2.pipeline.detectors import DetectorModel

@@ -190,7 +190,7 @@ class QProcessorControls(QWidget):
         swapper_defaults = FaceSwapperParams()
         enhancer_defaults = FaceEnhancerParams()
 
-        swapper_box = QGroupBox("FaceSwapper")
+        swapper_box = QGroupBox("Face swapper")
         swapper_box.setCheckable(True)
         swapper_box.setChecked(True)
         swapper_box.toggled.connect(self.configChanged)
@@ -209,39 +209,6 @@ class QProcessorControls(QWidget):
         )
         self._swapper_model.currentIndexChanged.connect(self.configChanged)
         swapper_form.addRow("Model", self._swapper_model)
-        self._detection_interval = QSpinBox()
-        self._detection_interval.setRange(1, 30)
-        self._detection_interval.setValue(swapper_defaults.detection_interval)
-        self._detection_interval.valueChanged.connect(self.configChanged)
-        swapper_form.addRow("Detection interval", self._detection_interval)
-        self._detection_size = QSpinBox()
-        # SCRFD strides are 8/16/32, so the detector input must be a multiple
-        # of 32. Step by 32 so every value is valid; 640 is insightface's
-        # default, smaller trades reach for speed.
-        self._detection_size.setRange(128, 1280)
-        self._detection_size.setSingleStep(32)
-        self._detection_size.setValue(swapper_defaults.detection_size)
-        self._detection_size.setToolTip(
-            "Face-detector input size (px). Smaller = faster detection but may "
-            "miss small or distant faces. 640 is the default; multiples of 32."
-        )
-        self._detection_size.valueChanged.connect(self.configChanged)
-        swapper_form.addRow("Detection size", self._detection_size)
-        self._detector = QComboBox()
-        for value, label in _DETECTOR_MODELS:
-            self._detector.addItem(label, value)
-            if value == swapper_defaults.detector.value:
-                self._detector.setCurrentIndex(self._detector.count() - 1)
-        self._detector.setToolTip(
-            "Target-face detector. buffalo_l runs InsightFace's full pack "
-            "(the only one that yields gender + 3D pose). yoloface / scrfd are "
-            "detection-only — faster (they skip the recognition/gender/landmark "
-            "models per frame), but the gender filter is unavailable and "
-            "rotation falls back to the keypoint angle. Downloads on first use."
-        )
-        self._detector.currentIndexChanged.connect(self.configChanged)
-        self._detector.currentIndexChanged.connect(self._update_detector_rows)
-        swapper_form.addRow("Detector", self._detector)
         self._many_faces = QCheckBox()
         self._many_faces.setChecked(swapper_defaults.many_faces)
         self._many_faces.toggled.connect(self.configChanged)
@@ -338,7 +305,7 @@ class QProcessorControls(QWidget):
             self._provider_checkboxes[prov] = cb
         swapper_form.addRow("ONNX providers", providers_box)
 
-        enhancer_box = QGroupBox("FaceEnhancer")
+        enhancer_box = QGroupBox("Face enhancer")
         enhancer_box.setCheckable(True)
         enhancer_box.setChecked(True)
         enhancer_box.toggled.connect(self.configChanged)
@@ -411,7 +378,7 @@ class QProcessorControls(QWidget):
 
         # ---- Upscaler (Real-ESRGAN) — whole-frame super-resolution ----
         upscaler_defaults = UpscalerParams()
-        upscaler_box = QGroupBox("Upscaler (Real-ESRGAN)")
+        upscaler_box = QGroupBox("Frame upscaler (Real-ESRGAN)")
         upscaler_box.setCheckable(True)
         upscaler_box.setChecked(False)  # opt-in (heavy; weights download on enable)
         upscaler_box.setToolTip(
@@ -455,9 +422,50 @@ class QProcessorControls(QWidget):
         upscaler_form.addRow("Device", self._upscaler_device)
         self._upscaler_box = upscaler_box
 
-        # ---- Face detector group (rotation compensation, experimental) ----
+        # ---- Face detector group (detector + sizing + rotation) ----
+        # Detection comes before the swap — you can't swap a face you didn't
+        # find — so this group sits first and owns the "how faces are found"
+        # knobs (detector model / input size / interval) plus rotation handling.
         face_box = QGroupBox("Face detector")
         face_form = QFormLayout(face_box)
+        self._detector = QComboBox()
+        for value, label in _DETECTOR_MODELS:
+            self._detector.addItem(label, value)
+            if value == swapper_defaults.detector.value:
+                self._detector.setCurrentIndex(self._detector.count() - 1)
+        self._detector.setToolTip(
+            "Target-face detector. buffalo_l runs InsightFace's full pack "
+            "(the only one that yields gender + 3D pose). yoloface / scrfd are "
+            "detection-only — faster (they skip the recognition/gender/landmark "
+            "models per frame), but the gender filter is unavailable and "
+            "rotation falls back to the keypoint angle. Downloads on first use."
+        )
+        self._detector.currentIndexChanged.connect(self.configChanged)
+        self._detector.currentIndexChanged.connect(self._update_detector_rows)
+        face_form.addRow("Detector", self._detector)
+        self._detection_size = QSpinBox()
+        # SCRFD strides are 8/16/32, so the detector input must be a multiple
+        # of 32. Step by 32 so every value is valid; 640 is insightface's
+        # default, smaller trades reach for speed.
+        self._detection_size.setRange(128, 1280)
+        self._detection_size.setSingleStep(32)
+        self._detection_size.setValue(swapper_defaults.detection_size)
+        self._detection_size.setToolTip(
+            "Face-detector input size (px). Smaller = faster detection but may "
+            "miss small or distant faces. 640 is the default; multiples of 32."
+        )
+        self._detection_size.valueChanged.connect(self.configChanged)
+        face_form.addRow("Detection size", self._detection_size)
+        self._detection_interval = QSpinBox()
+        self._detection_interval.setRange(1, 30)
+        self._detection_interval.setValue(swapper_defaults.detection_interval)
+        self._detection_interval.setToolTip(
+            "Detect every Nth frame and reuse the result on the frames between "
+            "(1 = every frame). Higher = faster on stable shots; with multiple "
+            "realtime workers prefer 1."
+        )
+        self._detection_interval.valueChanged.connect(self.configChanged)
+        face_form.addRow("Detection interval", self._detection_interval)
         self._rotation_enabled = QCheckBox()
         self._rotation_enabled.setChecked(swapper_defaults.rotation_compensation)
         self._rotation_enabled.setToolTip(
@@ -815,10 +823,12 @@ class QProcessorControls(QWidget):
         inner.setMinimumWidth(240)
         inner_layout = QVBoxLayout(inner)
         inner_layout.setContentsMargins(0, 0, 0, 0)
+        # Face detector first — detection precedes the swap (can't swap a face
+        # you didn't find).
+        inner_layout.addWidget(face_box)
         inner_layout.addWidget(swapper_box)
         inner_layout.addWidget(enhancer_box)
         inner_layout.addWidget(upscaler_box)
-        inner_layout.addWidget(face_box)
         inner_layout.addWidget(execution_box)
         inner_layout.addWidget(cache_box)
         inner_layout.addWidget(cache_storage_box)

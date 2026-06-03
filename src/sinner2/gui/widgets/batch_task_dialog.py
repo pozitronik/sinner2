@@ -122,7 +122,7 @@ class QBatchTaskDialog(QDialog):
         paths_form.addRow("Output format:", self._format_combo)
 
         # ---- FaceSwapper group (checkable: disable for enhancer-only) ----
-        swap_box = QGroupBox("FaceSwapper")
+        swap_box = QGroupBox("Face swapper")
         swap_box.setCheckable(True)
         swap_box.setChecked(task.swapper_enabled)
         self._swapper_box = swap_box
@@ -256,7 +256,7 @@ class QBatchTaskDialog(QDialog):
         swap_form.addRow("ONNX providers:", providers_box)
 
         # ---- FaceEnhancer group ----
-        enh_box = QGroupBox("FaceEnhancer")
+        enh_box = QGroupBox("Face enhancer")
         enh_box.setCheckable(True)
         enh_box.setChecked(task.enhancer_enabled)
         self._enhancer_box = enh_box
@@ -330,7 +330,7 @@ class QBatchTaskDialog(QDialog):
         enh_form.addRow("Device:", self._enhancer_device)
 
         # ---- Upscaler group (Real-ESRGAN whole-frame super-resolution) ----
-        up_box = QGroupBox("Upscaler (Real-ESRGAN)")
+        up_box = QGroupBox("Frame upscaler (Real-ESRGAN)")
         up_box.setCheckable(True)
         up_box.setChecked(task.upscaler_enabled)
         self._upscaler_box = up_box
