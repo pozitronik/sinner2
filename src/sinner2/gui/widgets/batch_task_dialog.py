@@ -159,6 +159,21 @@ class QBatchTaskDialog(QDialog):
             "miss small or distant faces. 640 default; multiples of 32."
         )
         swap_form.addRow("Detection size:", self._detection_size)
+        self._detector = QComboBox()
+        for value, label in (
+            ("buffalo_l", "buffalo_l (full pack, gender + pose)"),
+            ("yoloface", "YOLOFace 8n (fast, detection-only)"),
+            ("scrfd_2.5g", "SCRFD 2.5g (fast, detection-only)"),
+        ):
+            self._detector.addItem(label, value)
+            if value == task.swapper_detector:
+                self._detector.setCurrentIndex(self._detector.count() - 1)
+        self._detector.setToolTip(
+            "Target detector. yoloface / scrfd are faster (detection-only) but "
+            "disable the gender filter and use keypoint-angle rotation."
+        )
+        self._detector.currentIndexChanged.connect(self._update_detector_rows)
+        swap_form.addRow("Detector:", self._detector)
         self._many_faces = QCheckBox()
         self._many_faces.setChecked(task.swapper_many_faces)
         swap_form.addRow("Many faces:", self._many_faces)
@@ -168,6 +183,7 @@ class QBatchTaskDialog(QDialog):
             if value == task.swapper_target_sex:
                 self._target_sex.setCurrentIndex(self._target_sex.count() - 1)
         swap_form.addRow("Swap which:", self._target_sex)
+        self._update_detector_rows()
         # Rotation compensation (experimental) — see the realtime panel tooltip.
         self._rotation_enabled = QCheckBox()
         self._rotation_enabled.setChecked(task.swapper_rotation_compensation)
@@ -476,6 +492,10 @@ class QBatchTaskDialog(QDialog):
         self._refresh_scale_dims()  # initial probe for the task's target
         self._update_enhancer_rows()  # gray out the inactive model's knob
 
+    def _update_detector_rows(self) -> None:
+        """Gray the gender filter for detection-only detectors (no .sex)."""
+        self._target_sex.setEnabled(self._detector.currentData() == "buffalo_l")
+
     def _update_enhancer_rows(self) -> None:
         """Enable only the knob the selected enhancer model uses — Upscale for
         GFPGAN, Fidelity for CodeFormer; GPEN / RestoreFormer++ have neither."""
@@ -516,6 +536,7 @@ class QBatchTaskDialog(QDialog):
                 "swapper_model": self._swapper_model.currentData(),
                 "swapper_detection_interval": self._detection_interval.value(),
                 "swapper_detection_size": self._detection_size.value(),
+                "swapper_detector": self._detector.currentData(),
                 "swapper_many_faces": self._many_faces.isChecked(),
                 "swapper_target_sex": self._target_sex.currentData(),
                 "swapper_rotation_compensation": self._rotation_enabled.isChecked(),

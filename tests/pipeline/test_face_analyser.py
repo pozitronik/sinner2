@@ -141,6 +141,51 @@ class TestDetectionSize:
         assert captured["det_size"] == 256
 
 
+class TestAlternativeDetector:
+    """A standalone detector handles per-frame TARGET detection; the SOURCE
+    face (analyse_uncached) stays on buffalo_l for its embedding."""
+
+    class _StubDetector:
+        def __init__(self):
+            self.setups = 0
+            self.detects = 0
+
+        def setup(self):
+            self.setups += 1
+
+        def detect(self, _frame):
+            self.detects += 1
+            return [MagicMock(name="lite")]
+
+    def test_analyse_routes_to_detector_and_eager_setup(self, monkeypatch):
+        from sinner2.pipeline import detectors
+
+        stub = self._StubDetector()
+        monkeypatch.setattr(detectors, "build_detector", lambda m, p=None: stub)
+        a = FaceAnalyser(detector=detectors.DetectorModel.YOLOFACE)
+        assert stub.setups == 1  # loaded eagerly at construction (no worker race)
+        a.analyse(_blank_frame())
+        assert stub.detects == 1
+        assert a.provides_gender() is False
+
+    def test_analyse_uncached_stays_buffalo_l(
+        self, monkeypatch, stub_insightface: MagicMock
+    ):
+        from sinner2.pipeline import detectors
+
+        monkeypatch.setattr(
+            detectors, "build_detector", lambda m, p=None: self._StubDetector()
+        )
+        a = FaceAnalyser(detector=detectors.DetectorModel.YOLOFACE)
+        a.analyse_uncached(_blank_frame())
+        # Source path uses the shared pack, not the standalone detector.
+        assert stub_insightface.get.call_count == 1
+
+    def test_buffalo_l_default_has_no_detector_and_provides_gender(self):
+        a = FaceAnalyser()
+        assert a.provides_gender() is True
+
+
 class TestSharedFaceAnalysisProviders:
     """The shared insightface detector is built with the same tuned CUDA
     provider options as the swapper (FaceAnalysis forwards provider_options to

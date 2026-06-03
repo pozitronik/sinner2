@@ -93,11 +93,25 @@ class FaceAnalyser:
         detection_interval: int = 1,
         providers: list[str] | None = None,
         detection_size: int = _DEFAULT_DET_SIZE,
+        detector: Any = None,
     ) -> None:
         if detection_interval < 1:
             raise ValueError(f"detection_interval must be >= 1; got {detection_interval}")
         self._detection_interval = detection_interval
         self._detection_size = detection_size
+        # Optional standalone TARGET detector (yoloface / scrfd). None = the full
+        # buffalo_l pack. Built + loaded eagerly here (single-threaded
+        # construction, so the N-worker pool that later shares this analyser
+        # never races on first-frame setup). The SOURCE face still uses
+        # buffalo_l (analyse_uncached) for its ArcFace embedding.
+        from sinner2.pipeline.detectors import DetectorModel, build_detector
+
+        det_model = detector if detector is not None else DetectorModel.BUFFALO_L
+        self._detector = build_detector(
+            det_model, providers if providers is not None else None
+        )
+        if self._detector is not None:
+            self._detector.setup()
         # Preserve an explicit empty list (user selected no providers) — only
         # None means "unspecified" (→ platform default in _get_shared_face_analysis).
         self._providers = list(providers) if providers is not None else None
@@ -120,15 +134,28 @@ class FaceAnalyser:
             cached = self._cached_faces
         if not cache_miss:
             return list(cached or [])
-        faces = _get_shared_face_analysis(self._providers, self._detection_size).get(frame)
+        if self._detector is not None:
+            faces = self._detector.detect(frame)
+        else:
+            faces = _get_shared_face_analysis(
+                self._providers, self._detection_size
+            ).get(frame)
         with self._lock:
             self._cached_faces = faces
         return list(faces or [])
 
     def analyse_uncached(self, frame: Frame) -> list[Any]:
+        # Always the full buffalo_l pack — this is the path the SOURCE face uses,
+        # and the source needs the ArcFace embedding a standalone detector lacks.
         return list(
             _get_shared_face_analysis(self._providers, self._detection_size).get(frame)
         )
+
+    def provides_gender(self) -> bool:
+        """Whether detected faces carry insightface's `.sex` (only the full
+        buffalo_l pack does — standalone detectors are box+keypoints only). The
+        swapper gates its gender filter on this."""
+        return self._detector is None
 
     def reset_cache(self) -> None:
         with self._lock:

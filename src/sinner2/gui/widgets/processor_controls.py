@@ -34,6 +34,7 @@ from sinner2.pipeline.processors.face_enhancer import (
 )
 from sinner2.pipeline.processors.occlusion import FaceParser
 from sinner2.pipeline.processors.upscaler import UpscalerModel, UpscalerParams
+from sinner2.pipeline.detectors import DetectorModel
 from sinner2.pipeline.processors.face_swapper import (
     FaceSwapperParams,
     RotationAngleSource,
@@ -94,6 +95,12 @@ _SWAPPER_MODELS: list[tuple[str, str]] = [
     (SwapperModel.GHOST_3_256.value, "Ghost 3 (256, heaviest)"),
     (SwapperModel.SIMSWAP_256.value, "SimSwap (256, non-commercial)"),
     (SwapperModel.UNIFACE_256.value, "UniFace (256, pose-aware)"),
+]
+
+_DETECTOR_MODELS: list[tuple[str, str]] = [
+    (DetectorModel.BUFFALO_L.value, "buffalo_l (full pack, gender + pose)"),
+    (DetectorModel.YOLOFACE.value, "YOLOFace 8n (fast, detection-only)"),
+    (DetectorModel.SCRFD_2_5G.value, "SCRFD 2.5g (fast, detection-only)"),
 ]
 
 _ENHANCER_MODELS: list[tuple[str, str]] = [
@@ -220,6 +227,21 @@ class QProcessorControls(QWidget):
         )
         self._detection_size.valueChanged.connect(self.configChanged)
         swapper_form.addRow("Detection size", self._detection_size)
+        self._detector = QComboBox()
+        for value, label in _DETECTOR_MODELS:
+            self._detector.addItem(label, value)
+            if value == swapper_defaults.detector.value:
+                self._detector.setCurrentIndex(self._detector.count() - 1)
+        self._detector.setToolTip(
+            "Target-face detector. buffalo_l runs InsightFace's full pack "
+            "(the only one that yields gender + 3D pose). yoloface / scrfd are "
+            "detection-only — faster (they skip the recognition/gender/landmark "
+            "models per frame), but the gender filter is unavailable and "
+            "rotation falls back to the keypoint angle. Downloads on first use."
+        )
+        self._detector.currentIndexChanged.connect(self.configChanged)
+        self._detector.currentIndexChanged.connect(self._update_detector_rows)
+        swapper_form.addRow("Detector", self._detector)
         self._many_faces = QCheckBox()
         self._many_faces.setChecked(swapper_defaults.many_faces)
         self._many_faces.toggled.connect(self.configChanged)
@@ -514,6 +536,7 @@ class QProcessorControls(QWidget):
         face_form.addRow("Show orig/swapped", self._comparison_enabled)
         self._face_box = face_box
         self._update_rotation_rows()  # reflect the default rotation-on state
+        self._update_detector_rows()  # gray gender filter for detection-only
 
         execution_box = QGroupBox("Execution")
         execution_form = QFormLayout(execution_box)
@@ -923,6 +946,7 @@ class QProcessorControls(QWidget):
             model=SwapperModel(self._swapper_model.currentData()),
             detection_interval=self._detection_interval.value(),
             detection_size=self._detection_size.value(),
+            detector=DetectorModel(self._detector.currentData()),
             many_faces=self._many_faces.isChecked(),
             target_sex=self._target_sex.currentData(),
             rotation_compensation=self._rotation_enabled.isChecked(),
@@ -945,6 +969,17 @@ class QProcessorControls(QWidget):
                 self._swapper_model.setCurrentIndex(i)
                 break
         self._swapper_model.blockSignals(False)
+
+    def set_swapper_detector(self, value: str) -> None:
+        """Set the detector WITHOUT firing configChanged — used to revert the
+        selection when the user declines the detector-model download."""
+        self._detector.blockSignals(True)
+        for i in range(self._detector.count()):
+            if self._detector.itemData(i) == value:
+                self._detector.setCurrentIndex(i)
+                break
+        self._detector.blockSignals(False)
+        self._update_detector_rows()
 
     def set_occlusion_checked(self, on: bool) -> None:
         """Reflect occlusion-on without firing configChanged — used to revert
@@ -1049,6 +1084,12 @@ class QProcessorControls(QWidget):
         self._rotation_threshold.setEnabled(on)
         self._rotation_redetect.setEnabled(on)
         self._rotation_source.setEnabled(on)
+
+    def _update_detector_rows(self) -> None:
+        """Gray out the gender filter for detection-only detectors — they don't
+        provide insightface's .sex, so the swapper can't filter by gender."""
+        full_pack = self._detector.currentData() == DetectorModel.BUFFALO_L.value
+        self._target_sex.setEnabled(full_pack)
 
     def _couple_comparison_to_overlay(self, on: bool) -> None:
         """The comparison thumbnails draw on the detection overlay, so enabling
@@ -1201,6 +1242,7 @@ class QProcessorControls(QWidget):
         swapper_model: str | None = None,
         swapper_detection_interval: int | None,
         swapper_detection_size: int | None,
+        swapper_detector: str | None,
         swapper_many_faces: bool | None,
         swapper_target_sex: str | None,
         swapper_occlusion_mask: bool | None,
@@ -1244,6 +1286,7 @@ class QProcessorControls(QWidget):
             self._swapper_model,
             self._detection_interval,
             self._detection_size,
+            self._detector,
             self._many_faces,
             self._target_sex,
             self._occlusion_mask,
@@ -1286,6 +1329,11 @@ class QProcessorControls(QWidget):
                 self._detection_interval.setValue(swapper_detection_interval)
             if swapper_detection_size is not None:
                 self._detection_size.setValue(swapper_detection_size)
+            if swapper_detector is not None:
+                for i in range(self._detector.count()):
+                    if self._detector.itemData(i) == swapper_detector:
+                        self._detector.setCurrentIndex(i)
+                        break
             if swapper_many_faces is not None:
                 self._many_faces.setChecked(swapper_many_faces)
             if swapper_target_sex is not None:
@@ -1416,4 +1464,5 @@ class QProcessorControls(QWidget):
         self._update_scale_label()  # reflect a restored scale (set under blockSignals)
         self._update_enhancer_model_rows()  # reflect a restored enhancer model
         self._update_rotation_rows()  # reflect a restored rotation-compensation state
+        self._update_detector_rows()  # reflect a restored detector choice
         self.configChanged.emit()

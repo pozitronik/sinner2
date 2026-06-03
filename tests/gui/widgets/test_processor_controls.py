@@ -186,6 +186,7 @@ _FULL_RESTORE_KWARGS = dict(
     swapper_model="ghost_2_256",
     swapper_detection_interval=3,
     swapper_detection_size=320,
+    swapper_detector="yoloface",
     swapper_many_faces=False,
     swapper_target_sex="F",
     swapper_occlusion_mask=True,
@@ -220,6 +221,7 @@ _NONE_RESTORE_KWARGS = dict(
     swapper_model=None,
     swapper_detection_interval=None,
     swapper_detection_size=None,
+    swapper_detector=None,
     swapper_many_faces=None,
     swapper_target_sex=None,
     swapper_occlusion_mask=None,
@@ -529,6 +531,7 @@ class TestSettingsEndToEnd:
                 swapper_model=swapper.model.value,
                 swapper_detection_interval=swapper.detection_interval,
                 swapper_detection_size=swapper.detection_size,
+                swapper_detector=swapper.detector.value,
                 swapper_many_faces=swapper.many_faces,
                 swapper_target_sex=swapper.target_sex.value,
                 swapper_occlusion_mask=swapper.occlusion_mask,
@@ -568,6 +571,7 @@ class TestSettingsEndToEnd:
             swapper_model=reloaded.swapper_model,
             swapper_detection_interval=reloaded.swapper_detection_interval,
             swapper_detection_size=reloaded.swapper_detection_size,
+            swapper_detector=reloaded.swapper_detector,
             swapper_many_faces=reloaded.swapper_many_faces,
             swapper_target_sex=reloaded.swapper_target_sex,
             swapper_occlusion_mask=reloaded.swapper_occlusion_mask,
@@ -613,6 +617,33 @@ class TestSettingsEndToEnd:
         assert second.synced_max_lag_frames() == first.synced_max_lag_frames()
         assert second.swapper_providers() == first.swapper_providers()
         assert second.enhancer_device() == first.enhancer_device()
+
+
+class TestDetectorControl:
+    def test_detector_flows_to_swapper_params(self, widget):
+        from sinner2.pipeline.detectors import DetectorModel
+
+        widget.set_swapper_detector(DetectorModel.YOLOFACE.value)
+        assert widget.swapper_params().detector is DetectorModel.YOLOFACE
+
+    def test_default_detector_is_buffalo_l(self, widget):
+        from sinner2.pipeline.detectors import DetectorModel
+
+        assert widget.swapper_params().detector is DetectorModel.BUFFALO_L
+
+    def test_alt_detector_greys_gender_filter(self, widget):
+        from sinner2.pipeline.detectors import DetectorModel
+
+        widget.set_swapper_detector(DetectorModel.YOLOFACE.value)
+        assert widget._target_sex.isEnabled() is False  # noqa: SLF001
+        widget.set_swapper_detector(DetectorModel.BUFFALO_L.value)
+        assert widget._target_sex.isEnabled() is True  # noqa: SLF001
+
+    def test_restore_sets_detector(self, widget):
+        widget.apply_restored_settings(
+            **{**_NONE_RESTORE_KWARGS, "swapper_detector": "scrfd_2.5g"}
+        )
+        assert widget._detector.currentData() == "scrfd_2.5g"  # noqa: SLF001
 
 
 class TestDetectionSizeControl:

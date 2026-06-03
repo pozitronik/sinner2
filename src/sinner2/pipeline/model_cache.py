@@ -75,6 +75,18 @@ MODEL_SOURCES: dict[str, str] = {
         "https://github.com/facefusion/facefusion-assets/releases/download/"
         "models-3.0.0/restoreformer_plus_plus.onnx"
     ),
+    # ---- Alternative target detectors (optional; lazy on selection) ----
+    # Detection-only models (box + 5 keypoints) — faster than buffalo_l's full
+    # pack for per-frame target detection. yoloface parsing verified against
+    # buffalo_l; scrfd runs through insightface's own SCRFD class.
+    "yoloface_8n.onnx": (
+        "https://github.com/facefusion/facefusion-assets/releases/download/"
+        "models-3.0.0/yoloface_8n.onnx"
+    ),
+    "scrfd_2.5g.onnx": (
+        "https://github.com/facefusion/facefusion-assets/releases/download/"
+        "models-3.0.0/scrfd_2.5g.onnx"
+    ),
     # ---- Alternative face-swap models (optional; lazy on selection) ----
     # ReSwapper: clean-room reproduction of inswapper, drop-in via insightface's
     # INSwapper class (same ArcFace embedding contract). Saved under our own

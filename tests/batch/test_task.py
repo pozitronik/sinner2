@@ -53,6 +53,7 @@ class TestBatchTaskDefaults:
         s = FaceSwapperParams()
         assert t.swapper_detection_interval == s.detection_interval
         assert t.swapper_detection_size == s.detection_size
+        assert t.swapper_detector == s.detector.value
         assert t.swapper_many_faces == s.many_faces
         assert t.swapper_target_sex == s.target_sex.value
 

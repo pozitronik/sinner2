@@ -69,6 +69,8 @@ class TestPrefill:
         assert dlg._detection_interval.value() == 5  # noqa: SLF001
         assert dlg._detection_size.value() == 320  # noqa: SLF001
         assert dlg.to_task().swapper_detection_size == 320  # round-trips back out
+        assert dlg._detector.currentData() == "buffalo_l"  # noqa: SLF001  default
+        assert dlg.to_task().swapper_detector == "buffalo_l"
         assert dlg._many_faces.isChecked() is False  # noqa: SLF001
         assert dlg._target_sex.currentData() == "F"  # noqa: SLF001
         assert dlg._enhancer_box.isChecked() is False  # noqa: SLF001

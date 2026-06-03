@@ -31,6 +31,7 @@ from sinner2.config.execution import OnnxExecution, TorchExecution
 from sinner2.gui.face_detection_probe import FaceDetectionProbe, FaceDetectionSink
 from sinner2.gui.icon import app_icon
 from sinner2.gui.model_download import ensure_models
+from sinner2.pipeline.detectors import DETECTOR_MODEL_FILES, DetectorModel
 from sinner2.pipeline.processors.face_enhancer import (
     EnhancerModel,
     enhancer_onnx_model_file,
@@ -687,6 +688,12 @@ class SinnerMainWindow(QMainWindow):
             self, [parser_model_file(swapper_cfg.occlusion_parser)]
         ):
             self._processors.set_occlusion_checked(False)
+        # A detection-only detector (yoloface / scrfd) needs its weight; confirm
+        # the download. Decline reverts to buffalo_l (the always-present pack).
+        if swapper_cfg.detector is not DetectorModel.BUFFALO_L and not ensure_models(
+            self, [DETECTOR_MODEL_FILES[swapper_cfg.detector]]
+        ):
+            self._processors.set_swapper_detector(DetectorModel.BUFFALO_L.value)
         # ONNX enhancers (CodeFormer / GPEN-512 / RestoreFormer++) each need
         # their own weight — confirm the download when one is selected (and the
         # enhancer's on); decline reverts to GFPGAN so the chain isn't rebuilt
@@ -1287,6 +1294,7 @@ class SinnerMainWindow(QMainWindow):
             swapper_model=self._settings.swapper_model,
             swapper_detection_interval=self._settings.swapper_detection_interval,
             swapper_detection_size=self._settings.swapper_detection_size,
+            swapper_detector=self._settings.swapper_detector,
             swapper_many_faces=self._settings.swapper_many_faces,
             swapper_target_sex=self._settings.swapper_target_sex,
             swapper_rotation_compensation=self._settings.swapper_rotation_compensation,
@@ -1331,6 +1339,7 @@ class SinnerMainWindow(QMainWindow):
             swapper_model=swapper.model.value,
             swapper_detection_interval=swapper.detection_interval,
             swapper_detection_size=swapper.detection_size,
+            swapper_detector=swapper.detector.value,
             swapper_many_faces=swapper.many_faces,
             # str-Enum .value is the single-letter token, kept stable
             # for settings round-trip and sinner1 compatibility.
@@ -1505,6 +1514,7 @@ class SinnerMainWindow(QMainWindow):
             swapper_model=swapper.model.value,
             swapper_detection_interval=swapper.detection_interval,
             swapper_detection_size=swapper.detection_size,
+            swapper_detector=swapper.detector.value,
             swapper_many_faces=swapper.many_faces,
             swapper_target_sex=swapper.target_sex.value,
             swapper_rotation_compensation=swapper.rotation_compensation,

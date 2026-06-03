@@ -58,6 +58,8 @@ class TestModelSources:
             "gpen_bfr_1024.onnx",
             "gpen_bfr_2048.onnx",
             "restoreformer_plus_plus.onnx",
+            "yoloface_8n.onnx",
+            "scrfd_2.5g.onnx",
         ):
             assert name in model_cache.MODEL_SOURCES
             assert name not in model_cache.REQUIRED_MODELS

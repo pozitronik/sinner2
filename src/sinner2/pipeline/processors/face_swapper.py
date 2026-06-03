@@ -9,6 +9,7 @@ from sinner2.config.base import SinnerBaseModel
 from sinner2.config.execution import DEFAULT_ONNX_PROVIDERS
 from sinner2.config.source import Source
 from sinner2.io.cv2_unicode import imread_unicode
+from sinner2.pipeline.detectors import DetectorModel
 from sinner2.pipeline.face_analyser import FaceAnalyser
 from sinner2.pipeline.model_cache import (
     get_insightface_swap_model,
@@ -58,6 +59,11 @@ class FaceSwapperParams(SinnerBaseModel):
         ge=64,
         description="Face-detector input size (square, px); smaller = faster "
         "detection but may miss small/distant faces. Aligned to a multiple of 32.",
+    )
+    detector: DetectorModel = Field(
+        default=DetectorModel.BUFFALO_L,
+        description="Target-face detector: buffalo_l (full pack, gender/pose) or "
+        "the faster detection-only yoloface / scrfd_2.5g",
     )
     many_faces: bool = Field(
         default=True, description="Swap all detected faces (otherwise first only)"
@@ -205,6 +211,7 @@ class FaceSwapper:
             detection_interval=self._params.detection_interval,
             providers=providers,
             detection_size=self._params.detection_size,
+            detector=self._params.detector,
         )
         spec = get_spec(self._params.model)
         # insightface-compatible models (inswapper / reswapper) load through the
@@ -256,10 +263,14 @@ class FaceSwapper:
             except Exception:
                 pass
         target_sex = self._resolved_target_sex(source_face)
+        # The gender filter needs insightface's .sex, which only the buffalo_l
+        # pack provides — skip it (swap all) when a detection-only detector is
+        # active so M/F doesn't silently drop every face.
+        gender_filter = analyser.provides_gender()
         result = frame
         swapped_faces: list[Any] = []
         for face in faces:
-            if not _face_matches(face, target_sex):
+            if gender_filter and not _face_matches(face, target_sex):
                 continue
             before = result
             result = self._swap_one(before, face, swapper, source_face, analyser)

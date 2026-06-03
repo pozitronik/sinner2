@@ -134,6 +134,10 @@ class TestExtendedFieldsRoundtrip:
         settings.save(settings.Settings(swapper_detection_size=320))
         assert settings.load().swapper_detection_size == 320
 
+    def test_swapper_detector(self):
+        settings.save(settings.Settings(swapper_detector="yoloface"))
+        assert settings.load().swapper_detector == "yoloface"
+
     @pytest.mark.parametrize("value", [True, False])
     def test_swapper_many_faces(self, value: bool):
         settings.save(settings.Settings(swapper_many_faces=value))

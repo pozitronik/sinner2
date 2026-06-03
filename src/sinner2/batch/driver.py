@@ -54,6 +54,7 @@ from sinner2.config.target import Target, TargetKind
 from sinner2.io.target_reader import ImageTargetReader, TargetReader
 from sinner2.io.video_backend import VideoBackend, build_video_target_reader
 from sinner2.io.video_encoder import FfmpegMissingError, encode_frames_to_mp4
+from sinner2.pipeline.detectors import DetectorModel
 from sinner2.pipeline.image_writer import build_image_writer
 from sinner2.pipeline.processor import Processor
 from sinner2.pipeline.processors.face_enhancer import (
@@ -344,6 +345,7 @@ class BatchDriver:
                 model=SwapperModel(task.swapper_model),
                 detection_interval=task.swapper_detection_interval,
                 detection_size=task.swapper_detection_size,
+                detector=DetectorModel(task.swapper_detector),
                 many_faces=task.swapper_many_faces,
                 target_sex=TargetSex(task.swapper_target_sex),
                 rotation_compensation=task.swapper_rotation_compensation,
