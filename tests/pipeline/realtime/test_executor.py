@@ -1791,3 +1791,53 @@ class TestSeekResetsChainStreamState:
             assert _wait_until(lambda: len(seeks) >= 1, timeout=2.0)
         finally:
             ex.stop()
+
+
+class TestChainSetupFailure:
+    """A failure during chain.setup() (bad model/source) must NOT leak the
+    processors that already loaded — the workers/dispatcher just exit on
+    _stop_event and never run the normal release path."""
+
+    class _Proc:
+        def __init__(self, name: str, fail: bool = False) -> None:
+            self.name = name
+            self._fail = fail
+            self.setup_called = False
+            self.released = False
+
+        def setup(self) -> None:
+            self.setup_called = True
+            if self._fail:
+                raise RuntimeError("boom")
+
+        def release(self) -> None:
+            self.released = True
+
+    class _Status:
+        def __init__(self) -> None:
+            self.value = ""
+
+        def set(self, v: str) -> None:
+            self.value = v
+
+        def get(self) -> str:
+            return self.value
+
+    def _bare_executor(self, chain):
+        ex = RealtimeExecutor.__new__(RealtimeExecutor)
+        ex._stop_event = threading.Event()  # noqa: SLF001
+        ex._setup_done_event = threading.Event()  # noqa: SLF001
+        ex.status = self._Status()
+        ex._chain = chain  # noqa: SLF001
+        return ex
+
+    def test_setup_failure_releases_loaded_processors(self):
+        p0 = self._Proc("a")
+        p1 = self._Proc("b", fail=True)
+        p2 = self._Proc("c")
+        ex = self._bare_executor([p0, p1, p2])
+        ex._setup_chain_async()  # noqa: SLF001
+        assert ex._stop_event.is_set()  # noqa: SLF001
+        assert "chain setup failed" in ex.status.get()
+        assert ex._setup_done_event.is_set()  # noqa: SLF001
+        assert p0.released  # the already-loaded processor's GPU memory is freed

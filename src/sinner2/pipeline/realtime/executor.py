@@ -303,6 +303,15 @@ class RealtimeExecutor:
         except Exception as e:
             self.status.set(f"chain setup failed: {e}")
             self._stop_event.set()
+            # Release any processors that DID load: on failure the workers /
+            # dispatcher just exit on _stop_event and never run the normal
+            # release path, so a partial setup would leak GPU memory until
+            # process exit. release() is idempotent (guards un-set-up state).
+            for p in self._chain:
+                try:
+                    p.release()
+                except Exception:  # noqa: BLE001 - best-effort teardown
+                    pass
         else:
             # Clear the loading hint only on success — failures leave their
             # own message in place.

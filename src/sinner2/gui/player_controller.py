@@ -1035,7 +1035,9 @@ class PlayerController(QObject):
 
     def _on_status(self, message: object) -> None:
         text = str(message)
-        if text and text.lower().startswith(("worker error", "executor.start", "session setup")):
+        if text and text.lower().startswith(
+            ("worker error", "executor.start", "session setup", "chain setup")
+        ):
             self.errorOccurred.emit(text)
 
     def _teardown_session(self) -> None:
