@@ -1187,6 +1187,7 @@ class RealtimeExecutor:
                 shown_index = fallback_index
         if (
             frame is not None
+            and shown_index is not None
             and self._on_frame is not None
             and shown_index != self._last_shown_frame_index
         ):
