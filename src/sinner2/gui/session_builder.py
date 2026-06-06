@@ -9,7 +9,7 @@ are collected (a future SessionBuilder step) and emitted by the GUI caller.
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from sinner2.config.source import Source
@@ -74,7 +74,11 @@ _DEFAULT_CACHE_SETTINGS = CacheSettings(
 @dataclass
 class _SessionBundle:
     """A fully built (but not yet installed) session — the non-Qt product of
-    the session build, ready to be handed to _install_session on the GUI thread."""
+    the session build, ready to be handed to _install_session on the GUI thread.
+
+    `warnings` carries any non-fatal problems raised during the (Qt-free,
+    possibly background-thread) build — e.g. cache root unavailable; the GUI
+    caller emits them on the GUI thread after install/adopt."""
 
     executor: RealtimeExecutor
     write_executor: BoundedWriteExecutor
@@ -86,6 +90,7 @@ class _SessionBundle:
     target_fps: float
     frame_count: int
     native_size: tuple[int, int]
+    warnings: list[str] = field(default_factory=list)
 
 
 def _make_reader(

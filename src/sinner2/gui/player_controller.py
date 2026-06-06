@@ -213,10 +213,12 @@ class PlayerController(QObject):
         does NOT happen here (the executor loads models asynchronously in its
         own setup thread at start()); the slow part avoided up front is the
         reader-pool probe. Raises on failure after cleaning up a half-built
-        pool. The few warning emits here (cache unavailable) are Qt-signal
-        emits, which are thread-safe (delivered queued to the GUI thread)."""
+        pool. Non-fatal warnings (e.g. cache unavailable) are collected into the
+        returned bundle and emitted by the GUI caller — the build touches no Qt
+        signals, so it's safe to run off the GUI thread."""
         source = Source(path=source_path)
         target = Target(path=target_path)
+        warnings: list[str] = []
         reader_pool: ReaderPool | None = None
         try:
             # The pool's eager probe reader surfaces open errors here, so a bad
@@ -240,7 +242,7 @@ class PlayerController(QObject):
             cache_settings = self._cache_settings
             manager = self._cache.cache_manager()
             if not manager.is_available():
-                self.errorOccurred.emit(
+                warnings.append(
                     f"cache root unavailable ({self._cache.cache_root()}); "
                     "running with cache OFF"
                 )
@@ -289,12 +291,16 @@ class PlayerController(QObject):
             target_fps=float(reader_pool.fps) if reader_pool.fps > 0 else 0.0,
             frame_count=reader_pool.frame_count,
             native_size=(reader_pool.native_width, reader_pool.native_height),
+            warnings=warnings,
         )
 
     def _install_session(self, bundle: _SessionBundle) -> None:
         """Wire a freshly built session into the controller + widgets and start
         it. Qt-touching — MUST run on the GUI thread (it creates observable
         bridges, hooks the display, emits signals, loads audio)."""
+        # Surface any warnings the (Qt-free) build collected, now on the GUI thread.
+        for warning in bundle.warnings:
+            self.errorOccurred.emit(warning)
         executor = bundle.executor
         executor.on_frame_ready(self._display.show_frame)
         self._bind_observables(executor)
@@ -452,6 +458,9 @@ class PlayerController(QObject):
         is unchanged — bridges stay wired to the same executor observables — so
         this only refreshes the controller-owned references, the transport
         range, the cache panel, the native-size readout, and audio."""
+        # Surface build warnings now, on the GUI thread (the build ran on a worker).
+        for warning in bundle.warnings:
+            self.errorOccurred.emit(warning)
         self._current_source = bundle.source
         self._current_source_path = bundle.source_path
         self._current_target_path = bundle.target_path
