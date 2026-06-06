@@ -57,6 +57,20 @@ class TestUpscaleInference:
         tiled = _upscale(net, frame, scale=2, device=_CPU, fp16=False, tile=8)
         assert np.array_equal(whole, tiled)
 
+    @pytest.mark.skipif(
+        not torch.cuda.is_available(),
+        reason="needs CUDA to distinguish GPU vs CPU accumulation",
+    )
+    def test_tiled_forward_accumulates_on_cpu(self):
+        # Tiling exists to bound peak VRAM to a single tile's activations; the
+        # stitched output (~GBs at x4) must NOT be held on the GPU.
+        from sinner2.pipeline.processors.upscaler import _tiled_forward
+
+        t = torch.zeros((1, 3, 8, 8), device="cuda")
+        out = _tiled_forward(_StubNet(2), t, scale=2, tile=4)
+        assert out.device.type == "cpu"
+        assert tuple(out.shape) == (1, 3, 16, 16)
+
 
 class _StubOnnxUpscaleSession:
     """Nearest-neighbour upscale via numpy repeat, echoing the [0,1] input."""

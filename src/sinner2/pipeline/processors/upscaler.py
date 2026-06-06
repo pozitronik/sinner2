@@ -180,8 +180,12 @@ def _tiled_forward(
     import torch
 
     _, c, h, w = t.shape
+    # Accumulate the stitched output on CPU (float32). The full upscaled frame
+    # can be ~GBs at x4, so holding it on the GPU defeats the point of tiling
+    # (bounding peak VRAM to a single tile's activations); each tile is moved to
+    # CPU right after it's produced. Mirrors the ONNX tiled path.
     out = torch.zeros(
-        (1, c, h * scale, w * scale), dtype=t.dtype, device=t.device
+        (1, c, h * scale, w * scale), dtype=torch.float32, device="cpu"
     )
     for y0 in range(0, h, tile):
         for x0 in range(0, w, tile):
@@ -192,7 +196,7 @@ def _tiled_forward(
             oy0, ox0 = (y0 - yp0) * scale, (x0 - xp0) * scale
             oh, ow = (y1 - y0) * scale, (x1 - x0) * scale
             out[:, :, y0 * scale:y1 * scale, x0 * scale:x1 * scale] = (
-                up[:, :, oy0:oy0 + oh, ox0:ox0 + ow]
+                up[:, :, oy0:oy0 + oh, ox0:ox0 + ow].float().cpu()
             )
     return out
 
