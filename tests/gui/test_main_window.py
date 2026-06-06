@@ -789,3 +789,24 @@ class TestKeyboardTransportIsAudioAware:
         )
         self._press(window, _Qt.Key.Key_Right)
         assert seeks == [11]
+
+
+class TestUpdateSettingsResilience:
+    """A failed settings write must NOT leave the in-memory copy stale (rank 34):
+    self._settings is the base for every later model_copy, so a save() OSError
+    that prevented the assignment would corrupt all subsequent persistence."""
+
+    def test_memory_stays_authoritative_when_save_fails(self, monkeypatch):
+        from sinner2.config.settings import Settings
+        from sinner2.gui import main_window as mw
+
+        win = mw.SinnerMainWindow.__new__(mw.SinnerMainWindow)
+        win._settings = Settings()  # noqa: SLF001
+
+        def boom(_s):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(mw.user_settings, "save", boom)
+        # Must not raise, and must update the in-memory settings anyway.
+        win._update_settings(source_path="/new/src.png")  # noqa: SLF001
+        assert win._settings.source_path == "/new/src.png"  # noqa: SLF001

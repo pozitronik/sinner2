@@ -1630,12 +1630,17 @@ class SinnerMainWindow(QMainWindow):
         self._pickers.set_target(path)
 
     def _update_settings(self, **fields: object) -> None:
+        # Keep the in-memory copy authoritative even if the disk write fails:
+        # assign BEFORE save() so a transient OSError (full / read-only disk)
+        # can't leave self._settings stale while the UI shows the new value —
+        # that stale base would silently corrupt every later model_copy. Log the
+        # failure instead of swallowing it.
+        updated = self._settings.model_copy(update=fields)
+        self._settings = updated
         try:
-            updated = self._settings.model_copy(update=fields)
             user_settings.save(updated)
-            self._settings = updated
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - never crash the GUI on a settings write
+            _log.warning("failed to persist settings: %s", exc)
 
     def _restore_geometry_from_settings(self) -> bool:
         hex_str = self._settings.window_geometry_hex
