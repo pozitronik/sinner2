@@ -66,7 +66,9 @@ def test_release_evicts_session(monkeypatch):
     import sinner2.pipeline.processors.codeformer as cf
 
     evicted = []
-    monkeypatch.setattr(cf, "release_onnx_session", evicted.append)
+    monkeypatch.setattr(
+        cf, "release_onnx_session", lambda name, providers=None: evicted.append(name)
+    )
     backend = CodeFormerBackend()
     backend._session = _IdentitySession()  # noqa: SLF001
     backend._analyser = object()  # noqa: SLF001

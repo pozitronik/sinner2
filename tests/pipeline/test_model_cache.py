@@ -81,6 +81,39 @@ class TestSessionCache:
         assert s1 is s2
         assert call_count == 1
 
+    def test_caches_per_path_and_providers(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        # rank 35: the same ONNX file requested with DIFFERENT execution
+        # providers must NOT share a session (the second consumer would silently
+        # get the first's EP). Same (path, providers) still caches.
+        import onnxruntime
+
+        clear_session_cache()
+        monkeypatch.setenv("SINNER2_MODELS_DIR", str(tmp_path))
+        (tmp_path / "m.onnx").write_bytes(b"x")
+
+        built: list[tuple] = []
+
+        def fake_session(*_a, providers=None, **_k):
+            built.append(tuple(providers or ()))
+            return MagicMock()
+
+        monkeypatch.setattr(onnxruntime, "InferenceSession", fake_session)
+
+        s1 = get_onnx_session(
+            "m.onnx", providers=["CUDAExecutionProvider", "CPUExecutionProvider"]
+        )
+        s2 = get_onnx_session("m.onnx", providers=["CPUExecutionProvider"])
+        assert s1 is not s2  # different EP profile → distinct session
+        assert built == [
+            ("CUDAExecutionProvider", "CPUExecutionProvider"),
+            ("CPUExecutionProvider",),
+        ]
+        s3 = get_onnx_session("m.onnx", providers=["CPUExecutionProvider"])
+        assert s3 is s2  # same (path, providers) → cached, no rebuild
+        assert len(built) == 2
+
     def test_different_models_have_different_sessions(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ):
@@ -493,15 +526,16 @@ class TestDeleteModelEvictsCaches:
         clear_session_cache()
         name = "inswapper_128.onnx"
         path = get_models_dir() / name
-        mc._session_cache[path] = MagicMock()  # noqa: SLF001
-        mc._session_refcount[path] = 3  # noqa: SLF001  (3 live consumers)
-        mc._insightface_cache[  # noqa: SLF001
-            (path, ("CUDAExecutionProvider",))
-        ] = MagicMock()
+        skey = (path, ("CUDAExecutionProvider",))
+        mc._session_cache[skey] = MagicMock()  # noqa: SLF001
+        mc._session_refcount[skey] = 3  # noqa: SLF001  (3 live consumers)
+        mc._insightface_cache[skey] = MagicMock()  # noqa: SLF001
 
         mc.delete_model(name)
 
-        assert path not in mc._session_cache  # noqa: SLF001 — popped, not decremented
-        assert path not in mc._session_refcount  # noqa: SLF001
+        # Force-evicted regardless of refcount; all provider variants for the
+        # path are gone from both caches.
+        assert all(k[0] != path for k in mc._session_cache)  # noqa: SLF001
+        assert all(k[0] != path for k in mc._session_refcount)  # noqa: SLF001
         assert all(k[0] != path for k in mc._insightface_cache)  # noqa: SLF001
         clear_session_cache()

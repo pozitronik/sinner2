@@ -310,6 +310,7 @@ class Upscaler:
         self._device: Any = None
         self._scale = 1
         self._device_is_cuda = False
+        self._providers: list[str] = []  # EPs used for an ONNX-runtime model
         self._lock = threading.Lock()
 
     def setup(self) -> None:
@@ -334,6 +335,7 @@ class Upscaler:
                 if self._device_is_cuda
                 else ["CPUExecutionProvider"]
             )
+            self._providers = providers
             self._session = get_onnx_session(spec.filename, providers=providers)
             inp = self._session.get_inputs()[0]
             self._in_name = inp.name
@@ -379,7 +381,7 @@ class Upscaler:
             from sinner2.pipeline.model_cache import release_onnx_session
 
             self._session = None
-            release_onnx_session(_MODEL_SPECS[self._params.model].filename)
+            release_onnx_session(_MODEL_SPECS[self._params.model].filename, self._providers)
         if self._device_is_cuda:
             import torch
 

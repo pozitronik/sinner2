@@ -303,6 +303,6 @@ class GenericOnnxSwapper:
         self._session = None
         self._converter = None
         self._source_input = None
-        release_onnx_session(self._spec.model_file)
+        release_onnx_session(self._spec.model_file, self._providers)
         if self._spec.converter_file:
-            release_onnx_session(self._spec.converter_file)
+            release_onnx_session(self._spec.converter_file, self._providers)

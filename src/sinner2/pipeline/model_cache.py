@@ -349,14 +349,14 @@ def build_session_options() -> "ort.SessionOptions":
     return so
 
 
-_session_cache: dict[Path, "ort.InferenceSession"] = {}
+_session_cache: dict[tuple[Path, tuple[str, ...]], "ort.InferenceSession"] = {}
 # Per-path consumer refcount for _session_cache. A single cached session can be
 # SHARED by several consumers (notably the N per-worker CodeFormer backends, each
 # of which get_onnx_session's the same path). release_onnx_session must only
 # evict when the LAST consumer releases — otherwise one worker's release pulls
 # the session out from under the others and a later get rebuilds a duplicate
 # (VRAM leak). get bumps the count; release decrements and evicts at 0.
-_session_refcount: dict[Path, int] = {}
+_session_refcount: dict[tuple[Path, tuple[str, ...]], int] = {}
 # Cached insightface swap models (inswapper / reswapper), keyed by
 # (path, providers). insightface.model_zoo.get_model builds a BRAND-NEW ORT
 # session on every call and never caches, so without this a source/target
@@ -544,8 +544,9 @@ def _force_evict_caches(path: Path) -> None:
 
     evicted = False
     with _session_lock:
-        if _session_cache.pop(path, None) is not None:
-            _session_refcount.pop(path, None)
+        for key in [k for k in _session_cache if k[0] == path]:
+            _session_cache.pop(key, None)
+            _session_refcount.pop(key, None)
             evicted = True
         for key in [k for k in _insightface_cache if k[0] == path]:
             _insightface_cache.pop(key, None)
@@ -646,10 +647,14 @@ def get_onnx_session(
     # None → platform default; an explicit [] stays empty (ORT then uses its CPU
     # last-resort). Only an unspecified (None) list falls back to the default.
     names = list(_DEFAULT_PROVIDERS) if providers is None else list(providers)
+    # Key by (path, providers): the same ONNX file requested with a DIFFERENT EP
+    # profile must get its own session, not silently inherit the first caller's
+    # providers (matches how _insightface_cache is keyed).
+    key = (path, tuple(names))
     with _session_lock:
-        cached = _session_cache.get(path)
+        cached = _session_cache.get(key)
         if cached is not None:
-            _session_refcount[path] = _session_refcount.get(path, 0) + 1
+            _session_refcount[key] = _session_refcount.get(key, 0) + 1
             return cached
         session = ort.InferenceSession(
             str(path),
@@ -657,36 +662,38 @@ def get_onnx_session(
             providers=names,
             provider_options=build_provider_options(names),
         )
-        _session_cache[path] = session
-        _session_refcount[path] = 1
+        _session_cache[key] = session
+        _session_refcount[key] = 1
         return session
 
 
-def release_onnx_session(name: str) -> None:
+def release_onnx_session(name: str, providers: list[str] | None = None) -> None:
     """Drop one consumer's hold on the cached ONNX session for ``name``; evict +
     free its device memory only when the LAST consumer releases.
 
-    Called by a processor's release() when its feature is disabled so the model
-    doesn't linger in VRAM (ORT frees a session's GPU arena when the last
-    reference drops). A session can be shared (N per-worker CodeFormer backends),
-    so this is refcounted: each get_onnx_session bumped the count, each release
-    decrements it, and only the final release pops + collects. Without the
-    refcount, one per-worker release would evict the session the others still use
-    and a later get would rebuild a duplicate (VRAM leak). No-op if nothing is
-    cached for that name. Re-enabling reloads from disk via get_onnx_session.
+    Sessions are keyed by (path, providers), so pass the SAME ``providers`` used
+    to acquire the session (None → the platform default, matching get). Called by
+    a processor's release() when its feature is disabled so the model doesn't
+    linger in VRAM (ORT frees a session's GPU arena when the last reference
+    drops). A session can be shared (N per-worker CodeFormer backends), so this
+    is refcounted: each get_onnx_session bumped the count, each release decrements
+    it, and only the final release pops + collects. No-op if nothing is cached
+    for that (name, providers). Re-enabling reloads via get_onnx_session.
     """
     import gc
 
     path = get_models_dir() / name
+    names = list(_DEFAULT_PROVIDERS) if providers is None else list(providers)
+    key = (path, tuple(names))
     with _session_lock:
-        if path not in _session_cache:
+        if key not in _session_cache:
             return
-        remaining = _session_refcount.get(path, 1) - 1
+        remaining = _session_refcount.get(key, 1) - 1
         if remaining > 0:
-            _session_refcount[path] = remaining
+            _session_refcount[key] = remaining
             return  # other consumers still hold it
-        _session_refcount.pop(path, None)
-        session = _session_cache.pop(path, None)
+        _session_refcount.pop(key, None)
+        session = _session_cache.pop(key, None)
     if session is None:
         return
     # Last consumer gone — drop the local ref and force a collection so ORT's

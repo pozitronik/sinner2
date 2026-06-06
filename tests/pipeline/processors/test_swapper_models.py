@@ -147,7 +147,9 @@ class TestGenericGet:
         import sinner2.pipeline.processors.swapper_models as sm
 
         evicted: list[str] = []
-        monkeypatch.setattr(sm, "release_onnx_session", evicted.append)
+        monkeypatch.setattr(
+            sm, "release_onnx_session", lambda name, providers=None: evicted.append(name)
+        )
         backend = _make_backend(SwapperModel.GHOST_2_256)
         backend._session = _IdentitySession()  # noqa: SLF001
         backend._converter = object()  # noqa: SLF001
@@ -161,7 +163,9 @@ class TestGenericGet:
         import sinner2.pipeline.processors.swapper_models as sm
 
         evicted: list[str] = []
-        monkeypatch.setattr(sm, "release_onnx_session", evicted.append)
+        monkeypatch.setattr(
+            sm, "release_onnx_session", lambda name, providers=None: evicted.append(name)
+        )
         backend = _make_backend(SwapperModel.UNIFACE_256)
         backend._session = _IdentitySession()  # noqa: SLF001
         backend.release()

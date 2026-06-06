@@ -105,4 +105,4 @@ class CodeFormerBackend:
         ~377 MB of VRAM instead of leaving it resident."""
         self._session = None
         self._analyser = None
-        release_onnx_session(MODEL_FILE)
+        release_onnx_session(MODEL_FILE, self._providers)

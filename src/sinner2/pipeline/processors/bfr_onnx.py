@@ -137,4 +137,4 @@ class PlainBfrBackend:
         instead of leaving it resident."""
         self._session = None
         self._analyser = None
-        release_onnx_session(self._model_file)
+        release_onnx_session(self._model_file, self._providers)
