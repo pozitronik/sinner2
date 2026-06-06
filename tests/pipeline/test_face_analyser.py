@@ -161,12 +161,28 @@ class TestAlternativeDetector:
         from sinner2.pipeline import detectors
 
         stub = self._StubDetector()
-        monkeypatch.setattr(detectors, "build_detector", lambda m, p=None: stub)
+        monkeypatch.setattr(detectors, "build_detector", lambda m, p=None, size=640: stub)
         a = FaceAnalyser(detector=detectors.DetectorModel.YOLOFACE)
         assert stub.setups == 1  # loaded eagerly at construction (no worker race)
         a.analyse(_blank_frame())
         assert stub.detects == 1
         assert a.provides_gender() is False
+
+    def test_detection_size_forwarded_to_standalone_detector(self, monkeypatch):
+        # Regression: detection_size was dropped on the standalone-detector path
+        # (FaceAnalyser called build_detector without it), so the knob was dead
+        # for yolo/scrfd.
+        from sinner2.pipeline import detectors
+
+        captured: dict = {}
+
+        def fake_build(m, p=None, size=640):
+            captured["size"] = size
+            return self._StubDetector()
+
+        monkeypatch.setattr(detectors, "build_detector", fake_build)
+        FaceAnalyser(detector=detectors.DetectorModel.SCRFD_2_5G, detection_size=256)
+        assert captured["size"] == 256
 
     def test_analyse_uncached_stays_buffalo_l(
         self, monkeypatch, stub_insightface: MagicMock
@@ -174,7 +190,7 @@ class TestAlternativeDetector:
         from sinner2.pipeline import detectors
 
         monkeypatch.setattr(
-            detectors, "build_detector", lambda m, p=None: self._StubDetector()
+            detectors, "build_detector", lambda m, p=None, size=640: self._StubDetector()
         )
         a = FaceAnalyser(detector=detectors.DetectorModel.YOLOFACE)
         a.analyse_uncached(_blank_frame())

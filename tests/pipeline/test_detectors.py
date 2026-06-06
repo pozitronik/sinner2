@@ -141,3 +141,23 @@ class TestFactory:
         # buffalo_l is the full pack handled by FaceAnalyser itself, not a
         # standalone target detector.
         assert build_detector(DetectorModel.BUFFALO_L) is None
+
+    def test_build_forwards_size_to_detectors(self):
+        # det_size must reach the standalone detectors. It was silently dropped:
+        # build_detector took no size, so the knob did nothing for yolo/scrfd.
+        assert build_detector(DetectorModel.YOLOFACE, size=320)._size == 320  # noqa: SLF001
+        assert build_detector(DetectorModel.SCRFD_2_5G, size=512)._size == 512  # noqa: SLF001
+
+
+class TestYoloStaticInput:
+    def test_setup_pins_size_to_static_model_input(self, monkeypatch):
+        # yoloface_8n exports a FIXED [1,3,640,640] input — a requested det_size
+        # must be pinned to the model's size, else inference shape-mismatches.
+        from sinner2.pipeline import detectors
+
+        monkeypatch.setattr(
+            detectors, "get_onnx_session", lambda *a, **k: _PlantedYoloSession()
+        )
+        d = YoloFaceDetector(size=320)
+        d.setup()
+        assert d._size == 640  # noqa: SLF001

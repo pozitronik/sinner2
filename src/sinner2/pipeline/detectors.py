@@ -139,6 +139,15 @@ class YoloFaceDetector:
         self._session = get_onnx_session(self._model_file, providers=self._providers)
         self._in_name = self._session.get_inputs()[0].name
         self._out_name = self._session.get_outputs()[0].name
+        # yoloface_8n exports a FIXED square input (e.g. [1,3,640,640]); the
+        # network can't accept any other size, so pin our letterbox target to the
+        # model's static H/W. A requested det_size only takes effect if the model
+        # were exported with a dynamic input.
+        shape = self._session.get_inputs()[0].shape
+        if len(shape) == 4:
+            h, w = shape[2], shape[3]
+            if isinstance(h, int) and isinstance(w, int) and h == w > 0:
+                self._size = h
 
     def detect(self, frame: Frame) -> list[FaceLite]:
         if self._session is None:
@@ -171,7 +180,10 @@ class ScrfdDetector:
         self._det = get_model(
             str(get_model_path(self._model_file)), providers=self._providers
         )
-        self._det.prepare(ctx_id=0, input_size=(self._size, self._size))
+        # SCRFD downsamples by strides 8/16/32, so its input must be a multiple
+        # of 32 (mirrors the buffalo_l det_size alignment in face_analyser).
+        aligned = max(32, (self._size // 32) * 32)
+        self._det.prepare(ctx_id=0, input_size=(aligned, aligned))
 
     def detect(self, frame: Frame) -> list[FaceLite]:
         if self._det is None:
@@ -191,12 +203,14 @@ class ScrfdDetector:
 
 
 def build_detector(
-    model: DetectorModel, providers: list[str] | None = None
+    model: DetectorModel, providers: list[str] | None = None, size: int = _DET_SIZE
 ) -> YoloFaceDetector | ScrfdDetector | None:
     """The standalone detector for a model, or None for buffalo_l (which the
     FaceAnalyser drives through the full insightface pack itself)."""
     if model is DetectorModel.YOLOFACE:
-        return YoloFaceDetector(DETECTOR_MODEL_FILES[model], providers=providers)
+        return YoloFaceDetector(
+            DETECTOR_MODEL_FILES[model], providers=providers, size=size
+        )
     if model is DetectorModel.SCRFD_2_5G:
-        return ScrfdDetector(DETECTOR_MODEL_FILES[model], providers=providers)
+        return ScrfdDetector(DETECTOR_MODEL_FILES[model], providers=providers, size=size)
     return None

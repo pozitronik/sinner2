@@ -108,7 +108,9 @@ class FaceAnalyser:
 
         det_model = detector if detector is not None else DetectorModel.BUFFALO_L
         self._detector = build_detector(
-            det_model, providers if providers is not None else None
+            det_model,
+            providers if providers is not None else None,
+            size=detection_size,
         )
         if self._detector is not None:
             self._detector.setup()
