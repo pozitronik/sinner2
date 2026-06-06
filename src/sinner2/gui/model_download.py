@@ -23,6 +23,22 @@ from PySide6.QtWidgets import QMessageBox, QProgressDialog, QWidget
 from sinner2.pipeline import model_cache
 
 
+def _join_download_thread(
+    thread: QThread, worker: QObject, timeout_ms: int = 5000
+) -> None:
+    """Stop + join a download thread without freezing the GUI. The worker's
+    run() is a blocking download loop, so quit() only takes effect once it
+    returns (up to the ~30s socket timeout on a stalled read). Wait a BOUNDED
+    time; if it overruns, let the thread finish and clean itself up in the
+    background rather than hanging the app on close (was an unbounded wait())."""
+    thread.quit()
+    if thread.wait(timeout_ms):
+        worker.deleteLater()
+    else:
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(worker.deleteLater)
+
+
 class _DownloadWorker(QObject):
     progress = Signal(str, int, int)  # name, bytes_done, bytes_total
     finished = Signal(bool, str)  # ok, error ("" | "cancelled" | message)
@@ -142,9 +158,7 @@ def ensure_models(parent: QWidget, names: list[str]) -> bool:
     thread.start()
 
     dialog.exec()
-    thread.quit()
-    thread.wait()
-    worker.deleteLater()
+    _join_download_thread(thread, worker)
 
     if not controller.ok and controller.error not in ("", "cancelled"):
         QMessageBox.warning(

@@ -118,3 +118,33 @@ class TestDownloadController:
         ctrl.on_finished(False, "boom")
         assert ctrl.ok is False
         assert ctrl.error == "boom"
+
+
+class TestJoinDownloadThread:
+    def test_clean_join_deletes_worker(self):
+        from unittest.mock import MagicMock
+
+        from sinner2.gui.model_download import _join_download_thread
+
+        thread = MagicMock()
+        thread.wait.return_value = True
+        worker = MagicMock()
+        _join_download_thread(thread, worker, timeout_ms=5000)
+        thread.quit.assert_called_once()
+        thread.wait.assert_called_once_with(5000)
+        worker.deleteLater.assert_called_once()
+
+    def test_overrun_defers_cleanup_to_background(self):
+        # A stuck download (blocked in a chunk read up to the socket timeout)
+        # must not freeze the GUI on an unbounded wait: bound it, and defer
+        # cleanup to thread.finished rather than deleting a running thread now.
+        from unittest.mock import MagicMock
+
+        from sinner2.gui.model_download import _join_download_thread
+
+        thread = MagicMock()
+        thread.wait.return_value = False  # didn't finish within the budget
+        worker = MagicMock()
+        _join_download_thread(thread, worker, timeout_ms=5000)
+        worker.deleteLater.assert_not_called()  # not deleted while still running
+        assert thread.finished.connect.call_count >= 1  # background cleanup wired
