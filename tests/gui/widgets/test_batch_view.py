@@ -402,3 +402,38 @@ class TestStageNames:
             upscaler_enabled=True,
         ))
         assert names == ["upscaler"]
+
+
+class TestStepTrackerReuse:
+    def test_tracker_not_reallocated_each_progress_tick(
+        self, view, tmp_path, store, queue, monkeypatch
+    ):
+        # rank 40: the per-task _StepTracker (a deque) must be built once, not
+        # eagerly constructed-and-discarded on every progress tick via setdefault.
+        from sinner2.batch.task import BatchProgress
+        from sinner2.gui.widgets import batch_view
+
+        t = _task(tmp_path)
+        store.save(t)
+        view.reload_from_store()
+
+        real = batch_view._StepTracker
+        count = {"n": 0}
+
+        def counting(*a, **k):
+            count["n"] += 1
+            return real(*a, **k)
+
+        monkeypatch.setattr(batch_view, "_StepTracker", counting)
+        queue.taskStarted.emit(t.id)  # builds the one tracker
+        prog = dict(
+            stage_index=0, stage_count=1, stage_name="faceswapper",
+            stage_total=10, overall_total=10,
+        )
+        queue.taskProgress.emit(
+            t.id, BatchProgress(stage_completed=1, overall_completed=1, **prog)
+        )
+        queue.taskProgress.emit(
+            t.id, BatchProgress(stage_completed=2, overall_completed=2, **prog)
+        )
+        assert count["n"] == 1  # ticks reuse the tracker, don't reallocate

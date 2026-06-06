@@ -346,7 +346,11 @@ class QBatchView(QWidget):
         # the task from disk on every tick). Shows the step index + step % +
         # frame counts + stage name, then a recent-window throughput and the
         # step's elapsed/expected time.
-        tracker = self._throughput.setdefault(task_id, _StepTracker())
+        # get-then-set, not setdefault: setdefault eagerly builds (and discards)
+        # a _StepTracker + its deque on every tick once the key exists.
+        tracker = self._throughput.get(task_id)
+        if tracker is None:
+            tracker = self._throughput[task_id] = _StepTracker()
         fps, elapsed, expected = tracker.update(
             progress.stage_index, progress.stage_completed, progress.stage_total
         )
