@@ -79,9 +79,8 @@ class ProcessorParamsSnapshot:
 
         Rebuilds the frame-skip strategy from its name (+ synced lag) and bundles
         the cache knobs into a CacheSettings — exactly what the main window used
-        to assemble inline. CacheSettings is imported lazily to avoid a GUI
-        import cycle (player_controller → processor_controls → this module)."""
-        from sinner2.gui.player_controller import CacheSettings
+        to assemble inline."""
+        from sinner2.gui.session_builder import CacheSettings
 
         strategy: FrameSkipStrategy = (
             SyncedStrategy(max_lag_frames=self.synced_max_lag_frames)

@@ -7,27 +7,27 @@ from PySide6.QtCore import QObject, Signal
 
 from sinner2.audio.audio_backend import AudioBackend, AudioBackendName
 from sinner2.config.source import Source
-from sinner2.config.target import Target, TargetKind
+from sinner2.config.target import Target
 from sinner2.gui.audio_controller import AudioController
 from sinner2.gui.bridges.observable_bridge import ObservableValueBridge
 from sinner2.gui.cache_controller import CacheController
+from sinner2.gui.session_builder import (
+    _DEFAULT_CACHE_SETTINGS,
+    CacheSettings,
+    SessionFactory,
+    _default_session_factory,
+    _make_reader_factory,
+    _SessionBundle,
+)
 from sinner2.gui.widgets.frame_display import QFrameDisplayWidget
 from sinner2.gui.widgets.transport_controls import QTransportControls
 from sinner2.io.reader_pool import ReaderPool
-from sinner2.io.target_reader import ImageTargetReader, TargetReader
-from sinner2.io.video_backend import VideoBackend, build_video_target_reader
+from sinner2.io.video_backend import VideoBackend
 from sinner2.pipeline.buffer.bounded_write_executor import BoundedWriteExecutor
-from sinner2.pipeline.buffer.buffer import FrameBuffer
-from sinner2.pipeline.buffer.cache import MemoryFrameCache
 from sinner2.pipeline.buffer.store import FrameStore, PersistentFrameStore
-from sinner2.pipeline.buffer.timeline import Timeline
 from sinner2.pipeline.cache_manager import CacheManager, make_meta
 from sinner2.pipeline.cache_mode import CacheMode
-from sinner2.pipeline.image_writer import (
-    ImageFormat,
-    ImageWriter,
-    build_image_writer,
-)
+from sinner2.pipeline.image_writer import ImageWriter, build_image_writer
 from sinner2.pipeline.playback_mode import PlaybackMode
 from sinner2.pipeline.processor import Processor
 from sinner2.pipeline.processors.face_enhancer import (
@@ -46,46 +46,6 @@ from sinner2.pipeline.skip_strategy import (
 )
 
 
-@dataclass(frozen=True)
-class CacheSettings:
-    """Bundle of cache-and-writer knobs the session factory needs.
-
-    Grouped so the factory signature stays readable as the cache surface
-    grows: format, quality, in-memory cap, mode, and the disk-write
-    executor sizing all flow together.
-    """
-
-    mode: CacheMode
-    image_format: ImageFormat
-    image_quality: int
-    memory_max_bytes: int
-    write_workers: int
-    write_queue_size: int
-
-
-SessionFactory = Callable[
-    [
-        ReaderPool,
-        list[Processor],
-        FrameSkipStrategy,
-        int,
-        PlaybackMode,
-        CacheSettings,
-        FrameStore,
-    ],
-    tuple[RealtimeExecutor, BoundedWriteExecutor],
-]
-
-
-_DEFAULT_CACHE_SETTINGS = CacheSettings(
-    mode=CacheMode.WRITE_READ,
-    image_format=ImageFormat.JPEG,
-    image_quality=95,
-    memory_max_bytes=128 * 1024 * 1024,
-    write_workers=4,
-    write_queue_size=8,
-)
-
 # CodeFormer is a heavy, GPU-bound, SHARED ONNX session: extra realtime workers
 # don't add throughput (they serialize on the one GPU session) and only deepen
 # the in-flight queue, which adds latency between a seek and the frame showing.
@@ -95,93 +55,12 @@ _DEFAULT_CACHE_SETTINGS = CacheSettings(
 _CODEFORMER_REALTIME_WORKER_CAP = 2
 
 
-def _make_reader(
-    target: Target, video_backend: VideoBackend, scale: float = 1.0
-) -> TargetReader:
-    if target.kind == TargetKind.IMAGE:
-        return ImageTargetReader(target, scale)
-    if target.kind == TargetKind.VIDEO:
-        return build_video_target_reader(target, video_backend, scale)
-    raise ValueError(f"unsupported target kind: {target.kind}")
-
-
-def _make_reader_factory(
-    target: Target, video_backend: VideoBackend, scale: float = 1.0
-) -> Callable[[], TargetReader]:
-    """Thunk that builds a fresh reader on each call.
-
-    Used by ReaderPool to construct its N reader instances. Per-backend
-    logic stays in _make_reader; this just curries the arguments."""
-    return lambda: _make_reader(target, video_backend, scale)
-
-
-def _default_session_factory(
-    reader_pool: ReaderPool,
-    chain: list[Processor],
-    strategy: FrameSkipStrategy,
-    worker_count: int,
-    playback_mode: PlaybackMode,
-    cache_settings: CacheSettings,
-    store: FrameStore,
-) -> tuple[RealtimeExecutor, BoundedWriteExecutor]:
-    """Build a realtime executor around reader pool + chain + strategy + store.
-
-    Caller owns the store lifecycle. Caller takes ownership of (executor,
-    write_executor) and is responsible for stop() → shutdown(wait=True)
-    in that order. The chain is shared by all workers — ORT sessions handle
-    concurrent inference, so this is the fast path. The write_executor is
-    bounded; FrameBuffer.put silently drops writes when its outstanding
-    cap is hit so the queue can't pin memory unbounded on slow disks. The
-    reader pool's shutdown is owned by the executor (called from stop()).
-    """
-    timeline = Timeline(fps=reader_pool.fps)
-    cache = MemoryFrameCache(max_bytes=cache_settings.memory_max_bytes)
-    write_executor = BoundedWriteExecutor(
-        max_workers=cache_settings.write_workers,
-        max_outstanding=cache_settings.write_queue_size,
-    )
-    buffer = FrameBuffer(
-        store,
-        cache,
-        timeline,
-        write_executor,
-        cache_mode=cache_settings.mode,
-    )
-    executor = RealtimeExecutor(
-        reader_pool=reader_pool,
-        buffer=buffer,
-        timeline=timeline,
-        chain=chain,
-        strategy=strategy,
-        worker_count=worker_count,
-        playback_mode=playback_mode,
-    )
-    return executor, write_executor
-
-
 def _spawn_daemon(fn: Callable[[], None]) -> threading.Thread:
     """Default swap runner: fire the job on a daemon thread. Swapped out in
     tests for an inline runner so the async flow executes deterministically."""
     thread = threading.Thread(target=fn, name="sinner2-session-swap", daemon=True)
     thread.start()
     return thread
-
-
-@dataclass
-class _SessionBundle:
-    """A fully built (but not yet installed) session — the non-Qt product of
-    _build_session, ready to be handed to _install_session on the GUI thread."""
-
-    executor: RealtimeExecutor
-    write_executor: BoundedWriteExecutor
-    session_store: FrameStore
-    cache_dir: Path
-    source: Source
-    source_path: Path
-    target_path: Path
-    target_fps: float
-    frame_count: int
-    native_size: tuple[int, int]
 
 
 @dataclass
