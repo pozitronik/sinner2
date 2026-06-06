@@ -10,11 +10,11 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from sinner2.pipeline.face_geometry import paste_back
 from sinner2.pipeline.processors.swapper_models import (
     GenericOnnxSwapper,
     SwapperModel,
     _box_mask,
-    _paste_back,
     _warp_face,
     get_spec,
     is_insightface_model,
@@ -89,7 +89,10 @@ class TestGeometryHelpers:
         frame = np.full((64, 64, 3), 50, np.uint8)
         crop = np.full((256, 256, 3), 200, np.uint8)
         _, matrix = _warp_face(frame, _KPS, _TEMPLATE, 256)
-        out = _paste_back(frame, crop, _box_mask(256), matrix)
+        out = paste_back(
+            frame, crop, matrix, _box_mask(256),
+            border_replicate=True, clip_mask=True,
+        )
         assert out.shape == (64, 64, 3)
         assert out.dtype == np.uint8
         assert out.max() > 50  # the bright crop landed somewhere

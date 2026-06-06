@@ -27,6 +27,9 @@ import cv2
 import numpy as np
 
 from sinner2.config.execution import DEFAULT_ONNX_PROVIDERS
+# Aliased: GenericOnnxSwapper.get() has a `paste_back: bool` param (insightface
+# API convention) that would shadow the function name otherwise.
+from sinner2.pipeline.face_geometry import paste_back as _paste_back
 from sinner2.pipeline.model_cache import (
     get_onnx_session,
     record_actual_providers,
@@ -199,17 +202,6 @@ def _box_mask(size: int, blur: float = 0.3) -> np.ndarray:
     return mask
 
 
-def _paste_back(frame: Frame, crop: Frame, mask: np.ndarray, matrix: np.ndarray) -> Frame:
-    """Warp the swapped crop back by the inverse affine and alpha-blend it in
-    with the feathered mask (BORDER_REPLICATE to avoid black-fill halos)."""
-    h, w = frame.shape[:2]
-    inv = cv2.invertAffineTransform(matrix)
-    inv_mask = cv2.warpAffine(mask, inv, (w, h)).clip(0.0, 1.0)[..., None]
-    inv_crop = cv2.warpAffine(crop, inv, (w, h), borderMode=cv2.BORDER_REPLICATE)
-    out = frame.astype(np.float32) * (1.0 - inv_mask) + inv_crop.astype(np.float32) * inv_mask
-    return out.astype(np.uint8)
-
-
 class GenericOnnxSwapper:
     """facefusion-style ONNX swap backend for ghost / simswap / uniface.
 
@@ -294,7 +286,10 @@ class GenericOnnxSwapper:
         swapped = self._normalize_output(out)
         if not paste_back:
             return swapped
-        return _paste_back(img, swapped, self._mask, matrix)
+        return _paste_back(
+            img, swapped, matrix, self._mask,
+            border_replicate=True, clip_mask=True,
+        )
 
     def release(self) -> None:
         """Drop session/converter refs and evict the (exclusive) model + its

@@ -30,16 +30,32 @@ def feather_mask(size: int, pad_frac: float = 0.08) -> np.ndarray:
 
 
 def paste_back(
-    frame: Frame, patch: Frame, matrix: np.ndarray, mask: np.ndarray
+    frame: Frame,
+    patch: Frame,
+    matrix: np.ndarray,
+    mask: np.ndarray,
+    *,
+    border_replicate: bool = False,
+    clip_mask: bool = False,
 ) -> Frame:
     """Composite an aligned ``patch`` back into ``frame``.
 
     ``matrix`` is the 2x3 affine that mapped ``frame`` into the aligned space the
     ``patch`` lives in; this inverts it, warps both the patch and its ``mask``
     back to frame coordinates, and alpha-blends the patch in where the mask is
-    set (feathered at the edges)."""
+    set (feathered at the edges).
+
+    ``border_replicate`` edge-extends the patch under warp (BORDER_REPLICATE)
+    instead of black-filling — the swapper uses this to avoid dark halos around
+    the pasted crop. ``clip_mask`` clamps the warped alpha to [0,1] before the
+    blend (the swapper's mask can over/undershoot under interpolation). Both
+    default off, reproducing the restorers' original paste byte-for-byte."""
     h, w = frame.shape[:2]
     m_inv = cv2.invertAffineTransform(matrix)
-    back = cv2.warpAffine(patch, m_inv, (w, h)).astype(np.float32)
-    alpha = cv2.warpAffine(mask, m_inv, (w, h))[..., None]
+    border = cv2.BORDER_REPLICATE if border_replicate else cv2.BORDER_CONSTANT
+    back = cv2.warpAffine(patch, m_inv, (w, h), borderMode=border).astype(np.float32)
+    alpha = cv2.warpAffine(mask, m_inv, (w, h))
+    if clip_mask:
+        alpha = alpha.clip(0.0, 1.0)
+    alpha = alpha[..., None]
     return (frame.astype(np.float32) * (1.0 - alpha) + back * alpha).astype(np.uint8)

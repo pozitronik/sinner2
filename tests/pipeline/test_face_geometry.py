@@ -32,6 +32,18 @@ def _legacy_paste(
     return (frame.astype(np.float32) * (1.0 - alpha) + back * alpha).astype(np.uint8)
 
 
+def _legacy_swapper_paste(
+    frame: np.ndarray, crop: np.ndarray, mask: np.ndarray, matrix: np.ndarray
+) -> np.ndarray:
+    """The paste-back the swapper carried verbatim (BORDER_REPLICATE + clip)."""
+    h, w = frame.shape[:2]
+    inv = cv2.invertAffineTransform(matrix)
+    inv_mask = cv2.warpAffine(mask, inv, (w, h)).clip(0.0, 1.0)[..., None]
+    inv_crop = cv2.warpAffine(crop, inv, (w, h), borderMode=cv2.BORDER_REPLICATE)
+    out = frame.astype(np.float32) * (1.0 - inv_mask) + inv_crop.astype(np.float32) * inv_mask
+    return out.astype(np.uint8)
+
+
 def test_feather_mask_shape_matches_requested_size():
     assert feather_mask(512).shape == (512, 512)
     assert feather_mask(1024).shape == (1024, 1024)
@@ -64,4 +76,21 @@ def test_paste_back_is_byte_identical_to_legacy_formula():
     mask = feather_mask(512)
     assert np.array_equal(
         paste_back(frame, patch, m, mask), _legacy_paste(frame, patch, m, mask)
+    )
+
+
+def test_paste_back_flags_are_byte_identical_to_legacy_swapper_formula():
+    # The swapper flavor (border_replicate + clip_mask) must reproduce its
+    # former inline paste exactly — a feathered box mask in [0,1], a uint8 crop,
+    # a translate+scale matrix.
+    rng = np.random.default_rng(1)
+    frame = rng.integers(0, 255, (64, 64, 3), dtype=np.uint8)
+    crop = rng.integers(0, 255, (256, 256, 3), dtype=np.uint8)
+    matrix = np.array([[4.0, 0, 1.1], [0, 4.0, -0.7]], np.float32)  # frame→256
+    mask = np.zeros((256, 256), np.float32)
+    mask[24:232, 24:232] = 1.0
+    mask = cv2.GaussianBlur(mask, (0, 0), sigmaX=6.0)
+    assert np.array_equal(
+        paste_back(frame, crop, matrix, mask, border_replicate=True, clip_mask=True),
+        _legacy_swapper_paste(frame, crop, mask, matrix),
     )
