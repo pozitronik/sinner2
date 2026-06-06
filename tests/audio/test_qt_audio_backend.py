@@ -41,6 +41,21 @@ def _prime_player(backend: QtMediaAudioBackend) -> MagicMock:
     return fake
 
 
+class TestInvalidMedia:
+    def test_invalid_media_clears_loaded_path_so_reload_works(self, backend):
+        # A broken file → InvalidMedia must reset _loaded_path so is_loaded()
+        # reports False AND a later load() of the SAME path actually re-loads
+        # (load() early-returns while _loaded_path matches) — otherwise audio is
+        # dead for that path for the rest of the session.
+        _prime_player(backend)
+        backend.load(Path("/broken.mp4"))
+        assert backend.is_loaded() is True
+        backend._on_media_status_changed(  # noqa: SLF001
+            QMediaPlayer.MediaStatus.InvalidMedia
+        )
+        assert backend.is_loaded() is False
+
+
 class TestDeferredPlay:
     def test_play_before_ready_is_deferred(self, backend):
         fake = _prime_player(backend)

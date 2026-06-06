@@ -76,11 +76,15 @@ class QtMediaAudioBackend(QObject):
                 self._pending_play = False
                 self._player.play()
         elif status == QMediaPlayer.MediaStatus.InvalidMedia:
-            # Cannot honour pending play/seek on broken media; drop them
-            # so nothing dangles for the next load.
+            # Cannot honour pending play/seek on broken media; drop them so
+            # nothing dangles. Clear _loaded_path too: load()'s same-path
+            # early-return is keyed on it, so leaving it set would make a later
+            # load() of this path a no-op (audio dead for the session), and
+            # is_loaded() would wrongly report True for unusable media.
             self._pending_play = False
             self._pending_position_ms = None
             self._media_ready = False
+            self._loaded_path = None
 
     def load(self, media_path: Path) -> None:
         if self._loaded_path == media_path:
