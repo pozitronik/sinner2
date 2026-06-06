@@ -359,6 +359,10 @@ class FaceSwapper:
         if analyser is not None:
             analyser.reset_cache()
 
+    def cache_identity(self) -> str:
+        """Output-affecting params, for the realtime cache key."""
+        return self._params.model_dump_json()
+
     def release(self) -> None:
         # Generic ONNX backends (ghost/simswap/uniface) own a cached session;
         # ask them to evict it so disabling/switching the swapper frees VRAM.

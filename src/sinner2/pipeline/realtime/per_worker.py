@@ -42,17 +42,23 @@ class PerWorkerProcessor:
     ) -> None:
         self.name = name
         self._factory = factory
-        # The wrapped processor's params (a Pydantic model), exposed under the
-        # SAME attribute name the realtime cache key looks for (_cache_key reads
-        # p._params.model_dump_json()). Without this, the enhancer/upscaler — the
-        # only processors that run wrapped — contribute nothing to the cache key,
-        # so changing their settings serves stale cached frames.
+        # The wrapped processor's params (a Pydantic model). cache_identity()
+        # exposes them to the realtime cache key — without it the enhancer /
+        # upscaler (the only processors that run wrapped) would contribute
+        # nothing to the key, so changing their settings would serve stale frames.
         self._params = params
         self._local = threading.local()
         # Every instance ever built, so release() can tear them all down.
         # Guarded because workers append from their own threads.
         self._lock = threading.Lock()
         self._instances: list[Processor] = []
+
+    def cache_identity(self) -> str:
+        """The wrapped params' json, for the realtime cache key. Empty when no
+        params were supplied (the key then omits this stage, as before)."""
+        if self._params is not None and hasattr(self._params, "model_dump_json"):
+            return self._params.model_dump_json()
+        return ""
 
     def setup(self) -> None:
         # No-op: each worker thread builds its OWN instance lazily on its first

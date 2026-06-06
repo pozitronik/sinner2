@@ -246,6 +246,10 @@ class FaceEnhancer:
                 )
         return result
 
+    def cache_identity(self) -> str:
+        """Output-affecting params, for the realtime cache key."""
+        return self._params.model_dump_json()
+
     def release(self) -> None:
         self._restorer = None
         if self._codeformer is not None:

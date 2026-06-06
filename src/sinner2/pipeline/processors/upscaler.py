@@ -375,6 +375,10 @@ class Upscaler:
                 fp16=self._fp16, tile=self._params.tile, align=self._align,
             )
 
+    def cache_identity(self) -> str:
+        """Output-affecting params, for the realtime cache key."""
+        return self._params.model_dump_json()
+
     def release(self) -> None:
         self._model = None
         if self._session is not None:

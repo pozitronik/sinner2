@@ -138,9 +138,14 @@ def _cache_key(
     ]
     for p in chain:
         parts.append(p.name)
-        params = getattr(p, "_params", None)
-        if params is not None and hasattr(params, "model_dump_json"):
-            parts.append(params.model_dump_json())
+        # cache_identity() is the public contract for "what params affect my
+        # output pixels" — replaces reaching into a private _params attribute.
+        # Append only when non-empty so the hash is unchanged for processors
+        # that carry no params (cache-continuity with the old reflection form).
+        identity = getattr(p, "cache_identity", None)
+        ident = identity() if callable(identity) else ""
+        if ident:
+            parts.append(ident)
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
 
 
