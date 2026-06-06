@@ -843,3 +843,32 @@ class TestMetricsRateResetOnShow:
         win._set_stats_visible(False)  # noqa: SLF001
         win._write_rate.reset.assert_not_called()  # noqa: SLF001
         win._drop_rate.reset.assert_not_called()  # noqa: SLF001
+
+
+class TestSessionSwitchingDisablesControls:
+    """During an async source/target swap the processor panel must be disabled
+    too — not just the transport — else a config change mid-swap reaches the
+    controller and is silently overwritten by reconfigure_from."""
+
+    def _win(self):
+        from unittest.mock import MagicMock
+
+        from sinner2.gui import main_window as mw
+
+        win = mw.SinnerMainWindow.__new__(mw.SinnerMainWindow)
+        win._transport = MagicMock()  # noqa: SLF001
+        win._processors = MagicMock()  # noqa: SLF001
+        win._status_bar = MagicMock()  # noqa: SLF001
+        return win
+
+    def test_switching_disables_processor_panel(self):
+        win = self._win()
+        win._on_session_switching(True)  # noqa: SLF001
+        win._processors.setEnabled.assert_called_with(False)  # noqa: SLF001
+        win._transport.setEnabled.assert_called_with(False)  # noqa: SLF001
+
+    def test_ready_re_enables_processor_panel(self):
+        win = self._win()
+        win._on_session_switching(False)  # noqa: SLF001
+        win._processors.setEnabled.assert_called_with(True)  # noqa: SLF001
+        win._transport.setEnabled.assert_called_with(True)  # noqa: SLF001

@@ -834,10 +834,13 @@ class SinnerMainWindow(QMainWindow):
         return ensure_models(self, [name])
 
     def _on_session_switching(self, switching: bool) -> None:
-        """Disable transport + show a notice while an async source/target swap
-        drains the old session and builds the new one, so the user can't drive a
-        half-torn-down session. Re-enabled when the new session is ready."""
+        """Disable transport + the processor controls + show a notice while an
+        async source/target swap drains the old session and builds the new one,
+        so the user can't drive a half-torn-down session OR change chain config
+        mid-swap (which reconfigure_from would silently overwrite with the
+        swap-time snapshot). Re-enabled when the new session is ready."""
         self._transport.setEnabled(not switching)
+        self._processors.setEnabled(not switching)
         if switching:
             self._status_bar.show_message("Switching session…")
         else:
