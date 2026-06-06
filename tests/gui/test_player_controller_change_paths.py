@@ -42,7 +42,7 @@ def _make_controller(widgets) -> PlayerController:
         audio_backend_factory=lambda name: MagicMock(),
     )
     # Run the swap job inline so the async flow completes synchronously.
-    ctrl._spawn_swap = lambda job: (job(), None)[1]  # noqa: SLF001
+    ctrl._swap.spawn = lambda job: (job(), None)[1]  # noqa: SLF001
     return ctrl
 
 
@@ -258,7 +258,7 @@ class TestAsyncSwapBehavior:
         ctrl.sessionSwitching.connect(states.append)
         ctrl.change_source(Path("/new/source.png"))
         assert states == [True, False]  # switching on, then off when ready
-        assert ctrl._swapping is False  # noqa: SLF001
+        assert ctrl._swap.swapping is False  # noqa: SLF001
         ctrl.shutdown()
 
     def test_does_not_touch_executor_until_job_runs(self, widgets, monkeypatch):
@@ -268,7 +268,7 @@ class TestAsyncSwapBehavior:
         live = _attach_fake_session(ctrl)
         _stub_build(ctrl, monkeypatch)
         spawned: list = []
-        ctrl._spawn_swap = lambda job: spawned.append(job) or None  # noqa: SLF001
+        ctrl._swap.spawn = lambda job: spawned.append(job) or None  # noqa: SLF001
         ctrl.change_source(Path("/new/source.png"))
         live.reconfigure_from.assert_not_called()  # nothing before the job runs
         live.stop.assert_not_called()
@@ -283,11 +283,11 @@ class TestAsyncSwapBehavior:
         _attach_fake_session(ctrl)
         builds, _ = _stub_build(ctrl, monkeypatch)
         jobs: list = []
-        ctrl._spawn_swap = lambda job: jobs.append(job) or None  # noqa: SLF001
+        ctrl._swap.spawn = lambda job: jobs.append(job) or None  # noqa: SLF001
         ctrl.change_source(Path("/a.png"))   # swap 1 starts (job deferred)
-        assert ctrl._swapping is True  # noqa: SLF001
+        assert ctrl._swap.swapping is True  # noqa: SLF001
         ctrl.change_source(Path("/b.png"))   # arrives mid-swap → coalesced
-        assert ctrl._swap_pending is not None  # noqa: SLF001
+        assert ctrl._swap._pending is not None  # noqa: SLF001
         assert len(jobs) == 1                 # second didn't spawn its own job
         jobs[0]()                             # finish swap 1 → dispatches pending
         assert len(jobs) == 2                 # pending (b) now running

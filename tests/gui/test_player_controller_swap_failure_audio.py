@@ -12,7 +12,8 @@ from __future__ import annotations
 import pytest
 
 from sinner2.audio.audio_backend import AudioBackendName
-from sinner2.gui.player_controller import PlayerController, _SwapOutcome
+from sinner2.gui.player_controller import PlayerController
+from sinner2.gui.swap_coordinator import _SwapOutcome
 from sinner2.gui.widgets.frame_display import QFrameDisplayWidget
 from sinner2.gui.widgets.transport_controls import QTransportControls
 from tests.audio.test_audio_backend import FakeAudioBackend
@@ -82,7 +83,7 @@ class TestSwapFailureRestoresAudio:
         # Old session is still live and PLAYING (the failed swap left it alone).
         ctrl._executor = _FakeExecutor(frame=90, playing=True)  # noqa: SLF001
 
-        ctrl._on_session_swap_ready(_SwapOutcome(error="no face found"))  # noqa: SLF001
+        ctrl._swap._on_ready(_SwapOutcome(error="no face found"))  # noqa: SLF001
 
         assert backend.is_playing is True  # audio resumed with the video
         assert backend.position_s == pytest.approx(3.0)  # 90 / 30 fps
@@ -103,7 +104,7 @@ class TestSwapFailureRestoresAudio:
         ctrl._target_fps = 30.0  # noqa: SLF001
         ctrl._executor = _FakeExecutor(frame=0, playing=False)  # noqa: SLF001
 
-        ctrl._on_session_swap_ready(_SwapOutcome(error="boom"))  # noqa: SLF001
+        ctrl._swap._on_ready(_SwapOutcome(error="boom"))  # noqa: SLF001
 
         assert backend.is_playing is False  # stays paused — session is paused
         ctrl._executor = None  # noqa: SLF001

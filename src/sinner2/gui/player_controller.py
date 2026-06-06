@@ -1,6 +1,4 @@
-import threading
 from collections.abc import Callable
-from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
@@ -20,6 +18,7 @@ from sinner2.gui.session_builder import (
     _default_session_factory,
     _SessionBundle,
 )
+from sinner2.gui.swap_coordinator import SwapCoordinator, _SwapOutcome
 from sinner2.gui.widgets.frame_display import QFrameDisplayWidget
 from sinner2.gui.widgets.transport_controls import QTransportControls
 from sinner2.io.video_backend import VideoBackend
@@ -53,23 +52,6 @@ from sinner2.pipeline.skip_strategy import (
 _CODEFORMER_REALTIME_WORKER_CAP = 2
 
 
-def _spawn_daemon(fn: Callable[[], None]) -> threading.Thread:
-    """Default swap runner: fire the job on a daemon thread. Swapped out in
-    tests for an inline runner so the async flow executes deterministically."""
-    thread = threading.Thread(target=fn, name="sinner2-session-swap", daemon=True)
-    thread.start()
-    return thread
-
-
-@dataclass
-class _SwapOutcome:
-    """Result of a background session swap, marshaled back to the GUI thread.
-    Exactly one of bundle/error is set."""
-
-    bundle: _SessionBundle | None = None
-    error: str | None = None
-
-
 class PlayerController(QObject):
     """Owns the realtime executor lifecycle and wires widgets to it.
 
@@ -89,9 +71,6 @@ class PlayerController(QObject):
     cacheStorageStatsChanged = Signal()  # fired on session start/teardown/clear so the cache panel can refresh
     targetNativeSizeChanged = Signal(object)  # (width, height) on session start, None on teardown
     sessionSwitching = Signal(bool)  # True while an async source/target swap is draining+rebuilding
-    # Private: a background swap finished; carries a _SwapOutcome. Emitted from
-    # the swap worker thread, so the connection is queued onto the GUI thread.
-    _sessionSwapReady = Signal(object)
 
     def __init__(
         self,
@@ -165,14 +144,6 @@ class PlayerController(QObject):
         # rebuilt chain picks it up via _build_chain.
         self._detection_sink: object | None = None
 
-        # Async session-swap state. A source/target change on a running session
-        # tears down + rebuilds on a background thread so the slow worker drain
-        # (uninterruptible in-flight inference) never blocks the GUI. Only one
-        # swap runs at a time; a request arriving mid-swap is coalesced (latest
-        # wins) into _swap_pending and run when the current one finishes.
-        self._swapping = False
-        self._swap_pending: tuple[Path, Path] | None = None
-        self._swap_thread: threading.Thread | None = None
         # A completed-but-not-yet-adopted swap bundle. Set on the worker thread
         # the moment a swap succeeds and cleared by the GUI slot once adopted;
         # if shutdown() races the queued slot, it's still set and shutdown
@@ -183,11 +154,17 @@ class PlayerController(QObject):
         # the latest intent. Applied to the new executor once it's installed.
         self._restore_frame = 0
         self._restore_play = False
-        # Indirection so tests can run the swap inline instead of on a thread.
-        self._spawn_swap: Callable[[Callable[[], None]], threading.Thread | None] = (
-            _spawn_daemon
+        # Async source/target swap. A change on a running session tears down +
+        # rebuilds on a worker thread so the slow drain never blocks the GUI;
+        # SwapCoordinator owns the coalescing + threading + GUI-hop, and calls
+        # back into the controller-coupled work (build/reconfigure/adopt) below.
+        self._swap = SwapCoordinator(
+            run_job=self._run_swap_job,
+            on_complete=self._on_swap_complete,
+            on_begin=self._audio.pause_if_loaded,
+            on_switching=self.sessionSwitching.emit,
+            parent=self,
         )
-        self._sessionSwapReady.connect(self._on_session_swap_ready)
 
         transport.playRequested.connect(self._on_play)
         transport.pauseRequested.connect(self._on_pause)
@@ -276,50 +253,24 @@ class PlayerController(QObject):
 
     # ---- async session swap (source/target change on a running session) ----
 
-    def _change_session_async(self, source_path: Path, target_path: Path) -> None:
-        """Swap the running session to a new source/target WITHOUT blocking the
-        GUI. The slow teardown (draining uninterruptible in-flight inference)
-        and the rebuild run on a worker thread; the desired position/play state
-        (self._restore_frame/_play) is applied once the new executor is
-        installed. A request arriving while a swap is already running is
-        coalesced (latest wins) — callers update _restore_* + _current_*_path
-        before calling so the coalesced build targets the latest selection."""
-        if self._swapping:
-            self._swap_pending = (source_path, target_path)
-            return
-        self._begin_swap(source_path, target_path)
-
-    def _begin_swap(self, source_path: Path, target_path: Path) -> None:
-        self._swapping = True
-        self.sessionSwitching.emit(True)
-        # Pause audio for the brief swap window; _on_session_swap_ready restores
-        # it (re-seek + play) once the new world is live. The EXECUTOR is NOT
-        # torn down — it keeps running the old frames until the in-place swap
-        # lands, so the display never blanks.
-        self._audio.pause_if_loaded()
-        self._swap_thread = self._spawn_swap(
-            lambda: self._run_swap_job(source_path, target_path)
-        )
-
-    def _run_swap_job(self, source_path: Path, target_path: Path) -> None:
-        """Worker-thread half of an async source/target change. Builds the new
-        session world (the slow reader-probe runs here, off the GUI thread) as an
-        UNSTARTED executor, then hands its world to the LIVE executor to adopt —
-        keeping the live executor's worker threads (and their ORT per-thread CUDA
-        state) alive instead of churning them, which is what leaked GPU memory.
-        Shuts the displaced old resources down here too, then marshals GUI-ref
-        updates back to the main thread."""
+    def _run_swap_job(self, source_path: Path, target_path: Path) -> _SwapOutcome:
+        """Worker-thread half of an async source/target change (run via
+        SwapCoordinator). Builds the new session world (the slow reader-probe
+        runs here, off the GUI thread) as an UNSTARTED executor, then hands its
+        world to the LIVE executor to adopt — keeping the live executor's worker
+        threads (and their ORT per-thread CUDA state) alive instead of churning
+        them, which is what leaked GPU memory. Shuts the displaced old resources
+        down here too; returns the outcome for the coordinator to marshal back to
+        the GUI thread."""
         executor = self._executor
         if executor is None:
             # No live executor to adopt into (shouldn't happen — change_* guard
             # against it). Fall back to reporting nothing changed.
-            self._sessionSwapReady.emit(_SwapOutcome(error="no active session"))
-            return
+            return _SwapOutcome(error="no active session")
         try:
             bundle = self._build_session(source_path, target_path)
         except Exception as exc:  # noqa: BLE001 — surfaced on the GUI thread
-            self._sessionSwapReady.emit(_SwapOutcome(error=str(exc)))
-            return
+            return _SwapOutcome(error=str(exc))
         # Capture the OLD write executor + store (controller-owned) to shut down
         # after the swap; the old reader pool comes back from reconfigure_from.
         old_write_executor = self._write_executor
@@ -333,10 +284,7 @@ class PlayerController(QObject):
             # Swap failed (e.g. no face in the new source) — the old world is
             # still live. Discard the freshly built (unstarted) world.
             self._discard_unstarted_bundle(bundle)
-            self._sessionSwapReady.emit(
-                _SwapOutcome(error="could not switch to the new source/target")
-            )
-            return
+            return _SwapOutcome(error="could not switch to the new source/target")
         old_reader_pool, _old_buffer = old
         # Shut the displaced resources down off the GUI thread. The old reader
         # pool's threads + the write executor's threads don't touch ORT, so
@@ -346,11 +294,11 @@ class PlayerController(QObject):
             old_write_executor.shutdown(wait=True)
         if old_store is not None:
             old_store.close()
-        # Stash before emitting: the live executor now writes through this
-        # bundle's write executor + store. If shutdown() joins this thread
-        # before the queued GUI slot adopts the bundle, shutdown drains it.
+        # Stash before returning: the live executor now writes through this
+        # bundle's write executor + store. If shutdown() joins this thread before
+        # the queued GUI slot adopts the bundle, shutdown drains it.
         self._last_swap_bundle = bundle
-        self._sessionSwapReady.emit(_SwapOutcome(bundle=bundle))
+        return _SwapOutcome(bundle=bundle)
 
     @staticmethod
     def _discard_unstarted_bundle(bundle: _SessionBundle) -> None:
@@ -370,17 +318,16 @@ class PlayerController(QObject):
         except Exception:
             pass
 
-    def _on_session_swap_ready(self, outcome: _SwapOutcome) -> None:
-        """GUI thread: a background swap finished. The LIVE executor has already
-        adopted the new world (or kept the old one on failure); here we just
-        re-point the controller's GUI-facing references at the new resources,
-        reload + restore audio, and run any swap coalesced while this one ran."""
-        self._swapping = False
-        self._swap_thread = None
+    def _on_swap_complete(self, outcome: _SwapOutcome) -> None:
+        """GUI thread (via SwapCoordinator): a background swap finished. The LIVE
+        executor has already adopted the new world (or kept the old one on
+        failure); re-point the controller's GUI-facing references at the new
+        resources and reload + restore audio. The coordinator owns the
+        swapping / pending / switching state and runs any coalesced request."""
         if outcome.error is not None:
             self.errorOccurred.emit(f"session switch failed: {outcome.error}")
             # The old session is still live (the failed swap left it untouched)
-            # and, if it was playing, still producing frames — but _begin_swap
+            # and, if it was playing, still producing frames — but the swap start
             # paused audio. Re-sync audio to it so the video doesn't play on
             # silently (A/V desync) until the user manually toggles play.
             self._restore_audio_to_live_session()
@@ -389,11 +336,6 @@ class PlayerController(QObject):
             # Adopted into our refs — _teardown_session now owns it, so clear
             # the shutdown-drain stash to avoid a double teardown.
             self._last_swap_bundle = None
-        self.sessionSwitching.emit(False)
-        if self._swap_pending is not None:
-            source_path, target_path = self._swap_pending
-            self._swap_pending = None
-            self._begin_swap(source_path, target_path)
 
     def _adopt_swapped_bundle(self, bundle: _SessionBundle) -> None:
         """Re-point controller state + widgets at the new world after the live
@@ -615,12 +557,9 @@ class PlayerController(QObject):
         return chain
 
     def shutdown(self) -> None:
-        # A swap may be mid-flight on a worker thread; wait for it so we don't
-        # tear down (or exit) while it's still building/stopping a session.
-        self._swap_pending = None
-        swap_thread = self._swap_thread
-        if swap_thread is not None and swap_thread.is_alive():
-            swap_thread.join(timeout=30.0)
+        # A swap may be mid-flight on a worker thread; drop any coalesced request
+        # + wait for it so we don't tear down while it's still building/stopping.
+        self._swap.cancel_pending_and_join(30.0)
         self._teardown_session()
         # If a swap completed but its GUI slot never adopted the bundle (close
         # raced the queued signal), _teardown_session tore down the OLD refs —
@@ -866,7 +805,7 @@ class PlayerController(QObject):
             return
         self._restore_frame = max(0, self._executor.current_frame.get())
         self._restore_play = self._executor.is_playing.get()
-        self._change_session_async(
+        self._swap.request(
             self._current_source_path, self._current_target_path
         )
 
@@ -952,7 +891,7 @@ class PlayerController(QObject):
         """
         if self._current_target_path is None:
             return
-        if self._executor is None and not self._swapping:
+        if self._executor is None and not self._swap.swapping:
             return  # no active or in-flight session
         if self._executor is not None:
             # Capture position + play state from the live session. Mid-swap
@@ -960,7 +899,7 @@ class PlayerController(QObject):
             self._restore_frame = max(0, self._executor.current_frame.get())
             self._restore_play = self._executor.is_playing.get()
         self._current_source_path = source_path
-        self._change_session_async(source_path, self._current_target_path)
+        self._swap.request(source_path, self._current_target_path)
 
     def change_target(self, target_path: Path) -> None:
         """Replace the target. Position resets to frame 0 and the first frame is
@@ -969,13 +908,13 @@ class PlayerController(QObject):
         so the teardown never freezes the UI."""
         if self._current_source_path is None:
             return
-        if self._executor is None and not self._swapping:
+        if self._executor is None and not self._swap.swapping:
             return  # no active or in-flight session
         if self._executor is not None:
             self._restore_play = self._executor.is_playing.get()
         self._restore_frame = 0  # new timeline → start at frame 0
         self._current_target_path = target_path
-        self._change_session_async(self._current_source_path, target_path)
+        self._swap.request(self._current_source_path, target_path)
 
     def apply_initial_audio_state(self, volume: int) -> None:
         """Push persisted audio volume into the audio helper without re-emitting

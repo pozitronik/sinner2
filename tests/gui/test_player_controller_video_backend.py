@@ -36,7 +36,7 @@ def _make_controller(widgets):
         audio_backend_factory=lambda name: MagicMock(),
     )
     # Run the swap job inline so the async reconfigure completes synchronously.
-    ctrl._spawn_swap = lambda job: (job(), None)[1]  # noqa: SLF001
+    ctrl._swap.spawn = lambda job: (job(), None)[1]  # noqa: SLF001
     return ctrl
 
 
