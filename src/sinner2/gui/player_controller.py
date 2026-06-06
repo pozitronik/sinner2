@@ -14,20 +14,18 @@ from sinner2.gui.cache_controller import CacheController
 from sinner2.gui.session_builder import (
     _DEFAULT_CACHE_SETTINGS,
     CacheSettings,
+    SessionBuilder,
+    SessionBuildSpec,
     SessionFactory,
     _default_session_factory,
-    _make_reader_factory,
     _SessionBundle,
 )
 from sinner2.gui.widgets.frame_display import QFrameDisplayWidget
 from sinner2.gui.widgets.transport_controls import QTransportControls
-from sinner2.io.reader_pool import ReaderPool
 from sinner2.io.video_backend import VideoBackend
 from sinner2.pipeline.buffer.bounded_write_executor import BoundedWriteExecutor
-from sinner2.pipeline.buffer.store import FrameStore, PersistentFrameStore
-from sinner2.pipeline.cache_manager import CacheManager, make_meta
-from sinner2.pipeline.cache_mode import CacheMode
-from sinner2.pipeline.image_writer import ImageWriter, build_image_writer
+from sinner2.pipeline.buffer.store import FrameStore
+from sinner2.pipeline.cache_manager import CacheManager
 from sinner2.pipeline.playback_mode import PlaybackMode
 from sinner2.pipeline.processor import Processor
 from sinner2.pipeline.processors.face_enhancer import (
@@ -136,6 +134,10 @@ class PlayerController(QObject):
         # Cache-storage policy (root, per-session subdir, size cap, clear) lives
         # in its own helper; it reports storage changes back through the Qt signal.
         self._cache = CacheController(self.cacheStorageStatsChanged.emit)
+        # Session assembly (reader pool + cache dir + store + executor) lives in
+        # its own Qt-free builder; the chain + worker count are built here (they
+        # are shared with the live hot-swap path) and passed into build().
+        self._session_builder = SessionBuilder(self._cache, self._session_factory)
         # Audio playback (backend lifecycle + volume + guarded mirror ops) lives
         # in its own helper; it constructs the backend lazily because some
         # implementations (QtMultimedia) need a QApplication to exist first.
@@ -208,90 +210,31 @@ class PlayerController(QObject):
         self._install_session(bundle)
 
     def _build_session(self, source_path: Path, target_path: Path) -> _SessionBundle:
-        """Build all session resources (reader pool, chain, executor) WITHOUT
-        touching Qt — safe to run on a background thread. Heavy model loading
-        does NOT happen here (the executor loads models asynchronously in its
-        own setup thread at start()); the slow part avoided up front is the
-        reader-pool probe. Raises on failure after cleaning up a half-built
-        pool. Non-fatal warnings (e.g. cache unavailable) are collected into the
-        returned bundle and emitted by the GUI caller — the build touches no Qt
-        signals, so it's safe to run off the GUI thread."""
+        """Assemble a session for source+target. The chain + effective worker
+        count are built here (they're shared with the live hot-swap path) and
+        handed to the Qt-free SessionBuilder, which owns the reader/cache/store/
+        executor assembly. Build warnings ride back in the bundle for the GUI
+        caller to emit."""
         source = Source(path=source_path)
         target = Target(path=target_path)
-        warnings: list[str] = []
-        reader_pool: ReaderPool | None = None
-        try:
-            # The pool's eager probe reader surfaces open errors here, so a bad
-            # source fails session setup just like the old single-reader path.
-            reader_factory = _make_reader_factory(
-                target, self._video_backend, self._processing_scale
-            )
-            reader_pool = ReaderPool(
-                reader_factory, size=self._reader_pool_size, name="target",
-            )
-            chain = self._build_chain(source)
-            writer = build_image_writer(
-                self._cache_settings.image_format,
-                self._cache_settings.image_quality,
-            )
-            cache_dir = self._cache.cache_dir_for(
-                source, target, chain, writer, self._processing_scale
-            )
-            # Cache root reachable? If not, fall back to OFF for this session
-            # so the user sees something rather than a crash.
-            cache_settings = self._cache_settings
-            manager = self._cache.cache_manager()
-            if not manager.is_available():
-                warnings.append(
-                    f"cache root unavailable ({self._cache.cache_root()}); "
-                    "running with cache OFF"
-                )
-                cache_settings = CacheSettings(
-                    mode=CacheMode.OFF,
-                    image_format=cache_settings.image_format,
-                    image_quality=cache_settings.image_quality,
-                    memory_max_bytes=cache_settings.memory_max_bytes,
-                    write_workers=cache_settings.write_workers,
-                    write_queue_size=cache_settings.write_queue_size,
-                )
-            else:
-                # Cache root OK — evict old dirs down to the cap, sparing the
-                # active session's dir so a cache-hit reuse isn't evicted out
-                # from under us (rank 29).
-                self._cache.enforce_cap(manager, cache_dir)
-            session_store = PersistentFrameStore(cache_dir, writer=writer)
-            if manager.is_available():
-                self._write_session_metadata(
-                    manager, cache_dir, source, target,
-                    reader_pool.frame_count, chain, writer,
-                )
-            effective_workers = self._effective_worker_count()
-            self._applied_worker_count = effective_workers
-            executor, write_executor = self._session_factory(
-                reader_pool, chain, self._strategy, effective_workers,
-                self._playback_mode, cache_settings, session_store,
-            )
-        except Exception:
-            # Pool may have been partially built; tear it down so its threads +
-            # reader handles don't leak, then propagate to the caller.
-            if reader_pool is not None:
-                try:
-                    reader_pool.shutdown()
-                except Exception:
-                    pass
-            raise
-        return _SessionBundle(
-            executor=executor,
-            write_executor=write_executor,
-            session_store=session_store,
-            cache_dir=cache_dir,
-            source=source,
-            source_path=source_path,
-            target_path=target_path,
-            target_fps=float(reader_pool.fps) if reader_pool.fps > 0 else 0.0,
-            frame_count=reader_pool.frame_count,
-            native_size=(reader_pool.native_width, reader_pool.native_height),
-            warnings=warnings,
+        chain = self._build_chain(source)
+        effective_workers = self._effective_worker_count()
+        self._applied_worker_count = effective_workers
+        return self._session_builder.build(
+            source, target, source_path, target_path,
+            chain, effective_workers, self._build_spec(),
+        )
+
+    def _build_spec(self) -> SessionBuildSpec:
+        """Snapshot the session-assembly config (reader / cache / executor knobs)
+        the builder needs, from the controller's current state."""
+        return SessionBuildSpec(
+            strategy=self._strategy,
+            playback_mode=self._playback_mode,
+            cache_settings=self._cache_settings,
+            video_backend=self._video_backend,
+            reader_pool_size=self._reader_pool_size,
+            processing_scale=self._processing_scale,
         )
 
     def _install_session(self, bundle: _SessionBundle) -> None:
@@ -495,36 +438,6 @@ class PlayerController(QObject):
         self._audio.restore_state(
             self._target_fps, self._restore_frame, self._restore_play
         )
-
-    @staticmethod
-    def _write_session_metadata(
-        manager: CacheManager,
-        cache_dir: Path,
-        source: Source,
-        target: Target,
-        target_frame_count: int,
-        chain: list[Processor],
-        writer: ImageWriter,
-    ) -> None:
-        chain_summary = ", ".join(p.name for p in chain) or "(empty chain)"
-        # build_image_writer round-trip: writer.cache_key starts with the
-        # format token ("jpg-q95" / "png-c1") — extract the quality from
-        # the writer's own attribute since the surface is open.
-        if hasattr(writer, "quality"):
-            quality = int(getattr(writer, "quality"))
-        elif hasattr(writer, "compression"):
-            quality = int(getattr(writer, "compression"))
-        else:
-            quality = 0
-        meta = make_meta(
-            source_path=str(source.path),
-            target_path=str(target.path),
-            target_frame_count=target_frame_count,
-            image_format=writer.extension,
-            image_quality=quality,
-            chain_summary=chain_summary,
-        )
-        manager.write_meta(cache_dir, meta)
 
     def apply_session_config(
         self,
