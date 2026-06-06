@@ -18,6 +18,7 @@ from sinner2.gui.widgets.batch_view import (
     _COL_STATUS,
     _COL_TARGET,
     QBatchView,
+    _stage_names,
 )
 
 
@@ -374,3 +375,30 @@ class TestStepTracker:
         assert fps == 0.0
         assert expected is None
         assert elapsed == pytest.approx(1.0)
+
+
+class TestStageNames:
+    """_stage_names must mirror BatchDriver._build_stages exactly, including the
+    upscaler stage (it was omitted, so reloaded upscaler tasks showed the wrong
+    stage count/label)."""
+
+    def test_includes_upscaler_stage(self, tmp_path):
+        names = _stage_names(_task(
+            tmp_path, swapper_enabled=True, enhancer_enabled=False,
+            upscaler_enabled=True,
+        ))
+        assert names == ["faceswapper", "upscaler"]
+
+    def test_full_order_matches_driver(self, tmp_path):
+        names = _stage_names(_task(
+            tmp_path, swapper_enabled=True, enhancer_enabled=True,
+            upscaler_enabled=True,
+        ))
+        assert names == ["faceswapper", "faceenhancer", "upscaler"]
+
+    def test_upscaler_only_is_not_passthrough(self, tmp_path):
+        names = _stage_names(_task(
+            tmp_path, swapper_enabled=False, enhancer_enabled=False,
+            upscaler_enabled=True,
+        ))
+        assert names == ["upscaler"]

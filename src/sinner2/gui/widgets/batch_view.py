@@ -125,6 +125,8 @@ def _stage_names(task: BatchTask) -> list[str]:
         names.append("faceswapper")
     if task.enhancer_enabled:
         names.append("faceenhancer")
+    if task.upscaler_enabled:
+        names.append("upscaler")
     if not names:
         names.append("passthrough")
     return names
