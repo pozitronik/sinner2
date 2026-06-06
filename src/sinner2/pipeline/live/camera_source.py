@@ -23,22 +23,39 @@ from sinner2.types import Frame
 CaptureFactory = Callable[[Any, int, int], Any]
 
 
+def _open(device: Any, backend: int | None) -> Any:
+    return cv2.VideoCapture(device) if backend is None \
+        else cv2.VideoCapture(device, backend)
+
+
 def _default_capture(device: Any, width: int, height: int) -> Any:
-    # Windows webcams open far more reliably via DirectShow than the default
-    # Media Foundation backend (which often fails or stalls on open); fall back
-    # to the default backend if DirectShow can't open the device.
+    # Keep the first backend that not only OPENS but actually DELIVERS a frame.
+    # A Windows webcam frequently "opens" on one backend yet returns no frames
+    # (camera LED on, but cv2.read() fails) -> a black/frozen preview. So we
+    # test-read each backend and pick one that yields a frame. DirectShow is
+    # usually best; fall back to Media Foundation, then the platform default.
     if sys.platform == "win32" and isinstance(device, int):
-        cap = cv2.VideoCapture(device, cv2.CAP_DSHOW)
-        if not cap.isOpened():
-            cap.release()
-            cap = cv2.VideoCapture(device)
+        backends: list[int | None] = [cv2.CAP_DSHOW, cv2.CAP_MSMF, None]
     else:
-        cap = cv2.VideoCapture(device)
+        backends = [None]
+    chosen: Any = None
+    for backend in backends:
+        cap = _open(device, backend)
+        if cap.isOpened():
+            ok, _frame = cap.read()
+            if ok and _frame is not None:
+                chosen = cap
+                break
+        cap.release()
+    if chosen is None:
+        # Nothing delivered a frame; hand back the first attempt so CameraSource
+        # reports the failure (opened-but-no-frames is caught by frames_seen).
+        chosen = _open(device, backends[0])
     if width > 0:
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        chosen.set(cv2.CAP_PROP_FRAME_WIDTH, width)
     if height > 0:
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-    return cap
+        chosen.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+    return chosen
 
 
 class CameraSource:
@@ -66,6 +83,7 @@ class CameraSource:
         self._thread: threading.Thread | None = None
         self._opened = False
         self._error: str | None = None
+        self._frames_seen = 0
         self._ready = threading.Event()  # set once the open attempt has resolved
 
     @property
@@ -75,6 +93,11 @@ class CameraSource:
     @property
     def error(self) -> str | None:
         return self._error
+
+    @property
+    def frames_seen(self) -> int:
+        """How many frames have been captured (0 = opened but nothing delivered)."""
+        return self._frames_seen
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._run, daemon=True)
@@ -99,6 +122,7 @@ class CameraSource:
             frame = cv2.resize(frame, (self.w, self.h))  # type: ignore[assignment]
         with self._lock:
             self._latest = frame
+            self._frames_seen += 1
 
     def _run(self) -> None:
         cap = self._capture_factory(self.device, self.w, self.h)

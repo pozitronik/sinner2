@@ -161,6 +161,31 @@ def test_camera_open_failure_surfaces_error(off_snapshot, source_file):
     assert not ctrl.is_running()
 
 
+def test_camera_opened_but_no_frames_surfaces_error(off_snapshot, source_file):
+    class _NoFramesCam:
+        opened = True
+        frames_seen = 0
+
+        def start(self):
+            pass
+
+        def read(self):
+            return None
+
+        def stop(self):
+            pass
+
+    ctrl = LiveController(
+        camera_factory=lambda *a: _NoFramesCam(), sink_factory=lambda *a: _SpySink()
+    )
+    errors: list = []
+    ctrl.errorOccurred.connect(errors.append)
+    ctrl.start(source_path=source_file, snapshot=off_snapshot, mjpeg_port=0)
+    ctrl._check_camera()
+    assert errors and "no frames" in errors[0].lower()
+    assert not ctrl.is_running()
+
+
 def test_sink_url_while_running(qtbot, off_snapshot, source_file):
     ctrl = _controller(_StubCam(np.zeros((4, 4, 3), np.uint8)), _SpySink())
     try:

@@ -33,8 +33,9 @@ class QLiveView(QWidget):
         form = QFormLayout()
 
         self._device = QComboBox()
-        for i in range(4):  # sensible default options; Refresh probes for real
-            self._device.addItem(f"Camera {i}", i)
+        # Only index 0 by default — the real device list isn't known until a
+        # probe (Refresh), so don't imply more cameras than actually exist.
+        self._device.addItem("Camera 0", 0)
         self._refresh = QPushButton("Refresh")
         self._refresh.clicked.connect(self._refresh_devices)
         device_row = QHBoxLayout()

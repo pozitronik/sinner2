@@ -107,6 +107,12 @@ class LiveController(QObject):
                 getattr(cam, "error", None) or "camera failed to open"
             )
             self.stop()
+        elif getattr(cam, "frames_seen", 1) == 0:
+            self.errorOccurred.emit(
+                "camera opened but delivered no frames — try Refresh to pick a "
+                "working camera, or a lower resolution"
+            )
+            self.stop()
 
     def _emit_frame(self, frame: Frame) -> None:
         # Called on the loop thread; the queued Signal hops it to the GUI thread.

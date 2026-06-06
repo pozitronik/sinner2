@@ -62,6 +62,16 @@ def test_reads_latest_frame():
     assert int(frame[0, 0, 0]) == 200  # latest (b), not a
 
 
+def test_frames_seen_increments_while_capturing():
+    factory, _ = _factory_for([np.zeros((48, 64, 3), np.uint8)])
+    src = CameraSource(0, width=64, height=48, capture_factory=factory)
+    src.start()
+    src.wait_ready(timeout=5)
+    time.sleep(0.05)
+    src.stop()
+    assert src.frames_seen > 0
+
+
 def test_resizes_to_requested_size():
     factory, _ = _factory_for([np.full((100, 80, 3), 128, np.uint8)])
     src = CameraSource(0, width=64, height=48, capture_factory=factory)
