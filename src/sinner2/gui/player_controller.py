@@ -1,5 +1,3 @@
-import hashlib
-import os
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -15,6 +13,7 @@ from sinner2.audio.audio_backend import (
 from sinner2.config.source import Source
 from sinner2.config.target import Target, TargetKind
 from sinner2.gui.bridges.observable_bridge import ObservableValueBridge
+from sinner2.gui.cache_controller import CacheController
 from sinner2.gui.widgets.frame_display import QFrameDisplayWidget
 from sinner2.gui.widgets.transport_controls import QTransportControls
 from sinner2.io.reader_pool import ReaderPool
@@ -97,56 +96,6 @@ _DEFAULT_CACHE_SETTINGS = CacheSettings(
 # preview stays responsive. The user's stored worker count is untouched — this
 # only bounds what the executor actually runs with.
 _CODEFORMER_REALTIME_WORKER_CAP = 2
-
-
-def default_cache_root() -> Path:
-    """Persistent processed-frame cache root used when the user has not
-    set a custom path.
-
-    `SINNER2_CACHE_DIR` env var overrides; defaults to `<install>/temp/`.
-    Exposed (not `_` prefixed) so the GUI can show the default in tooltips
-    and as the file-dialog start path.
-    """
-    env = os.environ.get("SINNER2_CACHE_DIR")
-    if env:
-        return Path(env)
-    return Path(__file__).resolve().parents[3] / "temp"
-
-
-def _cache_key(
-    source: Source,
-    target: Target,
-    chain: list[Processor],
-    writer: ImageWriter,
-    scale: float = 1.0,
-) -> str:
-    """Stable hash of (source path, target path, chain config, writer settings,
-    processing scale).
-
-    Two sessions with identical inputs land in the same cache subdirectory
-    so processed frames carry over between runs. Different chain params,
-    different image format, different quality, or a different processing
-    scale go to a different subdirectory — keeps stale frames from a
-    different configuration out of view and lets the user toggle formats or
-    downscale without colliding with the full-resolution cache.
-    """
-    parts: list[str] = [
-        str(source.path.resolve()),
-        str(target.path.resolve()),
-        writer.cache_key,
-        f"scale={scale:.4f}",
-    ]
-    for p in chain:
-        parts.append(p.name)
-        # cache_identity() is the public contract for "what params affect my
-        # output pixels" — replaces reaching into a private _params attribute.
-        # Append only when non-empty so the hash is unchanged for processors
-        # that carry no params (cache-continuity with the old reflection form).
-        identity = getattr(p, "cache_identity", None)
-        ident = identity() if callable(identity) else ""
-        if ident:
-            parts.append(ident)
-    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
 
 
 def _make_reader(
@@ -309,10 +258,9 @@ class PlayerController(QObject):
         self._applied_worker_count = 1
         self._playback_mode: PlaybackMode = PlaybackMode.FIXED_30
         self._cache_settings: CacheSettings = _DEFAULT_CACHE_SETTINGS
-        # User-overridable cache root path. None → fall back to default.
-        self._cache_root: Path = default_cache_root()
-        # Hard cap on total cache size in bytes. 0 → uncapped.
-        self._cache_size_cap_bytes: int = 0
+        # Cache-storage policy (root, per-session subdir, size cap, clear) lives
+        # in its own helper; it reports storage changes back through the Qt signal.
+        self._cache = CacheController(self.cacheStorageStatsChanged.emit)
         # Audio playback. Backend is constructed lazily because some
         # implementations (QtMultimedia) need a QApplication to exist
         # first, and tests may build the controller before that.
@@ -411,16 +359,17 @@ class PlayerController(QObject):
                 self._cache_settings.image_format,
                 self._cache_settings.image_quality,
             )
-            cache_dir = self._cache_root / _cache_key(
+            cache_dir = self._cache.cache_dir_for(
                 source, target, chain, writer, self._processing_scale
             )
             # Cache root reachable? If not, fall back to OFF for this session
             # so the user sees something rather than a crash.
             cache_settings = self._cache_settings
-            manager = CacheManager(self._cache_root)
+            manager = self._cache.cache_manager()
             if not manager.is_available():
                 self.errorOccurred.emit(
-                    f"cache root unavailable ({self._cache_root}); running with cache OFF"
+                    f"cache root unavailable ({self._cache.cache_root()}); "
+                    "running with cache OFF"
                 )
                 cache_settings = CacheSettings(
                     mode=CacheMode.OFF,
@@ -434,7 +383,7 @@ class PlayerController(QObject):
                 # Cache root OK — evict old dirs down to the cap, sparing the
                 # active session's dir so a cache-hit reuse isn't evicted out
                 # from under us (rank 29).
-                self._enforce_cache_cap(manager, cache_dir)
+                self._cache.enforce_cap(manager, cache_dir)
             session_store = PersistentFrameStore(cache_dir, writer=writer)
             if manager.is_available():
                 self._write_session_metadata(
@@ -678,17 +627,6 @@ class PlayerController(QObject):
             backend.play()
         else:
             backend.pause()
-
-    def _enforce_cache_cap(self, manager: CacheManager, cache_dir: Path) -> None:
-        """Evict old cache dirs down to the size cap, sparing the active
-        session's dir. Without protect=, a cache-HIT reuse (cache_dir already
-        the LRU-oldest under pressure) could be evicted moments before this
-        session reattaches to it, forcing a needless full re-render (rank 29).
-        touch_last_used refreshes its recency first (no-op for a brand-new dir)."""
-        if self._cache_size_cap_bytes <= 0:
-            return
-        manager.touch_last_used(cache_dir)
-        manager.enforce_size_cap(self._cache_size_cap_bytes, protect=[cache_dir])
 
     @staticmethod
     def _write_session_metadata(
@@ -955,32 +893,21 @@ class PlayerController(QObject):
     # ---- Cache management ----
 
     def cache_root(self) -> Path:
-        return self._cache_root
+        return self._cache.cache_root()
 
     def cache_manager(self) -> CacheManager:
-        """Fresh CacheManager for the current root. Cheap to construct; we
-        rebuild rather than cache so a root change is immediately visible."""
-        return CacheManager(self._cache_root)
+        return self._cache.cache_manager()
 
     def set_cache_root(self, path: Path | None) -> None:
-        """Switch the cache root. None reverts to the default. Does NOT
-        migrate existing caches — only future sessions land in the new
-        location. The current session keeps its existing path until
-        teardown so we don't yank the rug out mid-write."""
-        new_root = Path(path) if path is not None else default_cache_root()
-        if new_root == self._cache_root:
-            return
-        self._cache_root = new_root
-        self.cacheStorageStatsChanged.emit()
+        """Switch the cache root (None reverts to the default). Delegated to the
+        cache helper, which fires cacheStorageStatsChanged on an actual change."""
+        self._cache.set_cache_root(path)
 
     def cache_size_cap_bytes(self) -> int:
-        return self._cache_size_cap_bytes
+        return self._cache.cache_size_cap_bytes()
 
     def set_cache_size_cap_bytes(self, max_bytes: int) -> None:
-        """Hard cap on total cache size. 0 = uncapped. Enforced at the
-        start of each session; not enforced live (would require periodic
-        size walks)."""
-        self._cache_size_cap_bytes = max(0, max_bytes)
+        self._cache.set_cache_size_cap_bytes(max_bytes)
 
     def invalidate_current_session(self) -> None:
         """Clear the active session's cached frames so they reprocess.
@@ -1017,9 +944,7 @@ class PlayerController(QObject):
         protect: list[Path] = []
         if self._session_cache_dir is not None:
             protect.append(self._session_cache_dir)
-        result = self.cache_manager().clear_all(protect=protect)
-        self.cacheStorageStatsChanged.emit()
-        return result
+        return self._cache.clear_all(protect)
 
     def _bind_observables(self, executor: RealtimeExecutor) -> None:
         current_bridge = ObservableValueBridge(executor.current_frame, self)

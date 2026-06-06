@@ -41,7 +41,8 @@ from sinner2.pipeline.processors.swapper_models import (
     model_files as swapper_model_files,
 )
 from sinner2.pipeline.processors.upscaler import model_filename
-from sinner2.gui.player_controller import PlayerController, default_cache_root
+from sinner2.gui.cache_controller import default_cache_root
+from sinner2.gui.player_controller import PlayerController
 from sinner2.gui.widgets.batch_task_dialog import QBatchTaskDialog
 from sinner2.gui.widgets.batch_view import QBatchView
 from sinner2.gui.widgets.models_view import QModelsView

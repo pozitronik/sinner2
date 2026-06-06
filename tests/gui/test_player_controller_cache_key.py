@@ -6,7 +6,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from sinner2.gui.player_controller import _cache_key
+from sinner2.gui.cache_controller import _cache_key
 
 
 def _fake(path: str):
