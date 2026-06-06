@@ -12,11 +12,10 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from sinner2.pipeline.face_geometry import feather_mask
 from sinner2.pipeline.processors.bfr_onnx import (
     PlainBfrBackend,
     _derive_align_size,
-    _feather_mask,
-    _paste_face,
     _restore_aligned,
 )
 
@@ -59,21 +58,6 @@ def test_restore_aligned_uses_dynamic_io_names():
     assert captured["in_keys"] == ["x"]
 
 
-def test_paste_face_blends_center_keeps_corners():
-    frame = np.full((100, 100, 3), 50, np.uint8)
-    restored = np.full((512, 512, 3), 200, np.uint8)
-    m = np.array([[5.12, 0, 0], [0, 5.12, 0]], np.float32)  # frame→512 scale
-    out = _paste_face(frame, restored, m, _feather_mask(512))
-    assert out.shape == (100, 100, 3)
-    assert out.max() > 50   # restored blended into the center
-    assert out.min() == 50  # corners untouched (feather mask is 0 there)
-
-
-def test_feather_mask_matches_requested_size():
-    assert _feather_mask(1024).shape == (1024, 1024)
-    assert _feather_mask(512).shape == (512, 512)
-
-
 class TestDeriveAlignSize:
     def test_static_square_input_drives_size(self):
         assert _derive_align_size([1, 3, 1024, 1024], default=512) == 1024
@@ -102,7 +86,7 @@ def test_enhance_aligns_at_configured_size():
     backend = PlainBfrBackend("gpen_bfr_1024.onnx")
     backend._session = _ShapeCapturingSession()  # noqa: SLF001
     backend._align_size = 1024  # noqa: SLF001
-    backend._mask = _feather_mask(1024)  # noqa: SLF001
+    backend._mask = feather_mask(1024)  # noqa: SLF001
     backend._analyser = SimpleNamespace(  # noqa: SLF001
         analyse=lambda _img: [
             SimpleNamespace(

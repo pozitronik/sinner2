@@ -8,7 +8,6 @@ import numpy as np
 
 from sinner2.pipeline.processors.codeformer import (
     CodeFormerBackend,
-    _paste_face,
     _restore_aligned,
 )
 
@@ -26,16 +25,6 @@ def test_restore_aligned_shape_and_dtype():
     out = _restore_aligned(_IdentitySession(), aligned, 0.7)
     assert out.shape == (512, 512, 3)
     assert out.dtype == np.uint8
-
-
-def test_paste_face_blends_center_keeps_corners():
-    frame = np.full((100, 100, 3), 50, np.uint8)
-    restored = np.full((512, 512, 3), 200, np.uint8)
-    m = np.array([[5.12, 0, 0], [0, 5.12, 0]], np.float32)  # frame→512 scale
-    out = _paste_face(frame, restored, m)
-    assert out.shape == (100, 100, 3)
-    assert out.max() > 50   # restored blended into the center
-    assert out.min() == 50  # corners untouched (feathered mask is 0 there)
 
 
 def test_enhance_restores_each_detected_face():

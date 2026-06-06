@@ -22,21 +22,13 @@ import numpy as np
 
 from sinner2.config.execution import DEFAULT_ONNX_PROVIDERS
 from sinner2.pipeline.face_analyser import FaceAnalyser
+from sinner2.pipeline.face_geometry import feather_mask, paste_back
 from sinner2.pipeline.model_cache import get_onnx_session, release_onnx_session
 from sinner2.types import Frame
 
 MODEL_FILE = "codeformer.onnx"
 _ALIGN_SIZE = 512
-
-
-def _make_feather_mask(size: int = _ALIGN_SIZE, pad_frac: float = 0.08) -> np.ndarray:
-    m = np.zeros((size, size), np.float32)
-    pad = int(size * pad_frac)
-    m[pad:size - pad, pad:size - pad] = 1.0
-    return cv2.GaussianBlur(m, (0, 0), sigmaX=size * 0.02)
-
-
-_FEATHER_MASK = _make_feather_mask()
+_FEATHER_MASK = feather_mask(_ALIGN_SIZE)
 
 
 def _restore_aligned(session: Any, aligned_bgr: np.ndarray, fidelity: float) -> Frame:
@@ -49,16 +41,6 @@ def _restore_aligned(session: Any, aligned_bgr: np.ndarray, fidelity: float) -> 
     img = (np.clip(out[0], -1.0, 1.0) + 1.0) / 2.0
     img = (img.transpose(1, 2, 0) * 255.0).round().astype(np.uint8)
     return cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-
-
-def _paste_face(frame: Frame, restored: Frame, m: np.ndarray) -> Frame:
-    """Warp a restored aligned face back by the inverse of `m` and blend it in
-    with the feathered face mask."""
-    h, w = frame.shape[:2]
-    m_inv = cv2.invertAffineTransform(m)
-    back = cv2.warpAffine(restored, m_inv, (w, h)).astype(np.float32)
-    alpha = cv2.warpAffine(_FEATHER_MASK, m_inv, (w, h))[..., None]
-    return (frame.astype(np.float32) * (1.0 - alpha) + back * alpha).astype(np.uint8)
 
 
 class CodeFormerBackend:
@@ -94,7 +76,7 @@ class CodeFormerBackend:
                 )
                 aligned = cv2.warpAffine(result, m, (_ALIGN_SIZE, _ALIGN_SIZE))
                 restored = _restore_aligned(self._session, aligned, self._fidelity)
-                result = _paste_face(result, restored, m)
+                result = paste_back(result, restored, m, _FEATHER_MASK)
             except Exception:
                 continue
         return result
