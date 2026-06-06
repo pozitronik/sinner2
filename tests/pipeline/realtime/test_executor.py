@@ -1669,6 +1669,7 @@ class TestPlaybackFallbackNoBackwardStutter:
         ex._completion_times = deque()  # noqa: SLF001
         ex._last_completion_time = None  # noqa: SLF001
         ex._last_fps = 0.0  # noqa: SLF001
+        ex._last_metrics_pub = 0.0  # noqa: SLF001
         ex.current_frame = MagicMock()
         ex.metrics = MagicMock()
         ex.processing_fps = MagicMock()
@@ -1876,6 +1877,7 @@ class TestPlaybackFallbackIndex:
         ex._state_lock = threading.RLock()  # noqa: SLF001
         ex._state = ex_mod._State.PLAYING  # noqa: SLF001
         ex._last_shown_frame_index = None  # noqa: SLF001
+        ex._last_metrics_pub = 0.0  # noqa: SLF001
         ex._buffer = self._Buf()  # noqa: SLF001
         ex._refresh_fps = lambda: None  # noqa: SLF001
         ex.current_frame = self._Obs()
@@ -1886,3 +1888,56 @@ class TestPlaybackFallbackIndex:
         ex._do_playback_tick()  # noqa: SLF001
         assert seen == [7]  # the SHOWN (fallback) index, not the target 10
         assert ex.current_frame.value == 10  # transport still tracks the target
+
+
+class TestMetricsPublishThrottle:
+    """buffer.metrics() recomputes percentiles and the playback tick can run at
+    ~1 kHz; metrics publication must be throttled to ~UI rate."""
+
+    class _Obs:
+        def __init__(self) -> None:
+            self.value = None
+
+        def set(self, v) -> None:
+            self.value = v
+
+    def test_metrics_recomputed_at_most_once_per_interval(self, monkeypatch):
+        from sinner2.pipeline.realtime import executor as ex_mod
+
+        clock = [0.0]
+        monkeypatch.setattr(ex_mod.time, "monotonic", lambda: clock[0])
+        calls = [0]
+
+        class _Buf:
+            def get_at_current_time(self):
+                return (5, "px")  # direct hit, no fallback
+
+            def latest_index_at_or_below(self, _i):
+                return 5
+
+            def get(self, _i):
+                return "px"
+
+            def metrics(self):
+                calls[0] += 1
+                return None
+
+        ex = RealtimeExecutor.__new__(RealtimeExecutor)
+        ex._state_lock = threading.RLock()  # noqa: SLF001
+        ex._state = ex_mod._State.PLAYING  # noqa: SLF001
+        ex._last_shown_frame_index = None  # noqa: SLF001
+        ex._last_metrics_pub = 0.0  # noqa: SLF001
+        ex._buffer = _Buf()  # noqa: SLF001
+        ex._refresh_fps = lambda: None  # noqa: SLF001
+        ex._on_frame = None  # noqa: SLF001
+        ex.current_frame = self._Obs()
+        ex.metrics = self._Obs()
+        ex.status = self._Obs()
+
+        clock[0] = 1.0
+        ex._do_playback_tick()  # noqa: SLF001 — publishes
+        clock[0] = 1.01
+        ex._do_playback_tick()  # noqa: SLF001 — within interval → skipped
+        clock[0] = 2.0
+        ex._do_playback_tick()  # noqa: SLF001 — interval elapsed → publishes
+        assert calls[0] == 2

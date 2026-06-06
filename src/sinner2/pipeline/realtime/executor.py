@@ -57,6 +57,11 @@ _FIXED_PLAYBACK_TICK_S = 1.0 / 30
 # means we don't actually emit more frames than the timeline produces, so
 # this floor mostly just bounds wakeup frequency.
 _UNLIMITED_PLAYBACK_TICK_S = 0.001
+# Throttle metrics publication to ~UI rate: buffer.metrics() recomputes
+# percentiles (two sorts over the latency deque) and the playback tick can run
+# at ~1 kHz in UNLIMITED mode, so publishing every tick burns CPU the overlay
+# (which samples at ~10 Hz) never consumes.
+_METRICS_PUBLISH_INTERVAL_S = 0.05
 # Time-window for processing_fps. Time-based (not count-based) so the
 # reading reflects current throughput rather than a sample-window average
 # that can stay stale through pauses. 3s is short enough to update visibly
@@ -229,6 +234,7 @@ class RealtimeExecutor:
         # so a slow-but-alive pipeline reports a decaying estimate rather than 0.
         self._last_completion_time: float | None = None
         self._last_fps = 0.0
+        self._last_metrics_pub = 0.0  # throttle metrics publication to ~UI rate
         # Per-processor timing: append (timestamp, processor_name, ns)
         # per process() call inside _apply_chain. Readers (overlay) get
         # a time-windowed dict via processor_timings(). bounded deque
@@ -1193,7 +1199,12 @@ class RealtimeExecutor:
             except Exception as e:
                 self.status.set(f"on_frame callback error: {e}")
         self.current_frame.set(index)
-        self.metrics.set(self._buffer.metrics())
+        # Throttle metrics publication — buffer.metrics() recomputes percentiles
+        # and this tick can run at ~1 kHz; the overlay only needs ~UI rate.
+        now = time.monotonic()
+        if now - self._last_metrics_pub >= _METRICS_PUBLISH_INTERVAL_S:
+            self._last_metrics_pub = now
+            self.metrics.set(self._buffer.metrics())
         self._refresh_fps()
 
     def _compute_playback_sleep(self) -> float | None:
