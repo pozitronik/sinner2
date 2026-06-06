@@ -1988,3 +1988,25 @@ class TestReconfigureGenerationGuard:
         assert ex._publish_result(item, "frame") is True  # noqa: SLF001
         buf.put.assert_called_once_with(3, "frame")
         assert ex._last_completed == 3  # noqa: SLF001
+
+
+class TestPublicAccessors:
+    """Public passthroughs so GUI callers don't reach executor privates
+    (_buffer / _reader_pool)."""
+
+    def test_invalidate_from_passes_through_to_buffer(self):
+        from unittest.mock import MagicMock
+
+        ex = RealtimeExecutor.__new__(RealtimeExecutor)
+        buf = MagicMock()
+        ex._buffer = buf  # noqa: SLF001
+        ex.invalidate_from(7)
+        buf.invalidate_from.assert_called_once_with(7)
+
+    def test_reader_pool_property_returns_pool(self):
+        from unittest.mock import MagicMock
+
+        ex = RealtimeExecutor.__new__(RealtimeExecutor)
+        pool = MagicMock()
+        ex._reader_pool = pool  # noqa: SLF001
+        assert ex.reader_pool is pool

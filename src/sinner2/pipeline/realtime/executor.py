@@ -525,6 +525,18 @@ class RealtimeExecutor:
         """Total frames in the target — for jump-to-end seeks etc."""
         return self._reader_pool.frame_count
 
+    @property
+    def reader_pool(self) -> ReaderPool:
+        """The live target ReaderPool — exposed so callers (e.g. discarding an
+        unstarted reconfigure bundle) don't reach the private attribute."""
+        return self._reader_pool
+
+    def invalidate_from(self, index: FrameIndex) -> None:
+        """Invalidate produced frames at index..end so they're reprocessed (e.g.
+        after a chain-config change) — passthrough to the frame buffer so callers
+        don't reach the private attribute."""
+        self._buffer.invalidate_from(index)
+
     def last_completed_frame(self) -> int:
         """Highest frame index a worker has finished. -1 before any
         completion — useful as a 'loading' signal for the metrics

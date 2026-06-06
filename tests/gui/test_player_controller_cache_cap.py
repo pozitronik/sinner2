@@ -45,3 +45,10 @@ def test_enforce_cache_cap_noop_when_uncapped(tmp_path):
     mgr = _SpyManager()
     ctrl._enforce_cache_cap(mgr, tmp_path / "x")  # noqa: SLF001
     assert mgr.enforce_called is False
+
+
+def test_session_cache_dir_accessor(tmp_path):
+    # Public accessor so main_window doesn't reach _controller._session_cache_dir.
+    ctrl = PlayerController.__new__(PlayerController)
+    ctrl._session_cache_dir = tmp_path / "abc"  # noqa: SLF001
+    assert ctrl.session_cache_dir() == tmp_path / "abc"

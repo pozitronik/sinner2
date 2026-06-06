@@ -583,7 +583,7 @@ class PlayerController(QObject):
         (the executor was never start()ed, so it owns no threads — only the
         reader pool + write executor + store need releasing)."""
         try:
-            bundle.executor._reader_pool.shutdown()  # noqa: SLF001
+            bundle.executor.reader_pool.shutdown()
         except Exception:
             pass
         try:
@@ -921,6 +921,11 @@ class PlayerController(QObject):
     def executor(self) -> RealtimeExecutor | None:
         return self._executor
 
+    def session_cache_dir(self) -> Path | None:
+        """The active session's cache dir (None if no session / cache off) —
+        exposed so the GUI doesn't reach the private attribute."""
+        return self._session_cache_dir
+
     def set_detection_sink(self, sink: object | None) -> None:
         """Set the sink the swapper publishes pre-swap detections to. Call
         before any session starts; the chain reads it at build time."""
@@ -986,7 +991,7 @@ class PlayerController(QObject):
         # invalidate_from(0) clears everything in cache + on-disk store from
         # frame 0 upward — exactly the "drop all rendered frames" semantic.
         try:
-            self._executor._buffer.invalidate_from(0)  # noqa: SLF001
+            self._executor.invalidate_from(0)
         except Exception as exc:
             self.errorOccurred.emit(f"cache invalidate failed: {exc}")
         if was_playing:

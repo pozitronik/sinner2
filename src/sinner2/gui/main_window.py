@@ -508,9 +508,7 @@ class SinnerMainWindow(QMainWindow):
     def _on_clear_all_caches(self) -> None:
         manager = self._controller.cache_manager()
         entries = manager.list_entries()
-        protected = (
-            self._controller._session_cache_dir  # noqa: SLF001 — UX text needs it
-        )
+        protected = self._controller.session_cache_dir()
         deletable = [e for e in entries if e.path != protected]
         if not deletable:
             QMessageBox.information(
