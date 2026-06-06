@@ -136,8 +136,15 @@ class FFmpegVideoTargetReader:
                 frame_count = int(float(s.get("duration", 0)) * fps)
             except (ValueError, TypeError):
                 frame_count = 0
-        width = int(s["width"])
-        height = int(s["height"])
+        try:
+            width = int(s["width"])
+            height = int(s["height"])
+        except (KeyError, ValueError, TypeError) as exc:
+            # Some streams (MJPEG, damaged headers) omit width/height; surface a
+            # clear error instead of a bare KeyError that reads as "'width'".
+            raise OSError(
+                f"ffprobe reported no video dimensions for {self._target.path}: {exc}"
+            ) from exc
         return fps, frame_count, width, height
 
     def _start_decoder_at(self, index: FrameIndex) -> None:

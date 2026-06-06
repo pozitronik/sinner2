@@ -105,3 +105,30 @@ class TestVideoTargetReader:
         r = VideoTargetReader(blue_video)
         r.release()
         r.release()
+
+
+class TestProbeMissingDimensions:
+    def test_probe_raises_oserror_when_dimensions_missing(
+        self, tmp_path, monkeypatch
+    ):
+        # MJPEG / damaged-header streams can omit width/height from ffprobe; the
+        # unguarded int(s["width"]) raised a bare KeyError that surfaced as a
+        # confusing "session setup failed: 'width'". It must be a clear OSError.
+        import json
+        from types import SimpleNamespace
+
+        from sinner2.io import video_target_reader as vtr
+
+        reader = vtr.FFmpegVideoTargetReader.__new__(vtr.FFmpegVideoTargetReader)
+        reader._target = SimpleNamespace(path=tmp_path / "weird.mkv")  # noqa: SLF001
+        payload = json.dumps(
+            {"streams": [{"avg_frame_rate": "30/1", "nb_frames": "10"}]}
+        )
+        monkeypatch.setattr(
+            vtr.subprocess,
+            "run",
+            lambda *a, **k: SimpleNamespace(stdout=payload, returncode=0, stderr=""),
+        )
+        with pytest.raises(OSError) as exc:
+            reader._probe()  # noqa: SLF001
+        assert "dimension" in str(exc.value).lower()
