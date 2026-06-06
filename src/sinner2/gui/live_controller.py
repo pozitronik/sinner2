@@ -13,7 +13,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, QTimer, Signal
 
 from sinner2.config.source import Source
 from sinner2.gui.processor_snapshot import ProcessorParamsSnapshot
@@ -48,6 +48,7 @@ class LiveController(QObject):
         )
         self._loop: LiveLoop | None = None
         self._sink: MjpegSink | None = None
+        self._camera: Any = None
 
     def is_running(self) -> bool:
         return self._loop is not None
@@ -86,12 +87,26 @@ class LiveController(QObject):
             upscaler_device=snapshot.upscaler_device,
         )
         camera = self._camera_factory(device, width, height, fps)
+        self._camera = camera
         self._sink = self._sink_factory(mjpeg_port, fps)
         self._loop = LiveLoop(
             camera, chain, [self._sink], on_frame=self._emit_frame, fps=fps
         )
         self._loop.start()
         self.runningChanged.emit(True)
+        # The device opens on the capture thread; surface a failure shortly after
+        # (non-blocking) so a bad camera shows an error instead of a blank panel.
+        QTimer.singleShot(1500, self._check_camera)
+
+    def _check_camera(self) -> None:
+        cam = self._camera
+        if cam is None or self._loop is None:
+            return
+        if not getattr(cam, "opened", True):
+            self.errorOccurred.emit(
+                getattr(cam, "error", None) or "camera failed to open"
+            )
+            self.stop()
 
     def _emit_frame(self, frame: Frame) -> None:
         # Called on the loop thread; the queued Signal hops it to the GUI thread.
@@ -103,6 +118,7 @@ class LiveController(QObject):
         self._loop.stop()
         self._loop = None
         self._sink = None
+        self._camera = None
         self.runningChanged.emit(False)
 
     def sink_url(self) -> str | None:

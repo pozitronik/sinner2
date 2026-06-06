@@ -135,6 +135,32 @@ def test_double_start_is_noop(qtbot, off_snapshot, source_file):
         ctrl.stop()
 
 
+def test_camera_open_failure_surfaces_error(off_snapshot, source_file):
+    class _FailCam:
+        opened = False
+        error = "could not open capture device 9"
+
+        def start(self):
+            pass
+
+        def read(self):
+            return None
+
+        def stop(self):
+            pass
+
+    cam = _FailCam()
+    ctrl = LiveController(
+        camera_factory=lambda *a: cam, sink_factory=lambda *a: _SpySink()
+    )
+    errors: list = []
+    ctrl.errorOccurred.connect(errors.append)
+    ctrl.start(source_path=source_file, snapshot=off_snapshot, mjpeg_port=0)
+    ctrl._check_camera()  # invoke the delayed open-failure check directly
+    assert errors and "open" in errors[0].lower()
+    assert not ctrl.is_running()
+
+
 def test_sink_url_while_running(qtbot, off_snapshot, source_file):
     ctrl = _controller(_StubCam(np.zeros((4, 4, 3), np.uint8)), _SpySink())
     try:

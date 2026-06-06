@@ -10,6 +10,7 @@ without a real camera (mirrors PlayerController's session_factory hook).
 """
 from __future__ import annotations
 
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -23,7 +24,16 @@ CaptureFactory = Callable[[Any, int, int], Any]
 
 
 def _default_capture(device: Any, width: int, height: int) -> Any:
-    cap = cv2.VideoCapture(device)
+    # Windows webcams open far more reliably via DirectShow than the default
+    # Media Foundation backend (which often fails or stalls on open); fall back
+    # to the default backend if DirectShow can't open the device.
+    if sys.platform == "win32" and isinstance(device, int):
+        cap = cv2.VideoCapture(device, cv2.CAP_DSHOW)
+        if not cap.isOpened():
+            cap.release()
+            cap = cv2.VideoCapture(device)
+    else:
+        cap = cv2.VideoCapture(device)
     if width > 0:
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
     if height > 0:
