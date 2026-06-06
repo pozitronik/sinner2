@@ -18,3 +18,7 @@ class WorkItem:
 
     frame_index: FrameIndex
     source_future: Future[Frame | None]
+    # The executor "world" (source / buffer / chain) this item belongs to. A
+    # reconfigure bumps the executor's generation; a worker discards a result
+    # whose generation no longer matches (it belongs to the pre-swap world).
+    generation: int = 0

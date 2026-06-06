@@ -140,6 +140,7 @@ class RealtimeExecutor:
             )
         self._reader_pool = reader_pool
         self._buffer = buffer
+        self._generation = 0  # bumped on reconfigure; tags WorkItems to a world
         self._timeline = timeline
         # Clamp the wall-clock playhead to the real last frame so it can't run
         # off the end of the media (see Timeline.set_max_frame).
@@ -692,7 +693,7 @@ class RealtimeExecutor:
         # Submit the read non-blockingly — a reader thread will produce
         # the frame; the worker will await the future.
         future = self._reader_pool.read_async(frame_index)
-        item = WorkItem(frame_index=frame_index, source_future=future)
+        item = WorkItem(frame_index=frame_index, source_future=future, generation=self._generation)
         try:
             self._work_queue.put(item, timeout=0.1)
         except Full:
@@ -778,6 +779,10 @@ class RealtimeExecutor:
             self._timeline = msg.timeline
             self._timeline.set_max_frame(max(0, msg.reader_pool.frame_count - 1))
             self._chain = msg.chain
+            # New world: bump the generation so any worker still parked on an
+            # old-world source future discards its result instead of writing a
+            # stale frame into the new buffer.
+            self._generation += 1
             self._strategy = msg.strategy
             self._playback_mode = msg.playback_mode
             # New world → reset progress trackers and the playback dup-guard so
@@ -936,7 +941,7 @@ class RealtimeExecutor:
         # Submit the read non-blockingly — a reader thread will produce
         # the frame; the worker awaits the future.
         future = self._reader_pool.read_async(frame_index)
-        item = WorkItem(frame_index=frame_index, source_future=future)
+        item = WorkItem(frame_index=frame_index, source_future=future, generation=self._generation)
         try:
             self._work_queue.put(item, timeout=0.1)
         except Full:
@@ -977,6 +982,7 @@ class RealtimeExecutor:
                 # if neither event is set yet (the events typically are by
                 # then, but don't depend on it).
                 break
+            assert item is not None  # the sentinel (None) is handled above
             # Await the source frame from the reader pool. Failures here
             # are non-fatal (one bad frame doesn't kill the executor):
             # cancellation, reader exception, and None all just skip
@@ -1007,20 +1013,13 @@ class RealtimeExecutor:
                 # is the intended fast path.
                 chain = self._chain
                 result = self._apply_chain(source_frame, chain)
-                self._buffer.put(item.frame_index, result)
-                # Wake playback so the freshly-written frame is picked
-                # up on its next tick. Without this, a seek-while-paused
-                # (or post-rebuild seek) is racy: playback wakes after
-                # the seek's enqueue, ticks against an empty buffer, and
-                # then sleeps forever waiting for an event. The worker
-                # producing the frame is exactly the signal playback
-                # needs. Set is O(1) and the dup-frame guard suppresses
-                # redundant emits when the index hasn't changed.
-                self._playback_wake.set()
-                with self._state_lock:
-                    if self._last_completed < item.frame_index:
-                        self._last_completed = item.frame_index
-                self._record_completion()
+                # Publish under the generation guard: a reconfigure may have
+                # swapped the world while this worker was parked on its source
+                # future (it's neither queued nor counted inflight), so discard a
+                # result that no longer belongs to the current world instead of
+                # writing a stale frame into the new buffer.
+                if self._publish_result(item, result):
+                    self._record_completion()
             except Exception as e:
                 # A per-frame chain/buffer error is RECOVERABLE — log it and
                 # skip this frame, exactly like a reader error above. Do NOT set
@@ -1042,6 +1041,26 @@ class RealtimeExecutor:
         # per-thread processor instances THIS worker built so a live shrink
         # frees the surplus model now, not at chain teardown.
         self._release_thread_local_chain()
+
+    def _publish_result(self, item: WorkItem, result: Frame) -> bool:
+        """Write a worker's result to the buffer iff its WorkItem still belongs
+        to the CURRENT world. A reconfigure (source/target swap) can complete
+        while a worker is parked on its source future — that worker is neither
+        queued (so _drain_work_queue can't cancel it) nor counted inflight (so
+        _wait_for_inflight doesn't block on it). Without this guard it would
+        write an OLD-world frame into the NEW buffer. Returns False if discarded.
+        """
+        with self._state_lock:
+            if item.generation != self._generation:
+                return False
+            buffer = self._buffer
+            if self._last_completed < item.frame_index:
+                self._last_completed = item.frame_index
+        buffer.put(item.frame_index, result)
+        # Wake playback so the freshly-written frame is picked up on its next
+        # tick (a seek-while-paused otherwise sleeps forever on an empty buffer).
+        self._playback_wake.set()
+        return True
 
     def _release_thread_local_chain(self) -> None:
         """Release any per-thread processor instances the calling (exiting)

@@ -1424,6 +1424,7 @@ class TestRerenderFromCurrent:
         ex._playback_wake = threading.Event()  # noqa: SLF001
         ex._last_submitted = 80  # noqa: SLF001
         ex._last_completed = 75  # noqa: SLF001
+        ex._generation = 0  # noqa: SLF001
         ex._last_shown_frame_index = 50  # noqa: SLF001
         ex._timeline = MagicMock()  # noqa: SLF001
         ex._timeline.current_frame.return_value = 50  # noqa: SLF001
@@ -1941,3 +1942,49 @@ class TestMetricsPublishThrottle:
         clock[0] = 2.0
         ex._do_playback_tick()  # noqa: SLF001 — interval elapsed → publishes
         assert calls[0] == 2
+
+
+class TestReconfigureGenerationGuard:
+    """A worker parked on its source-future during a reconfigure must NOT write
+    its old-world frame into the new buffer: _publish_result discards a result
+    whose WorkItem generation no longer matches the executor's current world."""
+
+    class _Obs:
+        def set(self):  # mimics threading.Event.set() (no arg)
+            pass
+
+    def _bare(self, generation):
+        ex = RealtimeExecutor.__new__(RealtimeExecutor)
+        ex._state_lock = threading.RLock()  # noqa: SLF001
+        ex._generation = generation  # noqa: SLF001
+        ex._last_completed = -1  # noqa: SLF001
+        ex._playback_wake = self._Obs()  # noqa: SLF001
+        return ex
+
+    def test_discards_result_from_stale_generation(self):
+        from concurrent.futures import Future
+        from unittest.mock import MagicMock
+
+        from sinner2.pipeline.realtime.work_item import WorkItem
+
+        ex = self._bare(generation=5)
+        buf = MagicMock()
+        ex._buffer = buf  # noqa: SLF001
+        item = WorkItem(frame_index=3, source_future=Future(), generation=4)
+        assert ex._publish_result(item, "frame") is False  # noqa: SLF001
+        buf.put.assert_not_called()  # stale frame NOT written to the new buffer
+        assert ex._last_completed == -1  # noqa: SLF001 — progress not advanced
+
+    def test_publishes_result_from_current_generation(self):
+        from concurrent.futures import Future
+        from unittest.mock import MagicMock
+
+        from sinner2.pipeline.realtime.work_item import WorkItem
+
+        ex = self._bare(generation=5)
+        buf = MagicMock()
+        ex._buffer = buf  # noqa: SLF001
+        item = WorkItem(frame_index=3, source_future=Future(), generation=5)
+        assert ex._publish_result(item, "frame") is True  # noqa: SLF001
+        buf.put.assert_called_once_with(3, "frame")
+        assert ex._last_completed == 3  # noqa: SLF001
