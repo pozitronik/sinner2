@@ -53,6 +53,7 @@ def _bundle(frame_count: int) -> SimpleNamespace:
         target_fps=30.0,
         frame_count=frame_count,
         native_size=(64, 48),
+        warnings=[],
     )
 
 
