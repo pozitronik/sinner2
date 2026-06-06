@@ -28,10 +28,10 @@ class _MarkEnh:
 
 @pytest.fixture(autouse=True)
 def _stub_processors(monkeypatch):
-    import sinner2.gui.player_controller as pc
+    import sinner2.pipeline.chain_builder as cb
 
-    monkeypatch.setattr(pc, "FaceSwapper", _MarkSwap)
-    monkeypatch.setattr(pc, "FaceEnhancer", _MarkEnh)
+    monkeypatch.setattr(cb, "FaceSwapper", _MarkSwap)
+    monkeypatch.setattr(cb, "FaceEnhancer", _MarkEnh)
 
 
 @pytest.fixture

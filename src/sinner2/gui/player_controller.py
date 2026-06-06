@@ -25,17 +25,16 @@ from sinner2.io.video_backend import VideoBackend
 from sinner2.pipeline.buffer.bounded_write_executor import BoundedWriteExecutor
 from sinner2.pipeline.buffer.store import FrameStore
 from sinner2.pipeline.cache_manager import CacheManager
+from sinner2.pipeline.chain_builder import build_chain
 from sinner2.pipeline.playback_mode import PlaybackMode
 from sinner2.pipeline.processor import Processor
 from sinner2.pipeline.processors.face_enhancer import (
     EnhancerModel,
-    FaceEnhancer,
     FaceEnhancerParams,
 )
-from sinner2.pipeline.processors.face_swapper import FaceSwapper, FaceSwapperParams
-from sinner2.pipeline.processors.upscaler import Upscaler, UpscalerParams
+from sinner2.pipeline.processors.face_swapper import FaceSwapperParams
+from sinner2.pipeline.processors.upscaler import UpscalerParams
 from sinner2.pipeline.realtime.executor import RealtimeExecutor
-from sinner2.pipeline.realtime.per_worker import PerWorkerProcessor
 from sinner2.pipeline.skip_strategy import (
     BestEffortStrategy,
     FrameSkipStrategy,
@@ -515,46 +514,21 @@ class PlayerController(QObject):
         return self._worker_count
 
     def _build_chain(self, source: Source) -> list[Processor]:
-        # Both processors are optional. An empty chain is valid — the
-        # executor passes frames through unchanged (raw preview). Each
-        # processor gets its framework-native execution param: ONNX providers
-        # for the swapper, a torch device for the enhancer.
-        chain: list[Processor] = []
-        if self._swapper_enabled:
-            chain.append(FaceSwapper(
-                source=source,
-                params=self._swapper_params,
-                # Pass the selection through verbatim — an EMPTY list means the
-                # user unchecked everything ("no providers"); the swapper keeps
-                # it empty (ORT → CPU) instead of substituting a GPU default.
-                providers=list(self._swapper_providers),
-                detection_sink=self._detection_sink,
-            ))
-        if self._enhancer_enabled:
-            # GFPGAN isn't thread-safe, so a single shared instance serialises
-            # every worker on its lock. Wrap it so each realtime worker gets
-            # its own instance and the live chain enhances in parallel. The
-            # swapper stays a shared single instance (thread-safe ORT session).
-            params = self._enhancer_params
-            device = self._enhancer_device
-            chain.append(PerWorkerProcessor(
-                factory=lambda p=params, d=device: FaceEnhancer(params=p, device=d),
-                name=FaceEnhancer.name,
-                # Surface the params so they're part of the frame cache key — a
-                # change must invalidate cached frames, not serve stale ones.
-                params=params,
-            ))
-        if self._upscaler_enabled:
-            # Whole-frame super-resolution, last in the chain. Torch model →
-            # per-worker like the enhancer.
-            up_params = self._upscaler_params
-            up_device = self._upscaler_device
-            chain.append(PerWorkerProcessor(
-                factory=lambda p=up_params, d=up_device: Upscaler(params=p, device=d),
-                name=Upscaler.name,
-                params=up_params,
-            ))
-        return chain
+        """Compose the realtime chain from current controller state via the
+        shared builder (same logic the live-camera path uses)."""
+        return build_chain(
+            source,
+            swapper_enabled=self._swapper_enabled,
+            swapper_params=self._swapper_params,
+            swapper_providers=self._swapper_providers,
+            detection_sink=self._detection_sink,
+            enhancer_enabled=self._enhancer_enabled,
+            enhancer_params=self._enhancer_params,
+            enhancer_device=self._enhancer_device,
+            upscaler_enabled=self._upscaler_enabled,
+            upscaler_params=self._upscaler_params,
+            upscaler_device=self._upscaler_device,
+        )
 
     def shutdown(self) -> None:
         # A swap may be mid-flight on a worker thread; drop any coalesced request
