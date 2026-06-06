@@ -22,7 +22,6 @@ from sinner2.batch.task import (
     BatchCleanupMode,
     BatchOutputFormat,
     BatchProgress,
-    BatchTask,
 )
 from sinner2.batch.task_store import BatchTaskStore
 from sinner2.config import media_extensions
@@ -1427,8 +1426,6 @@ class SinnerMainWindow(QMainWindow):
         target = self._pickers.target_path()
         if source is None or target is None:
             return
-        swapper = self._processors.swapper_params()
-        enhancer = self._processors.enhancer_params()
         default_format_value = (
             self._settings.batch_default_format or BatchOutputFormat.VIDEO.value
         )
@@ -1443,61 +1440,33 @@ class SinnerMainWindow(QMainWindow):
             default_cleanup = BatchCleanupMode(default_cleanup_value)
         except ValueError:
             default_cleanup = BatchCleanupMode.KEEP
-        # Per-processor execution profiles. Carry the current ONNX providers
-        # into the swapper profile (CPU vs GPU is a meaningful captured choice);
-        # workers default to the batch throughput defaults rather than the
-        # realtime pool size (live latency tuning ≠ batch throughput tuning).
-        providers = self._processors.swapper_providers()
+        # Capture the processor surface once; the batch task is built from it.
+        snap = self._processors.snapshot()
+        # Per-processor execution profiles. Carry the captured ONNX providers into
+        # the swapper profile (CPU vs GPU is a meaningful choice); workers default
+        # to the batch throughput defaults rather than the realtime pool size
+        # (live latency tuning ≠ batch throughput tuning). These execution objects
+        # are batch-only, so they're built here rather than in the shared snapshot.
+        providers = snap.swapper_providers
         swapper_execution = (
             OnnxExecution(workers=DEFAULT_SWAPPER_WORKERS, providers=list(providers))
             if providers
             else OnnxExecution(workers=DEFAULT_SWAPPER_WORKERS)
         )
         enhancer_execution = TorchExecution(
-            workers=DEFAULT_ENHANCER_WORKERS,
-            device=self._processors.enhancer_device(),
+            workers=DEFAULT_ENHANCER_WORKERS, device=snap.enhancer_device,
         )
-        up_params = self._processors.upscaler_params()
         upscaler_execution = TorchExecution(
-            workers=DEFAULT_UPSCALER_WORKERS,
-            device=self._processors.upscaler_device(),
+            workers=DEFAULT_UPSCALER_WORKERS, device=snap.upscaler_device,
         )
-        task = BatchTask(
+        task = snap.to_batch_task(
             source_path=source,
             target_path=target,
             output_format=default_format,
             cleanup_mode=default_cleanup,
-            swapper_enabled=self._processors.swapper_enabled(),
-            swapper_model=swapper.model.value,
-            swapper_detection_interval=swapper.detection_interval,
-            swapper_detection_size=swapper.detection_size,
-            swapper_detector=swapper.detector.value,
-            swapper_many_faces=swapper.many_faces,
-            swapper_target_sex=swapper.target_sex.value,
-            swapper_rotation_compensation=swapper.rotation_compensation,
-            swapper_rotation_threshold_deg=swapper.rotation_threshold_deg,
-            swapper_rotation_redetect=swapper.rotation_redetect,
-            swapper_rotation_angle_source=swapper.rotation_angle_source.value,
-            swapper_occlusion_mask=swapper.occlusion_mask,
-            swapper_occlusion_parser=swapper.occlusion_parser.value,
-            enhancer_enabled=self._processors.enhancer_enabled(),
-            enhancer_model=enhancer.model.value,
-            enhancer_upscale=enhancer.upscale,
-            enhancer_only_center_face=enhancer.only_center_face,
-            enhancer_codeformer_fidelity=enhancer.codeformer_fidelity,
-            enhancer_fp16=enhancer.fp16,
-            upscaler_enabled=self._processors.upscaler_enabled(),
-            upscaler_model=up_params.model.value,
-            upscaler_tile=up_params.tile,
-            upscaler_fp16=up_params.fp16,
             swapper_execution=swapper_execution,
             enhancer_execution=enhancer_execution,
             upscaler_execution=upscaler_execution,
-            video_backend=self._processors.video_backend(),
-            reader_pool_size=self._processors.reader_pool_size(),
-            processing_scale=self._processors.processing_scale(),
-            image_format=self._processors.image_format(),
-            image_quality=self._processors.image_quality(),
         )
         self._batch_store.save(task)
         self._batch_view.append_task(task)
