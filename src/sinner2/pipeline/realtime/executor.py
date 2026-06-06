@@ -1185,7 +1185,10 @@ class RealtimeExecutor:
             and shown_index != self._last_shown_frame_index
         ):
             try:
-                self._on_frame(frame, index)
+                # Pass the index of the frame whose pixels we're showing
+                # (shown_index), not the timeline target — they differ on the
+                # fallback path when the worker is behind.
+                self._on_frame(frame, shown_index)
                 self._last_shown_frame_index = shown_index
             except Exception as e:
                 self.status.set(f"on_frame callback error: {e}")

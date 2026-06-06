@@ -1692,12 +1692,13 @@ class TestPlaybackFallbackNoBackwardStutter:
 
     def test_repaints_newer_fallback_frame(self):
         shown, last = self._tick(last_shown=100, fallback_index=105)
-        assert shown == [200]
+        # on_frame gets the SHOWN (fallback) index, not the timeline target 200.
+        assert shown == [105]
         assert last == 105
 
     def test_first_paint_with_no_history(self):
         shown, last = self._tick(last_shown=None, fallback_index=50)
-        assert shown == [200]
+        assert shown == [50]  # shown (fallback) index, not the target 200
         assert last == 50
 
 
@@ -1841,3 +1842,47 @@ class TestChainSetupFailure:
         assert "chain setup failed" in ex.status.get()
         assert ex._setup_done_event.is_set()  # noqa: SLF001
         assert p0.released  # the already-loaded processor's GPU memory is freed
+
+
+class TestPlaybackFallbackIndex:
+    """on_frame must receive the index of the frame whose pixels are shown — the
+    fallback index when the worker is behind, not the timeline target (rank 31).
+    """
+
+    class _Obs:
+        def __init__(self) -> None:
+            self.value = None
+
+        def set(self, v) -> None:
+            self.value = v
+
+    class _Buf:
+        def get_at_current_time(self):
+            return (10, None)  # target 10 not ready yet
+
+        def latest_index_at_or_below(self, _idx):
+            return 7  # newest ready frame <= 10
+
+        def get(self, idx):
+            return "px" if idx == 7 else None
+
+        def metrics(self):
+            return None
+
+    def test_on_frame_gets_shown_index_not_target(self):
+        from sinner2.pipeline.realtime import executor as ex_mod
+
+        ex = RealtimeExecutor.__new__(RealtimeExecutor)
+        ex._state_lock = threading.RLock()  # noqa: SLF001
+        ex._state = ex_mod._State.PLAYING  # noqa: SLF001
+        ex._last_shown_frame_index = None  # noqa: SLF001
+        ex._buffer = self._Buf()  # noqa: SLF001
+        ex._refresh_fps = lambda: None  # noqa: SLF001
+        ex.current_frame = self._Obs()
+        ex.metrics = self._Obs()
+        ex.status = self._Obs()
+        seen: list = []
+        ex._on_frame = lambda _f, i: seen.append(i)  # noqa: SLF001
+        ex._do_playback_tick()  # noqa: SLF001
+        assert seen == [7]  # the SHOWN (fallback) index, not the target 10
+        assert ex.current_frame.value == 10  # transport still tracks the target
