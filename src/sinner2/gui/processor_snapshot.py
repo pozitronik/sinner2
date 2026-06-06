@@ -11,6 +11,7 @@ the surfaces can no longer drift out of lockstep and silently drop a setting.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from sinner2.io.video_backend import VideoBackend
 from sinner2.pipeline.cache_mode import CacheMode
@@ -19,6 +20,11 @@ from sinner2.pipeline.playback_mode import PlaybackMode
 from sinner2.pipeline.processors.face_enhancer import FaceEnhancerParams
 from sinner2.pipeline.processors.face_swapper import FaceSwapperParams
 from sinner2.pipeline.processors.upscaler import UpscalerParams
+from sinner2.pipeline.skip_strategy import (
+    BestEffortStrategy,
+    FrameSkipStrategy,
+    SyncedStrategy,
+)
 
 
 @dataclass(frozen=True)
@@ -61,3 +67,40 @@ class ProcessorParamsSnapshot:
     write_workers: int
     write_queue_size: int
     video_backend: VideoBackend
+
+    def to_session_config(self) -> dict[str, Any]:
+        """Build the keyword arguments for PlayerController.apply_session_config.
+
+        Rebuilds the frame-skip strategy from its name (+ synced lag) and bundles
+        the cache knobs into a CacheSettings — exactly what the main window used
+        to assemble inline. CacheSettings is imported lazily to avoid a GUI
+        import cycle (player_controller → processor_controls → this module)."""
+        from sinner2.gui.player_controller import CacheSettings
+
+        strategy: FrameSkipStrategy = (
+            SyncedStrategy(max_lag_frames=self.synced_max_lag_frames)
+            if self.strategy_name == SyncedStrategy.__name__
+            else BestEffortStrategy()
+        )
+        return dict(
+            swapper_params=self.swapper_params,
+            enhancer_params=self.enhancer_params,
+            enhancer_enabled=self.enhancer_enabled,
+            swapper_enabled=self.swapper_enabled,
+            strategy=strategy,
+            worker_count=self.realtime_workers,
+            playback_mode=self.playback_mode,
+            cache_settings=CacheSettings(
+                mode=self.cache_mode,
+                image_format=self.image_format,
+                image_quality=self.image_quality,
+                memory_max_bytes=self.memory_cache_mb * 1024 * 1024,
+                write_workers=self.write_workers,
+                write_queue_size=self.write_queue_size,
+            ),
+            swapper_providers=self.swapper_providers,
+            enhancer_device=self.enhancer_device,
+            upscaler_params=self.upscaler_params,
+            upscaler_enabled=self.upscaler_enabled,
+            upscaler_device=self.upscaler_device,
+        )

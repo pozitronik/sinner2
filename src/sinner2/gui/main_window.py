@@ -668,7 +668,6 @@ class SinnerMainWindow(QMainWindow):
     def _on_processor_config_changed(self) -> None:
         if self._batch_active:
             return  # editing is locked while a batch renders
-        from sinner2.gui.player_controller import CacheSettings
 
         # If the upscaler / occlusion mask was just enabled and its weights
         # aren't present, ask to download them (never silently). Decline →
@@ -706,39 +705,22 @@ class SinnerMainWindow(QMainWindow):
             if onnx_file is not None and not ensure_models(self, [onnx_file]):
                 self._processors.set_enhancer_model(EnhancerModel.GFPGAN.value)
 
-        self._controller.apply_session_config(
-            swapper_params=self._processors.swapper_params(),
-            enhancer_params=self._processors.enhancer_params(),
-            enhancer_enabled=self._processors.enhancer_enabled(),
-            swapper_enabled=self._processors.swapper_enabled(),
-            strategy=self._processors.skip_strategy(),
-            worker_count=self._processors.realtime_workers(),
-            playback_mode=self._processors.playback_mode(),
-            cache_settings=CacheSettings(
-                mode=self._processors.cache_mode(),
-                image_format=self._processors.image_format(),
-                image_quality=self._processors.image_quality(),
-                memory_max_bytes=self._processors.memory_cache_mb() * 1024 * 1024,
-                write_workers=self._processors.write_workers(),
-                write_queue_size=self._processors.write_queue_size(),
-            ),
-            swapper_providers=tuple(self._processors.swapper_providers()),
-            enhancer_device=self._processors.enhancer_device(),
-            upscaler_params=self._processors.upscaler_params(),
-            upscaler_enabled=self._processors.upscaler_enabled(),
-            upscaler_device=self._processors.upscaler_device(),
-        )
+        # Every download/revert guard above has settled the widget state; capture
+        # it once as a snapshot and route all consumers through that single value
+        # object instead of re-reading each field by hand (which used to drift).
+        snap = self._processors.snapshot()
+        self._controller.apply_session_config(**snap.to_session_config())
         # Video backend isn't part of the session-config bundle because
         # it's used by set_source_and_target rather than the executor;
         # push it directly to the controller so the next session picks
         # up the user's selection.
-        self._controller.set_video_backend(self._processors.video_backend())
+        self._controller.set_video_backend(snap.video_backend)
         # Reader pool size triggers a session rebuild via its own setter
         # (same pattern as video_backend).
-        self._controller.set_reader_pool_size(self._processors.reader_pool_size())
+        self._controller.set_reader_pool_size(snap.reader_pool_size)
         # Processing scale also rebuilds the session via its own setter (it's
         # part of the reader construction + cache key, not the live chain).
-        self._controller.set_processing_scale(self._processors.processing_scale())
+        self._controller.set_processing_scale(snap.processing_scale)
         # Swapper-provider / enhancer-device rebuilds are folded into
         # apply_session_config above; just refresh the status-bar EP label
         # and the failed-provider highlight afterwards.

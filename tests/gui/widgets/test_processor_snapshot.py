@@ -12,6 +12,8 @@ session parameter surface. Two gates:
 """
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -23,6 +25,7 @@ from PySide6.QtWidgets import (
 
 from sinner2.gui.processor_snapshot import ProcessorParamsSnapshot
 from sinner2.gui.widgets.processor_controls import QProcessorControls
+from sinner2.pipeline.skip_strategy import BestEffortStrategy, SyncedStrategy
 
 
 @pytest.fixture
@@ -117,3 +120,40 @@ def test_perturbed_snapshot_round_trips_to_a_fresh_widget(qtbot):
 
     dst.apply_snapshot(s)
     assert dst.snapshot() == s
+
+
+def test_to_session_config_synced_strategy_and_cache_bundle(widget):
+    """to_session_config rebuilds a SyncedStrategy from the name + lag, bundles
+    the cache knobs (MB→bytes), and passes the param models through unchanged."""
+    s = dataclasses.replace(
+        widget.snapshot(),
+        strategy_name="SyncedStrategy",
+        synced_max_lag_frames=42,
+        memory_cache_mb=7,
+    )
+    cfg = s.to_session_config()
+    assert isinstance(cfg["strategy"], SyncedStrategy)
+    assert cfg["strategy"].max_lag_frames == 42
+    assert cfg["cache_settings"].memory_max_bytes == 7 * 1024 * 1024
+    assert cfg["cache_settings"].mode == s.cache_mode
+    assert cfg["cache_settings"].image_format == s.image_format
+    assert cfg["cache_settings"].image_quality == s.image_quality
+    assert cfg["cache_settings"].write_workers == s.write_workers
+    assert cfg["cache_settings"].write_queue_size == s.write_queue_size
+    # Param models + the rest pass straight through.
+    assert cfg["swapper_params"] is s.swapper_params
+    assert cfg["enhancer_params"] is s.enhancer_params
+    assert cfg["upscaler_params"] is s.upscaler_params
+    assert cfg["swapper_enabled"] == s.swapper_enabled
+    assert cfg["enhancer_enabled"] == s.enhancer_enabled
+    assert cfg["upscaler_enabled"] == s.upscaler_enabled
+    assert cfg["swapper_providers"] == s.swapper_providers
+    assert cfg["enhancer_device"] == s.enhancer_device
+    assert cfg["upscaler_device"] == s.upscaler_device
+    assert cfg["worker_count"] == s.realtime_workers
+    assert cfg["playback_mode"] == s.playback_mode
+
+
+def test_to_session_config_best_effort_strategy(widget):
+    s = dataclasses.replace(widget.snapshot(), strategy_name="BestEffortStrategy")
+    assert isinstance(s.to_session_config()["strategy"], BestEffortStrategy)
