@@ -810,3 +810,36 @@ class TestUpdateSettingsResilience:
         # Must not raise, and must update the in-memory settings anyway.
         win._update_settings(source_path="/new/src.png")  # noqa: SLF001
         assert win._settings.source_path == "/new/src.png"  # noqa: SLF001
+
+
+class TestMetricsRateResetOnShow:
+    """Re-showing the metrics overlay must reset the write/drop rate trackers
+    (rank 38): the overlay timer stops while hidden, freezing the trackers, so
+    the first reading after a re-show would otherwise be a delta smeared over the
+    whole hidden interval."""
+
+    def _win(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from sinner2.config.settings import Settings
+        from sinner2.gui import main_window as mw
+
+        win = mw.SinnerMainWindow.__new__(mw.SinnerMainWindow)
+        win._settings = Settings()  # noqa: SLF001
+        win._write_rate = MagicMock()  # noqa: SLF001
+        win._drop_rate = MagicMock()  # noqa: SLF001
+        win._metrics_overlay = MagicMock()  # noqa: SLF001
+        monkeypatch.setattr(mw.user_settings, "save", lambda _s: None)
+        return win
+
+    def test_show_resets_rate_trackers(self, monkeypatch):
+        win = self._win(monkeypatch)
+        win._set_stats_visible(True)  # noqa: SLF001
+        win._write_rate.reset.assert_called_once()  # noqa: SLF001
+        win._drop_rate.reset.assert_called_once()  # noqa: SLF001
+
+    def test_hide_does_not_reset(self, monkeypatch):
+        win = self._win(monkeypatch)
+        win._set_stats_visible(False)  # noqa: SLF001
+        win._write_rate.reset.assert_not_called()  # noqa: SLF001
+        win._drop_rate.reset.assert_not_called()  # noqa: SLF001

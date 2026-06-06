@@ -1069,7 +1069,17 @@ class SinnerMainWindow(QMainWindow):
 
     # ---- Metrics overlay ----
 
+    def _reset_metrics_rates(self) -> None:
+        # Reset the cumulative write/drop rate trackers so the first reading
+        # after the overlay is (re-)shown is a fresh baseline, not a delta
+        # smeared over the whole interval the overlay was hidden (its timer is
+        # stopped while hidden, freezing the trackers' prev count/timestamp).
+        self._write_rate.reset()
+        self._drop_rate.reset()
+
     def _set_stats_visible(self, on: bool) -> None:
+        if on:
+            self._reset_metrics_rates()
         self._metrics_overlay.setVisible(on)
         if on:
             self._reposition_metrics_overlay()
@@ -1078,6 +1088,7 @@ class SinnerMainWindow(QMainWindow):
     def _restore_metrics_overlay_state(self) -> None:
         visible = bool(self._settings.metrics_overlay_visible)
         if visible:
+            self._reset_metrics_rates()
             self._reposition_metrics_overlay()
         self._metrics_overlay.setVisible(visible)
         self._set_button_checked(self._status_bar.stats_button, visible)
