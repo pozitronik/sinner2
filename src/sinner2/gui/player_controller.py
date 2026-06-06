@@ -5,13 +5,10 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 
-from sinner2.audio.audio_backend import (
-    AudioBackend,
-    AudioBackendName,
-    build_audio_backend,
-)
+from sinner2.audio.audio_backend import AudioBackend, AudioBackendName
 from sinner2.config.source import Source
 from sinner2.config.target import Target, TargetKind
+from sinner2.gui.audio_controller import AudioController
 from sinner2.gui.bridges.observable_bridge import ObservableValueBridge
 from sinner2.gui.cache_controller import CacheController
 from sinner2.gui.widgets.frame_display import QFrameDisplayWidget
@@ -231,7 +228,6 @@ class PlayerController(QObject):
         self._display = frame_display
         self._transport = transport
         self._session_factory = session_factory or _default_session_factory
-        self._audio_backend_factory = audio_backend_factory or build_audio_backend
 
         self._executor: RealtimeExecutor | None = None
         self._write_executor: BoundedWriteExecutor | None = None
@@ -261,12 +257,10 @@ class PlayerController(QObject):
         # Cache-storage policy (root, per-session subdir, size cap, clear) lives
         # in its own helper; it reports storage changes back through the Qt signal.
         self._cache = CacheController(self.cacheStorageStatsChanged.emit)
-        # Audio playback. Backend is constructed lazily because some
-        # implementations (QtMultimedia) need a QApplication to exist
-        # first, and tests may build the controller before that.
-        self._audio_backend: AudioBackend | None = None
-        self._audio_backend_name: AudioBackendName = AudioBackendName.QT
-        self._audio_volume: int = 100
+        # Audio playback (backend lifecycle + volume + guarded mirror ops) lives
+        # in its own helper; it constructs the backend lazily because some
+        # implementations (QtMultimedia) need a QApplication to exist first.
+        self._audio = AudioController(audio_backend_factory, self.errorOccurred.emit)
         # Target fps cached on load so seek-by-frame can convert to seconds.
         self._target_fps: float = 0.0
         # Video reader backend (applies on next session start).
@@ -474,8 +468,7 @@ class PlayerController(QObject):
         # it (re-seek + play) once the new world is live. The EXECUTOR is NOT
         # torn down — it keeps running the old frames until the in-place swap
         # lands, so the display never blanks.
-        if self._audio_backend is not None and self._audio_backend.is_loaded():
-            self._audio_backend.pause()
+        self._audio.pause_if_loaded()
         self._swap_thread = self._spawn_swap(
             lambda: self._run_swap_job(source_path, target_path)
         )
@@ -608,25 +601,12 @@ class PlayerController(QObject):
         self._restore_audio_state()
 
     def _restore_audio_state(self) -> None:
-        """Re-point the audio backend at the restored position + play state
-        after an async session swap.
-
-        _adopt_swapped_bundle has already reloaded the target into the backend
-        (a no-op when only the source changed and the target path is the same).
-        QtMediaAudioBackend arms a pending seek/play when the media isn't ready
-        yet, so issuing these immediately is safe — they apply the moment the
-        codec reports LoadedMedia. Mirrors the play/seek the transport handlers
-        do, but driven by the controller's restore intent rather than a user
-        action."""
-        backend = self._audio_backend
-        if backend is None or not backend.is_loaded():
-            return
-        if self._target_fps > 0:
-            backend.seek_seconds(self._restore_frame / self._target_fps)
-        if self._restore_play:
-            backend.play()
-        else:
-            backend.pause()
+        """Re-point the audio backend at the restored position + play state after
+        an async session swap. The restore intent (frame / play / target fps) is
+        controller-owned session state; the audio helper applies it."""
+        self._audio.restore_state(
+            self._target_fps, self._restore_frame, self._restore_play
+        )
 
     @staticmethod
     def _write_session_metadata(
@@ -857,9 +837,7 @@ class PlayerController(QObject):
                 bundle.session_store.close()
             except Exception:
                 pass
-        if self._audio_backend is not None:
-            self._audio_backend.shutdown()
-            self._audio_backend = None
+        self._audio.shutdown()
 
     def executor(self) -> RealtimeExecutor | None:
         return self._executor
@@ -981,8 +959,7 @@ class PlayerController(QObject):
         self._bridges = []
         # Stop audio before tearing down the executor so the user doesn't
         # hear audio continuing while the frame view freezes.
-        if self._audio_backend is not None and self._audio_backend.is_loaded():
-            self._audio_backend.pause()
+        self._audio.pause_if_loaded()
         if self._executor is not None:
             self._executor.stop()
             self._executor = None
@@ -1003,14 +980,12 @@ class PlayerController(QObject):
     def _on_play(self) -> None:
         if self._executor is not None:
             self._executor.play()
-        if self._audio_backend is not None and self._audio_backend.is_loaded():
-            self._audio_backend.play()
+        self._audio.play_if_loaded()
 
     def _on_pause(self) -> None:
         if self._executor is not None:
             self._executor.pause()
-        if self._audio_backend is not None and self._audio_backend.is_loaded():
-            self._audio_backend.pause()
+        self._audio.pause_if_loaded()
 
     def toggle_playback(self) -> None:
         """Audio-aware play/pause toggle. The spacebar shortcut routes through
@@ -1032,54 +1007,31 @@ class PlayerController(QObject):
     def _on_seek(self, frame: int) -> None:
         if self._executor is not None:
             self._executor.seek(frame)
-        if (
-            self._audio_backend is not None
-            and self._audio_backend.is_loaded()
-            and self._target_fps > 0
-        ):
-            self._audio_backend.seek_seconds(frame / self._target_fps)
+        if self._target_fps > 0:
+            self._audio.seek_if_loaded(frame / self._target_fps)
 
     # ---- Audio ----
 
     def audio_backend(self) -> AudioBackend | None:
         """Lazy accessor — backend is constructed on first request so the
-        QApplication exists by then. Returns None if construction failed
-        (logged via errorOccurred)."""
-        if self._audio_backend is None:
-            try:
-                self._audio_backend = self._audio_backend_factory(self._audio_backend_name)
-                # Replay cached volume so the backend matches the UI state the
-                # user set before any media was loaded.
-                self._audio_backend.set_volume(self._audio_volume / 100.0)
-            except Exception as exc:
-                self.errorOccurred.emit(f"audio backend init failed: {exc}")
-                self._audio_backend = None
-        return self._audio_backend
+        QApplication exists by then. Returns None if construction failed."""
+        return self._audio.ensure_backend()
 
     def set_audio_backend(self, name: AudioBackendName) -> None:
-        if name is self._audio_backend_name and self._audio_backend is not None:
-            return
-        if self._audio_backend is not None:
-            self._audio_backend.shutdown()
-            self._audio_backend = None
-        self._audio_backend_name = name
-        # Reconstruct so the new backend picks up the cached volume and is
-        # ready for the next session's load() call.
-        self.audio_backend()
-        # If a session is live, reload the current media into the fresh backend
-        # and restore seek+play from the executor. Without this, switching the
-        # backend mid-session leaves it with no media loaded, so play/pause/seek
-        # all no-op and audio stays silent for the rest of the session.
-        self._reload_audio_into_backend()
+        # Swap the backend; only when it actually changed, reload the current
+        # media + restore seek/play from the executor. Without that, switching
+        # mid-session leaves the new backend with no media loaded so play/pause/
+        # seek all no-op and audio stays silent for the rest of the session.
+        if self._audio.switch_backend(name):
+            self._reload_audio_into_backend()
 
     def _reload_audio_into_backend(self) -> None:
         """Reload the current target into the active audio backend and restore
         seek+play from the live executor. No-op when no backend, no target, or
         no live session — used after the backend is (re)constructed mid-session."""
-        backend = self._audio_backend
-        if backend is None or self._current_target_path is None:
+        if self._audio.backend is None or self._current_target_path is None:
             return
-        backend.load(self._current_target_path)
+        self._audio.load(self._current_target_path)
         self._restore_audio_to_live_session()
 
     def _restore_audio_to_live_session(self) -> None:
@@ -1093,9 +1045,7 @@ class PlayerController(QObject):
         self._restore_audio_state()
 
     def _on_audio_volume_changed(self, value: int) -> None:
-        self._audio_volume = max(0, min(100, value))
-        if self.audio_backend() is not None:
-            self._audio_backend.set_volume(self._audio_volume / 100.0)  # type: ignore[union-attr]
+        self._audio.set_volume(value)
 
     def _rebuild_current_session_async(self) -> None:
         """Re-point the running session at its CURRENT source+target through the
@@ -1227,11 +1177,7 @@ class PlayerController(QObject):
         self._change_session_async(self._current_source_path, target_path)
 
     def apply_initial_audio_state(self, volume: int) -> None:
-        """Push persisted audio volume into the controller + (lazy) backend
-        without re-emitting transport signals. Called once on startup
-        before any session loads."""
-        self._audio_volume = max(0, min(100, volume))
-        # If the backend is already constructed (it isn't on first launch,
-        # but be defensive), reflect the value immediately.
-        if self._audio_backend is not None:
-            self._audio_backend.set_volume(self._audio_volume / 100.0)
+        """Push persisted audio volume into the audio helper without re-emitting
+        transport signals. Called once on startup before any session loads; does
+        NOT construct the backend (none exists yet on first launch)."""
+        self._audio.cache_initial_volume(volume)

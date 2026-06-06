@@ -215,7 +215,7 @@ class TestAudioRestoredOnSwap:
     def _attach_audio(self, ctrl: PlayerController) -> MagicMock:
         audio = MagicMock()
         audio.is_loaded.return_value = True
-        ctrl._audio_backend = audio  # noqa: SLF001
+        ctrl._audio._backend = audio  # noqa: SLF001  (inject a loaded backend)
         return audio
 
     def test_resumes_audio_with_seek_when_playing(self, widgets, monkeypatch):
