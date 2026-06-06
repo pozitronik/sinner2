@@ -206,9 +206,12 @@ class Wizard:
         self.say("\n⚠ GPU build selected, but the NVIDIA driver looks missing or too old.")
         self.say("  " + _DRIVER_HELP)
         while True:
-            choice = self.ask(
-                "  [R]echeck after installing, use [C]PU instead, or [A]bort? "
-            ).strip().lower()
+            try:
+                choice = self.ask(
+                    "  [R]echeck after installing, use [C]PU instead, or [A]bort? "
+                ).strip().lower()
+            except EOFError:
+                return None  # non-interactive / closed stdin → abort cleanly
             if choice.startswith("r"):
                 info = detect.detect()
                 if info.has_nvidia_gpu and not plan.recommend(info).gpu_blocked:
@@ -218,6 +221,8 @@ class Wizard:
                 return "cpu"
             elif choice.startswith("a"):
                 return None
+            else:
+                self.say("  Enter R, C, or A.")
 
     def _ask_tensorrt(self) -> bool:
         self.say(

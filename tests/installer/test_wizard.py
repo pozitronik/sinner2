@@ -124,6 +124,30 @@ class TestDriverGate:
         info = SystemInfo("linux", "x86_64", (), is_wsl=False)  # GPU variant but no GPU
         assert w._driver_gate("cuda", info) == "cpu"
 
+    def test_eof_on_stdin_aborts_cleanly(self):
+        # Non-interactive / closed stdin: input() raises EOFError. The gate must
+        # treat that as Abort (return None), not crash the installer.
+        from installer.detect import SystemInfo
+
+        def boom(_p):
+            raise EOFError
+
+        w = Wizard(_ctx(), ask=boom, say=lambda _m: None)
+        info = SystemInfo("linux", "x86_64", (), is_wsl=False)
+        assert w._driver_gate("cuda", info) is None
+
+    def test_unknown_input_reprompts_with_guidance(self):
+        # An unrecognised answer must re-print the valid choices (not silently
+        # loop), like _select_variant does.
+        from installer.detect import SystemInfo
+
+        answers = iter(["huh?", "a"])
+        said: list[str] = []
+        w = Wizard(_ctx(), ask=lambda _p: next(answers), say=said.append)
+        info = SystemInfo("linux", "x86_64", (), is_wsl=False)
+        assert w._driver_gate("cuda", info) is None
+        assert any("R, C, or A" in m for m in said)
+
 
 class TestUpdateFlow:
     def test_manage_menu_lists_update_first(self):
