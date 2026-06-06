@@ -230,3 +230,37 @@ class TestEvenDimensions:
         assert "-vf" in cmd
         vf = cmd[cmd.index("-vf") + 1]
         assert "trunc(iw/2)*2" in vf and "trunc(ih/2)*2" in vf
+
+
+class TestAudioMuxCommand:
+    def test_audio_mux_does_not_use_shortest(self, tmp_path, monkeypatch):
+        # -shortest ends output at the shorter stream; for VFR / fps-rounding the
+        # reconstructed video can run longer than the copied source audio, so
+        # -shortest silently drops trailing processed frames. The video stream
+        # must define duration → no -shortest.
+        import subprocess
+        from sinner2.io import video_encoder
+
+        captured = {}
+
+        class _R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        def fake_run(cmd, **_kw):
+            captured["cmd"] = cmd
+            return _R()
+
+        monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/" + name)
+        monkeypatch.setattr(video_encoder, "probe_has_audio", lambda _p: True)
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        encode_frames_to_mp4(
+            tmp_path / "frames",
+            tmp_path / "out.mp4",
+            fps=30.0,
+            audio_source=tmp_path / "a.wav",
+        )
+        cmd = captured["cmd"]
+        assert "-map" in cmd and "1:a:0" in cmd  # audio path was taken
+        assert "-shortest" not in cmd

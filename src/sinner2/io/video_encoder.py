@@ -124,7 +124,11 @@ def encode_frames_to_mp4(
             "-c:a", "copy",            # re-mux, no re-encode
             "-map", "0:v:0",
             "-map", "1:a:0",
-            "-shortest",               # don't run past video or audio end
+            # No -shortest: the video stream (our rendered frame sequence) must
+            # define the duration. -shortest would end output at the shorter
+            # stream, so for VFR / fps-rounding sources where the video runs
+            # slightly longer than the copied audio it silently dropped trailing
+            # processed frames. Excess audio (if any) is harmless.
         ]
     else:
         cmd += ["-an"]                 # no audio output
