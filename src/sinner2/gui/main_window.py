@@ -42,6 +42,7 @@ from sinner2.pipeline.processors.swapper_models import (
 )
 from sinner2.pipeline.processors.upscaler import model_filename
 from sinner2.gui.cache_controller import default_cache_root
+from sinner2.gui.live_controller import LiveController
 from sinner2.gui.player_controller import PlayerController
 from sinner2.gui.widgets.batch_task_dialog import QBatchTaskDialog
 from sinner2.gui.widgets.batch_view import QBatchView
@@ -49,6 +50,7 @@ from sinner2.gui.widgets.models_view import QModelsView
 from sinner2.gui.widgets.face_detection_overlay import QFaceDetectionOverlay
 from sinner2.gui.widgets.frame_display import QFrameDisplayWidget
 from sinner2.gui.widgets.fullscreen_control_bar import FullscreenControlBar
+from sinner2.gui.widgets.live_view import QLiveView
 from sinner2.gui.widgets.metrics_overlay import (
     CumulativeRateTracker,
     MetricsSample,
@@ -139,6 +141,7 @@ class SinnerMainWindow(QMainWindow):
         self._transport = QTransportControls()
         self._pickers = QSourceTargetPanel()
         self._processors = QProcessorControls()
+        self._live_view = QLiveView()
         # Side panel hosts the processors plus the source/target libraries
         # in a tab widget. Thumbnails get cached under the project temp dir
         # so they survive restarts; same directory as the processed-frame
@@ -167,6 +170,7 @@ class SinnerMainWindow(QMainWindow):
             processors=self._processors,
             batch_view=self._batch_view,
             models_view=self._models_view,
+            live_view=self._live_view,
             sources_display_dim=self._settings.library_sources_display_dim or _legacy_dim,
             targets_display_dim=self._settings.library_targets_display_dim or _legacy_dim,
         )
@@ -313,6 +317,16 @@ class SinnerMainWindow(QMainWindow):
         self._controller.bufferMetricsChanged.connect(self._update_metrics_label)
         self._controller.strategyModeChanged.connect(self._update_strategy_mode_label)
         self._controller.sessionSwitching.connect(self._on_session_switching)
+
+        # Live-camera mode: webcam -> chain -> MJPEG sink, owned by its own
+        # controller. Its preview frames drive the same display; the file
+        # transport is meaningless while it runs (disabled in _on_live_running).
+        self._live = LiveController(parent=self)
+        self._live.frameReady.connect(lambda f: self._display.show_frame(f))
+        self._live.runningChanged.connect(self._on_live_running)
+        self._live.errorOccurred.connect(self._show_error)
+        self._live_view.startRequested.connect(self._on_live_start)
+        self._live_view.stopRequested.connect(self._live.stop)
 
         self._pickers.sourceChanged.connect(self._on_source_changed)
         self._pickers.targetChanged.connect(self._on_target_changed)
@@ -1255,12 +1269,37 @@ class SinnerMainWindow(QMainWindow):
         if self._face_overlay_on:
             self._face_overlay.set_detections(detections, width, height)  # type: ignore[arg-type]
 
+    def _on_live_start(self) -> None:
+        """Start a live-camera session from the current source face + processor
+        settings. Source = the face to apply (a still); the webcam is the target."""
+        source = self._pickers.source_path()
+        if source is None:
+            self._status_bar.show_message("Load a source face first", 4000)
+            return
+        self._live.start(
+            source_path=source,
+            snapshot=self._processors.snapshot(),
+            device=self._live_view.device(),
+            width=self._live_view.width(),
+            height=self._live_view.height(),
+            fps=self._live_view.fps(),
+            mjpeg_port=self._live_view.port(),
+        )
+
+    def _on_live_running(self, running: bool) -> None:
+        self._live_view.set_running(running)
+        self._live_view.set_url(self._live.sink_url() if running else None)
+        # Live owns the preview while running; the file transport (seek/scrub) is
+        # meaningless then.
+        self._transport.setEnabled(not running)
+
     def closeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         self._persist_geometry_to_settings()
         # Stop the batch queue FIRST so its runner thread joins
         # before the controller / side panel start tearing down
         # shared resources (models, etc.).
         self._batch_queue.stop()
+        self._live.stop()
         self._controller.shutdown()
         # Stop the detection probe thread (debug overlay) so it doesn't
         # outlive Qt during shutdown. Wait in bounded increments rather than a

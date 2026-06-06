@@ -872,3 +872,57 @@ class TestSessionSwitchingDisablesControls:
         win._on_session_switching(False)  # noqa: SLF001
         win._processors.setEnabled.assert_called_with(True)  # noqa: SLF001
         win._transport.setEnabled.assert_called_with(True)  # noqa: SLF001
+
+
+class TestLiveMode:
+    def _win(self):
+        from unittest.mock import MagicMock
+
+        from sinner2.gui import main_window as mw
+
+        win = mw.SinnerMainWindow.__new__(mw.SinnerMainWindow)
+        win._live = MagicMock()  # noqa: SLF001
+        win._live_view = MagicMock()  # noqa: SLF001
+        win._pickers = MagicMock()  # noqa: SLF001
+        win._processors = MagicMock()  # noqa: SLF001
+        win._status_bar = MagicMock()  # noqa: SLF001
+        win._transport = MagicMock()  # noqa: SLF001
+        return win
+
+    def test_start_without_source_shows_message_and_no_start(self):
+        win = self._win()
+        win._pickers.source_path.return_value = None  # noqa: SLF001
+        win._on_live_start()  # noqa: SLF001
+        win._live.start.assert_not_called()  # noqa: SLF001
+        win._status_bar.show_message.assert_called()  # noqa: SLF001
+
+    def test_start_with_source_delegates_with_snapshot(self, tmp_path):
+        win = self._win()
+        src = tmp_path / "face.png"
+        src.write_bytes(b"x")
+        win._pickers.source_path.return_value = src  # noqa: SLF001
+        for getter, value in (
+            ("device", 0), ("width", 1280), ("height", 720),
+            ("fps", 30), ("port", 8080),
+        ):
+            getattr(win._live_view, getter).return_value = value  # noqa: SLF001
+        win._on_live_start()  # noqa: SLF001
+        win._live.start.assert_called_once()  # noqa: SLF001
+        kwargs = win._live.start.call_args.kwargs  # noqa: SLF001
+        assert kwargs["source_path"] == src
+        assert kwargs["snapshot"] is win._processors.snapshot.return_value  # noqa: SLF001
+        assert kwargs["device"] == 0 and kwargs["mjpeg_port"] == 8080
+
+    def test_running_disables_transport_and_updates_view(self):
+        win = self._win()
+        win._live.sink_url.return_value = "http://localhost:8080/"  # noqa: SLF001
+        win._on_live_running(True)  # noqa: SLF001
+        win._live_view.set_running.assert_called_with(True)  # noqa: SLF001
+        win._live_view.set_url.assert_called_with("http://localhost:8080/")  # noqa: SLF001
+        win._transport.setEnabled.assert_called_with(False)  # noqa: SLF001
+
+    def test_stopped_re_enables_transport(self):
+        win = self._win()
+        win._on_live_running(False)  # noqa: SLF001
+        win._live_view.set_running.assert_called_with(False)  # noqa: SLF001
+        win._transport.setEnabled.assert_called_with(True)  # noqa: SLF001

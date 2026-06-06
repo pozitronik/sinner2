@@ -35,6 +35,7 @@ class QSidePanel(QTabWidget):
         processors: QProcessorControls | None = None,
         batch_view: QBatchView | None = None,
         models_view: QWidget | None = None,
+        live_view: QWidget | None = None,
         thumb_extract_dim: int = 384,
         thumb_display_dim: int = 128,
         sources_display_dim: int | None = None,
@@ -72,6 +73,7 @@ class QSidePanel(QTabWidget):
         )
         self._batch_view = batch_view
         self._models_view = models_view
+        self._live_view = live_view
 
         # Order: settings first (most-used during initial setup), then
         # libraries for ongoing source/target switching, then batch
@@ -83,6 +85,8 @@ class QSidePanel(QTabWidget):
             self.addTab(self._batch_view, "Batch")
         if self._models_view is not None:
             self.addTab(self._models_view, "Models")
+        if self._live_view is not None:
+            self.addTab(self._live_view, "Live")
 
     # ---- Accessors ----
 
