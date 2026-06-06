@@ -73,3 +73,33 @@ class TestWriteFailures:
     def test_writes_to_nonexistent_dir_returns_false(self, tmp_path: Path):
         p = tmp_path / "does-not-exist" / "x.png"
         assert imwrite_unicode(p, _frame()) is False
+
+
+class TestAtomicWrite:
+    def test_replace_failure_leaves_dest_intact_and_no_temp(
+        self, tmp_path: Path, monkeypatch
+    ):
+        # The write is atomic (temp + os.replace): a failure during the replace
+        # must NOT corrupt an existing file or leave a half-written one — batch
+        # resume's frame_ok accepts any non-zero file, so a truncated frame would
+        # be shipped into the output.
+        from sinner2.io import cv2_unicode
+
+        dest = tmp_path / "frame.png"
+        assert imwrite_unicode(dest, np.full((4, 4, 3), 7, np.uint8))
+        before = dest.read_bytes()
+
+        def boom(_src, _dst):
+            raise OSError("replace failed")
+
+        monkeypatch.setattr(cv2_unicode.os, "replace", boom)
+        ok = imwrite_unicode(dest, np.full((4, 4, 3), 200, np.uint8))
+        assert ok is False
+        assert dest.read_bytes() == before  # original intact, not half-written
+        assert list(tmp_path.glob("*.tmp")) == []  # temp cleaned up
+
+    def test_no_temp_left_on_success(self, tmp_path: Path):
+        dest = tmp_path / "ok.jpg"
+        assert imwrite_unicode(dest, _frame())
+        assert dest.is_file()
+        assert list(tmp_path.glob("*.tmp")) == []

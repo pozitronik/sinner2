@@ -15,6 +15,7 @@ image), but the alternative is broken on every non-Latin filename.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import cv2
@@ -59,8 +60,18 @@ def imwrite_unicode(
     ok, encoded = cv2.imencode(ext, frame, params or [])
     if not ok:
         return False
+    # Atomic write: encode to a sibling temp then os.replace() onto the final
+    # path, so a crash / kill mid-write can't leave a truncated (non-zero) file
+    # that batch resume's frame_ok (st_size > 0) would accept and ship into the
+    # output. (Single writer per path, so a fixed .tmp suffix can't collide.)
+    tmp = p.with_name(p.name + ".tmp")
     try:
-        p.write_bytes(encoded.tobytes())
+        tmp.write_bytes(encoded.tobytes())
+        os.replace(tmp, p)
     except OSError:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
         return False
     return True
