@@ -104,3 +104,55 @@ class ProcessorParamsSnapshot:
             upscaler_enabled=self.upscaler_enabled,
             upscaler_device=self.upscaler_device,
         )
+
+    def to_settings_kwargs(self) -> dict[str, Any]:
+        """Flatten the snapshot into the flat keyword surface shared by settings
+        persistence (`_update_settings`) and the widget restore path
+        (`apply_restored_settings`) — the single source for that 39-field map, so
+        persist and restore can't drift. str-Enum model fields become their
+        stable `.value` tokens (settings round-trip + sinner1 compatibility); the
+        session enums and primitives pass through as-is."""
+        sp = self.swapper_params
+        ep = self.enhancer_params
+        up = self.upscaler_params
+        return dict(
+            realtime_workers=self.realtime_workers,
+            strategy_name=self.strategy_name,
+            enhancer_enabled=self.enhancer_enabled,
+            swapper_enabled=self.swapper_enabled,
+            swapper_model=sp.model.value,
+            swapper_detection_interval=sp.detection_interval,
+            swapper_detection_size=sp.detection_size,
+            swapper_detector=sp.detector.value,
+            swapper_many_faces=sp.many_faces,
+            swapper_target_sex=sp.target_sex.value,
+            swapper_rotation_compensation=sp.rotation_compensation,
+            swapper_rotation_threshold_deg=sp.rotation_threshold_deg,
+            swapper_rotation_redetect=sp.rotation_redetect,
+            swapper_rotation_angle_source=sp.rotation_angle_source.value,
+            swapper_occlusion_mask=sp.occlusion_mask,
+            swapper_occlusion_parser=sp.occlusion_parser.value,
+            enhancer_model=ep.model.value,
+            enhancer_upscale=ep.upscale,
+            enhancer_only_center_face=ep.only_center_face,
+            enhancer_codeformer_fidelity=ep.codeformer_fidelity,
+            enhancer_fp16=ep.fp16,
+            playback_mode=self.playback_mode,
+            cache_mode=self.cache_mode,
+            image_format=self.image_format,
+            image_quality=self.image_quality,
+            memory_cache_mb=self.memory_cache_mb,
+            write_workers=self.write_workers,
+            write_queue_size=self.write_queue_size,
+            video_backend=self.video_backend,
+            reader_pool_size=self.reader_pool_size,
+            processing_scale=self.processing_scale,
+            synced_max_lag_frames=self.synced_max_lag_frames,
+            swapper_providers=list(self.swapper_providers),
+            enhancer_device=self.enhancer_device,
+            upscaler_enabled=self.upscaler_enabled,
+            upscaler_model=up.model.value,
+            upscaler_tile=up.tile,
+            upscaler_fp16=up.fp16,
+            upscaler_device=self.upscaler_device,
+        )

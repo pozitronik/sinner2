@@ -1328,51 +1328,9 @@ class SinnerMainWindow(QMainWindow):
         )
 
     def _persist_processor_settings(self) -> None:
-        swapper = self._processors.swapper_params()
-        enhancer = self._processors.enhancer_params()
-        self._update_settings(
-            realtime_workers=self._processors.realtime_workers(),
-            strategy_name=self._processors.strategy_name(),
-            enhancer_enabled=self._processors.enhancer_enabled(),
-            swapper_enabled=self._processors.swapper_enabled(),
-            swapper_model=swapper.model.value,
-            swapper_detection_interval=swapper.detection_interval,
-            swapper_detection_size=swapper.detection_size,
-            swapper_detector=swapper.detector.value,
-            swapper_many_faces=swapper.many_faces,
-            # str-Enum .value is the single-letter token, kept stable
-            # for settings round-trip and sinner1 compatibility.
-            swapper_target_sex=swapper.target_sex.value,
-            swapper_rotation_compensation=swapper.rotation_compensation,
-            swapper_rotation_threshold_deg=swapper.rotation_threshold_deg,
-            swapper_rotation_redetect=swapper.rotation_redetect,
-            swapper_rotation_angle_source=swapper.rotation_angle_source.value,
-            swapper_occlusion_mask=swapper.occlusion_mask,
-            swapper_occlusion_parser=swapper.occlusion_parser.value,
-            enhancer_model=enhancer.model.value,
-            enhancer_upscale=enhancer.upscale,
-            enhancer_only_center_face=enhancer.only_center_face,
-            enhancer_codeformer_fidelity=enhancer.codeformer_fidelity,
-            enhancer_fp16=enhancer.fp16,
-            playback_mode=self._processors.playback_mode(),
-            cache_mode=self._processors.cache_mode(),
-            image_format=self._processors.image_format(),
-            image_quality=self._processors.image_quality(),
-            memory_cache_mb=self._processors.memory_cache_mb(),
-            write_workers=self._processors.write_workers(),
-            write_queue_size=self._processors.write_queue_size(),
-            video_backend=self._processors.video_backend(),
-            reader_pool_size=self._processors.reader_pool_size(),
-            processing_scale=self._processors.processing_scale(),
-            synced_max_lag_frames=self._processors.synced_max_lag_frames(),
-            swapper_providers=self._processors.swapper_providers(),
-            enhancer_device=self._processors.enhancer_device(),
-            upscaler_enabled=self._processors.upscaler_enabled(),
-            upscaler_model=self._processors.upscaler_params().model.value,
-            upscaler_tile=self._processors.upscaler_params().tile,
-            upscaler_fp16=self._processors.upscaler_params().fp16,
-            upscaler_device=self._processors.upscaler_device(),
-        )
+        # One capture, one flat map — the same to_settings_kwargs() the widget's
+        # restore path consumes, so persisted + restored settings can't diverge.
+        self._update_settings(**self._processors.snapshot().to_settings_kwargs())
 
     def _restore_paths_from_settings(self) -> None:
         # Restore recents BEFORE the current path, so the persist

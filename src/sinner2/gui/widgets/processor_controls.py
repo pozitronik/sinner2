@@ -1293,55 +1293,11 @@ class QProcessorControls(QWidget):
     def apply_snapshot(self, snapshot: ProcessorParamsSnapshot) -> None:
         """Write a snapshot back into the controls (the inverse of snapshot()).
 
-        Reuses the bulk-restore path so per-widget signals stay suppressed and
-        configChanged fires once; flattens the three composed param models into
-        the flat restore kwargs. The str-Enum model fields are passed as their
-        token values (what the combos store as itemData); the session enums pass
-        through as-is (apply_restored_settings takes them directly)."""
-        sp = snapshot.swapper_params
-        ep = snapshot.enhancer_params
-        up = snapshot.upscaler_params
-        self.apply_restored_settings(
-            realtime_workers=snapshot.realtime_workers,
-            strategy_name=snapshot.strategy_name,
-            enhancer_enabled=snapshot.enhancer_enabled,
-            swapper_enabled=snapshot.swapper_enabled,
-            swapper_model=sp.model.value,
-            swapper_detection_interval=sp.detection_interval,
-            swapper_detection_size=sp.detection_size,
-            swapper_detector=sp.detector.value,
-            swapper_many_faces=sp.many_faces,
-            swapper_target_sex=sp.target_sex.value,
-            swapper_occlusion_mask=sp.occlusion_mask,
-            swapper_occlusion_parser=sp.occlusion_parser.value,
-            swapper_rotation_compensation=sp.rotation_compensation,
-            swapper_rotation_threshold_deg=sp.rotation_threshold_deg,
-            swapper_rotation_redetect=sp.rotation_redetect,
-            swapper_rotation_angle_source=sp.rotation_angle_source.value,
-            enhancer_model=ep.model.value,
-            enhancer_upscale=ep.upscale,
-            enhancer_only_center_face=ep.only_center_face,
-            enhancer_codeformer_fidelity=ep.codeformer_fidelity,
-            enhancer_fp16=ep.fp16,
-            playback_mode=snapshot.playback_mode,
-            cache_mode=snapshot.cache_mode,
-            image_format=snapshot.image_format,
-            image_quality=snapshot.image_quality,
-            memory_cache_mb=snapshot.memory_cache_mb,
-            write_workers=snapshot.write_workers,
-            write_queue_size=snapshot.write_queue_size,
-            video_backend=snapshot.video_backend,
-            reader_pool_size=snapshot.reader_pool_size,
-            processing_scale=snapshot.processing_scale,
-            synced_max_lag_frames=snapshot.synced_max_lag_frames,
-            swapper_providers=list(snapshot.swapper_providers),
-            enhancer_device=snapshot.enhancer_device,
-            upscaler_enabled=snapshot.upscaler_enabled,
-            upscaler_model=up.model.value,
-            upscaler_tile=up.tile,
-            upscaler_fp16=up.fp16,
-            upscaler_device=snapshot.upscaler_device,
-        )
+        Reuses the bulk-restore path (so per-widget signals stay suppressed and
+        configChanged fires once) AND the snapshot's own flat field map — the
+        same one settings persistence consumes — so restore and persist read
+        from a single source and can't drift apart."""
+        self.apply_restored_settings(**snapshot.to_settings_kwargs())
 
     def apply_restored_settings(
         self,

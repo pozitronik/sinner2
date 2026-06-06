@@ -13,6 +13,7 @@ session parameter surface. Two gates:
 from __future__ import annotations
 
 import dataclasses
+import inspect
 
 import pytest
 from PySide6.QtWidgets import (
@@ -157,3 +158,40 @@ def test_to_session_config_synced_strategy_and_cache_bundle(widget):
 def test_to_session_config_best_effort_strategy(widget):
     s = dataclasses.replace(widget.snapshot(), strategy_name="BestEffortStrategy")
     assert isinstance(s.to_session_config()["strategy"], BestEffortStrategy)
+
+
+def test_to_settings_kwargs_flattens_with_value_tokens(widget):
+    """Persist surface: str-Enum model fields become their stable .value tokens,
+    providers serialize as a plain list, primitives + session enums pass through."""
+    s = dataclasses.replace(
+        widget.snapshot(), swapper_providers=("CPUExecutionProvider",)
+    )
+    kw = s.to_settings_kwargs()
+    assert kw["swapper_model"] == s.swapper_params.model.value
+    assert kw["swapper_detector"] == s.swapper_params.detector.value
+    assert kw["swapper_target_sex"] == s.swapper_params.target_sex.value
+    assert kw["swapper_occlusion_parser"] == s.swapper_params.occlusion_parser.value
+    assert (
+        kw["swapper_rotation_angle_source"]
+        == s.swapper_params.rotation_angle_source.value
+    )
+    assert kw["enhancer_model"] == s.enhancer_params.model.value
+    assert kw["upscaler_model"] == s.upscaler_params.model.value
+    assert kw["swapper_providers"] == ["CPUExecutionProvider"]
+    assert isinstance(kw["swapper_providers"], list)
+    assert kw["realtime_workers"] == s.realtime_workers
+    assert kw["playback_mode"] == s.playback_mode
+    assert kw["synced_max_lag_frames"] == s.synced_max_lag_frames
+    assert kw["memory_cache_mb"] == s.memory_cache_mb
+
+
+def test_to_settings_kwargs_keys_match_apply_restored_settings(widget):
+    """The flat map IS the apply_restored_settings keyword surface — so the
+    shared persist/restore path provides exactly those keys, no more, no less.
+    This guards the dedup: a field added to one side must appear on the other."""
+    kw = widget.snapshot().to_settings_kwargs()
+    params = inspect.signature(QProcessorControls.apply_restored_settings).parameters
+    expected = {
+        name for name, p in params.items() if p.kind is p.KEYWORD_ONLY
+    }
+    assert set(kw) == expected
