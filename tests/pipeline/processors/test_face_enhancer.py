@@ -434,6 +434,48 @@ class TestPlainBfrBackends:
         assert fe._bfr is None  # noqa: SLF001
 
 
+class TestRotationSkippedForOnnxRestorers:
+    """CodeFormer / GPEN / RestoreFormer already remove in-plane roll via their
+    per-face estimate_norm alignment, so the GFPGAN-specific uprighting pass is
+    wasted work and must be skipped for them (it re-detects + re-restores the
+    heaviest op per tilted face)."""
+
+    class _StubBackend:
+        def __init__(self, *a, **k):
+            pass
+
+        def setup(self):
+            pass
+
+        def enhance(self, img):
+            return img
+
+    def test_codeformer_skips_uprighting(
+        self, models_dir, stub_face_detection, monkeypatch
+    ):
+        monkeypatch.setattr(face_enhancer, "CodeFormerBackend", self._StubBackend)
+        called: list = []
+        monkeypatch.setattr(
+            face_enhancer,
+            "enhance_with_uprighting",
+            lambda result, *a, **k: called.append(True) or result,
+        )
+        tilted = MagicMock()
+        tilted.bbox = np.array([2, 2, 8, 8], float)
+        tilted.kps = np.array([[3, 3], [7, 7]], float)  # 45° roll
+        stub_face_detection.get.return_value = [tilted]
+        fe = FaceEnhancer(
+            params=FaceEnhancerParams(
+                model=EnhancerModel.CODEFORMER,
+                rotation_compensation=True,
+                rotation_threshold_deg=15,
+            )
+        )
+        fe.setup()
+        fe.process(_blank())
+        assert called == []  # uprighting skipped for the ONNX restorer
+
+
 def test_enhancer_onnx_model_file_mapping():
     from sinner2.pipeline.processors.face_enhancer import enhancer_onnx_model_file
 

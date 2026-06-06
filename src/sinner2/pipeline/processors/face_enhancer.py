@@ -220,7 +220,16 @@ class FaceEnhancer:
             return out if out is not None else img
 
         result = enhance_image(frame, self._params.only_center_face)
-        if not self._params.rotation_compensation or self._analyser is None:
+        # Only GFPGAN needs the uprighting pass. The ONNX restorers (CodeFormer /
+        # GPEN / RestoreFormer) already remove in-plane roll via their per-face
+        # estimate_norm alignment, so re-enhancing an uprighted crop is wasted
+        # work — a full extra detect + restore + blend (the heaviest op) per
+        # tilted face, on by default.
+        if (
+            restorer is None
+            or not self._params.rotation_compensation
+            or self._analyser is None
+        ):
             return result
         # GFPGAN just mangled any tilted faces (no rotation handling). For each
         # face rolled past the threshold, re-enhance an uprighted crop of the
