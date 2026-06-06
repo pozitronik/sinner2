@@ -109,6 +109,11 @@ def encode_frames_to_mp4(
     if use_audio:
         cmd += ["-i", str(audio_source)]
     cmd += [
+        # libx264/yuv420p requires even width AND height. Force-truncate to even
+        # so an odd-dimension source (phone / screen captures) doesn't fail the
+        # encode with an opaque non-zero exit. No-op when dimensions are already
+        # even (trunc(iw/2)*2 == iw).
+        "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
         "-c:v", "libx264",
         "-pix_fmt", "yuv420p",
         "-crf", "18",                  # visually-lossless default

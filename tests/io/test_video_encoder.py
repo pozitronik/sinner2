@@ -134,6 +134,33 @@ class TestVideoRoundtrip:
         assert "video" in types
         assert "audio" in types
 
+    def test_encodes_odd_dimension_frames(self, tmp_path):
+        # 65x49 (both odd) would fail libx264/yuv420p without the even-scale
+        # filter; the output must exist and be cropped to even dimensions.
+        frame_dir = tmp_path / "frames"
+        frame_dir.mkdir()
+        _make_frames(frame_dir, n=6, w=65, h=49)
+        out = tmp_path / "odd.mp4"
+        encode_frames_to_mp4(frame_dir, out, fps=6.0)
+        assert out.is_file()
+        import subprocess
+
+        result = subprocess.run(
+            [
+                _FFPROBE,
+                "-v", "error",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=width,height",
+                "-of", "csv=p=0",
+                str(out),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        w, h = (int(x) for x in result.stdout.strip().split(","))
+        assert w % 2 == 0 and h % 2 == 0
+
     def test_audio_source_without_audio_stream_silently_drops_remux(
         self, tmp_path
     ):
@@ -176,3 +203,30 @@ class TestVideoRoundtrip:
             check=True,
         )
         assert "audio" not in result.stdout.split()
+
+
+class TestEvenDimensions:
+    def test_cmd_forces_even_dimensions(self, tmp_path, monkeypatch):
+        # libx264/yuv420p requires even W/H; odd-dimension sources (phone/screen
+        # recordings) otherwise fail the encode with an opaque non-zero exit. The
+        # encoder must always apply a trunc-to-even scale filter (no-op if even).
+        import subprocess
+
+        captured = {}
+
+        class _R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        def fake_run(cmd, **_kw):
+            captured["cmd"] = cmd
+            return _R()
+
+        monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/" + name)
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        encode_frames_to_mp4(tmp_path / "frames", tmp_path / "out.mp4", fps=30.0)
+        cmd = captured["cmd"]
+        assert "-vf" in cmd
+        vf = cmd[cmd.index("-vf") + 1]
+        assert "trunc(iw/2)*2" in vf and "trunc(ih/2)*2" in vf
