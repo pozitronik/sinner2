@@ -476,3 +476,32 @@ class TestActualProviders:
         record_actual_providers(["CUDAExecutionProvider"])
         record_actual_providers(["CPUExecutionProvider"])
         assert get_actual_providers() == ("CPUExecutionProvider",)
+
+
+class TestDeleteModelEvictsCaches:
+    def test_delete_force_evicts_session_and_insightface(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        # delete_model must FORCE-evict the cached session(s) regardless of
+        # refcount (the file is going away). Borrowing release_onnx_session's
+        # decrement left a dangling entry for an N-consumer session (refcount
+        # corruption) and never touched the insightface cache, so a deleted
+        # inswapper/reswapper stayed resident.
+        from sinner2.pipeline import model_cache as mc
+
+        monkeypatch.setenv("SINNER2_MODELS_DIR", str(tmp_path))
+        clear_session_cache()
+        name = "inswapper_128.onnx"
+        path = get_models_dir() / name
+        mc._session_cache[path] = MagicMock()  # noqa: SLF001
+        mc._session_refcount[path] = 3  # noqa: SLF001  (3 live consumers)
+        mc._insightface_cache[  # noqa: SLF001
+            (path, ("CUDAExecutionProvider",))
+        ] = MagicMock()
+
+        mc.delete_model(name)
+
+        assert path not in mc._session_cache  # noqa: SLF001 — popped, not decremented
+        assert path not in mc._session_refcount  # noqa: SLF001
+        assert all(k[0] != path for k in mc._insightface_cache)  # noqa: SLF001
+        clear_session_cache()

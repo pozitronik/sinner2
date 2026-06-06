@@ -532,13 +532,36 @@ def model_size_on_disk(name: str) -> int:
         return 0
 
 
+def _force_evict_caches(path: Path) -> None:
+    """Force-drop a model's cached session(s) regardless of refcount — used when
+    the file is going away (delete_model). The consumer-refcount API
+    (release_onnx_session) only evicts at the LAST release, so for an N-consumer
+    session it would leave a dangling entry and skew the count; and it never
+    touches the insightface cache (keyed by (path, providers)), so a deleted
+    inswapper/reswapper would stay resident. This pops both, for every provider
+    variant of the path."""
+    import gc
+
+    evicted = False
+    with _session_lock:
+        if _session_cache.pop(path, None) is not None:
+            _session_refcount.pop(path, None)
+            evicted = True
+        for key in [k for k in _insightface_cache if k[0] == path]:
+            _insightface_cache.pop(key, None)
+            evicted = True
+    if evicted:
+        gc.collect()
+
+
 def delete_model(name: str) -> bool:
     """Delete a model's file from the models dir. Returns True if a file was
-    removed (False if it wasn't there). Also evicts any cached ONNX session so
-    a re-download re-loads cleanly. The caller is responsible for confirming —
-    especially for REQUIRED models, which the app needs to run."""
-    release_onnx_session(name)
+    removed (False if it wasn't there). Force-evicts any cached session(s) so a
+    re-download re-loads cleanly and no stale model lingers in VRAM. The caller
+    is responsible for confirming — especially for REQUIRED models, which the
+    app needs to run."""
     path = get_models_dir() / name
+    _force_evict_caches(path)
     try:
         if path.is_file():
             path.unlink()
