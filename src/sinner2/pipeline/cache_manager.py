@@ -242,12 +242,17 @@ class CacheManager:
             return 0, 0
         protected = {Path(p).resolve() for p in protect}
         entries = self.list_entries()
-        total = sum(e.size_bytes for e in entries)
+        # Base the budget ONLY on deletable (non-protected) bytes. Counting the
+        # protected entry's bytes in `total` while subtracting only deleted
+        # candidates' sizes over-evicts (and, when the protected dir alone
+        # exceeds the cap, wipes every evictable entry without ever satisfying
+        # it). The protected (active) session dir is excluded from the budget.
+        candidates = [e for e in entries if e.path.resolve() not in protected]
+        total = sum(e.size_bytes for e in candidates)
         if total <= max_bytes:
             return 0, 0
         # Oldest first: prefer last_used_at from meta, else fall back to
-        # filesystem mtime. Protected entries are filtered out.
-        candidates = [e for e in entries if e.path.resolve() not in protected]
+        # filesystem mtime.
         candidates.sort(key=_entry_age_key)
         deleted = 0
         freed = 0

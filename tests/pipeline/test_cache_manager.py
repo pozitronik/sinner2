@@ -207,6 +207,33 @@ class TestEnforceSizeCap:
         deleted, _ = mgr.enforce_size_cap(max_bytes=0)
         assert deleted == 0
 
+    def test_protect_does_not_over_evict(self, tmp_path: Path):
+        # rank 30: protected entries' bytes must NOT count toward the budget.
+        # The only deletable entry (~1 KB) is well under the 5 KB cap, so nothing
+        # should be evicted even though the protected (active) dir is huge.
+        active = _make_entry(tmp_path, "active", [50_000])
+        old = _make_entry(tmp_path, "old", [1000])
+        mgr = CacheManager(tmp_path)
+        deleted, _ = mgr.enforce_size_cap(max_bytes=5000, protect=[active])
+        assert deleted == 0
+        assert old.exists()
+        assert active.exists()
+
+    def test_evicts_deletable_while_sparing_protected(self, tmp_path: Path):
+        # With a huge protected (active) dir, only the deletable entries count
+        # toward the cap: oldest deletable is evicted, newest deletable + the
+        # protected dir survive (the bug evicted BOTH deletable entries).
+        active = _make_entry(tmp_path, "active", [10_000])
+        old = _make_entry(tmp_path, "old", [10_000])
+        time.sleep(1.1)
+        new = _make_entry(tmp_path, "new", [10_000])
+        mgr = CacheManager(tmp_path)
+        deleted, _ = mgr.enforce_size_cap(max_bytes=15_000, protect=[active])
+        assert deleted == 1
+        assert not old.exists()
+        assert new.exists()
+        assert active.exists()
+
 
 class TestMetaIO:
     def test_write_then_list_round_trips(self, tmp_path: Path):
