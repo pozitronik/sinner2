@@ -857,3 +857,45 @@ class TestSwitchLibraryCancelsScans:
             assert view._scan_cancel_epoch > before  # noqa: SLF001
         finally:
             view.shutdown()
+
+
+class TestShutdownWaitBudget:
+    def test_shutdown_bounds_total_wait_across_stuck_jobs(self, monkeypatch):
+        # A stuck scan worker (slow network os.scandir) must not freeze the GUI
+        # for 5s PER job at close — the wait is bounded to one shared budget.
+        from unittest.mock import MagicMock
+
+        from sinner2.gui.widgets import library_view as lv
+
+        clock = [1000.0]
+        monkeypatch.setattr(lv.time, "monotonic", lambda: clock[0])
+        waits: list[int] = []
+
+        class _StuckThread:
+            def quit(self):
+                pass
+
+            def wait(self, ms):
+                waits.append(ms)
+                clock[0] += ms / 1000.0  # stays stuck for the whole wait
+                return False
+
+            def deleteLater(self):
+                pass
+
+        class _Worker:
+            def cancel(self):
+                pass
+
+            def deleteLater(self):
+                pass
+
+        view = lv.QLibraryView.__new__(lv.QLibraryView)
+        view._scan_cancel_epoch = 0  # noqa: SLF001
+        view._scan_label = MagicMock()  # noqa: SLF001
+        view._scan_jobs = [  # noqa: SLF001
+            (_StuckThread(), _Worker()) for _ in range(3)
+        ]
+        view.shutdown()
+        assert sum(waits) <= 5100  # one shared ~5s budget, not 5s x 3
+        assert view._scan_jobs == []  # noqa: SLF001

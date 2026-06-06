@@ -16,6 +16,7 @@ a tile. Caller wires that to whichever 'load this' action makes sense.
 """
 from __future__ import annotations
 
+import time
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
@@ -662,17 +663,20 @@ class QLibraryView(QWidget):
         # shared helper — keeps clear() and shutdown() symmetric so a
         # late batch never repopulates after either action.
         self._cancel_active_scans()
-        for thread, worker in jobs:
+        # Quit all first, then wait against a SINGLE shared deadline. The worker
+        # checks its cancel flag once per file iteration, so on a slow network
+        # share an in-flight os.scandir() can take seconds to return; waiting the
+        # full budget PER job would freeze the GUI for 5s × N. One shared budget
+        # bounds the total close stall; past it the daemon-promoted threads die
+        # with the process.
+        for thread, _worker in jobs:
             thread.quit()
-            # Generous wait: the worker checks the cancel flag once per
-            # file iteration, so on a slow network share the in-flight
-            # os.scandir() may take seconds to return. 5s is enough for
-            # any realistic single batch; past that we drop the wait
-            # and let the daemon-promoted threads die with the process.
-            thread.wait(5000)
-            # Queue deletion. _on_scan_finished may also fire later
-            # via a queued signal; deleteLater is idempotent here
-            # because Qt processes only one pending deletion per object.
+        deadline = time.monotonic() + 5.0
+        for thread, worker in jobs:
+            remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
+            thread.wait(remaining_ms)
+            # Queue deletion. _on_scan_finished may also fire later via a queued
+            # signal; deleteLater is idempotent (one pending deletion per object).
             worker.deleteLater()
             thread.deleteLater()
         # Clear the registry ourselves: _on_scan_finished does that
