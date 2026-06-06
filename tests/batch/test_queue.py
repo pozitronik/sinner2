@@ -235,3 +235,22 @@ class TestStopPausesNotCancels:
         queue.stop()
         driver.pause.assert_called_once()   # resumable
         driver.cancel.assert_not_called()   # no cache wipe
+
+
+class TestPauseTaskDoesNotAutostartNext:
+    """Pausing the current task (pause_task) must stop the queue, NOT roll on to
+    the next pending task — PAUSED was treated like COMPLETED and scheduled the
+    next task."""
+
+    def test_paused_terminal_does_not_schedule_next(self, queue):
+        queue._paused = False  # noqa: SLF001  (single-task pause leaves queue unpaused)
+        queue._worker = None  # noqa: SLF001
+        queue._thread = None  # noqa: SLF001
+        queue._current_task_id = "abc"  # noqa: SLF001
+        scheduled: list[bool] = []
+        queue._schedule_next = lambda: scheduled.append(True)  # noqa: SLF001
+        idle: list[bool] = []
+        queue.queueIdle.connect(lambda: idle.append(True))
+        queue._on_completed("abc", BatchTaskStatus.PAUSED.value)  # noqa: SLF001
+        assert scheduled == []   # did NOT auto-start the next task
+        assert idle == [True]    # went idle instead

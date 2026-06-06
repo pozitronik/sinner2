@@ -293,9 +293,14 @@ class BatchQueue(QObject):
                 self.taskFailed.emit(task_id, task.error_message or "")
         self.taskCompleted.emit(task_id)
         self._teardown_runner()
-        # Auto-pick next pending task unless we're paused or the
-        # terminal was a Cancel (user intent: stop scheduling).
-        if not self._paused and terminal is not BatchTaskStatus.CANCELLED:
+        # Auto-pick next pending task unless we're paused or the task reached a
+        # user-intent stop: Cancel OR Pause (pause_task pauses just the current
+        # task without setting the queue-level _paused flag, so PAUSED must also
+        # halt scheduling — else pausing one task silently starts the next).
+        if not self._paused and terminal not in (
+            BatchTaskStatus.CANCELLED,
+            BatchTaskStatus.PAUSED,
+        ):
             self._schedule_next()
         else:
             self.queueIdle.emit()
