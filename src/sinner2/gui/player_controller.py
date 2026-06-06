@@ -425,8 +425,11 @@ class PlayerController(QObject):
                     write_workers=cache_settings.write_workers,
                     write_queue_size=cache_settings.write_queue_size,
                 )
-            elif self._cache_size_cap_bytes > 0:
-                manager.enforce_size_cap(self._cache_size_cap_bytes)
+            else:
+                # Cache root OK — evict old dirs down to the cap, sparing the
+                # active session's dir so a cache-hit reuse isn't evicted out
+                # from under us (rank 29).
+                self._enforce_cache_cap(manager, cache_dir)
             session_store = PersistentFrameStore(cache_dir, writer=writer)
             if manager.is_available():
                 self._write_session_metadata(
@@ -670,6 +673,17 @@ class PlayerController(QObject):
             backend.play()
         else:
             backend.pause()
+
+    def _enforce_cache_cap(self, manager: CacheManager, cache_dir: Path) -> None:
+        """Evict old cache dirs down to the size cap, sparing the active
+        session's dir. Without protect=, a cache-HIT reuse (cache_dir already
+        the LRU-oldest under pressure) could be evicted moments before this
+        session reattaches to it, forcing a needless full re-render (rank 29).
+        touch_last_used refreshes its recency first (no-op for a brand-new dir)."""
+        if self._cache_size_cap_bytes <= 0:
+            return
+        manager.touch_last_used(cache_dir)
+        manager.enforce_size_cap(self._cache_size_cap_bytes, protect=[cache_dir])
 
     @staticmethod
     def _write_session_metadata(
