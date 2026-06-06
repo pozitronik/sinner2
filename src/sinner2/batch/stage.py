@@ -126,6 +126,33 @@ class FramesDirInput:
         pass
 
 
+class _ContiguousCounter:
+    """Tracks the contiguous-from-0 count of completed frames as they finish OUT
+    OF ORDER. ``value`` is the number of frames done with no gap from index 0 —
+    the durable resume high-water mark — as opposed to a raw completion count,
+    which can momentarily run ahead of that prefix under multiple workers."""
+
+    def __init__(self, pending: set[int], total: int) -> None:
+        self._pending = pending
+        self._total = total
+        self._cursor = 0
+        self._advance()
+
+    def _advance(self) -> None:
+        while self._cursor < self._total and self._cursor not in self._pending:
+            self._cursor += 1
+
+    @property
+    def value(self) -> int:
+        return self._cursor
+
+    def complete(self, idx: int) -> int:
+        self._pending.discard(idx)
+        if idx == self._cursor:
+            self._advance()
+        return self._cursor
+
+
 def run_stage(
     *,
     stage_input: StageInput,
@@ -174,15 +201,18 @@ def run_stage(
         return t
 
     pending = missing(total)
-    done = total - len(pending)
+    # Report the contiguous-from-0 prefix (the durable resume point), not a raw
+    # completion count: with multiple workers frames finish out of order, so a
+    # plain count can momentarily exceed the gap-free prefix and overstate the
+    # persisted last_completed_frame on a mid-task restart.
+    counter = _ContiguousCounter(set(pending), total)
     if on_progress is not None:
-        on_progress(done)
+        on_progress(counter.value)
 
-    def bump() -> None:
-        nonlocal done
-        done += 1
+    def bump(idx: int) -> None:
+        v = counter.complete(idx)
         if on_progress is not None:
-            on_progress(done)
+            on_progress(v)
 
     errors: list[str] = []
 
@@ -310,7 +340,7 @@ def _feed(
     workers: int,
     pause_event: threading.Event,
     cancel_event: threading.Event,
-    bump: Callable[[], None],
+    bump: Callable[[int], None],
     eof_on_none: bool,
     maybe_preview: Callable[[Frame | None], None],
     on_error: Callable[[BaseException], None],
@@ -318,7 +348,7 @@ def _feed(
     """Submit ``indices`` through the processor pool. Reads happen here on a
     single thread (sequential decode); workers only process + write. Returns
     the interrupt status and, if eof_on_none hit a None read, the EOF index."""
-    inflight: list[Future] = []
+    inflight: list[tuple[int, Future]] = []
     cap = max(2, workers * 2)
     interrupted: StageStatus | None = None
     eof_at: int | None = None
@@ -342,7 +372,7 @@ def _feed(
                 continue  # gap within the real range; integrity catches it
             out_path = output_dir / f"{idx:08d}.{ext}"
             inflight.append(
-                executor.submit(_process_write, pool, frame, out_path, writer)
+                (idx, executor.submit(_process_write, pool, frame, out_path, writer))
             )
             if len(inflight) >= cap:
                 _drain_one(inflight, bump, maybe_preview, on_error)
@@ -352,21 +382,23 @@ def _feed(
 
 
 def _drain_one(
-    inflight: list[Future],
-    bump: Callable[[], None],
+    inflight: list[tuple[int, Future]],
+    bump: Callable[[int], None],
     maybe_preview: Callable[[Frame | None], None],
     on_error: Callable[[BaseException], None],
 ) -> None:
-    done, _pending = wait(inflight, return_when="FIRST_COMPLETED")
+    done, _pending = wait([f for _, f in inflight], return_when="FIRST_COMPLETED")
     for fut in done:
-        inflight.remove(fut)
+        entry = next(e for e in inflight if e[1] is fut)
+        inflight.remove(entry)
+        idx = entry[0]
         # Per-frame errors don't stop the stage: the missing output is caught by
         # the integrity pass, which reprocesses then fails loudly if persistent.
         # But the cause must not vanish — on_error logs it and retains the first
         # one so a persistent failure surfaces WHY, not just "frames missing".
         exc = fut.exception()
         if exc is None:
-            bump()
+            bump(idx)
             maybe_preview(fut.result())
         else:
             on_error(exc)

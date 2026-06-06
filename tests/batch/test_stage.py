@@ -305,6 +305,27 @@ class TestEofTolerance:
         assert res.missing == [7, 8, 9]
 
 
+class TestContiguousCounter:
+    """Progress reports the contiguous-from-0 prefix, not a raw completion count
+    that can run ahead of the durable resume point under multiple workers."""
+
+    def test_tracks_contiguous_prefix_under_out_of_order(self):
+        from sinner2.batch.stage import _ContiguousCounter
+
+        c = _ContiguousCounter({0, 1, 2}, 3)
+        assert c.value == 0
+        assert c.complete(1) == 0  # frame 1 done, 0 still pending → prefix 0
+        assert c.complete(2) == 0  # frame 2 done, 0 still pending → prefix 0
+        assert c.complete(0) == 3  # frame 0 done → 0,1,2 contiguous → prefix 3
+
+    def test_starts_past_already_done_prefix(self):
+        from sinner2.batch.stage import _ContiguousCounter
+
+        c = _ContiguousCounter({2}, 3)  # 0,1 already on disk (resume)
+        assert c.value == 2
+        assert c.complete(2) == 3
+
+
 class TestFramesDirInput:
     def test_reads_written_frames_and_none_for_missing(self, tmp_path, writer):
         d = tmp_path / "frames"
