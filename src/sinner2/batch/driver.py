@@ -25,6 +25,7 @@ spins it on a QThread); each stage manages its own worker pool internally.
 """
 from __future__ import annotations
 
+import hashlib
 import shutil
 import threading
 import time
@@ -100,6 +101,7 @@ class StageSpec:
     factory: Callable[[], Processor]
     thread_safe: bool
     workers: int
+    config_sig: str = ""  # output-affecting params (json), for cumulative cache keying
 
 
 class _IdentityProcessor:
@@ -205,10 +207,7 @@ class BatchDriver:
         )
         size_token = f"{reader.width}x{reader.height}"
         task_cache = self._cache_root / task.id
-        stage_dirs = [
-            task_cache / f"stage{i}-{spec.name}@{size_token}"
-            for i, spec in enumerate(stages)
-        ]
+        stage_dirs = self._stage_cache_dirs(task_cache, size_token, task, stages)
         try:
             total = reader.frame_count
             fps = reader.fps
@@ -365,6 +364,7 @@ class BatchDriver:
                 ),
                 thread_safe=FaceSwapper.thread_safe,
                 workers=task.swapper_execution.workers,
+                config_sig=swapper_params.model_dump_json(),
             ))
         if task.enhancer_enabled:
             enhancer_params = FaceEnhancerParams(
@@ -390,6 +390,7 @@ class BatchDriver:
                 ),
                 thread_safe=FaceEnhancer.thread_safe,
                 workers=task.enhancer_execution.workers,
+                config_sig=enhancer_params.model_dump_json(),
             ))
         if task.upscaler_enabled:
             upscaler_params = UpscalerParams(
@@ -405,6 +406,7 @@ class BatchDriver:
                 ),
                 thread_safe=Upscaler.thread_safe,
                 workers=task.upscaler_execution.workers,
+                config_sig=upscaler_params.model_dump_json(),
             ))
         if not stages:
             stages.append(StageSpec(
@@ -414,6 +416,27 @@ class BatchDriver:
                 workers=1,
             ))
         return stages
+
+    @staticmethod
+    def _stage_cache_dirs(
+        task_cache: Path,
+        size_token: str,
+        task: BatchTask,
+        stages: list[StageSpec],
+    ) -> list[Path]:
+        """Per-stage cache dirs, keyed by output size AND a CUMULATIVE chain
+        signature: source/target plus each stage's output-affecting params, in
+        order. Changing an upstream stage's config invalidates it and every
+        downstream stage (whose input changed); changing only the last stage
+        re-renders just that stage. Without this an edited task could resume onto
+        frames rendered with the OLD config and silently mix them into output."""
+        dirs: list[Path] = []
+        chain_sig = f"{task.source_path}|{task.target_path}"
+        for i, spec in enumerate(stages):
+            chain_sig = f"{chain_sig}|{spec.config_sig}"
+            digest = hashlib.sha1(chain_sig.encode()).hexdigest()[:10]
+            dirs.append(task_cache / f"stage{i}-{spec.name}@{size_token}-{digest}")
+        return dirs
 
     # ---- Helpers ----
 

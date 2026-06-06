@@ -634,7 +634,12 @@ class TestOverReportedFrameCount:
         task.cleanup_mode = BatchCleanupMode.AUTO
         task.total_frames = 8     # persisted real length from the prior run
         task.completed_stages = 1  # stage 0 already done
-        stage0 = driver._cache_root / task.id / "stage0-faceswapper@8x8"  # noqa: SLF001
+        task_cache = driver._cache_root / task.id  # noqa: SLF001
+        stages = driver._build_stages(None, task)  # stubbed passthrough stubs  # noqa: SLF001
+        size_token = f"{reader.width}x{reader.height}"
+        stage0 = BatchDriver._stage_cache_dirs(  # noqa: SLF001
+            task_cache, size_token, task, stages
+        )[0]
         stage0.mkdir(parents=True)
         for i in range(8):
             cv2.imwrite(str(stage0 / f"{i:08d}.jpg"), np.full((8, 8, 3), i, np.uint8))
@@ -707,3 +712,63 @@ class TestBuildStages:
         status = driver.run(task)
         assert status is BatchTaskStatus.COMPLETED
         assert len(list(task.output_path.glob("*.jpg"))) == 3
+
+
+class TestChainConfigCacheKey:
+    """The stage-dir token folds in a CUMULATIVE chain-config signature so an
+    edited task can't resume onto frames rendered with the OLD config (P1)."""
+
+    def _stages(self, sigs):
+        return [
+            StageSpec(f"stage{i}", lambda: None, True, 1, config_sig=s)
+            for i, s in enumerate(sigs)
+        ]
+
+    def test_build_stages_sets_config_sig_from_params(self, tmp_path):
+        from unittest.mock import MagicMock
+
+        t1 = BatchTask(
+            source_path=tmp_path / "s.png",
+            target_path=tmp_path / "t.mp4",
+            swapper_detection_interval=1,
+        )
+        t2 = BatchTask(
+            source_path=tmp_path / "s.png",
+            target_path=tmp_path / "t.mp4",
+            swapper_detection_interval=5,
+        )
+        s1 = BatchDriver._build_stages(MagicMock(), t1)  # noqa: SLF001
+        s2 = BatchDriver._build_stages(MagicMock(), t2)  # noqa: SLF001
+        assert s1[0].config_sig  # non-empty for a real stage
+        assert s1[0].config_sig != s2[0].config_sig  # output-affecting param flows in
+
+    def test_cumulative_invalidation(self, tmp_path):
+        task = BatchTask(
+            source_path=tmp_path / "s.png", target_path=tmp_path / "t.mp4"
+        )
+        cache = tmp_path / "c"
+        base = BatchDriver._stage_cache_dirs(  # noqa: SLF001
+            cache, "640x480", task, self._stages(["A", "B"])
+        )
+        # Upstream (stage 0) change invalidates stage 0 AND downstream.
+        d_s0 = BatchDriver._stage_cache_dirs(  # noqa: SLF001
+            cache, "640x480", task, self._stages(["A2", "B"])
+        )
+        assert d_s0[0] != base[0]
+        assert d_s0[1] != base[1]
+        # Changing only the LAST stage leaves the upstream dir reusable.
+        d_s1 = BatchDriver._stage_cache_dirs(  # noqa: SLF001
+            cache, "640x480", task, self._stages(["A", "B2"])
+        )
+        assert d_s1[0] == base[0]
+        assert d_s1[1] != base[1]
+
+    def test_source_change_invalidates_all_stages(self, tmp_path):
+        cache = tmp_path / "c"
+        t1 = BatchTask(source_path=tmp_path / "a.png", target_path=tmp_path / "t.mp4")
+        t2 = BatchTask(source_path=tmp_path / "b.png", target_path=tmp_path / "t.mp4")
+        stages = self._stages(["A", "B"])
+        d1 = BatchDriver._stage_cache_dirs(cache, "640x480", t1, stages)  # noqa: SLF001
+        d2 = BatchDriver._stage_cache_dirs(cache, "640x480", t2, stages)  # noqa: SLF001
+        assert d1[0] != d2[0]
+        assert d1[1] != d2[1]
