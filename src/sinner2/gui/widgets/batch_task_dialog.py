@@ -243,10 +243,16 @@ class QBatchTaskDialog(QDialog):
             available = available_onnx_providers()
         except Exception:
             available = list(DEFAULT_ONNX_PROVIDERS)
-        wanted = set(task.swapper_execution.providers)
-        for prov in available:
+        wanted = list(task.swapper_execution.providers)
+        wanted_set = set(wanted)
+        # Show the task's requested providers first (in priority order), then any
+        # other provider this machine exposes. This keeps a requested-but-
+        # unavailable EP (e.g. a CUDA task edited on a CPU-only box) AND its order
+        # instead of silently dropping it — mirrors the torch-device preservation.
+        ordered = wanted + [p for p in available if p not in wanted_set]
+        for prov in ordered:
             cb = QCheckBox(prov)
-            cb.setChecked(prov in wanted)
+            cb.setChecked(prov in wanted_set)
             providers_layout.addWidget(cb)
             self._provider_checkboxes[prov] = cb
         providers_box.setToolTip(

@@ -208,6 +208,30 @@ class TestWritebackToTask:
         assert dlg._enhancer_device.currentData() == "cuda:9"  # noqa: SLF001
         assert dlg.to_task().enhancer_execution.device == "cuda:9"
 
+    def test_unavailable_requested_provider_is_preserved(
+        self, qtbot, tmp_path, monkeypatch
+    ):
+        # Editing a task on a machine missing a requested EP must round-trip it
+        # (and its priority order), not silently drop it — mirrors the unknown-
+        # device preservation above.
+        from sinner2.gui.widgets import batch_task_dialog as btd
+
+        monkeypatch.setattr(
+            btd, "available_onnx_providers", lambda: ["CPUExecutionProvider"]
+        )
+        t = _task(
+            tmp_path,
+            swapper_execution=OnnxExecution(
+                providers=["CUDAExecutionProvider", "CPUExecutionProvider"]
+            ),
+        )
+        dlg = QBatchTaskDialog.from_task(t)
+        qtbot.addWidget(dlg)
+        assert dlg.to_task().swapper_execution.providers == [
+            "CUDAExecutionProvider",
+            "CPUExecutionProvider",
+        ]
+
     def test_to_task_preserves_id_and_runtime_state(
         self, qtbot, tmp_path
     ):
