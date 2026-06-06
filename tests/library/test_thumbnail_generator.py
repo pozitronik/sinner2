@@ -242,3 +242,35 @@ class TestDoubleSubmitSuppression:
         fut1.result(timeout=5.0)
         # First submission's outcome arrived.
         assert first_outcome, "first submission's callback never fired"
+
+
+class TestCallbackCoalescing:
+    def test_second_submit_for_inflight_path_still_gets_its_callback(
+        self, gen, tmp_path
+    ):
+        # rank 23: a path present in BOTH libraries (source + target) submitted
+        # while the first job is in flight must deliver the outcome to BOTH
+        # callbacks — the set-based dedup dropped the second, blanking its tile.
+        src = tmp_path / "shared.png"
+        _make_image(src)
+        in_produce = threading.Event()
+        release = threading.Event()
+        orig = gen._produce  # noqa: SLF001
+
+        def gated_produce(source):
+            in_produce.set()
+            release.wait(timeout=3.0)
+            return orig(source)
+
+        gen._produce = gated_produce  # noqa: SLF001
+        got1: list = []
+        got2: list = []
+        fut1 = gen.submit(src, lambda o: got1.append(o))
+        assert fut1 is not None
+        assert in_produce.wait(timeout=3.0)  # first job is mid-produce
+        fut2 = gen.submit(src, lambda o: got2.append(o))  # coalesced
+        assert fut2 is None  # not re-submitted
+        release.set()
+        fut1.result(timeout=5.0)
+        assert got1, "first callback fired"
+        assert got2, "second (coalesced) callback also fired"

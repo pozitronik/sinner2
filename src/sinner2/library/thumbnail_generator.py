@@ -89,10 +89,12 @@ class ThumbnailGenerator:
         self._executor = ThreadPoolExecutor(
             max_workers=workers, thread_name_prefix="sinner2-thumb"
         )
-        # Track in-flight paths so we don't double-submit the same source
-        # when the model re-requests it before the prior job finishes.
+        # In-flight jobs: path -> coalesced callbacks. We don't double-submit a
+        # path already being generated, but a path requested by BOTH libraries
+        # (used as source AND target) while in flight must deliver the outcome
+        # to ALL callers — dropping the second left its tile blank forever.
         self._inflight_lock = threading.Lock()
-        self._inflight: set[Path] = set()
+        self._inflight: dict[Path, list[OnReady]] = {}
 
     @property
     def thumb_dim(self) -> int:
@@ -109,17 +111,19 @@ class ThumbnailGenerator:
         thread before touching widgets.
         """
         with self._inflight_lock:
-            if source in self._inflight:
+            waiters = self._inflight.get(source)
+            if waiters is not None:
+                waiters.append(on_ready)  # coalesce onto the in-flight job
                 return None
-            self._inflight.add(source)
+            self._inflight[source] = [on_ready]
         try:
-            return self._executor.submit(self._run, source, on_ready)
+            return self._executor.submit(self._run, source)
         except RuntimeError:
             # The executor was shut down between our inflight check and
             # this submit. The caller (model.add_path → view.add_paths)
             # treats None as a no-op, so don't leak the inflight entry.
             with self._inflight_lock:
-                self._inflight.discard(source)
+                self._inflight.pop(source, None)
             return None
 
     def shutdown(self, wait: bool = True, cancel_futures: bool = False) -> None:
@@ -138,20 +142,21 @@ class ThumbnailGenerator:
         self._cache.shutdown()
         self._executor.shutdown(wait=wait, cancel_futures=cancel_futures)
 
-    def _run(self, source: Path, on_ready: OnReady) -> None:
+    def _run(self, source: Path) -> None:
         try:
             outcome = self._produce(source)
         except Exception as e:
             outcome = ThumbnailError(source=source, reason=f"unexpected: {e}")
         finally:
             with self._inflight_lock:
-                self._inflight.discard(source)
-        try:
-            on_ready(outcome)
-        except Exception:
-            # The callback is GUI-side; swallowing here keeps a buggy slot
-            # from killing the worker thread (and thus all subsequent jobs).
-            pass
+                callbacks = self._inflight.pop(source, [])
+        for on_ready in callbacks:
+            try:
+                on_ready(outcome)
+            except Exception:
+                # The callback is GUI-side; swallowing here keeps a buggy slot
+                # from killing the worker thread (and thus all subsequent jobs).
+                pass
 
     def _produce(self, source: Path) -> ThumbnailOutcome:
         if not source.is_file():
