@@ -171,6 +171,10 @@ class BatchTask(SinnerBaseModel):
     last_completed_frame: int = -1
     total_frames: int = -1
     completed_stages: int = 0  # fully-validated stages (AUTO-cleanup resume)
+    # Hash of the chain config the cached frames were rendered with. A resume
+    # whose config/scale changed (different fingerprint) resets the resume
+    # markers so it re-renders instead of trusting stale-token frames.
+    cache_fingerprint: str = ""
     error_message: str | None = None
     started_at: float | None = None  # epoch seconds
     finished_at: float | None = None

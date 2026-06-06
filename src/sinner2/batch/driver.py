@@ -208,6 +208,17 @@ class BatchDriver:
         size_token = f"{reader.width}x{reader.height}"
         task_cache = self._cache_root / task.id
         stage_dirs = self._stage_cache_dirs(task_cache, size_token, task, stages)
+        current_fp = self._chain_fingerprint(task, size_token, stages)
+        if task.cache_fingerprint and task.cache_fingerprint != current_fp:
+            # Config / scale changed since the cached run: the persisted resume
+            # markers point at frames rendered with the OLD config under a now-
+            # stale token. Reset so the task re-renders from scratch instead of
+            # trusting them — esp. the AUTO trusted-skip path, which would
+            # otherwise read an empty new-token dir and hard-fail "frames missing".
+            task.completed_stages = 0
+            task.last_completed_frame = -1
+            task.total_frames = -1
+        task.cache_fingerprint = current_fp
         try:
             total = reader.frame_count
             fps = reader.fps
@@ -437,6 +448,18 @@ class BatchDriver:
             digest = hashlib.sha1(chain_sig.encode()).hexdigest()[:10]
             dirs.append(task_cache / f"stage{i}-{spec.name}@{size_token}-{digest}")
         return dirs
+
+    @staticmethod
+    def _chain_fingerprint(
+        task: BatchTask, size_token: str, stages: list[StageSpec]
+    ) -> str:
+        """Stable hash of everything the stage-dir token depends on (source /
+        target / output size / every stage's output-affecting params). Persisted
+        on the task so a resume whose config changed since the cached run can
+        reset the stale resume markers instead of trusting them."""
+        parts = [str(task.source_path), str(task.target_path), size_token]
+        parts += [spec.config_sig for spec in stages]
+        return hashlib.sha1("|".join(parts).encode()).hexdigest()[:12]
 
     # ---- Helpers ----
 

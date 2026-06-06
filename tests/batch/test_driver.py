@@ -772,3 +772,36 @@ class TestChainConfigCacheKey:
         d2 = BatchDriver._stage_cache_dirs(cache, "640x480", t2, stages)  # noqa: SLF001
         assert d1[0] != d2[0]
         assert d1[1] != d2[1]
+
+    def test_chain_fingerprint_changes_with_config_or_size(self, tmp_path):
+        task = BatchTask(
+            source_path=tmp_path / "s.png", target_path=tmp_path / "t.mp4"
+        )
+        fp1 = BatchDriver._chain_fingerprint(  # noqa: SLF001
+            task, "640x480", self._stages(["A", "B"])
+        )
+        fp_cfg = BatchDriver._chain_fingerprint(  # noqa: SLF001
+            task, "640x480", self._stages(["A", "C"])
+        )
+        fp_size = BatchDriver._chain_fingerprint(  # noqa: SLF001
+            task, "320x240", self._stages(["A", "B"])
+        )
+        assert fp1 != fp_cfg  # a stage config change
+        assert fp1 != fp_size  # a size/scale change
+
+
+class TestAutoResumeStaleFingerprint:
+    def test_auto_resume_with_changed_config_re_renders(
+        self, driver, stub_stages, tmp_path
+    ):
+        # AUTO task whose persisted markers (completed_stages=1) belong to an OLD
+        # config (stale fingerprint). On resume the token changed, so the trusted
+        # stage-0 marker must be invalidated and the task re-rendered — not
+        # trusted into reading an empty new-token dir and failing "frames missing".
+        task = _make_task(tmp_path, image_target=False, enhancer_enabled=True)
+        task.cleanup_mode = BatchCleanupMode.AUTO
+        task.completed_stages = 1
+        task.cache_fingerprint = "stale-from-old-config"
+        status = driver.run(task)
+        assert status is BatchTaskStatus.COMPLETED, task.error_message
+        assert len(list(task.output_path.glob("*.jpg"))) == 3
