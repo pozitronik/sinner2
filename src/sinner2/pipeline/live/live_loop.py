@@ -82,33 +82,72 @@ class LiveLoop:
             sink.stop()
 
     def _run(self) -> None:
+        # Load the chain's models on a side thread so the RAW camera shows
+        # immediately; the chain is applied only once setup completes. Per the
+        # Processor contract, setup() must not run concurrently with process() —
+        # the loop only processes after `ready` is set (i.e. setup has finished).
+        ready = threading.Event()
+
+        def _setup() -> None:
+            self._setup_chain()
+            ready.set()
+
+        threading.Thread(
+            target=_setup, name="sinner2-live-setup", daemon=True
+        ).start()
         delivered = False
-        while not self._stop.is_set():
-            t0 = time.perf_counter()
-            frame = self._source.read()
-            if frame is None:
-                time.sleep(0.005)  # nothing captured yet
-                continue
-            out = frame
-            try:
-                for processor in self._chain:
-                    out = processor.process(out)
-            except Exception as exc:  # noqa: BLE001 — show the raw frame, don't freeze
-                self.errors += 1
-                if self.errors <= 3:  # log the first few, then stay quiet
-                    print(f"[live] chain error (showing raw frame): {exc}",
-                          file=sys.stderr)
+        try:
+            while not self._stop.is_set():
+                t0 = time.perf_counter()
+                frame = self._source.read()
+                if frame is None:
+                    time.sleep(0.005)  # nothing captured yet
+                    continue
                 out = frame
-            for sink in self._sinks:
-                sink.push(out)
-            if self._on_frame is not None:
-                self._on_frame(out)
-            if not delivered:
-                delivered = True
-                print(f"[live] first frame delivered to {len(self._sinks)} "
-                      "sink(s) + preview", file=sys.stderr)
-            self.frames_processed += 1
-            self._pace(t0)
+                if ready.is_set():
+                    try:
+                        for processor in self._chain:
+                            out = processor.process(out)
+                    except Exception as exc:  # noqa: BLE001 — show raw, don't freeze
+                        self.errors += 1
+                        if self.errors <= 3:  # log the first few, then stay quiet
+                            print(f"[live] chain error (showing raw frame): {exc}",
+                                  file=sys.stderr)
+                        out = frame
+                # else: raw passthrough while the models are still loading.
+                for sink in self._sinks:
+                    sink.push(out)
+                if self._on_frame is not None:
+                    self._on_frame(out)
+                if not delivered:
+                    delivered = True
+                    print(f"[live] first frame delivered to {len(self._sinks)} "
+                          "sink(s) + preview", file=sys.stderr)
+                self.frames_processed += 1
+                self._pace(t0)
+        finally:
+            # Let setup finish before releasing so the two never overlap.
+            ready.wait(timeout=15.0)
+            self._release_chain()
+
+    def _setup_chain(self) -> None:
+        if self._chain:
+            print("[live] loading chain (models)...", file=sys.stderr)
+        for processor in self._chain:
+            try:
+                processor.setup()
+            except Exception as exc:  # noqa: BLE001
+                print(f"[live] setup failed for "
+                      f"{getattr(processor, 'name', '?')}: {exc}", file=sys.stderr)
+        if self._chain:
+            print("[live] chain ready", file=sys.stderr)
+
+    def _release_chain(self) -> None:
+        for processor in self._chain:
+            try:
+                processor.release()
+            except Exception:  # noqa: BLE001
+                pass
 
     def _pace(self, t0: float) -> None:
         """Cap the loop at the fps target; no-op when already running behind."""

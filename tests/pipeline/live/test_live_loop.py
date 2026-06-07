@@ -34,6 +34,14 @@ class _SpyProcessor:
         self.name = name
         self._delta = delta
         self.calls = 0
+        self.setup_called = False
+        self.released = False
+
+    def setup(self):
+        self.setup_called = True
+
+    def release(self):
+        self.released = True
 
     def process(self, frame):
         self.calls += 1
@@ -82,6 +90,16 @@ def test_processes_chain_in_order_to_all_sinks_and_preview():
     assert loop.frames_processed > 0
 
 
+def test_chain_is_setup_before_processing_and_released_on_stop():
+    src = _StubSource(np.zeros((4, 4, 3), np.uint8))
+    p = _SpyProcessor("a", 1)
+    loop = LiveLoop(src, [p], [_SpySink()], fps=200)
+    _run_briefly(loop)
+    assert p.setup_called   # models loaded before any process()
+    assert p.calls > 0      # processed once ready
+    assert p.released       # released on stop
+
+
 def test_lifecycle_starts_and_stops_source_and_sinks():
     src = _StubSource(np.zeros((4, 4, 3), np.uint8))
     sink = _SpySink()
@@ -109,6 +127,12 @@ def test_throwing_processor_does_not_kill_loop():
 
         def __init__(self):
             self.calls = 0
+
+        def setup(self):
+            pass
+
+        def release(self):
+            pass
 
         def process(self, frame):
             self.calls += 1
