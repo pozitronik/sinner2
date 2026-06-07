@@ -467,25 +467,21 @@ class TestRotationShortcut:
 
 
 class TestTransportGating:
-    """The whole transport row is inactive until a source AND target load."""
+    """Transport controls gate on the active session's capabilities."""
 
-    def test_disabled_without_source_and_target(self, window):
-        assert window._transport.isEnabled() is False  # noqa: SLF001
+    def test_disabled_without_session(self, window):
+        assert not window._transport._play_button.isEnabled()  # noqa: SLF001
+        assert not window._transport._slider.isEnabled()  # noqa: SLF001
 
-    def test_enables_only_when_both_loaded(self, window, tmp_path, monkeypatch):
-        monkeypatch.setattr(
-            window._controller,  # noqa: SLF001
-            "set_source_and_target",
-            lambda *a, **k: None,
-        )
-        src = tmp_path / "s.png"
-        src.write_bytes(b"x")
-        window._pickers.set_source(src)  # noqa: SLF001
-        assert window._transport.isEnabled() is False  # noqa: SLF001  # source only
-        tgt = tmp_path / "t.mp4"
-        tgt.write_bytes(b"x")
-        window._pickers.set_target(tgt)  # noqa: SLF001
-        assert window._transport.isEnabled() is True  # noqa: SLF001  # both
+    def test_file_session_enables_play_and_seek(self, window, monkeypatch):
+        from unittest.mock import MagicMock
+
+        ex = MagicMock()
+        monkeypatch.setattr(window._controller, "executor", lambda: ex)  # noqa: SLF001
+        monkeypatch.setattr(window._controller, "_executor", ex)  # noqa: SLF001
+        window._refresh_transport_enabled()  # noqa: SLF001
+        assert window._transport._play_button.isEnabled()  # noqa: SLF001
+        assert window._transport._slider.isEnabled()  # noqa: SLF001
 
 
 class TestBatchIntegration:
@@ -524,35 +520,29 @@ class TestBatchIntegration:
         # Row also landed in the view.
         assert window._batch_view._model.rowCount() == 1  # noqa: SLF001
 
-    def test_batch_running_locks_editing_surface(
-        self, window, tmp_path, monkeypatch
-    ):
+    def test_batch_running_locks_editing_surface(self, window, monkeypatch):
         # DaVinci-style: a running batch locks transport + pickers + settings
-        # + libraries, but the Batch tab stays interactive.
-        # Load a source + target (controller stubbed to skip the heavy session
-        # build) so the transport is live before the lock and re-enables after.
-        monkeypatch.setattr(
-            window._controller,  # noqa: SLF001
-            "set_source_and_target",
-            lambda *a, **k: None,
-        )
-        src = tmp_path / "src.png"
-        src.write_bytes(b"x")
-        tgt = tmp_path / "tgt.mp4"
-        tgt.write_bytes(b"x")
-        window._pickers.set_source(src)  # noqa: SLF001
-        window._pickers.set_target(tgt)  # noqa: SLF001
-        assert window._transport.isEnabled()  # noqa: SLF001  # source+target loaded
+        # + libraries, but the Batch tab stays interactive. A mock file session
+        # makes the transport live before the lock + re-enabled after.
+        from unittest.mock import MagicMock
+
+        ex = MagicMock()
+        ex.frame_count.return_value = 100      # resync_transport reads these on idle
+        ex.current_frame.get.return_value = 0
+        monkeypatch.setattr(window._controller, "executor", lambda: ex)  # noqa: SLF001
+        monkeypatch.setattr(window._controller, "_executor", ex)  # noqa: SLF001
+        window._refresh_transport_enabled()  # noqa: SLF001
+        assert window._transport._play_button.isEnabled()  # noqa: SLF001
 
         window._batch_queue.taskStarted.emit("x")  # noqa: SLF001
-        assert not window._transport.isEnabled()  # noqa: SLF001
+        assert not window._transport._play_button.isEnabled()  # noqa: SLF001 locked
         assert not window._pickers.isEnabled()  # noqa: SLF001
         assert not window._processors.isEnabled()  # noqa: SLF001
         assert not window._side_panel.sources_library().isEnabled()  # noqa: SLF001
         assert not window._side_panel.targets_library().isEnabled()  # noqa: SLF001
         assert window._batch_view.isEnabled()  # noqa: SLF001  queue stays usable
         window._batch_queue.queueIdle.emit()  # noqa: SLF001
-        assert window._transport.isEnabled()  # noqa: SLF001  # re-enabled
+        assert window._transport._play_button.isEnabled()  # noqa: SLF001 re-enabled
         assert window._pickers.isEnabled()  # noqa: SLF001
         assert window._processors.isEnabled()  # noqa: SLF001
 
@@ -859,19 +849,23 @@ class TestSessionSwitchingDisablesControls:
         win._transport = MagicMock()  # noqa: SLF001
         win._processors = MagicMock()  # noqa: SLF001
         win._status_bar = MagicMock()  # noqa: SLF001
+        win._session = MagicMock()  # noqa: SLF001
+        win._batch_active = False  # noqa: SLF001
         return win
 
-    def test_switching_disables_processor_panel(self):
+    def test_switching_disables_processor_panel_and_transport(self):
         win = self._win()
         win._on_session_switching(True)  # noqa: SLF001
         win._processors.setEnabled.assert_called_with(False)  # noqa: SLF001
-        win._transport.setEnabled.assert_called_with(False)  # noqa: SLF001
+        # Transport gated off via capabilities (none) rather than whole-widget.
+        win._transport.apply_capabilities.assert_called()  # noqa: SLF001
 
-    def test_ready_re_enables_processor_panel(self):
+    def test_ready_re_enables_processor_panel_and_transport(self):
         win = self._win()
         win._on_session_switching(False)  # noqa: SLF001
         win._processors.setEnabled.assert_called_with(True)  # noqa: SLF001
-        win._transport.setEnabled.assert_called_with(True)  # noqa: SLF001
+        # _refresh_transport_enabled re-applies the active session's caps.
+        win._transport.apply_capabilities.assert_called()  # noqa: SLF001
 
 
 class TestLiveMode:
@@ -888,147 +882,114 @@ class TestLiveMode:
         win._status_bar = MagicMock()  # noqa: SLF001
         win._transport = MagicMock()  # noqa: SLF001
         win._controller = MagicMock()  # noqa: SLF001
+        win._session = MagicMock()  # noqa: SLF001
+        win._batch_active = False  # noqa: SLF001
+        win._update_settings = MagicMock()  # noqa: SLF001 — persist no-op
         return win
 
-    def test_start_without_source_shows_message_and_no_start(self):
+    def test_use_camera_without_source_shows_message_and_no_activation(self):
         win = self._win()
         win._pickers.source_path.return_value = None  # noqa: SLF001
-        win._on_live_start()  # noqa: SLF001
-        win._live.start.assert_not_called()  # noqa: SLF001
+        win._on_use_camera()  # noqa: SLF001
+        win._session.set_target.assert_not_called()  # noqa: SLF001
         win._status_bar.show_message.assert_called()  # noqa: SLF001
 
-    def test_start_with_source_delegates_with_snapshot(self, tmp_path):
+    def test_use_camera_with_source_sets_camera_target(self, tmp_path):
+        from sinner2.gui.session_capabilities import CameraConfig
+
         win = self._win()
         src = tmp_path / "face.png"
         src.write_bytes(b"x")
         win._pickers.source_path.return_value = src  # noqa: SLF001
         for getter, value in (
-            ("device", 0), ("width", 1280), ("height", 720),
-            ("fps", 30), ("port", 8080),
+            ("device", 2), ("width", 640), ("height", 480),
+            ("fps", 24), ("workers", 3), ("port", 9000),
         ):
             getattr(win._live_view, getter).return_value = value  # noqa: SLF001
-        win._on_live_start()  # noqa: SLF001
-        win._live.start.assert_called_once()  # noqa: SLF001
-        win._controller.pause.assert_called_once()  # noqa: SLF001  live takes over
-        kwargs = win._live.start.call_args.kwargs  # noqa: SLF001
-        assert kwargs["source_path"] == src
-        assert kwargs["snapshot"] is win._processors.snapshot.return_value  # noqa: SLF001
-        assert kwargs["device"] == 0 and kwargs["mjpeg_port"] == 8080
+        win._on_use_camera()  # noqa: SLF001
+        win._session.set_target.assert_called_once()  # noqa: SLF001
+        cfg = win._session.set_target.call_args.args[0]  # noqa: SLF001
+        assert isinstance(cfg, CameraConfig)
+        assert cfg.device == 2 and cfg.mjpeg_port == 9000
 
-
-    def test_start_without_source_does_not_pause(self):
-        win = self._win()
-        win._pickers.source_path.return_value = None  # noqa: SLF001
-        win._on_live_start()  # noqa: SLF001
-        win._controller.pause.assert_not_called()  # noqa: SLF001
-
-    def test_running_disables_transport_and_updates_view(self):
+    def test_running_updates_view_and_transport(self):
         win = self._win()
         win._live.sink_url.return_value = "http://localhost:8080/"  # noqa: SLF001
         win._on_live_running(True)  # noqa: SLF001
         win._live_view.set_running.assert_called_with(True)  # noqa: SLF001
         win._live_view.set_url.assert_called_with("http://localhost:8080/")  # noqa: SLF001
-        win._transport.setEnabled.assert_called_with(False)  # noqa: SLF001
+        win._transport.apply_capabilities.assert_called()  # noqa: SLF001
 
-    def test_stopped_re_enables_transport(self):
+    def test_stopped_updates_view(self):
         win = self._win()
         win._on_live_running(False)  # noqa: SLF001
         win._live_view.set_running.assert_called_with(False)  # noqa: SLF001
-        win._transport.setEnabled.assert_called_with(True)  # noqa: SLF001
+        win._transport.apply_capabilities.assert_called()  # noqa: SLF001
 
 
-class TestModeToggle:
+class TestCapabilityChromeAndFps:
+    """The transport + Settings chrome + FPS label follow the active session's
+    capabilities (no more File/Live mode flag)."""
+
     def _win(self):
         from unittest.mock import MagicMock
 
         from sinner2.gui import main_window as mw
 
         win = mw.SinnerMainWindow.__new__(mw.SinnerMainWindow)
-        win._mode = "file"  # noqa: SLF001
-        win._status_bar = MagicMock()  # noqa: SLF001  carries the mode_button
-        win._controller = MagicMock()  # noqa: SLF001
-        win._live = MagicMock()  # noqa: SLF001
+        win._session = MagicMock()  # noqa: SLF001
         win._transport = MagicMock()  # noqa: SLF001
-        win._pickers = MagicMock()  # noqa: SLF001
         win._processors = MagicMock()  # noqa: SLF001
-        win._side_panel = MagicMock()  # noqa: SLF001
         win._fps_label = MagicMock()  # noqa: SLF001
-        win._refresh_transport_enabled = MagicMock()  # noqa: SLF001
+        win._batch_active = False  # noqa: SLF001
         return win
 
-    def test_switch_to_live_pauses_file_and_hides_file_chrome(self):
+    def test_camera_caps_disable_seek_and_hide_file_groups(self):
+        from sinner2.gui.session_capabilities import (
+            SessionCapabilities,
+            SessionKind,
+        )
+
         win = self._win()
-        win._controller.executor.return_value = object()  # noqa: SLF001
-        win._set_mode("live")  # noqa: SLF001
-        assert win._mode == "live"  # noqa: SLF001
-        win._controller.pause.assert_called_once()  # noqa: SLF001 paused, not torn down
-        win._live.stop.assert_not_called()  # noqa: SLF001
-        win._transport.setVisible.assert_called_with(False)  # noqa: SLF001
-        win._pickers.set_target_visible.assert_called_with(False)  # noqa: SLF001
+        win._session.active_kind.return_value = SessionKind.CAMERA  # noqa: SLF001
+        win._on_capabilities_changed(SessionCapabilities.for_camera())  # noqa: SLF001
+        win._transport.apply_capabilities.assert_called_once()  # noqa: SLF001
         win._processors.set_file_only_visible.assert_called_with(False)  # noqa: SLF001
-        win._side_panel.set_mode.assert_called_with("live")  # noqa: SLF001
 
-    def test_switch_to_live_does_not_autostart_camera(self):
-        win = self._win()
-        win._controller.executor.return_value = None  # noqa: SLF001
-        win._set_mode("live")  # noqa: SLF001
-        win._live.start.assert_not_called()  # noqa: SLF001  user presses Start
+    def test_file_caps_show_file_groups(self):
+        from sinner2.gui.session_capabilities import (
+            SessionCapabilities,
+            SessionKind,
+        )
 
-    def test_switch_to_file_stops_live_and_restores_chrome(self):
         win = self._win()
-        win._mode = "live"  # noqa: SLF001
-        win._set_mode("file")  # noqa: SLF001
-        assert win._mode == "file"  # noqa: SLF001
-        win._live.stop.assert_called_once()  # noqa: SLF001
-        win._transport.setVisible.assert_called_with(True)  # noqa: SLF001
-        win._pickers.set_target_visible.assert_called_with(True)  # noqa: SLF001
+        win._session.active_kind.return_value = SessionKind.FILE  # noqa: SLF001
+        win._on_capabilities_changed(  # noqa: SLF001
+            SessionCapabilities.for_file(has_audio=True)
+        )
         win._processors.set_file_only_visible.assert_called_with(True)  # noqa: SLF001
-        win._side_panel.set_mode.assert_called_with("file")  # noqa: SLF001
-        win._refresh_transport_enabled.assert_called_once()  # noqa: SLF001
 
-    def test_same_mode_is_noop(self):
-        win = self._win()  # already "file"
-        win._set_mode("file")  # noqa: SLF001
-        win._side_panel.set_mode.assert_not_called()  # noqa: SLF001
-        win._controller.pause.assert_not_called()  # noqa: SLF001
-        win._live.stop.assert_not_called()  # noqa: SLF001
+    def test_live_fps_label_only_updates_for_camera(self):
+        from sinner2.gui.session_capabilities import SessionKind
 
-    def test_switch_clears_fps_label(self):
         win = self._win()
-        win._controller.executor.return_value = None  # noqa: SLF001
-        win._set_mode("live")  # noqa: SLF001
-        win._fps_label.setText.assert_called_with("--- fps")  # noqa: SLF001
-
-    def test_live_fps_label_only_updates_in_live_mode(self):
-        win = self._win()  # file mode
+        win._session.active_kind.return_value = SessionKind.FILE  # noqa: SLF001
         win._update_live_fps_label(12.3)  # noqa: SLF001
         win._fps_label.setText.assert_not_called()  # noqa: SLF001
-        win._mode = "live"  # noqa: SLF001
+        win._session.active_kind.return_value = SessionKind.CAMERA  # noqa: SLF001
         win._update_live_fps_label(12.3)  # noqa: SLF001
         win._fps_label.setText.assert_called_with("12.3 fps")  # noqa: SLF001
 
-    def test_file_fps_label_ignored_in_live_mode(self):
+    def test_file_fps_label_ignored_for_camera(self):
+        from sinner2.gui.session_capabilities import SessionKind
+
         win = self._win()
-        win._mode = "live"  # noqa: SLF001
+        win._session.active_kind.return_value = SessionKind.CAMERA  # noqa: SLF001
         win._update_fps_label(30.0)  # noqa: SLF001
         win._fps_label.setText.assert_not_called()  # noqa: SLF001
 
-    def test_default_mode_is_file_with_button_unchecked_and_live_tab_hidden(
-        self, window
-    ):
-        # Real window: defaults to file mode; the status-bar toggle is unchecked.
-        assert window._mode == "file"  # noqa: SLF001
-        assert not window._status_bar.mode_button.isChecked()  # noqa: SLF001
-        live_idx = window._side_panel.indexOf(window._live_view)  # noqa: SLF001
-        assert not window._side_panel.isTabVisible(live_idx)  # noqa: SLF001
 
-    def test_mode_button_toggles_mode(self, window):
-        assert window._mode == "file"  # noqa: SLF001
-        window._status_bar.mode_button.setChecked(True)  # noqa: SLF001 fires toggled
-        assert window._mode == "live"  # noqa: SLF001
-        window._status_bar.mode_button.setChecked(False)  # noqa: SLF001
-        assert window._mode == "file"  # noqa: SLF001
-
+class TestFullscreenTransportRehome:
     def test_fullscreen_exit_rehomes_transport_below_splitter(
         self, window, monkeypatch
     ):

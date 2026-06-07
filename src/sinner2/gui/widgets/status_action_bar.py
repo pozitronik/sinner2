@@ -22,7 +22,6 @@ class QStatusActionBar(QWidget):
         super().__init__(parent)
         # Toggles reflect on/off state; actions just fire. Tooltips carry the
         # keyboard shortcut so the buttons double as shortcut discovery.
-        self.mode_button = self._toggle("📹", "Live camera mode (File ⇄ Live)")
         self.on_top_button = self._toggle("📌", "Keep window on top (F12)")
         self.stats_button = self._toggle("📊", "Show stats overlay (F4)")
         self.rotate_button = self._action("🔄", "Rotate display (R)")
@@ -36,7 +35,6 @@ class QStatusActionBar(QWidget):
         layout.setContentsMargins(2, 1, 2, 1)
         layout.setSpacing(2)
         for button in (
-            self.mode_button,
             self.on_top_button,
             self.stats_button,
             self.rotate_button,

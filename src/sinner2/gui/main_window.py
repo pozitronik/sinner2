@@ -44,7 +44,12 @@ from sinner2.pipeline.processors.upscaler import model_filename
 from sinner2.gui.cache_controller import default_cache_root
 from sinner2.gui.live_controller import LiveController
 from sinner2.gui.player_controller import PlayerController
-from sinner2.gui.session_capabilities import FileTarget
+from sinner2.gui.session_capabilities import (
+    CameraConfig,
+    FileTarget,
+    SessionCapabilities,
+    SessionKind,
+)
 from sinner2.gui.session_facade import SessionFacade
 from sinner2.gui.widgets.batch_task_dialog import QBatchTaskDialog
 from sinner2.gui.widgets.batch_view import QBatchView
@@ -245,10 +250,6 @@ class SinnerMainWindow(QMainWindow):
         layout.addWidget(self._transport)
         layout.addWidget(self._pickers)
         self._central_layout = layout
-        # File / Live mode is driven by a toggle button in the bottom status bar
-        # (wired below). Start in file mode with the Live tab hidden.
-        self._mode = "file"
-        self._side_panel.set_mode("file")
 
         # Custom bottom status bar: view/window action buttons (left), status
         # message (middle), persistent indicators (right). Replaces
@@ -260,7 +261,6 @@ class SinnerMainWindow(QMainWindow):
         layout.addWidget(self._status_bar)
         self.setCentralWidget(central)
 
-        self._status_bar.mode_button.toggled.connect(self._on_mode_button_toggled)
         self._status_bar.on_top_button.toggled.connect(self._set_stays_on_top)
         self._status_bar.stats_button.toggled.connect(self._set_stats_visible)
         self._status_bar.rotate_button.clicked.connect(self._cycle_rotation)
@@ -323,9 +323,8 @@ class SinnerMainWindow(QMainWindow):
         self._controller.strategyModeChanged.connect(self._update_strategy_mode_label)
         self._controller.sessionSwitching.connect(self._on_session_switching)
 
-        # Live-camera mode: webcam -> chain -> MJPEG sink, owned by its own
-        # controller. Its preview frames drive the same display; the file
-        # transport is meaningless while it runs (disabled in _on_live_running).
+        # Live-camera engine: webcam -> chain -> MJPEG sink. Its preview frames
+        # drive the same display; activation + transport are owned by the facade.
         self._live = LiveController(parent=self)
         # Same detection sink the file path uses, so the live swap publishes to
         # the GUI overlay + comparison-crop probe.
@@ -334,14 +333,21 @@ class SinnerMainWindow(QMainWindow):
         self._live.runningChanged.connect(self._on_live_running)
         self._live.errorOccurred.connect(self._show_error)
         self._live.processingFpsChanged.connect(self._update_live_fps_label)
-        self._live_view.startRequested.connect(self._on_live_start)
+        self._live_view.startRequested.connect(self._on_use_camera)
         self._live_view.stopRequested.connect(self._live.stop)
         self._live_view.workersChanged.connect(self._live.set_worker_count)
+        self._live_view.configChanged.connect(self._persist_camera_config)
 
-        # Single-session facade: the transport + keyboard bind to ONE active
-        # session (the facade routes to the file or camera engine). Stage 5
-        # routes the FILE path; the mode toggle + live path remain until Stage 8.
-        self._session = SessionFacade(self._controller, self._live, parent=self)
+        # Single-session facade: ONE active session (file or camera) the
+        # transport + keyboard + target picker bind to. The camera is just
+        # another target; the facade pulls the current settings snapshot when it
+        # starts/updates the camera chain.
+        self._session = SessionFacade(
+            self._controller, self._live,
+            snapshot_provider=self._processors.snapshot, parent=self,
+        )
+        self._session.capabilitiesChanged.connect(self._on_capabilities_changed)
+        self._pickers.cameraRequested.connect(self._on_use_camera)
         self._transport.playRequested.connect(self._session.play)
         self._transport.pauseRequested.connect(self._session.pause)
         self._transport.seekRequested.connect(self._session.seek_to)
@@ -446,29 +452,25 @@ class SinnerMainWindow(QMainWindow):
         self._pre_fullscreen_maximized = False
 
     def _on_source_changed(self, source_path: Path) -> None:
-        """Source picker fired. While live is running, hot-apply the new face to
-        the camera feed; otherwise route the new face to the active session (the
-        facade builds on first load + swaps on a running file session)."""
-        if self._live.is_running():
-            self._live.update(
-                source_path=source_path, snapshot=self._processors.snapshot()
-            )
-            return
+        """Source picker fired. Route the new face to the active session — the
+        facade hot-applies it to a running file/camera session, or seeds the next
+        build."""
         self._session.set_source(source_path)
 
     def _on_target_changed(self, target_path: Path) -> None:
         """Target picker fired. The facade builds on first load (once a source is
-        present) and swaps the target on a running session."""
+        present), swaps the target on a running session, and tears down the camera
+        if one was active."""
         self._session.set_target(FileTarget(target_path))
 
     def _update_fps_label(self, fps: float) -> None:
-        # File-session throughput; ignored in live mode so a late executor
-        # emission (it's paused, decaying to 0) can't overwrite the live reading.
-        if self._mode == "file":
+        # File-session throughput; ignored while the camera is the active target
+        # so a late paused-executor emission can't overwrite the live reading.
+        if self._session.active_kind() is not SessionKind.CAMERA:
             self._fps_label.setText(f"{fps:.1f} fps")
 
     def _update_live_fps_label(self, fps: float) -> None:
-        if self._mode == "live":
+        if self._session.active_kind() is SessionKind.CAMERA:
             self._fps_label.setText(f"{fps:.1f} fps")
 
     def _update_scratch_label(self, scratch_dir: object) -> None:
@@ -580,15 +582,23 @@ class SinnerMainWindow(QMainWindow):
         self._update_settings(audio_volume=int(value))
 
     def _refresh_transport_enabled(self, *_: object) -> None:
-        # The transport (play / seek / volume + add-to-batch) is usable only
-        # once both a source and target are loaded, and never while a batch
-        # render holds the editing surface. (Per-capability gating — camera
-        # disables seek — lands with the camera target in a later stage.)
-        ready = (
-            self._pickers.source_path() is not None
-            and self._pickers.target_path() is not None
+        # Per-control gating from the active session's capabilities (a file is
+        # seekable/finite/maybe-audio; a camera disables seek/volume but keeps
+        # play=stop/start). A batch render holds the editing surface → all off.
+        caps = (
+            SessionCapabilities.none()
+            if self._batch_active
+            else self._session.capabilities()
         )
-        self._transport.setEnabled(ready and not self._batch_active)
+        self._transport.apply_capabilities(caps)
+
+    def _on_capabilities_changed(self, caps: object) -> None:
+        # The active session (re)built or switched targets — reflect it on the
+        # transport + hide the file-only Settings groups when a camera is active.
+        if not self._batch_active:
+            self._transport.apply_capabilities(caps)  # type: ignore[arg-type]
+        is_camera = self._session.active_kind() is SessionKind.CAMERA
+        self._processors.set_file_only_visible(not is_camera)
 
     def _update_strategy_mode_label(self, mode: object) -> None:
         text = str(mode) if mode else ""
@@ -741,18 +751,10 @@ class SinnerMainWindow(QMainWindow):
         # it once as a snapshot and route all consumers through that single value
         # object instead of re-reading each field by hand (which used to drift).
         snap = self._processors.snapshot()
-        # Live takes priority: while the camera feed is running the file session
-        # is paused, so hot-apply the new settings to the live chain (rebuilding
-        # the paused file chain would just churn models + contend for VRAM).
-        if self._live.is_running():
-            src = self._pickers.source_path()
-            if src is not None:
-                self._live.update(source_path=src, snapshot=snap)
-            self._refresh_providers_label()
-            return
         # Route the whole settings bundle to the active session (the facade
-        # applies the chain hot-swap + the video-backend / reader-pool /
-        # processing-scale rebuilds to the file engine).
+        # hot-applies to the camera chain when one is active, else applies the
+        # chain hot-swap + video-backend / reader-pool / processing-scale
+        # rebuilds to the file engine).
         self._session.apply_settings(snap)
         # Swapper-provider / enhancer-device rebuilds are folded into
         # apply_settings above; just refresh the status-bar EP label
@@ -852,7 +854,10 @@ class SinnerMainWindow(QMainWindow):
         so the user can't drive a half-torn-down session OR change chain config
         mid-swap (which reconfigure_from would silently overwrite with the
         swap-time snapshot). Re-enabled when the new session is ready."""
-        self._transport.setEnabled(not switching)
+        if switching:
+            self._transport.apply_capabilities(SessionCapabilities.none())
+        else:
+            self._refresh_transport_enabled()
         self._processors.setEnabled(not switching)
         if switching:
             self._status_bar.show_message("Switching session…")
@@ -1295,61 +1300,39 @@ class SinnerMainWindow(QMainWindow):
         if self._face_overlay_on:
             self._face_overlay.set_detections(detections, width, height)  # type: ignore[arg-type]
 
-    def _on_mode_button_toggled(self, checked: bool) -> None:
-        self._set_mode("live" if checked else "file")
-
-    def _set_mode(self, mode: str) -> None:
-        """Switch between File and Live mode. The mode IS the mutual exclusion:
-        Live pauses the file session (not torn down, so File resumes instantly);
-        File stops the camera. Each mode shows only the controls that apply."""
-        if mode == self._mode:
-            return
-        self._mode = mode
-        live = mode == "live"
-        # Reflect on the status-bar toggle without re-firing its handler.
-        self._set_button_checked(self._status_bar.mode_button, live)
-        if live:
-            if self._controller.executor() is not None:
-                self._controller.pause()
-        else:
-            self._live.stop()
-        # File-only chrome: transport, target picker, the file-only Settings
-        # groups, and the Targets/Batch tabs. Live reveals the Live tab/controls.
-        self._transport.setVisible(not live)
-        self._pickers.set_target_visible(not live)
-        self._processors.set_file_only_visible(not live)
-        self._side_panel.set_mode(mode)
-        self._fps_label.setText("--- fps")  # drop the other mode's stale reading
-        if not live:
-            self._refresh_transport_enabled()
-
-    def _on_live_start(self) -> None:
-        """Start a live-camera session from the current source face + processor
-        settings. Source = the face to apply (a still); the webcam is the target."""
-        source = self._pickers.source_path()
-        if source is None:
+    def _on_use_camera(self) -> None:
+        """Make the camera the active target (from the picker button or the Live
+        tab). The facade tears down the file session + auto-starts the camera;
+        needs a source face to build the chain."""
+        if self._pickers.source_path() is None:
             self._status_bar.show_message("Load a source face first", 4000)
             return
-        # Live mode takes over the display — pause the file session so the two
-        # don't drive the panel at once.
-        self._controller.pause()
-        self._live.start(
-            source_path=source,
-            snapshot=self._processors.snapshot(),
+        self._persist_camera_config()
+        self._session.set_target(CameraConfig(
             device=self._live_view.device(),
             width=self._live_view.width(),
             height=self._live_view.height(),
             fps=self._live_view.fps(),
             workers=self._live_view.workers(),
             mjpeg_port=self._live_view.port(),
+        ))
+
+    def _persist_camera_config(self) -> None:
+        self._update_settings(
+            camera_device=self._live_view.device(),
+            camera_width=self._live_view.width(),
+            camera_height=self._live_view.height(),
+            camera_fps=self._live_view.fps(),
+            camera_workers=self._live_view.workers(),
+            camera_mjpeg_port=self._live_view.port(),
         )
 
     def _on_live_running(self, running: bool) -> None:
         self._live_view.set_running(running)
         self._live_view.set_url(self._live.sink_url() if running else None)
-        # Live owns the preview while running; the file transport (seek/scrub) is
-        # meaningless then.
-        self._transport.setEnabled(not running)
+        # Reflect the camera session on the transport (play = stop/start; the
+        # capability gate keeps seek/volume disabled).
+        self._refresh_transport_enabled()
 
     def closeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         self._persist_geometry_to_settings()
@@ -1451,6 +1434,18 @@ class SinnerMainWindow(QMainWindow):
             p = Path(self._settings.target_path)
             if p.is_file():
                 self._pickers.set_target(p)
+        # Restore the persisted camera target config into the Live tab (silent —
+        # set_config doesn't fire configChanged, so it won't re-persist).
+        s = self._settings
+        if s.camera_device is not None:
+            self._live_view.set_config(
+                device=s.camera_device,
+                width=s.camera_width or self._live_view.width(),
+                height=s.camera_height or self._live_view.height(),
+                fps=s.camera_fps or self._live_view.fps(),
+                workers=s.camera_workers or self._live_view.workers(),
+                mjpeg_port=s.camera_mjpeg_port or self._live_view.port(),
+            )
         # Library roots — set_roots is silent (doesn't fire rootsChanged)
         # so restoring won't re-persist the same list. Stale folder
         # roots (parent dir since deleted) and stale file roots are
