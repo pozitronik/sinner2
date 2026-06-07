@@ -124,14 +124,16 @@ class SessionFacade(QObject):
     # ---- introspection ----
 
     def capabilities(self) -> SessionCapabilities:
-        if self._active_kind is SessionKind.FILE:
-            return self._player.capabilities()
         if self._active_kind is SessionKind.CAMERA:
             return SessionCapabilities.for_camera()
-        return SessionCapabilities.none()
+        # File caps follow the player's actual session (for_file when an executor
+        # exists, else none) — robust to sessions built without a set_target call.
+        return self._player.capabilities()
 
     def is_active(self) -> bool:
-        return self._active_kind is not SessionKind.NONE
+        if self._active_kind is SessionKind.CAMERA:
+            return True
+        return self._player.executor() is not None
 
     def active_kind(self) -> SessionKind:
         return self._active_kind

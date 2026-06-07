@@ -44,6 +44,8 @@ from sinner2.pipeline.processors.upscaler import model_filename
 from sinner2.gui.cache_controller import default_cache_root
 from sinner2.gui.live_controller import LiveController
 from sinner2.gui.player_controller import PlayerController
+from sinner2.gui.session_capabilities import FileTarget
+from sinner2.gui.session_facade import SessionFacade
 from sinner2.gui.widgets.batch_task_dialog import QBatchTaskDialog
 from sinner2.gui.widgets.batch_view import QBatchView
 from sinner2.gui.widgets.models_view import QModelsView
@@ -336,6 +338,14 @@ class SinnerMainWindow(QMainWindow):
         self._live_view.stopRequested.connect(self._live.stop)
         self._live_view.workersChanged.connect(self._live.set_worker_count)
 
+        # Single-session facade: the transport + keyboard bind to ONE active
+        # session (the facade routes to the file or camera engine). Stage 5
+        # routes the FILE path; the mode toggle + live path remain until Stage 8.
+        self._session = SessionFacade(self._controller, self._live, parent=self)
+        self._transport.playRequested.connect(self._session.play)
+        self._transport.pauseRequested.connect(self._session.pause)
+        self._transport.seekRequested.connect(self._session.seek_to)
+
         self._pickers.sourceChanged.connect(self._on_source_changed)
         self._pickers.targetChanged.connect(self._on_target_changed)
         self._pickers.sourceChanged.connect(self._persist_source_path)
@@ -437,33 +447,19 @@ class SinnerMainWindow(QMainWindow):
 
     def _on_source_changed(self, source_path: Path) -> None:
         """Source picker fired. While live is running, hot-apply the new face to
-        the camera feed. Otherwise: first-load → set_source_and_target;
-        subsequent changes → change_source (preserves frame + play state).
-        Both paths must be present for any file-path action."""
+        the camera feed; otherwise route the new face to the active session (the
+        facade builds on first load + swaps on a running file session)."""
         if self._live.is_running():
             self._live.update(
                 source_path=source_path, snapshot=self._processors.snapshot()
             )
             return
-        target_path = self._pickers.target_path()
-        if target_path is None:
-            return
-        if self._controller.executor() is None:
-            self._controller.set_source_and_target(source_path, target_path)
-        else:
-            self._controller.change_source(source_path)
+        self._session.set_source(source_path)
 
     def _on_target_changed(self, target_path: Path) -> None:
-        """Target picker fired. First-load → set_source_and_target;
-        subsequent changes → change_target (resets to frame 0 but
-        keeps play state)."""
-        source_path = self._pickers.source_path()
-        if source_path is None:
-            return
-        if self._controller.executor() is None:
-            self._controller.set_source_and_target(source_path, target_path)
-        else:
-            self._controller.change_target(target_path)
+        """Target picker fired. The facade builds on first load (once a source is
+        present) and swaps the target on a running session."""
+        self._session.set_target(FileTarget(target_path))
 
     def _update_fps_label(self, fps: float) -> None:
         # File-session throughput; ignored in live mode so a late executor
@@ -586,7 +582,8 @@ class SinnerMainWindow(QMainWindow):
     def _refresh_transport_enabled(self, *_: object) -> None:
         # The transport (play / seek / volume + add-to-batch) is usable only
         # once both a source and target are loaded, and never while a batch
-        # render holds the editing surface.
+        # render holds the editing surface. (Per-capability gating — camera
+        # disables seek — lands with the camera target in a later stage.)
         ready = (
             self._pickers.source_path() is not None
             and self._pickers.target_path() is not None
@@ -753,20 +750,12 @@ class SinnerMainWindow(QMainWindow):
                 self._live.update(source_path=src, snapshot=snap)
             self._refresh_providers_label()
             return
-        self._controller.apply_session_config(**snap.to_session_config())
-        # Video backend isn't part of the session-config bundle because
-        # it's used by set_source_and_target rather than the executor;
-        # push it directly to the controller so the next session picks
-        # up the user's selection.
-        self._controller.set_video_backend(snap.video_backend)
-        # Reader pool size triggers a session rebuild via its own setter
-        # (same pattern as video_backend).
-        self._controller.set_reader_pool_size(snap.reader_pool_size)
-        # Processing scale also rebuilds the session via its own setter (it's
-        # part of the reader construction + cache key, not the live chain).
-        self._controller.set_processing_scale(snap.processing_scale)
+        # Route the whole settings bundle to the active session (the facade
+        # applies the chain hot-swap + the video-backend / reader-pool /
+        # processing-scale rebuilds to the file engine).
+        self._session.apply_settings(snap)
         # Swapper-provider / enhancer-device rebuilds are folded into
-        # apply_session_config above; just refresh the status-bar EP label
+        # apply_settings above; just refresh the status-bar EP label
         # and the failed-provider highlight afterwards.
         self._refresh_providers_label()
         # A TensorRT-enable triggers a one-time engine compile on the executor
@@ -926,28 +915,31 @@ class SinnerMainWindow(QMainWindow):
             # eat the dialog-cancel keypress in normal use.
             self._status_bar.fullscreen_button.toggle()
             return
-        executor = self._controller.executor()
-        if executor is None:
+        if not self._session.is_active():
             super().keyPressEvent(event)
             return
-        # Route through the controller's audio-aware methods (NOT the executor
-        # directly) so audio stays in lock-step — the transport buttons do the
-        # same. Driving the executor directly paused/seeked the video but left
-        # audio playing / desynced whenever the button lacked keyboard focus.
+        # Route through the facade so the keys reach the ACTIVE session (file or
+        # camera); the player keeps the audio-aware play/seek logic. Space is
+        # play/pause for any session; the seek keys apply only to seekable
+        # (finite) targets.
         if key == Qt.Key.Key_Space:
-            self._controller.toggle_playback()
+            self._session.toggle_playback()
+            return
+        executor = self._controller.executor()
+        if not self._session.capabilities().seekable or executor is None:
+            super().keyPressEvent(event)
             return
         if key == Qt.Key.Key_Left:
-            self._controller.seek_to(max(0, executor.current_frame.get() - 1))
+            self._session.seek_to(max(0, executor.current_frame.get() - 1))
             return
         if key == Qt.Key.Key_Right:
-            self._controller.seek_to(executor.current_frame.get() + 1)
+            self._session.seek_to(executor.current_frame.get() + 1)
             return
         if key == Qt.Key.Key_Home:
-            self._controller.seek_to(0)
+            self._session.seek_to(0)
             return
         if key == Qt.Key.Key_End:
-            self._controller.seek_to(max(0, executor.frame_count() - 1))
+            self._session.seek_to(max(0, executor.frame_count() - 1))
             return
         super().keyPressEvent(event)
 

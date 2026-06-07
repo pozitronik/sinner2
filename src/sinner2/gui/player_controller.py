@@ -167,9 +167,10 @@ class PlayerController(QObject):
             parent=self,
         )
 
-        transport.playRequested.connect(self._on_play)
-        transport.pauseRequested.connect(self._on_pause)
-        transport.seekRequested.connect(self._on_seek)
+        # Play/pause/seek are routed by the SessionFacade (so they reach whichever
+        # engine owns the active target); the controller keeps the audio-aware
+        # play()/pause()/seek_to()/toggle_playback() the facade calls. Volume is
+        # file-only audio and stays wired here.
         transport.volumeChanged.connect(self._on_audio_volume_changed)
 
     def set_source_and_target(self, source_path: Path | None, target_path: Path | None) -> None:
@@ -568,8 +569,9 @@ class PlayerController(QObject):
 
     def capabilities(self) -> SessionCapabilities:
         """The active file session's capabilities — always seekable + finite;
-        audio only when the target is a video. NONE when no session is loaded."""
-        if self._executor is None:
+        audio only when the target is a video. NONE when no session is loaded.
+        Reads executor() (not the attribute) so it tracks a test/real swap."""
+        if self.executor() is None:
             return SessionCapabilities.none()
         has_audio = (
             self._current_target_path is not None
