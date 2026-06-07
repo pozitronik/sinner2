@@ -69,24 +69,9 @@ class LiveController(QObject):
         the camera is the live target. No-op if already running."""
         if self._loop is not None:
             return
-        try:
-            source = Source(path=source_path)
-        except Exception as exc:  # noqa: BLE001 — surface bad source to the GUI
-            self.errorOccurred.emit(f"invalid source: {exc}")
+        chain = self._build_chain(source_path, snapshot)
+        if chain is None:
             return
-        chain = build_chain(
-            source,
-            swapper_enabled=snapshot.swapper_enabled,
-            swapper_params=snapshot.swapper_params,
-            swapper_providers=snapshot.swapper_providers,
-            detection_sink=None,
-            enhancer_enabled=snapshot.enhancer_enabled,
-            enhancer_params=snapshot.enhancer_params,
-            enhancer_device=snapshot.enhancer_device,
-            upscaler_enabled=snapshot.upscaler_enabled,
-            upscaler_params=snapshot.upscaler_params,
-            upscaler_device=snapshot.upscaler_device,
-        )
         camera = self._camera_factory(device, width, height, fps)
         self._camera = camera
         self._sink = self._sink_factory(mjpeg_port, fps)
@@ -106,6 +91,42 @@ class LiveController(QObject):
         # The device opens on the capture thread; surface a failure shortly after
         # (non-blocking) so a bad camera shows an error instead of a blank panel.
         QTimer.singleShot(1500, self._check_camera)
+
+    def update(
+        self, *, source_path: Path, snapshot: ProcessorParamsSnapshot
+    ) -> None:
+        """Hot-apply a new source face / processor settings to the running
+        session by rebuilding the chain and swapping it in. No-op if not
+        running. The new chain's models load on a side thread; the live feed
+        keeps running the current chain until the swap completes."""
+        if self._loop is None:
+            return
+        chain = self._build_chain(source_path, snapshot)
+        if chain is None:
+            return
+        self._loop.set_chain(chain)
+
+    def _build_chain(
+        self, source_path: Path, snapshot: ProcessorParamsSnapshot
+    ) -> list[Any] | None:
+        try:
+            source = Source(path=source_path)
+        except Exception as exc:  # noqa: BLE001 — surface bad source to the GUI
+            self.errorOccurred.emit(f"invalid source: {exc}")
+            return None
+        return build_chain(
+            source,
+            swapper_enabled=snapshot.swapper_enabled,
+            swapper_params=snapshot.swapper_params,
+            swapper_providers=snapshot.swapper_providers,
+            detection_sink=None,
+            enhancer_enabled=snapshot.enhancer_enabled,
+            enhancer_params=snapshot.enhancer_params,
+            enhancer_device=snapshot.enhancer_device,
+            upscaler_enabled=snapshot.upscaler_enabled,
+            upscaler_params=snapshot.upscaler_params,
+            upscaler_device=snapshot.upscaler_device,
+        )
 
     def _check_camera(self) -> None:
         cam = self._camera

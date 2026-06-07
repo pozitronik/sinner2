@@ -100,6 +100,24 @@ def test_chain_is_setup_before_processing_and_released_on_stop():
     assert p.released       # released on stop
 
 
+def test_set_chain_hot_swaps_and_releases_old():
+    src = _StubSource(np.zeros((4, 4, 3), np.uint8))
+    sink = _SpySink()
+    p1 = _SpyProcessor("a", 1)
+    loop = LiveLoop(src, [p1], [sink], fps=200)
+    loop.start()
+    time.sleep(0.05)
+    assert p1.calls > 0  # initial chain processing (+1)
+    p2 = _SpyProcessor("b", 5)
+    loop.set_chain([p2])  # hot-swap to a different chain
+    time.sleep(0.05)
+    loop.stop()
+    assert p2.setup_called and p2.calls > 0  # swapped-in chain ran
+    assert p1.released  # outgoing chain released on swap
+    assert p2.released  # active chain released on stop
+    assert int(sink.pushed[-1][0, 0, 0]) == 5  # output is now p2's (+5)
+
+
 def test_lifecycle_starts_and_stops_source_and_sinks():
     src = _StubSource(np.zeros((4, 4, 3), np.uint8))
     sink = _SpySink()

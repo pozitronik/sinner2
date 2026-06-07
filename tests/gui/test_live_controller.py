@@ -186,6 +186,44 @@ def test_camera_opened_but_no_frames_surfaces_error(off_snapshot, source_file):
     assert not ctrl.is_running()
 
 
+def test_update_hot_swaps_chain_while_running(
+    qtbot, off_snapshot, source_file, tmp_path
+):
+    from unittest.mock import MagicMock
+
+    ctrl = _controller(_StubCam(np.zeros((4, 4, 3), np.uint8)), _SpySink())
+    try:
+        ctrl.start(source_path=source_file, snapshot=off_snapshot, mjpeg_port=0)
+        ctrl._loop.set_chain = MagicMock()  # type: ignore[union-attr]
+        other = tmp_path / "face2.jpg"
+        other.write_bytes(b"")
+        ctrl.update(source_path=other, snapshot=off_snapshot)
+        ctrl._loop.set_chain.assert_called_once()  # type: ignore[union-attr]
+    finally:
+        ctrl.stop()
+
+
+def test_update_when_not_running_is_noop(off_snapshot, source_file):
+    ctrl = _controller(_StubCam(np.zeros((4, 4, 3), np.uint8)), _SpySink())
+    ctrl.update(source_path=source_file, snapshot=off_snapshot)  # must not crash
+    assert not ctrl.is_running()
+
+
+def test_update_bad_source_emits_error_but_keeps_running(
+    qtbot, off_snapshot, source_file, tmp_path
+):
+    ctrl = _controller(_StubCam(np.zeros((4, 4, 3), np.uint8)), _SpySink())
+    errors: list = []
+    ctrl.errorOccurred.connect(errors.append)
+    try:
+        ctrl.start(source_path=source_file, snapshot=off_snapshot, mjpeg_port=0)
+        ctrl.update(source_path=tmp_path / "missing.jpg", snapshot=off_snapshot)
+        assert errors and "source" in errors[0].lower()
+        assert ctrl.is_running()  # bad swap surfaced, session stayed up
+    finally:
+        ctrl.stop()
+
+
 def test_sink_url_while_running(qtbot, off_snapshot, source_file):
     ctrl = _controller(_StubCam(np.zeros((4, 4, 3), np.uint8)), _SpySink())
     try:

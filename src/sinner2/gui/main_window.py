@@ -428,9 +428,15 @@ class SinnerMainWindow(QMainWindow):
         self._pre_fullscreen_maximized = False
 
     def _on_source_changed(self, source_path: Path) -> None:
-        """Source picker fired. First-load → set_source_and_target;
+        """Source picker fired. While live is running, hot-apply the new face to
+        the camera feed. Otherwise: first-load → set_source_and_target;
         subsequent changes → change_source (preserves frame + play state).
-        Both paths must be present for any action."""
+        Both paths must be present for any file-path action."""
+        if self._live.is_running():
+            self._live.update(
+                source_path=source_path, snapshot=self._processors.snapshot()
+            )
+            return
         target_path = self._pickers.target_path()
         if target_path is None:
             return
@@ -723,6 +729,15 @@ class SinnerMainWindow(QMainWindow):
         # it once as a snapshot and route all consumers through that single value
         # object instead of re-reading each field by hand (which used to drift).
         snap = self._processors.snapshot()
+        # Live takes priority: while the camera feed is running the file session
+        # is paused, so hot-apply the new settings to the live chain (rebuilding
+        # the paused file chain would just churn models + contend for VRAM).
+        if self._live.is_running():
+            src = self._pickers.source_path()
+            if src is not None:
+                self._live.update(source_path=src, snapshot=snap)
+            self._refresh_providers_label()
+            return
         self._controller.apply_session_config(**snap.to_session_config())
         # Video backend isn't part of the session-config bundle because
         # it's used by set_source_and_target rather than the executor;
