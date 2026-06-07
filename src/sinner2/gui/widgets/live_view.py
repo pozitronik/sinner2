@@ -27,6 +27,7 @@ class QLiveView(QWidget):
     startRequested = Signal()
     stopRequested = Signal()
     workersChanged = Signal(int)  # live worker-pool resize while running
+    configChanged = Signal()  # device/res/fps/workers/port changed → persist
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -63,6 +64,11 @@ class QLiveView(QWidget):
         form.addRow("FPS", self._fps)
         form.addRow("Workers", self._workers)
         form.addRow("MJPEG port", self._port)
+        # Any config change persists (main_window saves it to settings).
+        self._device.currentIndexChanged.connect(self.configChanged)
+        for spin in (self._width, self._height, self._fps, self._workers,
+                     self._port):
+            spin.valueChanged.connect(self.configChanged)
 
         self._toggle = QPushButton("Start live")
         self._toggle.clicked.connect(self._on_toggle)
@@ -105,6 +111,26 @@ class QLiveView(QWidget):
 
     def port(self) -> int:
         return self._port.value()
+
+    def set_config(
+        self, *, device: int, width: int, height: int, fps: int,
+        workers: int, mjpeg_port: int,
+    ) -> None:
+        """Restore persisted camera config WITHOUT emitting configChanged."""
+        idx = self._device.findData(device)
+        self._device.blockSignals(True)
+        if idx < 0:  # not in the (un-probed) list yet — add it so it's selectable
+            self._device.addItem(f"Camera {device}", device)
+            idx = self._device.findData(device)
+        self._device.setCurrentIndex(idx)
+        self._device.blockSignals(False)
+        for spin, value in (
+            (self._width, width), (self._height, height), (self._fps, fps),
+            (self._workers, workers), (self._port, mjpeg_port),
+        ):
+            spin.blockSignals(True)
+            spin.setValue(value)
+            spin.blockSignals(False)
 
     # ---- state driven by LiveController.runningChanged ----
 

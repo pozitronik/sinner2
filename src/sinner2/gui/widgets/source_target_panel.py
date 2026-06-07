@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMenu,
+    QPushButton,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -171,6 +172,7 @@ class QSourceTargetPanel(QWidget):
     targetChanged = Signal(Path)
     sourceRecentsChanged = Signal(list)  # list[Path]
     targetRecentsChanged = Signal(list)
+    cameraRequested = Signal()  # "use the camera as the target"
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -180,6 +182,14 @@ class QSourceTargetPanel(QWidget):
         self._target.pathChanged.connect(self.targetChanged)
         self._source.recentsChanged.connect(self.sourceRecentsChanged)
         self._target.recentsChanged.connect(self.targetRecentsChanged)
+        # Camera is a peer choice to a file target: pick it and the session
+        # becomes a live camera (config lives in the Live tab).
+        self._use_camera = QPushButton("📹 Use camera")
+        self._use_camera.setToolTip(
+            "Use the camera as the target (live mode). Configure the device / "
+            "resolution / fps in the Live tab."
+        )
+        self._use_camera.clicked.connect(self.cameraRequested)
 
         layout = QVBoxLayout(self)
         # Tight + edge-aligned with the display above: no side inset, minimal
@@ -189,6 +199,7 @@ class QSourceTargetPanel(QWidget):
         layout.setSpacing(2)
         layout.addWidget(self._source)
         layout.addWidget(self._target)
+        layout.addWidget(self._use_camera)
 
     def source_path(self) -> Path | None:
         return self._source.path()

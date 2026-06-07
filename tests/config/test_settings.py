@@ -218,6 +218,17 @@ class TestExtendedFieldsRoundtrip:
         settings.save(settings.Settings(synced_max_lag_frames=120))
         assert settings.load().synced_max_lag_frames == 120
 
+    def test_camera_config_roundtrip(self):
+        settings.save(settings.Settings(
+            camera_device=2, camera_width=640, camera_height=480,
+            camera_fps=24, camera_workers=3, camera_mjpeg_port=9000,
+        ))
+        loaded = settings.load()
+        assert loaded.camera_device == 2
+        assert loaded.camera_width == 640 and loaded.camera_height == 480
+        assert loaded.camera_fps == 24 and loaded.camera_workers == 3
+        assert loaded.camera_mjpeg_port == 9000
+
     @pytest.mark.parametrize("value", [True, False])
     def test_side_panel_visible(self, value: bool):
         settings.save(settings.Settings(side_panel_visible=value))

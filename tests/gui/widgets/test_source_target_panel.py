@@ -70,6 +70,10 @@ class TestQSourceTargetPanel:
         panel.set_target_visible(True)
         assert panel._target.isVisibleTo(panel)      # noqa: SLF001
 
+    def test_use_camera_button_emits_camera_requested(self, panel, qtbot):
+        with qtbot.waitSignal(panel.cameraRequested, timeout=1000):
+            panel._use_camera.click()  # noqa: SLF001
+
 
 class TestQPathPickerRecents:
     @pytest.fixture

@@ -67,6 +67,13 @@ class Settings(SinnerBaseModel):
     reader_pool_size: int | None = None
     processing_scale: float | None = None  # 0 < s <= 1; downscale frames before processing
     synced_max_lag_frames: int | None = None
+    # Live-camera target config (remembered across launches).
+    camera_device: int | None = None
+    camera_width: int | None = None
+    camera_height: int | None = None
+    camera_fps: int | None = None
+    camera_workers: int | None = None
+    camera_mjpeg_port: int | None = None
     side_panel_visible: bool | None = None
     metrics_overlay_visible: bool | None = None
     face_overlay_visible: bool | None = None  # face-detection debug overlay

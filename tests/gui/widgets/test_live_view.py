@@ -74,3 +74,19 @@ def test_workers_stays_enabled_while_running(view):
     # The pool resizes live, so the Workers control is NOT locked while running.
     view.set_running(True)
     assert view._workers.isEnabled()  # noqa: SLF001
+
+
+def test_set_config_restores_values_without_emitting(qtbot, view):
+    seen: list = []
+    view.configChanged.connect(lambda: seen.append(1))
+    view.set_config(device=2, width=640, height=480, fps=24, workers=3,
+                    mjpeg_port=9000)
+    assert view.device() == 2
+    assert view.width() == 640 and view.height() == 480
+    assert view.fps() == 24 and view.workers() == 3 and view.port() == 9000
+    assert seen == []  # restore must NOT emit configChanged
+
+
+def test_config_changed_fires_on_user_change(qtbot, view):
+    with qtbot.waitSignal(view.configChanged, timeout=1000):
+        view._width.setValue(800)  # noqa: SLF001
