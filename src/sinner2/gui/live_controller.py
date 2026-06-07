@@ -39,6 +39,7 @@ class LiveController(QObject):
         *,
         camera_factory: CameraFactory | None = None,
         sink_factory: SinkFactory | None = None,
+        detection_sink: object | None = None,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -48,6 +49,9 @@ class LiveController(QObject):
         self._sink_factory: SinkFactory = sink_factory or (
             lambda port, fps: MjpegSink(port=port, fps=fps)
         )
+        # Shared FaceDetectionSink (same object the file path uses) so the live
+        # chain's swapper publishes detections to the GUI overlay + crop probe.
+        self._detection_sink = detection_sink
         self._loop: LiveLoop | None = None
         self._sink: MjpegSink | None = None
         self._camera: Any = None
@@ -55,6 +59,11 @@ class LiveController(QObject):
         self._fps_timer = QTimer(self)
         self._fps_timer.setInterval(200)
         self._fps_timer.timeout.connect(self._emit_fps)
+
+    def set_detection_sink(self, sink: object | None) -> None:
+        """Wire the shared detection sink (call before start). Mirrors
+        PlayerController.set_detection_sink so the live overlay works too."""
+        self._detection_sink = sink
 
     def measured_fps(self) -> float:
         return self._loop.measured_fps() if self._loop is not None else 0.0
@@ -131,7 +140,7 @@ class LiveController(QObject):
             swapper_enabled=snapshot.swapper_enabled,
             swapper_params=snapshot.swapper_params,
             swapper_providers=snapshot.swapper_providers,
-            detection_sink=None,
+            detection_sink=self._detection_sink,
             enhancer_enabled=snapshot.enhancer_enabled,
             enhancer_params=snapshot.enhancer_params,
             enhancer_device=snapshot.enhancer_device,

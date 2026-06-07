@@ -259,3 +259,41 @@ def test_fps_timer_stops_on_stop(qtbot, off_snapshot, source_file):
     ctrl.processingFpsChanged.connect(seen.append)
     qtbot.wait(300)  # well past the 200ms timer interval
     assert seen == []  # no emissions once stopped
+
+
+def _spy_build_chain(captured):
+    def _spy(source, **kwargs):
+        captured.update(kwargs)
+        return []  # empty chain -> raw passthrough, no model load
+    return _spy
+
+
+def test_detection_sink_passed_to_chain(off_snapshot, source_file, monkeypatch):
+    captured: dict = {}
+    monkeypatch.setattr("sinner2.gui.live_controller.build_chain",
+                        _spy_build_chain(captured))
+    sink = object()
+    ctrl = LiveController(
+        camera_factory=lambda *a: _StubCam(np.zeros((4, 4, 3), np.uint8)),
+        sink_factory=lambda *a: _SpySink(),
+        detection_sink=sink,
+    )
+    try:
+        ctrl.start(source_path=source_file, snapshot=off_snapshot, mjpeg_port=0)
+        assert captured.get("detection_sink") is sink  # forwarded, not None
+    finally:
+        ctrl.stop()
+
+
+def test_set_detection_sink_before_start(off_snapshot, source_file, monkeypatch):
+    captured: dict = {}
+    monkeypatch.setattr("sinner2.gui.live_controller.build_chain",
+                        _spy_build_chain(captured))
+    sink = object()
+    ctrl = _controller(_StubCam(np.zeros((4, 4, 3), np.uint8)), _SpySink())
+    ctrl.set_detection_sink(sink)
+    try:
+        ctrl.start(source_path=source_file, snapshot=off_snapshot, mjpeg_port=0)
+        assert captured.get("detection_sink") is sink
+    finally:
+        ctrl.stop()
