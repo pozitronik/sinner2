@@ -297,3 +297,51 @@ def test_set_detection_sink_before_start(off_snapshot, source_file, monkeypatch)
         assert captured.get("detection_sink") is sink
     finally:
         ctrl.stop()
+
+
+def test_start_passes_worker_count_to_loop(off_snapshot, source_file, monkeypatch):
+    captured: dict = {}
+
+    class _FakeLoop:
+        def __init__(self, *args, **kwargs):
+            captured.update(kwargs)
+
+        def start(self):
+            pass
+
+        def stop(self):
+            pass
+
+        def measured_fps(self):
+            return 0.0
+
+    monkeypatch.setattr("sinner2.gui.live_controller.LiveLoop", _FakeLoop)
+    ctrl = _controller(_StubCam(np.zeros((4, 4, 3), np.uint8)), _SpySink())
+    try:
+        ctrl.start(source_path=source_file, snapshot=off_snapshot,
+                   workers=5, mjpeg_port=0)
+        assert captured.get("workers") == 5
+    finally:
+        ctrl.stop()
+
+
+def test_set_worker_count_delegates_to_loop(off_snapshot, source_file, monkeypatch):
+    from unittest.mock import MagicMock
+
+    fake = MagicMock()
+    fake.measured_fps.return_value = 0.0
+    monkeypatch.setattr("sinner2.gui.live_controller.LiveLoop",
+                        lambda *a, **k: fake)
+    ctrl = _controller(_StubCam(np.zeros((4, 4, 3), np.uint8)), _SpySink())
+    try:
+        ctrl.start(source_path=source_file, snapshot=off_snapshot, mjpeg_port=0)
+        ctrl.set_worker_count(6)
+        fake.set_worker_count.assert_called_once_with(6)
+    finally:
+        ctrl.stop()
+
+
+def test_set_worker_count_noop_when_not_running(off_snapshot, source_file):
+    ctrl = _controller(_StubCam(np.zeros((4, 4, 3), np.uint8)), _SpySink())
+    ctrl.set_worker_count(4)  # no live session -> must not raise
+    assert not ctrl.is_running()

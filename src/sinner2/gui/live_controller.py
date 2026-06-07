@@ -71,6 +71,11 @@ class LiveController(QObject):
     def _emit_fps(self) -> None:
         self.processingFpsChanged.emit(self.measured_fps())
 
+    def set_worker_count(self, n: int) -> None:
+        """Resize the live worker pool while running (no-op when stopped)."""
+        if self._loop is not None:
+            self._loop.set_worker_count(n)
+
     def is_running(self) -> bool:
         return self._loop is not None
 
@@ -83,6 +88,7 @@ class LiveController(QObject):
         width: int = 1280,
         height: int = 720,
         fps: int = 30,
+        workers: int = 1,
         mjpeg_port: int = 8080,
     ) -> None:
         """Build + start a live session. Source is the face to apply (a still);
@@ -96,7 +102,8 @@ class LiveController(QObject):
         self._camera = camera
         self._sink = self._sink_factory(mjpeg_port, fps)
         self._loop = LiveLoop(
-            camera, chain, [self._sink], on_frame=self._emit_frame, fps=fps
+            camera, chain, [self._sink], on_frame=self._emit_frame,
+            fps=fps, workers=workers,
         )
         try:
             self._loop.start()

@@ -935,3 +935,103 @@ class TestLiveMode:
         win._on_live_running(False)  # noqa: SLF001
         win._live_view.set_running.assert_called_with(False)  # noqa: SLF001
         win._transport.setEnabled.assert_called_with(True)  # noqa: SLF001
+
+
+class TestModeToggle:
+    def _win(self):
+        from unittest.mock import MagicMock
+
+        from sinner2.gui import main_window as mw
+
+        win = mw.SinnerMainWindow.__new__(mw.SinnerMainWindow)
+        win._mode = "file"  # noqa: SLF001
+        win._mode_toggle = MagicMock()  # noqa: SLF001
+        win._controller = MagicMock()  # noqa: SLF001
+        win._live = MagicMock()  # noqa: SLF001
+        win._transport = MagicMock()  # noqa: SLF001
+        win._pickers = MagicMock()  # noqa: SLF001
+        win._processors = MagicMock()  # noqa: SLF001
+        win._side_panel = MagicMock()  # noqa: SLF001
+        win._fps_label = MagicMock()  # noqa: SLF001
+        win._refresh_transport_enabled = MagicMock()  # noqa: SLF001
+        return win
+
+    def test_switch_to_live_pauses_file_and_hides_file_chrome(self):
+        win = self._win()
+        win._controller.executor.return_value = object()  # noqa: SLF001
+        win._set_mode("live")  # noqa: SLF001
+        assert win._mode == "live"  # noqa: SLF001
+        win._controller.pause.assert_called_once()  # noqa: SLF001 paused, not torn down
+        win._live.stop.assert_not_called()  # noqa: SLF001
+        win._transport.setVisible.assert_called_with(False)  # noqa: SLF001
+        win._pickers.set_target_visible.assert_called_with(False)  # noqa: SLF001
+        win._processors.set_file_only_visible.assert_called_with(False)  # noqa: SLF001
+        win._side_panel.set_mode.assert_called_with("live")  # noqa: SLF001
+
+    def test_switch_to_live_does_not_autostart_camera(self):
+        win = self._win()
+        win._controller.executor.return_value = None  # noqa: SLF001
+        win._set_mode("live")  # noqa: SLF001
+        win._live.start.assert_not_called()  # noqa: SLF001  user presses Start
+
+    def test_switch_to_file_stops_live_and_restores_chrome(self):
+        win = self._win()
+        win._mode = "live"  # noqa: SLF001
+        win._set_mode("file")  # noqa: SLF001
+        assert win._mode == "file"  # noqa: SLF001
+        win._live.stop.assert_called_once()  # noqa: SLF001
+        win._transport.setVisible.assert_called_with(True)  # noqa: SLF001
+        win._pickers.set_target_visible.assert_called_with(True)  # noqa: SLF001
+        win._processors.set_file_only_visible.assert_called_with(True)  # noqa: SLF001
+        win._side_panel.set_mode.assert_called_with("file")  # noqa: SLF001
+        win._refresh_transport_enabled.assert_called_once()  # noqa: SLF001
+
+    def test_same_mode_is_noop(self):
+        win = self._win()  # already "file"
+        win._set_mode("file")  # noqa: SLF001
+        win._side_panel.set_mode.assert_not_called()  # noqa: SLF001
+        win._controller.pause.assert_not_called()  # noqa: SLF001
+        win._live.stop.assert_not_called()  # noqa: SLF001
+
+    def test_switch_clears_fps_label(self):
+        win = self._win()
+        win._controller.executor.return_value = None  # noqa: SLF001
+        win._set_mode("live")  # noqa: SLF001
+        win._fps_label.setText.assert_called_with("--- fps")  # noqa: SLF001
+
+    def test_live_fps_label_only_updates_in_live_mode(self):
+        win = self._win()  # file mode
+        win._update_live_fps_label(12.3)  # noqa: SLF001
+        win._fps_label.setText.assert_not_called()  # noqa: SLF001
+        win._mode = "live"  # noqa: SLF001
+        win._update_live_fps_label(12.3)  # noqa: SLF001
+        win._fps_label.setText.assert_called_with("12.3 fps")  # noqa: SLF001
+
+    def test_file_fps_label_ignored_in_live_mode(self):
+        win = self._win()
+        win._mode = "live"  # noqa: SLF001
+        win._update_fps_label(30.0)  # noqa: SLF001
+        win._fps_label.setText.assert_not_called()  # noqa: SLF001
+
+    def test_default_mode_hides_live_tab_shows_file_chrome(self, window):
+        # Real window: defaults to file mode with the toggle on top.
+        assert window._mode == "file"  # noqa: SLF001
+        assert window._central_layout.indexOf(window._mode_toggle) == 0  # noqa: SLF001
+        live_idx = window._side_panel.indexOf(window._live_view)  # noqa: SLF001
+        assert not window._side_panel.isTabVisible(live_idx)  # noqa: SLF001
+
+    def test_fullscreen_exit_rehomes_transport_below_splitter(
+        self, window, monkeypatch
+    ):
+        # The mode toggle sits at index 0, so exit-fullscreen must re-home the
+        # transport relative to the splitter, not at a hardcoded slot.
+        monkeypatch.setattr(window, "showFullScreen", lambda: None)
+        monkeypatch.setattr(window, "showMaximized", lambda: None)
+        monkeypatch.setattr(window, "showNormal", lambda: None)
+        monkeypatch.setattr(window, "isMaximized", lambda: False)
+        layout = window._central_layout  # noqa: SLF001
+        window._enter_fullscreen()  # noqa: SLF001
+        window._exit_fullscreen()  # noqa: SLF001
+        assert layout.indexOf(window._mode_toggle) == 0  # noqa: SLF001
+        splitter_idx = layout.indexOf(window._top_splitter)  # noqa: SLF001
+        assert layout.indexOf(window._transport) == splitter_idx + 1  # noqa: SLF001

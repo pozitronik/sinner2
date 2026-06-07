@@ -51,6 +51,7 @@ from sinner2.gui.widgets.face_detection_overlay import QFaceDetectionOverlay
 from sinner2.gui.widgets.frame_display import QFrameDisplayWidget
 from sinner2.gui.widgets.fullscreen_control_bar import FullscreenControlBar
 from sinner2.gui.widgets.live_view import QLiveView
+from sinner2.gui.widgets.mode_toggle import QModeToggle
 from sinner2.gui.widgets.metrics_overlay import (
     CumulativeRateTracker,
     MetricsSample,
@@ -242,9 +243,15 @@ class SinnerMainWindow(QMainWindow):
         layout.addWidget(self._top_splitter, stretch=1)
         layout.addWidget(self._transport)
         layout.addWidget(self._pickers)
-        # Kept so exit-fullscreen can re-home the transport into its slot
-        # (index 1: between the display splitter and the pickers row).
         self._central_layout = layout
+        # File / Live mode switch sits at the very top. Inserting it shifts the
+        # other rows down — exit-fullscreen re-homes the transport relative to
+        # the splitter index (not a literal slot) so it stays correct.
+        self._mode = "file"
+        self._mode_toggle = QModeToggle()
+        layout.insertWidget(0, self._mode_toggle)
+        # Live tab is hidden until Live mode is selected.
+        self._side_panel.set_mode("file")
 
         # Custom bottom status bar: view/window action buttons (left), status
         # message (middle), persistent indicators (right). Replaces
@@ -322,11 +329,17 @@ class SinnerMainWindow(QMainWindow):
         # controller. Its preview frames drive the same display; the file
         # transport is meaningless while it runs (disabled in _on_live_running).
         self._live = LiveController(parent=self)
+        # Same detection sink the file path uses, so the live swap publishes to
+        # the GUI overlay + comparison-crop probe.
+        self._live.set_detection_sink(self._detection_sink)
         self._live.frameReady.connect(lambda f: self._display.show_frame(f))
         self._live.runningChanged.connect(self._on_live_running)
         self._live.errorOccurred.connect(self._show_error)
+        self._live.processingFpsChanged.connect(self._update_live_fps_label)
         self._live_view.startRequested.connect(self._on_live_start)
         self._live_view.stopRequested.connect(self._live.stop)
+        self._live_view.workersChanged.connect(self._live.set_worker_count)
+        self._mode_toggle.modeChanged.connect(self._set_mode)
 
         self._pickers.sourceChanged.connect(self._on_source_changed)
         self._pickers.targetChanged.connect(self._on_target_changed)
@@ -458,7 +471,14 @@ class SinnerMainWindow(QMainWindow):
             self._controller.change_target(target_path)
 
     def _update_fps_label(self, fps: float) -> None:
-        self._fps_label.setText(f"{fps:.1f} fps")
+        # File-session throughput; ignored in live mode so a late executor
+        # emission (it's paused, decaying to 0) can't overwrite the live reading.
+        if self._mode == "file":
+            self._fps_label.setText(f"{fps:.1f} fps")
+
+    def _update_live_fps_label(self, fps: float) -> None:
+        if self._mode == "live":
+            self._fps_label.setText(f"{fps:.1f} fps")
 
     def _update_scratch_label(self, scratch_dir: object) -> None:
         self._scratch_label.setText(f"cache: {scratch_dir}" if scratch_dir else "cache: —")
@@ -1066,7 +1086,11 @@ class SinnerMainWindow(QMainWindow):
         # splitter, above the pickers row).
         self._fs_controls.end()
         self._fs_controls.detach(self._transport)
-        self._central_layout.insertWidget(1, self._transport)
+        # Re-home the transport just below the display splitter. Resolved by the
+        # splitter's current index (the mode toggle above it shifts the slots),
+        # so it lands correctly whether or not the toggle is present.
+        slot = self._central_layout.indexOf(self._top_splitter) + 1
+        self._central_layout.insertWidget(slot, self._transport)
         self._transport.show()
         for w, was_visible in self._pre_fullscreen_visibility.items():
             w.setVisible(was_visible)
@@ -1284,6 +1308,30 @@ class SinnerMainWindow(QMainWindow):
         if self._face_overlay_on:
             self._face_overlay.set_detections(detections, width, height)  # type: ignore[arg-type]
 
+    def _set_mode(self, mode: str) -> None:
+        """Switch between File and Live mode. The mode IS the mutual exclusion:
+        Live pauses the file session (not torn down, so File resumes instantly);
+        File stops the camera. Each mode shows only the controls that apply."""
+        if mode == self._mode:
+            return
+        self._mode = mode
+        self._mode_toggle.set_mode(mode)  # reflect (no-op when user-driven)
+        live = mode == "live"
+        if live:
+            if self._controller.executor() is not None:
+                self._controller.pause()
+        else:
+            self._live.stop()
+        # File-only chrome: transport, target picker, the file-only Settings
+        # groups, and the Targets/Batch tabs. Live reveals the Live tab/controls.
+        self._transport.setVisible(not live)
+        self._pickers.set_target_visible(not live)
+        self._processors.set_file_only_visible(not live)
+        self._side_panel.set_mode(mode)
+        self._fps_label.setText("--- fps")  # drop the other mode's stale reading
+        if not live:
+            self._refresh_transport_enabled()
+
     def _on_live_start(self) -> None:
         """Start a live-camera session from the current source face + processor
         settings. Source = the face to apply (a still); the webcam is the target."""
@@ -1301,6 +1349,7 @@ class SinnerMainWindow(QMainWindow):
             width=self._live_view.width(),
             height=self._live_view.height(),
             fps=self._live_view.fps(),
+            workers=self._live_view.workers(),
             mjpeg_port=self._live_view.port(),
         )
 
