@@ -1,5 +1,6 @@
 import pytest
 
+from sinner2.gui.session_capabilities import SessionCapabilities
 from sinner2.gui.widgets.transport_controls import QTransportControls
 
 
@@ -8,6 +9,36 @@ def widget(qtbot):
     w = QTransportControls()
     qtbot.addWidget(w)
     return w
+
+
+class TestApplyCapabilities:
+    def test_file_caps_enable_seek_label_audio_batch(self, widget):
+        widget.apply_capabilities(SessionCapabilities.for_file(has_audio=True))
+        assert widget._play_button.isEnabled()        # noqa: SLF001
+        assert widget._slider.isEnabled()             # noqa: SLF001
+        assert widget._label.isVisibleTo(widget)      # noqa: SLF001
+        assert widget._volume.isEnabled()             # noqa: SLF001
+        assert widget._add_to_batch.isEnabled()       # noqa: SLF001
+
+    def test_file_without_audio_disables_volume_only(self, widget):
+        widget.apply_capabilities(SessionCapabilities.for_file(has_audio=False))
+        assert widget._slider.isEnabled()             # noqa: SLF001
+        assert not widget._volume.isEnabled()         # noqa: SLF001
+
+    def test_camera_caps_disable_seek_label_audio_batch_keep_play(self, widget):
+        widget.apply_capabilities(SessionCapabilities.for_camera())
+        assert widget._play_button.isEnabled()        # noqa: SLF001 stop/start
+        assert not widget._slider.isEnabled()         # noqa: SLF001 no seek
+        assert not widget._label.isVisibleTo(widget)  # noqa: SLF001 no frames
+        assert not widget._volume.isEnabled()         # noqa: SLF001 no audio
+        assert not widget._add_to_batch.isEnabled()   # noqa: SLF001 file-only
+
+    def test_none_caps_disable_everything(self, widget):
+        widget.apply_capabilities(SessionCapabilities.none())
+        assert not widget._play_button.isEnabled()    # noqa: SLF001
+        assert not widget._slider.isEnabled()         # noqa: SLF001
+        assert not widget._volume.isEnabled()         # noqa: SLF001
+        assert not widget._add_to_batch.isEnabled()   # noqa: SLF001
 
 
 class TestTransportControls:

@@ -8,6 +8,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sinner2.gui.session_capabilities import SessionCapabilities, SessionKind
+
 _SEEK_DEBOUNCE_MS = 100
 
 
@@ -167,3 +169,15 @@ class QTransportControls(QWidget):
         """Enable/disable the volume control. Called after each new session
         loads, based on whether the target has an audio track."""
         self._volume.setEnabled(enabled)
+
+    # ---- Capability-driven gating ----
+
+    def apply_capabilities(self, caps: SessionCapabilities) -> None:
+        """Gate each control by the active target's capabilities. A file target
+        is seekable/finite/maybe-audio; a camera target is none of those but
+        still play/pause-able (stop/start); NONE disables everything."""
+        self._play_button.setEnabled(caps.can_play_pause)
+        self._slider.setEnabled(caps.seekable)
+        self._label.setVisible(caps.has_timeline)
+        self.set_audio_enabled(caps.has_audio)
+        self._add_to_batch.setEnabled(caps.kind is SessionKind.FILE)
