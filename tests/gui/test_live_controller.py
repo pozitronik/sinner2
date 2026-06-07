@@ -376,6 +376,36 @@ def test_toggle_playback_noop_when_never_started(off_snapshot, source_file):
     assert not ctrl.is_running()
 
 
+def test_set_source_delegates_to_loop_without_rebuild(
+    off_snapshot, source_file, monkeypatch, tmp_path
+):
+    from unittest.mock import MagicMock
+
+    fake = MagicMock()
+    fake.measured_fps.return_value = 0.0
+    monkeypatch.setattr("sinner2.gui.live_controller.LiveLoop",
+                        lambda *a, **k: fake)
+    ctrl = _controller(_StubCam(np.zeros((4, 4, 3), np.uint8)), _SpySink())
+    try:
+        ctrl.start(source_path=source_file, snapshot=off_snapshot, mjpeg_port=0)
+        other = tmp_path / "face2.jpg"
+        other.write_bytes(b"")
+        ctrl.set_source(other)
+        fake.set_source.assert_called_once()       # fast path, not set_chain
+        fake.set_chain.assert_not_called()
+        assert ctrl._restart_args["source_path"] == other  # noqa: SLF001
+    finally:
+        ctrl.stop()
+
+
+def test_set_source_noop_when_not_running(off_snapshot, source_file, tmp_path):
+    ctrl = _controller(_StubCam(np.zeros((4, 4, 3), np.uint8)), _SpySink())
+    other = tmp_path / "f.jpg"
+    other.write_bytes(b"")
+    ctrl.set_source(other)  # not running -> no crash
+    assert not ctrl.is_running()
+
+
 def test_update_refreshes_restart_source(qtbot, off_snapshot, source_file, tmp_path):
     ctrl = _controller(_StubCam(np.zeros((4, 4, 3), np.uint8)), _SpySink())
     try:

@@ -94,6 +94,9 @@ class _StubLive(QObject):
     def update(self, **kwargs):
         self.calls.append(("update", kwargs))
 
+    def set_source(self, source_path):
+        self.calls.append(("set_source", source_path))
+
     def toggle_playback(self):
         self.calls.append(("toggle",))
         self._running = not self._running
@@ -267,21 +270,24 @@ def test_file_target_after_camera_stops_the_camera(trio):
     assert facade.active_kind() is SessionKind.FILE
 
 
-def test_source_change_hot_updates_running_camera(trio):
+def test_source_change_uses_fast_path_not_rebuild_when_camera(trio):
     facade, _, live = trio
     facade.set_source(SRC)
     facade.set_target(CameraConfig())
     other = Path("face2.jpg")
     facade.set_source(other)
-    updates = [c for c in live.calls if c[0] == "update"]
-    assert updates and updates[-1][1]["source_path"] == other
+    # Fast path: live.set_source (no chain rebuild), NOT live.update.
+    sets = [c for c in live.calls if c[0] == "set_source"]
+    assert sets and sets[-1][1] == other
+    assert not any(c[0] == "update" for c in live.calls)
 
 
-def test_settings_change_hot_updates_running_camera(trio):
+def test_settings_change_rebuilds_running_camera(trio):
     facade, _, live = trio
     facade.set_source(SRC)
     facade.set_target(CameraConfig())
     facade.apply_settings(_Snap())
+    # Settings DO rebuild the chain (enhancer/upscaler params may change).
     assert any(c[0] == "update" for c in live.calls)
 
 

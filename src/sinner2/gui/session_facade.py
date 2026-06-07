@@ -63,7 +63,10 @@ class SessionFacade(QObject):
         next file build when a target is already chosen."""
         self._source_path = source_path
         if self._active_kind is SessionKind.CAMERA:
-            self._update_camera()
+            # Fast path: re-point the live swapper without a chain rebuild (the
+            # enhancer/upscaler worker instances survive). Settings changes still
+            # go through apply_settings → _update_camera (full rebuild).
+            self._live.set_source(source_path)
             return
         if self._player.executor() is not None:
             self._player.change_source(source_path)

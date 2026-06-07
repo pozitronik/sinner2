@@ -136,11 +136,27 @@ class LiveController(QObject):
         # (non-blocking) so a bad camera shows an error instead of a blank panel.
         QTimer.singleShot(1500, self._check_camera)
 
+    def set_source(self, source_path: Path) -> None:
+        """Fast source-face change on the running camera: re-point the swapper
+        without rebuilding the chain (keeps the enhancer/upscaler worker
+        instances). No-op if not running."""
+        if self._loop is None:
+            return
+        try:
+            source = Source(path=source_path)
+        except Exception as exc:  # noqa: BLE001 — surface a bad source
+            self.errorOccurred.emit(f"invalid source: {exc}")
+            return
+        self._loop.set_source(source)
+        if self._restart_args is not None:  # keep a Space-restart current
+            self._restart_args["source_path"] = source_path
+
     def update(
         self, *, source_path: Path, snapshot: ProcessorParamsSnapshot
     ) -> None:
-        """Hot-apply a new source face / processor settings to the running
-        session by rebuilding the chain and swapping it in. No-op if not
+        """Hot-apply a new source face + processor settings to the running
+        session by rebuilding the chain and swapping it in (used for SETTINGS
+        changes; source-only changes use the cheaper set_source). No-op if not
         running. The new chain's models load on a side thread; the live feed
         keeps running the current chain until the swap completes."""
         if self._loop is None:
