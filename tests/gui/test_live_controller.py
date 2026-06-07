@@ -231,3 +231,31 @@ def test_sink_url_while_running(qtbot, off_snapshot, source_file):
         assert ctrl.sink_url() == "http://localhost:0/"
     finally:
         ctrl.stop()
+
+
+def test_measured_fps_zero_when_not_running(off_snapshot, source_file):
+    ctrl = _controller(_StubCam(np.zeros((4, 4, 3), np.uint8)), _SpySink())
+    assert ctrl.measured_fps() == 0.0
+
+
+def test_processing_fps_signal_emits_while_running(qtbot, off_snapshot, source_file):
+    cam = _StubCam(np.zeros((8, 8, 3), np.uint8))
+    ctrl = _controller(cam, _SpySink())
+    try:
+        with qtbot.waitSignal(ctrl.processingFpsChanged, timeout=2000) as blocker:
+            ctrl.start(source_path=source_file, snapshot=off_snapshot, mjpeg_port=0)
+        assert isinstance(blocker.args[0], float)
+        assert blocker.args[0] >= 0.0
+    finally:
+        ctrl.stop()
+
+
+def test_fps_timer_stops_on_stop(qtbot, off_snapshot, source_file):
+    ctrl = _controller(_StubCam(np.zeros((4, 4, 3), np.uint8)), _SpySink())
+    ctrl.start(source_path=source_file, snapshot=off_snapshot, mjpeg_port=0)
+    qtbot.wait(50)
+    ctrl.stop()
+    seen: list = []
+    ctrl.processingFpsChanged.connect(seen.append)
+    qtbot.wait(300)  # well past the 200ms timer interval
+    assert seen == []  # no emissions once stopped

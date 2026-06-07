@@ -32,6 +32,7 @@ class LiveController(QObject):
     frameReady = Signal(object)   # processed Frame — queued to the GUI thread
     errorOccurred = Signal(str)
     runningChanged = Signal(bool)
+    processingFpsChanged = Signal(float)  # measured live throughput (emitted fps)
 
     def __init__(
         self,
@@ -50,6 +51,16 @@ class LiveController(QObject):
         self._loop: LiveLoop | None = None
         self._sink: MjpegSink | None = None
         self._camera: Any = None
+        # Poll the loop's measured fps (~5 Hz) and re-emit on the GUI thread.
+        self._fps_timer = QTimer(self)
+        self._fps_timer.setInterval(200)
+        self._fps_timer.timeout.connect(self._emit_fps)
+
+    def measured_fps(self) -> float:
+        return self._loop.measured_fps() if self._loop is not None else 0.0
+
+    def _emit_fps(self) -> None:
+        self.processingFpsChanged.emit(self.measured_fps())
 
     def is_running(self) -> bool:
         return self._loop is not None
@@ -87,6 +98,7 @@ class LiveController(QObject):
             self._camera = None
             return
         print(f"[live] MJPEG sink: {self._sink.describe()}", file=sys.stderr)
+        self._fps_timer.start()
         self.runningChanged.emit(True)
         # The device opens on the capture thread; surface a failure shortly after
         # (non-blocking) so a bad camera shows an error instead of a blank panel.
@@ -151,6 +163,7 @@ class LiveController(QObject):
     def stop(self) -> None:
         if self._loop is None:
             return
+        self._fps_timer.stop()
         self._loop.stop()
         self._loop = None
         self._sink = None
