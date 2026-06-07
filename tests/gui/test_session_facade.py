@@ -69,6 +69,9 @@ class _StubPlayer(QObject):
     def set_processing_scale(self, s):
         self.calls.append(("scale", s))
 
+    def deactivate(self):
+        self.calls.append(("deactivate",))
+
     def shutdown(self):
         self.calls.append(("shutdown",))
 
@@ -84,6 +87,13 @@ class _StubLive(QObject):
     def is_running(self):
         return self._running
 
+    def start(self, **kwargs):
+        self.calls.append(("start", kwargs))
+        self._running = True
+
+    def update(self, **kwargs):
+        self.calls.append(("update", kwargs))
+
     def toggle_playback(self):
         self.calls.append(("toggle",))
         self._running = not self._running
@@ -93,10 +103,19 @@ class _StubLive(QObject):
         self._running = False
 
 
+class _Snap:
+    video_backend = "cv2"
+    reader_pool_size = 3
+    processing_scale = 0.5
+
+    def to_session_config(self):
+        return {"a": 1}
+
+
 @pytest.fixture
 def trio(qtbot):
     player, live = _StubPlayer(), _StubLive()
-    facade = SessionFacade(player, live)
+    facade = SessionFacade(player, live, snapshot_provider=lambda: _Snap())
     return facade, player, live
 
 
@@ -164,15 +183,6 @@ def test_seek_routes_when_file_seekable(trio):
 
 def test_apply_settings_routes_to_player(trio):
     facade, player, _ = trio
-
-    class _Snap:
-        video_backend = "cv2"
-        reader_pool_size = 3
-        processing_scale = 0.5
-
-        def to_session_config(self):
-            return {"a": 1}
-
     facade.set_target(FileTarget(TGT))
     facade.apply_settings(_Snap())
     kinds = [c[0] for c in player.calls]
@@ -227,7 +237,66 @@ def test_shutdown_stops_live_then_player(trio):
     assert ("shutdown",) in player.calls
 
 
-def test_camera_target_not_implemented_until_stage6(trio):
+# ---- camera target ----
+
+def test_camera_target_deactivates_file_and_starts_camera(trio):
+    facade, player, live = trio
+    facade.set_source(SRC)              # a face is required to build the chain
+    facade.set_target(CameraConfig(device=2, mjpeg_port=9000))
+    assert ("deactivate",) in player.calls         # file engine torn down
+    assert facade.active_kind() is SessionKind.CAMERA
+    starts = [c for c in live.calls if c[0] == "start"]
+    assert starts and starts[0][1]["device"] == 2  # auto-started with the config
+    assert starts[0][1]["source_path"] == SRC
+
+
+def test_camera_caps_are_for_camera(trio):
     facade, _, _ = trio
-    with pytest.raises(NotImplementedError):
-        facade.set_target(CameraConfig())
+    facade.set_source(SRC)
+    facade.set_target(CameraConfig())
+    assert facade.capabilities().kind is SessionKind.CAMERA
+    assert facade.is_active()
+
+
+def test_file_target_after_camera_stops_the_camera(trio):
+    facade, player, live = trio
+    facade.set_source(SRC)
+    facade.set_target(CameraConfig())
+    facade.set_target(FileTarget(TGT))
+    assert ("stop",) in live.calls
+    assert facade.active_kind() is SessionKind.FILE
+
+
+def test_source_change_hot_updates_running_camera(trio):
+    facade, _, live = trio
+    facade.set_source(SRC)
+    facade.set_target(CameraConfig())
+    other = Path("face2.jpg")
+    facade.set_source(other)
+    updates = [c for c in live.calls if c[0] == "update"]
+    assert updates and updates[-1][1]["source_path"] == other
+
+
+def test_settings_change_hot_updates_running_camera(trio):
+    facade, _, live = trio
+    facade.set_source(SRC)
+    facade.set_target(CameraConfig())
+    facade.apply_settings(_Snap())
+    assert any(c[0] == "update" for c in live.calls)
+
+
+def test_toggle_playback_routes_to_camera(trio):
+    facade, player, live = trio
+    facade.set_source(SRC)
+    facade.set_target(CameraConfig())
+    facade.toggle_playback()  # Space = stop/start the camera
+    assert ("toggle",) in live.calls
+    assert ("toggle",) not in player.calls
+
+
+def test_camera_does_not_start_without_a_source(trio):
+    facade, player, live = trio
+    facade.set_target(CameraConfig())  # no source set
+    assert ("deactivate",) in player.calls
+    assert facade.active_kind() is SessionKind.CAMERA   # camera is the target…
+    assert not any(c[0] == "start" for c in live.calls)  # …but can't start yet

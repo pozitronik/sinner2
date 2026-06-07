@@ -13,6 +13,7 @@ CameraConfig, and the camera hot-reconfigure) is stubbed and lands in Stage 6.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
@@ -37,15 +38,20 @@ class SessionFacade(QObject):
         self,
         player: PlayerController,
         live: LiveController,
+        snapshot_provider: Callable[[], ProcessorParamsSnapshot] | None = None,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
         self._player = player
         self._live = live
+        # Pulls the current processor settings when starting / hot-updating the
+        # camera (the live engine builds its chain from a snapshot, like the
+        # file engine does). Injected by main_window; None until then.
+        self._snapshot_provider = snapshot_provider
         self._active_kind = SessionKind.NONE
         self._source_path: Path | None = None
         self._file_target_path: Path | None = None
-        self._snapshot: ProcessorParamsSnapshot | None = None
+        self._camera_config: CameraConfig | None = None
         player.errorOccurred.connect(self.errorOccurred)
         live.errorOccurred.connect(self.errorOccurred)
         player.sessionSwitching.connect(self.sessionSwitching)
@@ -67,11 +73,15 @@ class SessionFacade(QObject):
 
     def set_target(self, descriptor: FileTarget | CameraConfig) -> None:
         """Choose the target. A file path routes to the file engine (build on
-        first load, async swap when one is already active)."""
+        first load, async swap when one is active); a CameraConfig tears down the
+        file session and starts the camera."""
         if isinstance(descriptor, CameraConfig):
-            raise NotImplementedError("camera target lands in Stage 6")
+            self._activate_camera(descriptor)
+            return
         if not isinstance(descriptor, FileTarget):
             return
+        if self._active_kind is SessionKind.CAMERA:
+            self._live.stop()  # leaving the camera for a file target
         self._active_kind = SessionKind.FILE
         self._file_target_path = descriptor.path
         if self._player.executor() is not None:
@@ -80,9 +90,30 @@ class SessionFacade(QObject):
             self._player.set_source_and_target(self._source_path, descriptor.path)
         self._emit_caps()
 
+    def _activate_camera(self, config: CameraConfig) -> None:
+        # Tear down the file session (keeps the reusable audio backend), then
+        # start the camera — auto-start, like a file target shows frame 0.
+        self._player.deactivate()
+        self._active_kind = SessionKind.CAMERA
+        self._camera_config = config
+        self._start_camera()
+        self._emit_caps()
+
+    def _start_camera(self) -> None:
+        if self._snapshot_provider is None or self._source_path is None:
+            return  # need a face + a settings source to build the live chain
+        cfg = self._camera_config
+        if cfg is None:
+            return
+        self._live.start(
+            source_path=self._source_path,
+            snapshot=self._snapshot_provider(),
+            device=cfg.device, width=cfg.width, height=cfg.height,
+            fps=cfg.fps, workers=cfg.workers, mjpeg_port=cfg.mjpeg_port,
+        )
+
     def apply_settings(self, snapshot: ProcessorParamsSnapshot) -> None:
         """Hot-apply processor/exec settings to the active session."""
-        self._snapshot = snapshot
         if self._active_kind is SessionKind.CAMERA:
             self._update_camera()
             return
@@ -92,8 +123,12 @@ class SessionFacade(QObject):
         self._player.set_processing_scale(snapshot.processing_scale)
 
     def _update_camera(self) -> None:
-        # Stage 6: live.update(source=self._source_path, snapshot=self._snapshot).
-        pass
+        # Hot-apply the current face + settings to the running camera chain.
+        if self._snapshot_provider is None or self._source_path is None:
+            return
+        self._live.update(
+            source_path=self._source_path, snapshot=self._snapshot_provider()
+        )
 
     # ---- transport (delegate; the player keeps the audio-aware logic) ----
 
