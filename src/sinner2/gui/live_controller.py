@@ -55,6 +55,9 @@ class LiveController(QObject):
         self._loop: LiveLoop | None = None
         self._sink: MjpegSink | None = None
         self._camera: Any = None
+        # The last start() args (refreshed by update()), so toggle_playback can
+        # restart the camera after a Space-stop with the current source/settings.
+        self._restart_args: dict[str, Any] | None = None
         # Poll the loop's measured fps (~5 Hz) and re-emit on the GUI thread.
         self._fps_timer = QTimer(self)
         self._fps_timer.setInterval(200)
@@ -79,6 +82,14 @@ class LiveController(QObject):
     def is_running(self) -> bool:
         return self._loop is not None
 
+    def toggle_playback(self) -> None:
+        """Camera play/pause = stop/start capture (Space). Restarts with the last
+        start() config (kept current by update()). No-op if never started."""
+        if self._loop is not None:
+            self.stop()
+        elif self._restart_args is not None:
+            self.start(**self._restart_args)
+
     def start(
         self,
         *,
@@ -95,6 +106,11 @@ class LiveController(QObject):
         the camera is the live target. No-op if already running."""
         if self._loop is not None:
             return
+        self._restart_args = {
+            "source_path": source_path, "snapshot": snapshot, "device": device,
+            "width": width, "height": height, "fps": fps, "workers": workers,
+            "mjpeg_port": mjpeg_port,
+        }
         chain = self._build_chain(source_path, snapshot)
         if chain is None:
             return
@@ -133,6 +149,9 @@ class LiveController(QObject):
         if chain is None:
             return
         self._loop.set_chain(chain)
+        if self._restart_args is not None:  # keep a Space-restart current
+            self._restart_args["source_path"] = source_path
+            self._restart_args["snapshot"] = snapshot
 
     def _build_chain(
         self, source_path: Path, snapshot: ProcessorParamsSnapshot

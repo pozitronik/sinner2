@@ -345,3 +345,45 @@ def test_set_worker_count_noop_when_not_running(off_snapshot, source_file):
     ctrl = _controller(_StubCam(np.zeros((4, 4, 3), np.uint8)), _SpySink())
     ctrl.set_worker_count(4)  # no live session -> must not raise
     assert not ctrl.is_running()
+
+
+def test_toggle_playback_stops_running_camera(qtbot, off_snapshot, source_file):
+    ctrl = _controller(_StubCam(np.zeros((4, 4, 3), np.uint8)), _SpySink())
+    ctrl.start(source_path=source_file, snapshot=off_snapshot, mjpeg_port=0)
+    assert ctrl.is_running()
+    ctrl.toggle_playback()  # Space = stop the capture
+    assert not ctrl.is_running()
+
+
+def test_toggle_playback_restarts_stopped_camera(qtbot, off_snapshot, source_file):
+    ctrl = LiveController(
+        camera_factory=lambda *a: _StubCam(np.zeros((4, 4, 3), np.uint8)),
+        sink_factory=lambda *a: _SpySink(),
+    )
+    try:
+        ctrl.start(source_path=source_file, snapshot=off_snapshot, mjpeg_port=0)
+        ctrl.toggle_playback()  # stop
+        assert not ctrl.is_running()
+        ctrl.toggle_playback()  # restart with the remembered config
+        assert ctrl.is_running()
+    finally:
+        ctrl.stop()
+
+
+def test_toggle_playback_noop_when_never_started(off_snapshot, source_file):
+    ctrl = _controller(_StubCam(np.zeros((4, 4, 3), np.uint8)), _SpySink())
+    ctrl.toggle_playback()  # no remembered config -> no-op, no crash
+    assert not ctrl.is_running()
+
+
+def test_update_refreshes_restart_source(qtbot, off_snapshot, source_file, tmp_path):
+    ctrl = _controller(_StubCam(np.zeros((4, 4, 3), np.uint8)), _SpySink())
+    try:
+        ctrl.start(source_path=source_file, snapshot=off_snapshot, mjpeg_port=0)
+        other = tmp_path / "face2.jpg"
+        other.write_bytes(b"")
+        ctrl.update(source_path=other, snapshot=off_snapshot)
+        # A later Space-restart uses the updated face, not the original.
+        assert ctrl._restart_args["source_path"] == other  # noqa: SLF001
+    finally:
+        ctrl.stop()
