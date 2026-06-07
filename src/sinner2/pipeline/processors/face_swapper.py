@@ -240,6 +240,34 @@ class FaceSwapper:
             self._masker = OcclusionMasker(parser=self._params.occlusion_parser)
             self._masker.setup()
 
+    def set_source(self, source: Source) -> None:
+        """Re-point the swap at a new SOURCE face WITHOUT reloading any model:
+        re-analyse the source image with the already-loaded analyser and update
+        the source state in place. Cheap (no model load, no chain rebuild) — used
+        for live source-face changes so the enhancer/upscaler worker instances
+        aren't torn down + rebuilt. Records the source for the next setup() if
+        called before setup(). Thread-safe: the new source state is published via
+        single assignments (process() snapshots its handles), so concurrent
+        workers never see a half-updated source."""
+        analyser = self._analyser
+        swapper = self._swapper
+        if analyser is None or swapper is None:
+            self._source = source  # not set up yet → next setup() picks it up
+            return
+        source_img = imread_unicode(source.path)
+        if source_img is None:
+            raise ValueError(f"cannot read source image: {source.path}")
+        faces = analyser.analyse_uncached(source_img)
+        if not faces:
+            raise ValueError(f"no face detected in source: {source.path}")
+        new_face = faces[0]
+        if not get_spec(self._params.model).insightface:
+            # Generic backend caches the source identity; prepare_source's final
+            # assignment is atomic, so live workers stay consistent.
+            swapper.prepare_source(source_img, new_face)
+        self._source = source
+        self._source_face = new_face  # atomic swap — read via process()'s snapshot
+
     def process(self, frame: Frame) -> Frame:
         # Snapshot the backend handles into locals — release() (from a live
         # set_chain/reconfigure) can null self._* concurrently, and the

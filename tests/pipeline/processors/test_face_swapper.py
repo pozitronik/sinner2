@@ -133,6 +133,49 @@ class TestFaceSwapper:
         assert stub_inswapper.get.call_count == 2
 
 
+class TestSetSource:
+    """set_source() re-points the swap at a new face WITHOUT reloading models —
+    the fast path for live source-face changes."""
+
+    def test_reanalyses_without_reloading_models(
+        self, source_image, models_dir, stub_insightface_app, stub_inswapper,
+        tmp_path,
+    ):
+        face1, face2 = MagicMock(name="src1"), MagicMock(name="src2")
+        stub_insightface_app.get.side_effect = [[face1], [face2]]
+        fs = FaceSwapper(source=Source(path=source_image))
+        fs.setup()
+        assert fs._source_face is face1  # noqa: SLF001
+        analyser, swapper = fs._analyser, fs._swapper  # noqa: SLF001
+        src2 = tmp_path / "src2.png"
+        cv2.imwrite(str(src2), np.full((32, 32, 3), 64, dtype=np.uint8))
+        fs.set_source(Source(path=src2))
+        assert fs._source_face is face2  # noqa: SLF001  re-analysed
+        assert fs._analyser is analyser  # noqa: SLF001  analyser NOT rebuilt
+        assert fs._swapper is swapper    # noqa: SLF001  model NOT reloaded
+        assert fs._source.path == src2   # noqa: SLF001
+
+    def test_before_setup_just_records_source(self, source_image, tmp_path):
+        fs = FaceSwapper(source=Source(path=source_image))
+        src2 = tmp_path / "s2.png"
+        src2.write_bytes(b"x")
+        fs.set_source(Source(path=src2))  # no models loaded → record only
+        assert fs._source.path == src2   # noqa: SLF001
+        assert fs._source_face is None   # noqa: SLF001
+
+    def test_raises_when_new_source_has_no_face(
+        self, source_image, models_dir, stub_insightface_app, stub_inswapper,
+        tmp_path,
+    ):
+        stub_insightface_app.get.side_effect = [[MagicMock()], []]
+        fs = FaceSwapper(source=Source(path=source_image))
+        fs.setup()
+        src2 = tmp_path / "s2.png"
+        cv2.imwrite(str(src2), np.zeros((8, 8, 3), dtype=np.uint8))
+        with pytest.raises(ValueError, match="no face"):
+            fs.set_source(Source(path=src2))
+
+
 class TestModelDispatch:
     def test_generic_model_builds_generic_backend(
         self,
