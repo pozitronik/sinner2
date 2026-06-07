@@ -722,6 +722,11 @@ class PlayerController(QObject):
             self._executor.pause()
         self._audio.pause_if_loaded()
 
+    def play(self) -> None:
+        """Public play — symmetric with pause(); the session facade calls it for
+        the transport's play request. No-op when no session is loaded."""
+        self._on_play()
+
     def pause(self) -> None:
         """Public pause — used when live-camera mode takes over the display so
         the file session stops driving it. No-op when nothing is playing."""
