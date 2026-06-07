@@ -51,7 +51,6 @@ from sinner2.gui.widgets.face_detection_overlay import QFaceDetectionOverlay
 from sinner2.gui.widgets.frame_display import QFrameDisplayWidget
 from sinner2.gui.widgets.fullscreen_control_bar import FullscreenControlBar
 from sinner2.gui.widgets.live_view import QLiveView
-from sinner2.gui.widgets.mode_toggle import QModeToggle
 from sinner2.gui.widgets.metrics_overlay import (
     CumulativeRateTracker,
     MetricsSample,
@@ -244,13 +243,9 @@ class SinnerMainWindow(QMainWindow):
         layout.addWidget(self._transport)
         layout.addWidget(self._pickers)
         self._central_layout = layout
-        # File / Live mode switch sits at the very top. Inserting it shifts the
-        # other rows down — exit-fullscreen re-homes the transport relative to
-        # the splitter index (not a literal slot) so it stays correct.
+        # File / Live mode is driven by a toggle button in the bottom status bar
+        # (wired below). Start in file mode with the Live tab hidden.
         self._mode = "file"
-        self._mode_toggle = QModeToggle()
-        layout.insertWidget(0, self._mode_toggle)
-        # Live tab is hidden until Live mode is selected.
         self._side_panel.set_mode("file")
 
         # Custom bottom status bar: view/window action buttons (left), status
@@ -263,6 +258,7 @@ class SinnerMainWindow(QMainWindow):
         layout.addWidget(self._status_bar)
         self.setCentralWidget(central)
 
+        self._status_bar.mode_button.toggled.connect(self._on_mode_button_toggled)
         self._status_bar.on_top_button.toggled.connect(self._set_stays_on_top)
         self._status_bar.stats_button.toggled.connect(self._set_stats_visible)
         self._status_bar.rotate_button.clicked.connect(self._cycle_rotation)
@@ -339,7 +335,6 @@ class SinnerMainWindow(QMainWindow):
         self._live_view.startRequested.connect(self._on_live_start)
         self._live_view.stopRequested.connect(self._live.stop)
         self._live_view.workersChanged.connect(self._live.set_worker_count)
-        self._mode_toggle.modeChanged.connect(self._set_mode)
 
         self._pickers.sourceChanged.connect(self._on_source_changed)
         self._pickers.targetChanged.connect(self._on_target_changed)
@@ -1308,6 +1303,9 @@ class SinnerMainWindow(QMainWindow):
         if self._face_overlay_on:
             self._face_overlay.set_detections(detections, width, height)  # type: ignore[arg-type]
 
+    def _on_mode_button_toggled(self, checked: bool) -> None:
+        self._set_mode("live" if checked else "file")
+
     def _set_mode(self, mode: str) -> None:
         """Switch between File and Live mode. The mode IS the mutual exclusion:
         Live pauses the file session (not torn down, so File resumes instantly);
@@ -1315,8 +1313,9 @@ class SinnerMainWindow(QMainWindow):
         if mode == self._mode:
             return
         self._mode = mode
-        self._mode_toggle.set_mode(mode)  # reflect (no-op when user-driven)
         live = mode == "live"
+        # Reflect on the status-bar toggle without re-firing its handler.
+        self._set_button_checked(self._status_bar.mode_button, live)
         if live:
             if self._controller.executor() is not None:
                 self._controller.pause()

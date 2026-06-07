@@ -945,7 +945,7 @@ class TestModeToggle:
 
         win = mw.SinnerMainWindow.__new__(mw.SinnerMainWindow)
         win._mode = "file"  # noqa: SLF001
-        win._mode_toggle = MagicMock()  # noqa: SLF001
+        win._status_bar = MagicMock()  # noqa: SLF001  carries the mode_button
         win._controller = MagicMock()  # noqa: SLF001
         win._live = MagicMock()  # noqa: SLF001
         win._transport = MagicMock()  # noqa: SLF001
@@ -1013,18 +1013,27 @@ class TestModeToggle:
         win._update_fps_label(30.0)  # noqa: SLF001
         win._fps_label.setText.assert_not_called()  # noqa: SLF001
 
-    def test_default_mode_hides_live_tab_shows_file_chrome(self, window):
-        # Real window: defaults to file mode with the toggle on top.
+    def test_default_mode_is_file_with_button_unchecked_and_live_tab_hidden(
+        self, window
+    ):
+        # Real window: defaults to file mode; the status-bar toggle is unchecked.
         assert window._mode == "file"  # noqa: SLF001
-        assert window._central_layout.indexOf(window._mode_toggle) == 0  # noqa: SLF001
+        assert not window._status_bar.mode_button.isChecked()  # noqa: SLF001
         live_idx = window._side_panel.indexOf(window._live_view)  # noqa: SLF001
         assert not window._side_panel.isTabVisible(live_idx)  # noqa: SLF001
+
+    def test_mode_button_toggles_mode(self, window):
+        assert window._mode == "file"  # noqa: SLF001
+        window._status_bar.mode_button.setChecked(True)  # noqa: SLF001 fires toggled
+        assert window._mode == "live"  # noqa: SLF001
+        window._status_bar.mode_button.setChecked(False)  # noqa: SLF001
+        assert window._mode == "file"  # noqa: SLF001
 
     def test_fullscreen_exit_rehomes_transport_below_splitter(
         self, window, monkeypatch
     ):
-        # The mode toggle sits at index 0, so exit-fullscreen must re-home the
-        # transport relative to the splitter, not at a hardcoded slot.
+        # Exit-fullscreen must re-home the transport relative to the splitter
+        # index, not a hardcoded slot.
         monkeypatch.setattr(window, "showFullScreen", lambda: None)
         monkeypatch.setattr(window, "showMaximized", lambda: None)
         monkeypatch.setattr(window, "showNormal", lambda: None)
@@ -1032,6 +1041,5 @@ class TestModeToggle:
         layout = window._central_layout  # noqa: SLF001
         window._enter_fullscreen()  # noqa: SLF001
         window._exit_fullscreen()  # noqa: SLF001
-        assert layout.indexOf(window._mode_toggle) == 0  # noqa: SLF001
         splitter_idx = layout.indexOf(window._top_splitter)  # noqa: SLF001
         assert layout.indexOf(window._transport) == splitter_idx + 1  # noqa: SLF001

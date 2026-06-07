@@ -14,6 +14,7 @@ def bar(qtbot):
 class TestStatusActionBar:
     def test_toggle_buttons_are_checkable(self, bar):
         for button in (
+            bar.mode_button,
             bar.on_top_button,
             bar.stats_button,
             bar.fullscreen_button,
@@ -27,6 +28,7 @@ class TestStatusActionBar:
 
     def test_every_button_has_a_tooltip(self, bar):
         for button in (
+            bar.mode_button,
             bar.on_top_button,
             bar.stats_button,
             bar.rotate_button,
