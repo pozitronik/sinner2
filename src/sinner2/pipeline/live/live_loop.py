@@ -188,6 +188,30 @@ class LiveLoop:
             target=_prepare, name="sinner2-live-setup", daemon=True
         ).start()
 
+    def set_source(self, source: object) -> None:
+        """Fast source-face change: re-point the active chain's swapper at a new
+        source WITHOUT rebuilding the chain, so the enhancer/upscaler per-worker
+        instances are NOT torn down + reloaded. Runs on a side thread (the source
+        re-analysis is off the caller's thread); no-op if no processor accepts a
+        source. The swapper's set_source is internally thread-safe vs workers."""
+        def _apply() -> None:
+            with self._lock:
+                chain = self._active
+            for processor in chain:
+                setter = getattr(processor, "set_source", None)
+                if not callable(setter):
+                    continue
+                try:
+                    setter(source)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[live] set_source failed for "
+                          f"{getattr(processor, 'name', '?')}: {exc}",
+                          file=sys.stderr)
+
+        threading.Thread(
+            target=_apply, name="sinner2-live-source", daemon=True
+        ).start()
+
     def _wait_for_gen_drain(self, gen: int, timeout: float) -> None:
         deadline = time.monotonic() + timeout
         with self._inflight_cv:

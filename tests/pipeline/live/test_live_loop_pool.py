@@ -311,6 +311,51 @@ def test_hot_swap_discards_stale_world_frames():
     assert any(_tag(f) == 200 for f in sink.pushed)
 
 
+def test_set_source_applies_to_active_swapper_without_rebuild():
+    class _SwapSpy:
+        name = "swap"
+
+        def __init__(self):
+            self.sources = []
+            self.setup_calls = 0
+            self.released = False
+
+        def setup(self):
+            self.setup_calls += 1
+
+        def release(self):
+            self.released = True
+
+        def process(self, frame):
+            return frame
+
+        def set_source(self, source):
+            self.sources.append(source)
+
+    swap = _SwapSpy()
+    loop = LiveLoop(_CountingSource(), [swap], [_SpySink()], workers=2, fps=1000)
+    loop.start()
+    try:
+        assert _wait_until(lambda: swap.setup_calls == 1)  # set up once
+        loop.set_source("FACE2")
+        assert _wait_until(lambda: swap.sources == ["FACE2"])  # fast-applied
+        assert swap.setup_calls == 1  # NOT re-setup — no chain rebuild
+        assert not swap.released      # chain (enhancer/upscaler) survives
+    finally:
+        loop.stop()
+
+
+def test_set_source_skips_processors_without_setter():
+    loop = LiveLoop(_CountingSource(), [_SpyProcessor("noop")], [_SpySink()],
+                    workers=1, fps=1000)
+    loop.start()
+    try:
+        loop.set_source("X")  # processor has no set_source -> skipped, no crash
+        assert _wait_until(lambda: loop.frames_processed > 0)
+    finally:
+        loop.stop()
+
+
 def test_stop_drains_and_joins_promptly():
     class _NoneSource(_CountingSource):
         def read(self):
