@@ -4,9 +4,11 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Signal
 
 from sinner2.audio.audio_backend import AudioBackend, AudioBackendName
+from sinner2.config.media_extensions import is_video_ext
 from sinner2.config.source import Source
 from sinner2.config.target import Target
 from sinner2.gui.audio_controller import AudioController
+from sinner2.gui.session_capabilities import SessionCapabilities
 from sinner2.gui.bridges.observable_bridge import ObservableValueBridge
 from sinner2.gui.cache_controller import CacheController
 from sinner2.gui.session_builder import (
@@ -530,7 +532,12 @@ class PlayerController(QObject):
             upscaler_device=self._upscaler_device,
         )
 
-    def shutdown(self) -> None:
+    def deactivate(self) -> None:
+        """Tear down the active session — cancel any in-flight swap, stop the
+        executor, close the store — WITHOUT destroying the reusable audio
+        backend. Used when the session switches to another target kind (e.g. the
+        camera); a later file load rebuilds via set_source_and_target. shutdown()
+        is this plus the audio backend teardown."""
         # A swap may be mid-flight on a worker thread; drop any coalesced request
         # + wait for it so we don't tear down while it's still building/stopping.
         self._swap.cancel_pending_and_join(30.0)
@@ -551,10 +558,24 @@ class PlayerController(QObject):
                 bundle.session_store.close()
             except Exception:
                 pass
+
+    def shutdown(self) -> None:
+        self.deactivate()
         self._audio.shutdown()
 
     def executor(self) -> RealtimeExecutor | None:
         return self._executor
+
+    def capabilities(self) -> SessionCapabilities:
+        """The active file session's capabilities — always seekable + finite;
+        audio only when the target is a video. NONE when no session is loaded."""
+        if self._executor is None:
+            return SessionCapabilities.none()
+        has_audio = (
+            self._current_target_path is not None
+            and is_video_ext(self._current_target_path)
+        )
+        return SessionCapabilities.for_file(has_audio=has_audio)
 
     def session_cache_dir(self) -> Path | None:
         """The active session's cache dir (None if no session / cache off) —
