@@ -887,6 +887,7 @@ class TestLiveMode:
         win._processors = MagicMock()  # noqa: SLF001
         win._status_bar = MagicMock()  # noqa: SLF001
         win._transport = MagicMock()  # noqa: SLF001
+        win._controller = MagicMock()  # noqa: SLF001
         return win
 
     def test_start_without_source_shows_message_and_no_start(self):
@@ -908,10 +909,18 @@ class TestLiveMode:
             getattr(win._live_view, getter).return_value = value  # noqa: SLF001
         win._on_live_start()  # noqa: SLF001
         win._live.start.assert_called_once()  # noqa: SLF001
+        win._controller.pause.assert_called_once()  # noqa: SLF001  live takes over
         kwargs = win._live.start.call_args.kwargs  # noqa: SLF001
         assert kwargs["source_path"] == src
         assert kwargs["snapshot"] is win._processors.snapshot.return_value  # noqa: SLF001
         assert kwargs["device"] == 0 and kwargs["mjpeg_port"] == 8080
+
+
+    def test_start_without_source_does_not_pause(self):
+        win = self._win()
+        win._pickers.source_path.return_value = None  # noqa: SLF001
+        win._on_live_start()  # noqa: SLF001
+        win._controller.pause.assert_not_called()  # noqa: SLF001
 
     def test_running_disables_transport_and_updates_view(self):
         win = self._win()

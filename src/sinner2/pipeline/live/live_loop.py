@@ -16,6 +16,7 @@ thread (e.g. via a queued Qt signal).
 """
 from __future__ import annotations
 
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -81,23 +82,31 @@ class LiveLoop:
             sink.stop()
 
     def _run(self) -> None:
+        delivered = False
         while not self._stop.is_set():
             t0 = time.perf_counter()
             frame = self._source.read()
             if frame is None:
                 time.sleep(0.005)  # nothing captured yet
                 continue
+            out = frame
             try:
                 for processor in self._chain:
-                    frame = processor.process(frame)
-            except Exception:  # noqa: BLE001 — one bad frame must not kill the feed
+                    out = processor.process(out)
+            except Exception as exc:  # noqa: BLE001 — show the raw frame, don't freeze
                 self.errors += 1
-                self._pace(t0)
-                continue
+                if self.errors <= 3:  # log the first few, then stay quiet
+                    print(f"[live] chain error (showing raw frame): {exc}",
+                          file=sys.stderr)
+                out = frame
             for sink in self._sinks:
-                sink.push(frame)
+                sink.push(out)
             if self._on_frame is not None:
-                self._on_frame(frame)
+                self._on_frame(out)
+            if not delivered:
+                delivered = True
+                print(f"[live] first frame delivered to {len(self._sinks)} "
+                      "sink(s) + preview", file=sys.stderr)
             self.frames_processed += 1
             self._pace(t0)
 

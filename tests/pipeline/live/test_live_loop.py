@@ -121,7 +121,9 @@ def test_throwing_processor_does_not_kill_loop():
     _run_briefly(loop)
     assert flaky.calls > 1          # kept running past the first failure
     assert loop.errors > 0
-    assert sink.pushed == []        # failed frames are not pushed
+    # On a chain error the RAW frame is passed through (never a blank feed).
+    assert sink.pushed
+    assert int(sink.pushed[-1].sum()) == 0  # the unprocessed zero frame
 
 
 def test_stop_is_clean_when_never_started_frames():

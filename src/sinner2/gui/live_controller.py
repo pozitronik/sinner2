@@ -9,6 +9,7 @@ updates on the GUI thread. Capture/sink construction is injectable for tests.
 """
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -92,7 +93,15 @@ class LiveController(QObject):
         self._loop = LiveLoop(
             camera, chain, [self._sink], on_frame=self._emit_frame, fps=fps
         )
-        self._loop.start()
+        try:
+            self._loop.start()
+        except Exception as exc:  # noqa: BLE001 — e.g. MJPEG port already in use
+            self.errorOccurred.emit(f"failed to start live session: {exc}")
+            self._loop = None
+            self._sink = None
+            self._camera = None
+            return
+        print(f"[live] MJPEG sink: {self._sink.describe()}", file=sys.stderr)
         self.runningChanged.emit(True)
         # The device opens on the capture thread; surface a failure shortly after
         # (non-blocking) so a bad camera shows an error instead of a blank panel.

@@ -701,6 +701,11 @@ class PlayerController(QObject):
             self._executor.pause()
         self._audio.pause_if_loaded()
 
+    def pause(self) -> None:
+        """Public pause — used when live-camera mode takes over the display so
+        the file session stops driving it. No-op when nothing is playing."""
+        self._on_pause()
+
     def toggle_playback(self) -> None:
         """Audio-aware play/pause toggle. The spacebar shortcut routes through
         here (not executor.play/pause directly) so audio stays in lock-step with

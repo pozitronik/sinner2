@@ -29,27 +29,24 @@ def _open(device: Any, backend: int | None) -> Any:
 
 
 def _default_capture(device: Any, width: int, height: int) -> Any:
-    # Keep the first backend that not only OPENS but actually DELIVERS a frame.
-    # A Windows webcam frequently "opens" on one backend yet returns no frames
-    # (camera LED on, but cv2.read() fails) -> a black/frozen preview. So we
-    # test-read each backend and pick one that yields a frame. DirectShow is
-    # usually best; fall back to Media Foundation, then the platform default.
+    # Default backend first (Media Foundation on Windows). DirectShow-by-index is
+    # unreliable on many setups ("DSHOW: can't be used to capture by index"), so
+    # try it only as a fallback. Keep the first that OPENS; first-read warmup is
+    # handled by the capture loop's read-retries (a webcam's first read often
+    # fails). frames_seen surfaces an open-but-never-delivers device.
     if sys.platform == "win32" and isinstance(device, int):
-        backends: list[int | None] = [cv2.CAP_DSHOW, cv2.CAP_MSMF, None]
+        backends: list[int | None] = [None, cv2.CAP_DSHOW]
     else:
         backends = [None]
     chosen: Any = None
     for backend in backends:
         cap = _open(device, backend)
         if cap.isOpened():
-            ok, _frame = cap.read()
-            if ok and _frame is not None:
-                chosen = cap
-                break
+            chosen = cap
+            break
         cap.release()
     if chosen is None:
-        # Nothing delivered a frame; hand back the first attempt so CameraSource
-        # reports the failure (opened-but-no-frames is caught by frames_seen).
+        # Nothing opened; hand back the first attempt so CameraSource reports it.
         chosen = _open(device, backends[0])
     if width > 0:
         chosen.set(cv2.CAP_PROP_FRAME_WIDTH, width)
@@ -129,17 +126,23 @@ class CameraSource:
         self._opened = bool(cap.isOpened())
         if not self._opened:
             self._error = f"could not open capture device {self.device!r}"
+            print(f"[live] {self._error}", file=sys.stderr)
             self._ready.set()
             cap.release()
             return
         self._ready.set()
+        print(f"[live] camera {self.device!r}: opened", file=sys.stderr)
         try:
             while not self._stop.is_set():
                 ok, frame = cap.read()
                 if not ok or frame is None:
-                    time.sleep(0.01)  # transient hiccup / no frame yet
+                    time.sleep(0.01)  # transient hiccup / warmup / no frame yet
                     continue
+                first = self._frames_seen == 0
                 self._store(frame)
+                if first:
+                    print(f"[live] camera {self.device!r}: first frame "
+                          f"{frame.shape[1]}x{frame.shape[0]}", file=sys.stderr)
         finally:
             cap.release()
 

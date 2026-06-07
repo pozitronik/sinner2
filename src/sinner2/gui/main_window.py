@@ -1276,6 +1276,9 @@ class SinnerMainWindow(QMainWindow):
         if source is None:
             self._status_bar.show_message("Load a source face first", 4000)
             return
+        # Live mode takes over the display — pause the file session so the two
+        # don't drive the panel at once.
+        self._controller.pause()
         self._live.start(
             source_path=source,
             snapshot=self._processors.snapshot(),
