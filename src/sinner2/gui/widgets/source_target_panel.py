@@ -8,7 +8,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMenu,
-    QPushButton,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -182,9 +181,10 @@ class QSourceTargetPanel(QWidget):
         self._target.pathChanged.connect(self.targetChanged)
         self._source.recentsChanged.connect(self.sourceRecentsChanged)
         self._target.recentsChanged.connect(self.targetRecentsChanged)
-        # Camera is a peer choice to a file target: pick it and the session
-        # becomes a live camera (config lives in the Live tab).
-        self._use_camera = QPushButton("📹 Use camera")
+        # Camera is a peer choice to a file target: a compact icon button after
+        # the target's Load button (config lives in the Live tab).
+        self._use_camera = QToolButton()
+        self._use_camera.setText("📹")
         self._use_camera.setToolTip(
             "Use the camera as the target (live mode). Configure the device / "
             "resolution / fps in the Live tab."
@@ -198,8 +198,13 @@ class QSourceTargetPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
         layout.addWidget(self._source)
-        layout.addWidget(self._target)
-        layout.addWidget(self._use_camera)
+        # Target picker + the compact "use camera" button on one row, so the
+        # camera button sits just after the picker's Load button.
+        target_row = QHBoxLayout()
+        target_row.setContentsMargins(0, 0, 0, 0)
+        target_row.addWidget(self._target, stretch=1)
+        target_row.addWidget(self._use_camera)
+        layout.addLayout(target_row)
 
     def source_path(self) -> Path | None:
         return self._source.path()
