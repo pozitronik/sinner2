@@ -836,6 +836,12 @@ class QProcessorControls(QWidget):
         inner_layout.setContentsMargins(0, 0, 0, 0)
         # Face detector first — detection precedes the swap (can't swap a face
         # you didn't find).
+        # Captured so live mode can hide the file-only groups (the camera path
+        # has no timeline cache, reader pool, processing scale, or video backend;
+        # its worker count lives in the Live tab instead — see set_file_only_visible).
+        self._execution_box = execution_box
+        self._cache_box = cache_box
+        self._cache_storage_box = cache_storage_box
         inner_layout.addWidget(face_box)
         inner_layout.addWidget(swapper_box)
         inner_layout.addWidget(enhancer_box)
@@ -864,6 +870,13 @@ class QProcessorControls(QWidget):
         ]
         self._uniform_label_width = self._compute_uniform_label_width()
         self._apply_form_density()
+
+    def set_file_only_visible(self, visible: bool) -> None:
+        """Show/hide the file-only groups (Execution, Cache, Cache storage). Live
+        mode hides them: a camera has no timeline cache, reader pool, processing
+        scale, or video backend, and its worker count lives in the Live tab."""
+        for box in (self._execution_box, self._cache_box, self._cache_storage_box):
+            box.setVisible(visible)
 
     # ---- Responsive form density (consistent + adaptive caption columns) ----
 

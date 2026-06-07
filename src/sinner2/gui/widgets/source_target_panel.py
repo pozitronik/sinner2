@@ -202,6 +202,10 @@ class QSourceTargetPanel(QWidget):
     def set_target(self, path: Path | None) -> None:
         self._target.set_path(path)
 
+    def set_target_visible(self, visible: bool) -> None:
+        """Hide the target picker in live mode (the camera is the target)."""
+        self._target.setVisible(visible)
+
     def source_recents(self) -> list[Path]:
         return self._source.recents()
 

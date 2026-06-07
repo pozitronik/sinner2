@@ -113,6 +113,26 @@ class QSidePanel(QTabWidget):
         self._sources_library.setEnabled(not locked)
         self._targets_library.setEnabled(not locked)
 
+    def set_mode(self, mode: str) -> None:
+        """Show only the tabs relevant to the active mode. Live hides Targets +
+        Batch (no file target; batch is file-only) and reveals + selects Live;
+        any other mode restores Targets/Batch and hides Live. Resolved by widget
+        index so optional tabs don't shift the mapping."""
+        live = mode == "live"
+        ti = self.indexOf(self._targets_library)
+        if ti >= 0:
+            self.setTabVisible(ti, not live)
+        if self._batch_view is not None:
+            bi = self.indexOf(self._batch_view)
+            if bi >= 0:
+                self.setTabVisible(bi, not live)
+        if self._live_view is not None:
+            li = self.indexOf(self._live_view)
+            if li >= 0:
+                self.setTabVisible(li, live)
+                if live:
+                    self.setCurrentWidget(self._live_view)
+
     def set_display_dim(self, dim: int) -> None:
         """Apply the same thumbnail display size to both libraries.
         Used to keep source/target tiles in sync (resizing one should

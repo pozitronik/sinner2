@@ -63,6 +63,13 @@ class TestQSourceTargetPanel:
         with qtbot.assertNotEmitted(panel.targetChanged, wait=100):
             panel.set_source(tmp_path / "x.png")
 
+    def test_set_target_visible_toggles_only_target(self, panel):
+        panel.set_target_visible(False)
+        assert not panel._target.isVisibleTo(panel)  # noqa: SLF001
+        assert panel._source.isVisibleTo(panel)      # noqa: SLF001 — source stays
+        panel.set_target_visible(True)
+        assert panel._target.isVisibleTo(panel)      # noqa: SLF001
+
 
 class TestQPathPickerRecents:
     @pytest.fixture

@@ -17,6 +17,21 @@ def widget(qtbot):
     return w
 
 
+class TestFileOnlyVisibility:
+    """Live mode hides the file-only groups (Execution, Cache, Cache storage);
+    the per-processor groups + providers/devices stay (they apply to live)."""
+
+    def test_set_file_only_visible_toggles_execution_and_cache(self, widget):
+        widget.set_file_only_visible(False)
+        assert not widget._execution_box.isVisibleTo(widget)      # noqa: SLF001
+        assert not widget._cache_box.isVisibleTo(widget)          # noqa: SLF001
+        assert not widget._cache_storage_box.isVisibleTo(widget)  # noqa: SLF001
+        widget.set_file_only_visible(True)
+        assert widget._execution_box.isVisibleTo(widget)          # noqa: SLF001
+        assert widget._cache_box.isVisibleTo(widget)              # noqa: SLF001
+        assert widget._cache_storage_box.isVisibleTo(widget)      # noqa: SLF001
+
+
 class TestProviderFloor:
     """You can't run on no provider — unchecking everything forces CPU back on
     (the floor), so the swapper provider selection is never empty."""
