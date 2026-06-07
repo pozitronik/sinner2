@@ -20,11 +20,13 @@ from PySide6.QtWidgets import (
 )
 
 from sinner2.pipeline.live.camera_source import available_cameras
+from sinner2.pipeline.live.live_loop import MAX_LIVE_WORKERS
 
 
 class QLiveView(QWidget):
     startRequested = Signal()
     stopRequested = Signal()
+    workersChanged = Signal(int)  # live worker-pool resize while running
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -48,10 +50,18 @@ class QLiveView(QWidget):
         self._width = self._spin(160, 3840, 1280, step=16)
         self._height = self._spin(120, 2160, 720, step=16)
         self._fps = self._spin(1, 60, 30)
+        self._workers = self._spin(1, MAX_LIVE_WORKERS, 1)
+        self._workers.setToolTip(
+            "Parallel processing threads for the live chain. More can raise "
+            "throughput on a heavy chain (swap + enhance + upscale); adjustable "
+            "while running."
+        )
+        self._workers.valueChanged.connect(self.workersChanged)
         self._port = self._spin(1, 65535, 8080)
         form.addRow("Width", self._width)
         form.addRow("Height", self._height)
         form.addRow("FPS", self._fps)
+        form.addRow("Workers", self._workers)
         form.addRow("MJPEG port", self._port)
 
         self._toggle = QPushButton("Start live")
@@ -89,6 +99,9 @@ class QLiveView(QWidget):
 
     def fps(self) -> int:
         return self._fps.value()
+
+    def workers(self) -> int:
+        return self._workers.value()
 
     def port(self) -> int:
         return self._port.value()

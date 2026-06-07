@@ -51,3 +51,26 @@ def test_set_url(view):
     assert "8080" in view._url.text()  # noqa: SLF001
     view.set_url(None)
     assert view._url.text() == "—"  # noqa: SLF001
+
+
+def test_workers_default_and_range(view):
+    assert view.workers() == 1
+    assert view._workers.minimum() == 1   # noqa: SLF001
+    assert view._workers.maximum() == 16  # noqa: SLF001
+
+
+def test_workers_getter(view):
+    view._workers.setValue(4)  # noqa: SLF001
+    assert view.workers() == 4
+
+
+def test_workers_changed_signal(qtbot, view):
+    with qtbot.waitSignal(view.workersChanged, timeout=1000) as blocker:
+        view._workers.setValue(3)  # noqa: SLF001
+    assert blocker.args == [3]
+
+
+def test_workers_stays_enabled_while_running(view):
+    # The pool resizes live, so the Workers control is NOT locked while running.
+    view.set_running(True)
+    assert view._workers.isEnabled()  # noqa: SLF001
