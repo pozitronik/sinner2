@@ -1,12 +1,13 @@
-"""Tests for the paused-view chain refresh.
+"""Tests for chain-refresh + cache reconfiguration on apply_session_config.
 
 When the user toggles a chain-affecting param (enhancer on/off, swapper
-detection interval, etc.) while paused, the executor.set_chain() swap
-puts the new chain in place but the displayed pixels are still the old
-chain's output. apply_session_config compensates by issuing a seek to
-the current frame, which causes the new chain to reprocess and the
-display to update. When playing, the dispatcher naturally submits next
-frames through the new chain, so no extra seek is needed."""
+detection interval, etc.), apply_session_config rebuilds the chain and calls
+executor.set_chain(). set_chain itself now invalidates the whole frame cache
+and re-renders the current frame (paused or playing), so the controller no
+longer issues a compensating seek — and crucially every cached frame refreshes,
+not just the visible one, so a tweak applies across the clip even with a large
+memory cache. A memory-cache-size change is hot-applied to the live buffer
+(no restart / session rebuild needed)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -153,8 +154,12 @@ class TestDetectionSizeResetsSharedDetector:
         ctrl.shutdown()
 
 
-class TestPausedChainRefresh:
-    def test_paused_chain_change_seeks_current_frame(
+class TestChainRefresh:
+    """set_chain now owns the reprocess (it invalidates the whole cache and
+    re-renders the current frame itself), so the controller just calls set_chain
+    — no compensating seek, paused or playing."""
+
+    def test_paused_chain_change_calls_set_chain_without_seek(
         self, widgets, fake_source_path, monkeypatch
     ):
         ctrl = _make_controller(widgets)
@@ -165,15 +170,14 @@ class TestPausedChainRefresh:
             source_path=fake_source_path,
             monkeypatch=monkeypatch,
         )
-        # Default enhancer_enabled is False; flipping forces chain_changed.
         # Controller default is enhancer_enabled=True; flip to False to
         # force chain_changed.
         _apply(ctrl, enhancer_enabled=False)
         fake.set_chain.assert_called_once()
-        fake.seek.assert_called_once_with(42)
+        fake.seek.assert_not_called()
         ctrl.shutdown()
 
-    def test_playing_chain_change_does_not_seek(
+    def test_playing_chain_change_calls_set_chain_without_seek(
         self, widgets, fake_source_path, monkeypatch
     ):
         ctrl = _make_controller(widgets)
@@ -186,12 +190,10 @@ class TestPausedChainRefresh:
         )
         _apply(ctrl, enhancer_enabled=False)
         fake.set_chain.assert_called_once()
-        # Playing: dispatcher submits next frames through the new chain
-        # on its own — no nudge needed.
         fake.seek.assert_not_called()
         ctrl.shutdown()
 
-    def test_paused_no_chain_change_does_not_seek(
+    def test_no_chain_change_does_not_set_chain_or_seek(
         self, widgets, fake_source_path, monkeypatch
     ):
         ctrl = _make_controller(widgets)
@@ -203,42 +205,65 @@ class TestPausedChainRefresh:
             monkeypatch=monkeypatch,
         )
         # Apply the controller's current state — chain_changed=False.
-        # No set_chain, no seek.
         _apply(ctrl, enhancer_enabled=ctrl._enhancer_enabled)  # noqa: SLF001
         fake.set_chain.assert_not_called()
         fake.seek.assert_not_called()
         ctrl.shutdown()
 
-    def test_paused_chain_change_at_frame_zero_seeks_zero(
+
+class TestMemoryCacheHotResize:
+    """A memory-cache-size change must hot-resize the LIVE buffer (so it takes
+    effect without a restart / source change), and only when it actually
+    changes."""
+
+    def test_memory_size_change_hot_resizes_live_cache(
         self, widgets, fake_source_path, monkeypatch
     ):
-        # The guard is "current >= 0", so frame 0 must still seek.
+        import dataclasses
+
         ctrl = _make_controller(widgets)
         fake = _attach_fake_session(
             ctrl,
             playing=False,
-            current_frame=0,
+            current_frame=10,
             source_path=fake_source_path,
             monkeypatch=monkeypatch,
         )
-        _apply(ctrl, enhancer_enabled=False)
-        fake.seek.assert_called_once_with(0)
+        bigger = dataclasses.replace(
+            _DEFAULT_CACHE_SETTINGS, memory_max_bytes=256 * 1024 * 1024
+        )
+        ctrl.apply_session_config(
+            swapper_params=FaceSwapperParams(),
+            enhancer_params=FaceEnhancerParams(),
+            enhancer_enabled=ctrl._enhancer_enabled,  # noqa: SLF001 — no chain change
+            strategy=BestEffortStrategy(),
+            worker_count=1,
+            playback_mode=PlaybackMode.FIXED_30,
+            cache_settings=bigger,
+        )
+        fake.set_memory_cache_bytes.assert_called_once_with(256 * 1024 * 1024)
+        fake.set_chain.assert_not_called()
         ctrl.shutdown()
 
-    def test_paused_chain_change_at_negative_frame_does_not_seek(
+    def test_same_memory_size_does_not_resize(
         self, widgets, fake_source_path, monkeypatch
     ):
-        # current_frame=-1 means timeline hasn't produced any frame yet
-        # (initial state). Seeking to -1 would be invalid.
         ctrl = _make_controller(widgets)
         fake = _attach_fake_session(
             ctrl,
             playing=False,
-            current_frame=-1,
+            current_frame=10,
             source_path=fake_source_path,
             monkeypatch=monkeypatch,
         )
-        _apply(ctrl, enhancer_enabled=False)
-        fake.set_chain.assert_called_once()
-        fake.seek.assert_not_called()
+        ctrl.apply_session_config(
+            swapper_params=FaceSwapperParams(),
+            enhancer_params=FaceEnhancerParams(),
+            enhancer_enabled=ctrl._enhancer_enabled,  # noqa: SLF001
+            strategy=BestEffortStrategy(),
+            worker_count=1,
+            playback_mode=PlaybackMode.FIXED_30,
+            cache_settings=_DEFAULT_CACHE_SETTINGS,
+        )
+        fake.set_memory_cache_bytes.assert_not_called()
         ctrl.shutdown()

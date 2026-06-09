@@ -14,6 +14,8 @@ class FrameCache(Protocol):
     def evict_at(self, index: FrameIndex) -> None: ...
     def evict_before(self, index: FrameIndex) -> None: ...
     def evict_from(self, index: FrameIndex) -> None: ...
+    def clear(self) -> None: ...
+    def set_max_bytes(self, max_bytes: int) -> None: ...
     def memory_used_bytes(self) -> int: ...
 
 
@@ -81,6 +83,29 @@ class MemoryFrameCache:
                 self._total_bytes -= self._sizes[i]
                 del self._frames[i]
                 del self._sizes[i]
+
+    def clear(self) -> None:
+        """Drop every cached frame. Used on a chain swap — the cache is keyed by
+        frame index, not by the chain that produced the pixels, so once the chain
+        changes every entry is stale."""
+        with self._lock:
+            self._frames.clear()
+            self._sizes.clear()
+            self._total_bytes = 0
+
+    def set_max_bytes(self, max_bytes: int) -> None:
+        """Resize the byte budget at runtime, evicting LRU frames down to fit.
+
+        Lets the GUI's memory-cache size take effect on the LIVE session without
+        rebuilding the buffer (the budget was previously fixed at construction)."""
+        if max_bytes <= 0:
+            raise ValueError(f"max_bytes must be > 0; got {max_bytes}")
+        with self._lock:
+            self._max_bytes = max_bytes
+            while self._total_bytes > self._max_bytes:
+                lru_index, _ = self._frames.popitem(last=False)
+                self._total_bytes -= self._sizes[lru_index]
+                del self._sizes[lru_index]
 
     def memory_used_bytes(self) -> int:
         with self._lock:

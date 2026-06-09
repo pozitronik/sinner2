@@ -94,3 +94,32 @@ class TestMemoryFrameCache:
         before = cache.memory_used_bytes()
         cache.evict_before(1)
         assert cache.memory_used_bytes() < before
+
+    def test_clear_empties_cache(self):
+        cache = MemoryFrameCache(max_bytes=10 * 1024)
+        cache.put(0, _frame())
+        cache.put(1, _frame())
+        cache.clear()
+        assert cache.get(0) is None
+        assert cache.get(1) is None
+        assert cache.memory_used_bytes() == 0
+
+    def test_set_max_bytes_shrink_evicts_down_to_new_budget(self):
+        cache = MemoryFrameCache(max_bytes=10 * 1024)
+        for i in range(5):
+            cache.put(i, _frame())  # 5 * 300 = 1500 bytes, all fit
+        cache.set_max_bytes(600)
+        assert cache.memory_used_bytes() <= 600
+
+    def test_set_max_bytes_grow_keeps_all_frames(self):
+        cache = MemoryFrameCache(max_bytes=600)
+        for i in range(5):
+            cache.put(i, _frame())
+        used = cache.memory_used_bytes()
+        cache.set_max_bytes(10 * 1024)
+        assert cache.memory_used_bytes() == used  # growing evicts nothing
+
+    def test_set_max_bytes_rejects_non_positive(self):
+        cache = MemoryFrameCache(max_bytes=1024)
+        with pytest.raises(ValueError):
+            cache.set_max_bytes(0)

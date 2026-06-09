@@ -459,6 +459,11 @@ class RealtimeExecutor:
         I/O paths the buffer takes; no rebuild required."""
         self._buffer.set_cache_mode(mode)
 
+    def set_memory_cache_bytes(self, max_bytes: int) -> None:
+        """Hot-resize the in-memory frame-cache budget. Cheap — evicts LRU down
+        to the new budget; no rebuild required."""
+        self._buffer.set_memory_max_bytes(max_bytes)
+
     def reconfigure_from(
         self,
         other: "RealtimeExecutor",
@@ -749,6 +754,21 @@ class RealtimeExecutor:
             self._wait_for_inflight()
             for p in to_release:
                 p.release()
+        # A chain swap makes EVERY cached frame stale: the cache + store are
+        # keyed by frame index, not by the chain that produced them, so a frame
+        # rendered with the OLD chain would otherwise be served unchanged on
+        # revisit — worse with a large memory cache, where nothing evicts, so the
+        # change appears not to apply at all. Drop them all and re-render the
+        # current frame so the new chain's output reaches the display at once,
+        # paused OR playing, every frame (not just the one a seek nudge touched).
+        with self._state_lock:
+            current = self._timeline.current_frame()
+            self._last_submitted = current - 1
+            self._last_completed = min(self._last_completed, current - 1)
+        self._buffer.invalidate_all()
+        self._last_shown_frame_index = None
+        self._submit_specific_frame(current)
+        self._playback_wake.set()
 
     def _wait_for_inflight(self, timeout_s: float = 5.0) -> None:
         deadline = time.monotonic() + timeout_s

@@ -162,6 +162,28 @@ class FrameBuffer:
             if self._last_written_index is not None and self._last_written_index >= index:
                 self._last_written_index = (index - 1) if index > 0 else None
 
+    def invalidate_all(self) -> None:
+        """Drop EVERY cached + stored frame.
+
+        Used on a chain swap: the cache and store are keyed by frame index, not
+        by the chain that produced them, so once the chain changes every
+        previously-processed frame is stale and must be re-rendered on the next
+        read. Without this a frame already in the (potentially large) memory
+        cache would be served unchanged after a processor/param change — the
+        change would appear not to apply. Also clears tombstones + the recent-
+        index tracking so the buffer starts clean for the new chain."""
+        self._cache.clear()
+        self._store.clear_from(0)
+        with self._lock:
+            self._last_written_index = None
+            self._invalidated.clear()
+            self._recent_indices.clear()
+
+    def set_memory_max_bytes(self, max_bytes: int) -> None:
+        """Resize the in-memory cache budget at runtime (evicts LRU down to fit).
+        Lets the GUI's memory-cache size apply to the live session immediately."""
+        self._cache.set_max_bytes(max_bytes)
+
     def metrics(self) -> BufferMetrics:
         with self._lock:
             last_displayed = self._last_displayed_index

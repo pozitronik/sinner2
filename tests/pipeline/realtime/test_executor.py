@@ -1060,6 +1060,49 @@ class TestRealtimeExecutorSetChain:
         finally:
             ex.stop()
 
+    def test_set_chain_reprocesses_current_frame_without_a_seek(self, buffer_setup):
+        # A chain swap must re-render the current frame on its own: the executor
+        # invalidates the whole cache + resubmits, so the new chain's output
+        # reaches the display WITHOUT the controller issuing a seek (and even
+        # while paused, where the dispatcher isn't advancing the playhead).
+        buffer, timeline, _ = buffer_setup
+        delivered: list[int] = []
+        lock = threading.Lock()
+
+        def on_frame(_f: Frame, i: int) -> None:
+            with lock:
+                delivered.append(i)
+
+        ex = RealtimeExecutor(
+            reader_pool=_pool_for(_MultiFrameReader(100, fps=timeline.fps)),
+            buffer=buffer,
+            timeline=timeline,
+            chain=[_CountingProcessor()],
+            strategy=BestEffortStrategy(),
+        )
+        ex.on_frame_ready(on_frame)
+        try:
+            ex.start()
+            ex.seek(5)  # land on frame 5 (paused) — first emit
+            assert _wait_until(lambda: 5 in delivered, timeout=2.0), (
+                f"first emit at 5 expected; got {delivered}"
+            )
+            count_before = delivered.count(5)
+            ex.set_chain([_CountingProcessor()])  # swap — NO manual seek
+            assert _wait_until(
+                lambda: delivered.count(5) > count_before, timeout=2.0
+            ), f"expected re-emit at 5 after set_chain; got {delivered}"
+        finally:
+            ex.stop()
+
+    def test_set_memory_cache_bytes_delegates_to_buffer(self):
+        from unittest.mock import MagicMock
+
+        ex = RealtimeExecutor.__new__(RealtimeExecutor)
+        ex._buffer = MagicMock()  # noqa: SLF001
+        ex.set_memory_cache_bytes(2048)
+        ex._buffer.set_memory_max_bytes.assert_called_once_with(2048)  # noqa: SLF001
+
 
 class TestRealtimeExecutorWorkerError:
     def test_chain_error_is_logged_and_recoverable_not_fatal(self, buffer_setup):

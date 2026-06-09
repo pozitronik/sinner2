@@ -163,6 +163,36 @@ class TestInvalidateFrom:
         store.clear_from.assert_called_once_with(50)
 
 
+class TestInvalidateAll:
+    """Whole-buffer invalidation for a chain swap. The cache + store are keyed by
+    frame index, not by chain, so after the chain changes every entry is stale
+    and must be dropped — otherwise a tweak appears not to apply on any frame
+    that's still cached (acute with a large memory cache that never evicts)."""
+
+    def test_clears_cache_store_and_resets_written_index(self):
+        buf, store, cache, *_ = _mock_buffer()
+        buf.put(5, _frame())
+        buf.put(9, _frame())
+        assert buf.last_written_index == 9
+        buf.invalidate_all()
+        cache.clear.assert_called_once_with()
+        store.clear_from.assert_called_with(0)
+        assert buf.last_written_index is None
+
+    def test_clears_tombstones(self):
+        f = _frame()
+        buf, store, cache, *_ = _mock_buffer(cache_get_returns=f)
+        buf.invalidate(5)
+        assert buf.get(5) is None  # tombstoned
+        buf.invalidate_all()
+        assert buf.get(5) is f  # tombstone gone, cache hit returns again
+
+    def test_set_memory_max_bytes_delegates_to_cache(self):
+        buf, store, cache, *_ = _mock_buffer()
+        buf.set_memory_max_bytes(2048)
+        cache.set_max_bytes.assert_called_once_with(2048)
+
+
 class TestInvalidate:
     """Per-index tombstone for chain-swap reprocessing.
 

@@ -402,12 +402,16 @@ class PlayerController(QObject):
         """Update stored params and propagate any changes to the live session.
 
         Hot-swap surface: chain (on param / providers / device change),
-        strategy, worker_count, playback_mode, cache_mode. The rest of
-        cache_settings (format, quality, memory cache size, write workers,
-        write queue size) is stored and takes effect at the next session start
-        — switching them live would require re-creating the buffer + write
-        executor + store directory hash, which is what `set_source_and_target`
-        already does.
+        strategy, worker_count, playback_mode, cache_mode, memory cache size.
+        The rest of cache_settings (format, quality, write workers, write queue
+        size) is stored and takes effect at the next session start — switching
+        them live would require re-creating the buffer + write executor + store
+        directory hash, which is what `set_source_and_target` already does.
+
+        A chain change additionally invalidates the whole frame cache inside the
+        executor (the cache is keyed by frame index, not chain), so the new
+        chain's output reaches the display on EVERY frame — paused or playing —
+        not just the one visible while paused.
 
         Providers (swapper, ONNX) and device (enhancer, torch) are part of the
         chain: changing either rebuilds the chain so the processors reload on
@@ -448,6 +452,9 @@ class PlayerController(QObject):
             strategy_changed = True
         playback_mode_changed = playback_mode is not self._playback_mode
         cache_mode_changed = cache_settings.mode is not self._cache_settings.mode
+        memory_bytes_changed = (
+            cache_settings.memory_max_bytes != self._cache_settings.memory_max_bytes
+        )
 
         self._swapper_params = swapper_params
         self._enhancer_params = enhancer_params
@@ -481,16 +488,11 @@ class PlayerController(QObject):
             except Exception as exc:
                 self.errorOccurred.emit(f"chain rebuild failed: {exc}")
                 return
+            # set_chain invalidates the whole frame cache and re-renders the
+            # current frame itself (paused or playing), so no seek nudge here —
+            # and crucially it refreshes EVERY cached frame, not just the visible
+            # one, so a tweak applies across the clip even with a large cache.
             self._executor.set_chain(new_chain)
-            # When paused, seek back to the current frame so the new
-            # chain reprocesses the visible pixels. Without this the
-            # display stays as the old chain's output until play.
-            # Playing case needs no nudge — dispatcher submits next
-            # frames through the new chain on its own.
-            if not self._executor.is_playing.get():
-                current = self._executor.current_frame.get()
-                if current >= 0:
-                    self._executor.seek(current)
         if strategy_changed:
             self._executor.set_skip_strategy(strategy)
         # Re-apply the EFFECTIVE worker count whenever it moves — that's the
@@ -504,6 +506,8 @@ class PlayerController(QObject):
             self._executor.set_playback_mode(playback_mode)
         if cache_mode_changed:
             self._executor.set_cache_mode(cache_settings.mode)
+        if memory_bytes_changed and cache_settings.memory_max_bytes > 0:
+            self._executor.set_memory_cache_bytes(cache_settings.memory_max_bytes)
 
     def _effective_worker_count(self) -> int:
         """Realtime worker count actually used, capped for a heavy GPU-bound
