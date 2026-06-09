@@ -989,6 +989,164 @@ class TestCapabilityChromeAndFps:
         win._fps_label.setText.assert_not_called()  # noqa: SLF001
 
 
+class TestPathIsFileHelper:
+    """_path_is_file must report an UNREACHABLE location as "not a file" rather
+    than raising — on Windows a detached drive makes is_file() raise OSError, and
+    that exception, hit during startup restore, would abort the whole launch."""
+
+    def test_missing_path_returns_false(self, tmp_path):
+        from sinner2.gui.main_window import _path_is_file
+
+        assert _path_is_file(tmp_path / "nope.jpg") is False
+
+    def test_existing_file_returns_true(self, tmp_path):
+        from sinner2.gui.main_window import _path_is_file
+
+        p = tmp_path / "f.bin"
+        p.write_bytes(b"x")
+        assert _path_is_file(p) is True
+
+    def test_oserror_is_swallowed_to_false(self):
+        from unittest.mock import MagicMock
+
+        from sinner2.gui.main_window import _path_is_file
+
+        fake = MagicMock()
+        fake.is_file.side_effect = OSError("WinError 21: device not ready")
+        assert _path_is_file(fake) is False
+
+
+class TestStartupResilienceWithUnreachablePaths:
+    """A persisted source/target on a detached drive (is_file raises OSError)
+    must not crash startup — the path is skipped, the window comes up, and no
+    session is built."""
+
+    def test_window_constructs_when_persisted_path_raises(
+        self, qtbot, monkeypatch, tmp_path
+    ):
+        import json as _json
+        from pathlib import Path as _Path
+
+        bad = r"Z:\detached\face.jpg"
+        settings_path = tmp_path / "settings.json"
+        settings_path.write_text(
+            _json.dumps({"source_path": bad, "target_path": bad}),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("SINNER2_SETTINGS_PATH", str(settings_path))
+
+        # Simulate a detached drive: is_file() RAISES for the persisted path
+        # (as Windows does for unready media) but behaves normally elsewhere.
+        real_is_file = _Path.is_file
+
+        def fake_is_file(self):
+            if str(self) == bad:
+                raise OSError("WinError 21: device not ready")
+            return real_is_file(self)
+
+        monkeypatch.setattr(_Path, "is_file", fake_is_file)
+
+        from sinner2.gui.main_window import SinnerMainWindow
+
+        win = SinnerMainWindow()  # must NOT raise
+        qtbot.addWidget(win)
+        assert win._controller.executor() is None  # noqa: SLF001
+        assert win._pending_initial_target is None  # noqa: SLF001
+        win.close()
+
+
+class TestDeferredInitialSession:
+    """The first session build (restored source+target) is deferred to showEvent
+    so the window paints before model loading starts."""
+
+    def _win(self):
+        from unittest.mock import MagicMock
+
+        from sinner2.gui import main_window as mw
+
+        win = mw.SinnerMainWindow.__new__(mw.SinnerMainWindow)
+        win._session = MagicMock()  # noqa: SLF001
+        win._restoring_paths = False  # noqa: SLF001
+        win._pending_initial_target = None  # noqa: SLF001
+        win._initial_session_started = False  # noqa: SLF001
+        win._refresh_transport_enabled = MagicMock()  # noqa: SLF001
+        win._highlight_failed_providers = MagicMock()  # noqa: SLF001
+        return win
+
+    def test_target_change_during_restore_defers_build(self):
+        win = self._win()
+        win._restoring_paths = True  # noqa: SLF001
+        win._on_target_changed(Path("clip.mp4"))  # noqa: SLF001
+        # Recorded, NOT built.
+        assert win._pending_initial_target == Path("clip.mp4")  # noqa: SLF001
+        win._session.set_target.assert_not_called()  # noqa: SLF001
+
+    def test_target_change_outside_restore_builds_immediately(self):
+        from sinner2.gui.session_capabilities import FileTarget
+
+        win = self._win()
+        win._on_target_changed(Path("clip.mp4"))  # noqa: SLF001
+        win._session.set_target.assert_called_once_with(  # noqa: SLF001
+            FileTarget(Path("clip.mp4"))
+        )
+        assert win._pending_initial_target is None  # noqa: SLF001
+
+    def test_deferred_start_builds_pending_target(self):
+        from sinner2.gui.session_capabilities import FileTarget
+
+        win = self._win()
+        win._pending_initial_target = Path("clip.mp4")  # noqa: SLF001
+        win._start_deferred_initial_session()  # noqa: SLF001
+        win._session.set_target.assert_called_once_with(  # noqa: SLF001
+            FileTarget(Path("clip.mp4"))
+        )
+        # Consumed (can't fire twice) and chrome refreshed.
+        assert win._pending_initial_target is None  # noqa: SLF001
+        win._refresh_transport_enabled.assert_called_once()  # noqa: SLF001
+        win._highlight_failed_providers.assert_called_once()  # noqa: SLF001
+
+    def test_deferred_start_no_pending_is_noop(self):
+        win = self._win()
+        win._start_deferred_initial_session()  # noqa: SLF001
+        win._session.set_target.assert_not_called()  # noqa: SLF001
+
+    def test_show_schedules_deferred_build_once(self, qtbot, monkeypatch, tmp_path):
+        # Restore a real source+target so a build IS pending, then assert showing
+        # the window does NOT build during construction and schedules exactly one
+        # deferred build that runs on the event loop.
+        import json as _json
+
+        src = tmp_path / "face.png"
+        src.write_bytes(b"x")
+        tgt = tmp_path / "clip.mp4"
+        tgt.write_bytes(b"x")
+        settings_path = tmp_path / "settings.json"
+        settings_path.write_text(
+            _json.dumps({"source_path": str(src), "target_path": str(tgt)}),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("SINNER2_SETTINGS_PATH", str(settings_path))
+
+        from sinner2.gui.main_window import SinnerMainWindow
+
+        win = SinnerMainWindow()
+        qtbot.addWidget(win)
+        # Deferred: nothing built during __init__, but the target is recorded.
+        assert win._controller.executor() is None  # noqa: SLF001
+        assert win._pending_initial_target == tgt  # noqa: SLF001
+
+        # Don't actually load models — stub the build the deferred starter calls.
+        from unittest.mock import MagicMock
+
+        win._session = MagicMock()  # noqa: SLF001
+        win.show()
+        qtbot.waitUntil(
+            lambda: win._pending_initial_target is None, timeout=2000  # noqa: SLF001
+        )
+        win._session.set_target.assert_called_once()  # noqa: SLF001
+        win.close()
+
+
 class TestFullscreenTransportRehome:
     def test_fullscreen_exit_rehomes_transport_below_splitter(
         self, window, monkeypatch

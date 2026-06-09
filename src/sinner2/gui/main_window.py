@@ -92,6 +92,23 @@ def _join_qthread(thread, per_wait_ms: int, max_waits: int) -> bool:  # type: ig
     return not thread.isRunning()
 
 
+def _path_is_file(path: Path) -> bool:
+    """`Path.is_file()` that reports an UNAVAILABLE location as "not a file"
+    rather than raising.
+
+    On Windows a path on a detached drive (unmapped letter, ejected media, a
+    disconnected network share) makes `is_file()`/`stat()` raise OSError
+    ("the device is not ready" — WinError 21/53) instead of returning False.
+    Run during startup restore that exception would abort the whole launch, so
+    a persisted-but-now-unreachable path must simply be skipped. We swallow the
+    error and treat the path as absent (it self-heals out of settings on the
+    next save)."""
+    try:
+        return path.is_file()
+    except OSError:
+        return False
+
+
 def _fmt_size(b: int) -> str:
     """Human-readable bytes: 1024 → 1.0 KB → 1.0 MB → 1.0 GB → 1.0 TB.
 
@@ -434,6 +451,13 @@ class SinnerMainWindow(QMainWindow):
         self._restore_comparison_state()
         self._restore_stays_on_top()
         self._restore_rotation()
+        # Restoring a complete source+target pair would otherwise trigger a
+        # synchronous, model-loading session build inside the constructor,
+        # delaying the window's first paint. Defer that build to the first
+        # showEvent so the GUI appears immediately ("GUI first, models after").
+        self._restoring_paths = False
+        self._pending_initial_target: Path | None = None
+        self._initial_session_started = False
         self._restore_paths_from_settings()
         # Transport starts disabled and only enables once a source AND target
         # are present (restore above may have supplied them).
@@ -460,7 +484,14 @@ class SinnerMainWindow(QMainWindow):
     def _on_target_changed(self, target_path: Path) -> None:
         """Target picker fired. The facade builds on first load (once a source is
         present), swaps the target on a running session, and tears down the camera
-        if one was active."""
+        if one was active.
+
+        During startup restore the heavy first build is deferred: record the
+        target and let showEvent kick the build off AFTER the window paints, so
+        the GUI is up immediately instead of waiting on model loading."""
+        if self._restoring_paths:
+            self._pending_initial_target = target_path
+            return
         self._session.set_target(FileTarget(target_path))
 
     def _update_fps_label(self, fps: float) -> None:
@@ -1334,6 +1365,15 @@ class SinnerMainWindow(QMainWindow):
         # capability gate keeps seek/volume disabled).
         self._refresh_transport_enabled()
 
+    def showEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        super().showEvent(event)
+        # Kick the deferred initial session build ONCE, on first show, one
+        # event-loop tick later (singleShot(0)) so the window paints before
+        # model loading starts.
+        if not self._initial_session_started:
+            self._initial_session_started = True
+            QTimer.singleShot(0, self._start_deferred_initial_session)
+
     def closeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         self._persist_geometry_to_settings()
         # Stop the batch queue FIRST so its runner thread joins
@@ -1426,14 +1466,23 @@ class SinnerMainWindow(QMainWindow):
             self._pickers.set_target_recents(
                 [Path(p) for p in self._settings.recent_targets]
             )
-        if self._settings.source_path:
-            p = Path(self._settings.source_path)
-            if p.is_file():
-                self._pickers.set_source(p)
-        if self._settings.target_path:
-            p = Path(self._settings.target_path)
-            if p.is_file():
-                self._pickers.set_target(p)
+        # _restoring_paths defers the heavy first session build: setting the
+        # target picker fires _on_target_changed, which records the target
+        # instead of building now (the build runs after first paint — see
+        # _start_deferred_initial_session). _path_is_file keeps an unreachable
+        # persisted path (detached drive) from aborting startup.
+        self._restoring_paths = True
+        try:
+            if self._settings.source_path:
+                p = Path(self._settings.source_path)
+                if _path_is_file(p):
+                    self._pickers.set_source(p)
+            if self._settings.target_path:
+                p = Path(self._settings.target_path)
+                if _path_is_file(p):
+                    self._pickers.set_target(p)
+        finally:
+            self._restoring_paths = False
         # Restore the persisted camera target config into the Live tab (silent —
         # set_config doesn't fire configChanged, so it won't re-persist).
         s = self._settings
@@ -1469,6 +1518,25 @@ class SinnerMainWindow(QMainWindow):
             self._settings.library_targets_sort_field,
             self._settings.library_targets_sort_order,
         )
+
+    def _start_deferred_initial_session(self) -> None:
+        """Build the session for the restored source+target, deferred to after
+        the first paint (scheduled by showEvent).
+
+        Keeping this out of the constructor means the window is visible and
+        responsive before the multi-second, model-loading build begins — "GUI
+        first, models after". No-op when restore supplied no complete
+        source+target pair (the common case: nothing persisted, or a missing /
+        detached path was skipped)."""
+        target = self._pending_initial_target
+        self._pending_initial_target = None
+        if target is None:
+            return
+        self._session.set_target(FileTarget(target))
+        # The build records what ORT actually loaded and may flip capabilities —
+        # re-run the same chrome refresh the constructor did right after restore.
+        self._refresh_transport_enabled()
+        self._highlight_failed_providers()
 
     def _persist_source_path(self, path: Path) -> None:
         self._update_settings(source_path=str(path))
