@@ -14,6 +14,9 @@ from PySide6.QtWidgets import (
 )
 
 _RECENTS_MAX = 10
+# Gap between the target's Load button and the camera button (px). The Source
+# Load button is widened by this gap + the camera width so both path edits match.
+_CAMERA_GAP = 4
 
 
 class QPathPicker(QWidget):
@@ -64,6 +67,23 @@ class QPathPicker(QWidget):
         layout.addWidget(self._load_button)
 
         self.setAcceptDrops(True)
+
+    def label_width_hint(self) -> int:
+        """Natural width of the leading label — used by the panel to give Source
+        and Target a common label column so their path edits share a left edge."""
+        return self._label.sizeHint().width()
+
+    def set_label_width(self, px: int) -> None:
+        self._label.setFixedWidth(px)
+
+    def extend_load_button(self, extra_px: int) -> None:
+        """Widen the Load button by `extra_px` past its natural width.
+
+        Lets a row WITHOUT a trailing button (Source) match the path-edit width of
+        a sibling row that HAS one (Target's camera button): instead of leaving
+        that trailing space empty, this row spends it on a wider Load button, so
+        both edits end up the same width with a shared right edge."""
+        self._load_button.setFixedWidth(self._load_button.sizeHint().width() + extra_px)
 
     def path(self) -> Path | None:
         return self._path
@@ -202,9 +222,22 @@ class QSourceTargetPanel(QWidget):
         # camera button sits just after the picker's Load button.
         target_row = QHBoxLayout()
         target_row.setContentsMargins(0, 0, 0, 0)
+        target_row.setSpacing(_CAMERA_GAP)
         target_row.addWidget(self._target, stretch=1)
         target_row.addWidget(self._use_camera)
         layout.addLayout(target_row)
+
+        # Align the two rows so BOTH path edits have the SAME width:
+        #  - a shared label column gives them a common left edge;
+        #  - widening the Source Load button by the camera button's footprint
+        #    (gap + width) gives them a common right edge — the source row spends
+        #    the camera's space on its Load button instead of leaving it empty.
+        label_w = max(self._source.label_width_hint(), self._target.label_width_hint())
+        self._source.set_label_width(label_w)
+        self._target.set_label_width(label_w)
+        self._source.extend_load_button(
+            _CAMERA_GAP + self._use_camera.sizeHint().width()
+        )
 
     def source_path(self) -> Path | None:
         return self._source.path()

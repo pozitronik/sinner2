@@ -74,6 +74,26 @@ class TestQSourceTargetPanel:
         with qtbot.waitSignal(panel.cameraRequested, timeout=1000):
             panel._use_camera.click()  # noqa: SLF001
 
+    def test_source_and_target_edits_are_equal_width(self, panel, qtbot):
+        # The camera button on the target row would otherwise make the target
+        # edit narrower; the source Load button is widened to compensate so both
+        # path edits render the same width.
+        panel.resize(400, 80)
+        panel.show()
+        qtbot.waitExposed(panel)
+        src_edit = panel._source._display  # noqa: SLF001
+        tgt_edit = panel._target._display  # noqa: SLF001
+        assert abs(src_edit.width() - tgt_edit.width()) <= 1
+
+    def test_source_load_button_wider_than_target_load(self, panel, qtbot):
+        panel.resize(400, 80)
+        panel.show()
+        qtbot.waitExposed(panel)
+        src_load = panel._source._load_button  # noqa: SLF001
+        tgt_load = panel._target._load_button  # noqa: SLF001
+        # Source spends the camera's space on its Load button → strictly wider.
+        assert src_load.width() > tgt_load.width()
+
 
 class TestQPathPickerRecents:
     @pytest.fixture
