@@ -65,6 +65,11 @@ class AudioBackend(Protocol):
 
     def set_muted(self, muted: bool) -> None: ...
 
+    def audio_position_seconds(self) -> float:
+        """Current playback position in seconds, or -1.0 when unavailable
+        (no media loaded, or the backend can't report it yet). Read-only;
+        used by sync diagnostics (and a future closed-loop A/V sync)."""
+
     def is_loaded(self) -> bool:
         """True after a successful load() and before any teardown."""
 

@@ -21,6 +21,7 @@ from sinner2.gui.session_builder import (
     _SessionBundle,
 )
 from sinner2.gui.swap_coordinator import SwapCoordinator, _SwapOutcome
+from sinner2.gui.sync_tracer import SyncSample, SyncTracer
 from sinner2.gui.widgets.frame_display import QFrameDisplayWidget
 from sinner2.gui.widgets.transport_controls import QTransportControls
 from sinner2.io.video_backend import VideoBackend
@@ -124,6 +125,9 @@ class PlayerController(QObject):
         self._audio = AudioController(audio_backend_factory, self.errorOccurred.emit)
         # Target fps cached on load so seek-by-frame can convert to seconds.
         self._target_fps: float = 0.0
+        # Optional A/V sync diagnostic sampler (dormant unless SINNER2_SYNC_TRACE
+        # is set). Read-only; started/stopped with playback. See sync_tracer.py.
+        self._sync_tracer = SyncTracer(self._sync_sample, parent=self)
         # Video reader backend (applies on next session start).
         self._video_backend: VideoBackend = VideoBackend.FFMPEG
         # Number of parallel readers in the ReaderPool. Default 1 ≈ current
@@ -569,6 +573,7 @@ class PlayerController(QObject):
                 pass
 
     def shutdown(self) -> None:
+        self._sync_tracer.stop()
         self.deactivate()
         self._audio.shutdown()
 
@@ -722,15 +727,36 @@ class PlayerController(QObject):
         self._current_target_path = None
         self.cacheStorageStatsChanged.emit()
 
+    def _sync_sample(self) -> SyncSample | None:
+        """Read-only snapshot of the playback clocks for the sync tracer.
+        None when no session is active. Uses the already-built audio backend
+        (never constructs one just to sample)."""
+        ex = self._executor
+        if ex is None:
+            return None
+        backend = self._audio.backend
+        audio_s = backend.audio_position_seconds() if backend is not None else -1.0
+        frame = max(0, ex.current_frame.get())
+        fps = self._target_fps
+        return SyncSample(
+            frame=frame,
+            video_seconds=frame / fps if fps > 0 else 0.0,
+            audio_seconds=audio_s,
+            playing=ex.is_playing.get(),
+            strategy_mode=ex.strategy_mode.get(),
+        )
+
     def _on_play(self) -> None:
         if self._executor is not None:
             self._executor.play()
         self._audio.play_if_loaded()
+        self._sync_tracer.start()
 
     def _on_pause(self) -> None:
         if self._executor is not None:
             self._executor.pause()
         self._audio.pause_if_loaded()
+        self._sync_tracer.stop()
 
     def play(self) -> None:
         """Public play — symmetric with pause(); the session facade calls it for

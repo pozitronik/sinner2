@@ -55,6 +55,9 @@ class FakeAudioBackend:
         self.muted = bool(muted)
         self.calls.append(("set_muted", muted))
 
+    def audio_position_seconds(self) -> float:
+        return self.position_s if self.loaded is not None else -1.0
+
     def is_loaded(self) -> bool:
         return self.loaded is not None
 

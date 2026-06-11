@@ -159,6 +159,13 @@ class QtMediaAudioBackend(QObject):
         if self._output is not None:
             self._output.setMuted(bool(muted))
 
+    def audio_position_seconds(self) -> float:
+        # QMediaPlayer.position() is in milliseconds; -1.0 when there's no
+        # player yet (position is unknown / not meaningful). Read-only probe.
+        if self._player is None:
+            return -1.0
+        return self._player.position() / 1000.0
+
     def is_loaded(self) -> bool:
         return self._loaded_path is not None and self._player is not None
 
