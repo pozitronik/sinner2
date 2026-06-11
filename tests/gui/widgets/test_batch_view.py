@@ -254,8 +254,6 @@ class TestResetToPending:
     def test_reset_confirmed_calls_refresh(
         self, view, tmp_path, store, queue, monkeypatch
     ):
-        from PySide6.QtWidgets import QMessageBox
-
         t = _task(tmp_path, status=BatchTaskStatus.COMPLETED)
         store.save(t)
         view.reload_from_store()
@@ -264,9 +262,7 @@ class TestResetToPending:
             queue, "refresh_task", lambda tid: called.append(tid)
         )
         monkeypatch.setattr(
-            QMessageBox,
-            "question",
-            lambda *a, **k: QMessageBox.StandardButton.Yes,
+            "sinner2.gui.widgets.batch_view.confirm", lambda *a, **k: True
         )
         view._reset_task_to_pending(t.id)  # noqa: SLF001
         assert called == [t.id]
@@ -274,8 +270,6 @@ class TestResetToPending:
     def test_reset_declined_does_not_refresh(
         self, view, tmp_path, store, queue, monkeypatch
     ):
-        from PySide6.QtWidgets import QMessageBox
-
         t = _task(tmp_path, status=BatchTaskStatus.COMPLETED)
         store.save(t)
         view.reload_from_store()
@@ -284,9 +278,7 @@ class TestResetToPending:
             queue, "refresh_task", lambda tid: called.append(tid)
         )
         monkeypatch.setattr(
-            QMessageBox,
-            "question",
-            lambda *a, **k: QMessageBox.StandardButton.No,
+            "sinner2.gui.widgets.batch_view.confirm", lambda *a, **k: False
         )
         view._reset_task_to_pending(t.id)  # noqa: SLF001
         assert called == []

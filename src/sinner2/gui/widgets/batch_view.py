@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 )
 
 from sinner2.batch.queue import BatchQueue
+from sinner2.gui.confirm import confirm
 from sinner2.batch.task import BatchTask, BatchTaskStatus, resolve_output_path
 from sinner2.batch.task_store import BatchTaskStore
 
@@ -453,15 +454,13 @@ class QBatchView(QWidget):
     def _reset_task_to_pending(self, task_id: str) -> None:
         """Confirm, then reset the task to Pending and discard its
         processed-frame cache so it re-runs from scratch."""
-        reply = QMessageBox.question(
+        if not confirm(
             self,
+            "reset_task",
             "Reset to Pending",
             "Reset this task to Pending and re-run it from scratch?\n\n"
             "Frames already processed for this task will be discarded.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if reply != QMessageBox.StandardButton.Yes:
+        ):
             return
         self._queue.refresh_task(task_id)
         self._refresh_row(task_id)
@@ -474,14 +473,9 @@ class QBatchView(QWidget):
                 "Cannot delete a running task. Cancel it first.",
             )
             return
-        reply = QMessageBox.question(
-            self,
-            "Delete task",
-            "Remove this task from the batch?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if reply == QMessageBox.StandardButton.Yes:
+        if confirm(
+            self, "delete_task", "Delete task", "Remove this task from the batch?"
+        ):
             self._store.delete(task_id)
             row = self._row_for_task_id(task_id)
             if row is not None:

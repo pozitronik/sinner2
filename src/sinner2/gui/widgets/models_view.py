@@ -21,13 +21,13 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QMenu,
-    QMessageBox,
     QPushButton,
     QTableView,
     QVBoxLayout,
     QWidget,
 )
 
+from sinner2.gui.confirm import confirm
 from sinner2.pipeline import model_cache
 from sinner2.pipeline.models_catalog import (
     ModelCategory,
@@ -317,13 +317,10 @@ class QModelsView(QWidget):
         if not missing:
             return
         total_mb = sum((model_info(m).size_mb if model_info(m) else 0) for m in missing)
-        reply = QMessageBox.question(
-            self, "Download all missing",
+        if confirm(
+            self, "download_all_missing", "Download all missing",
             f"Download {len(missing)} model(s), about {total_mb} MB?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if reply == QMessageBox.StandardButton.Yes:
+        ):
             self._enqueue(missing)
 
     def _delete(self, name: str) -> None:
@@ -331,12 +328,11 @@ class QModelsView(QWidget):
         msg = f"Delete {name}?"
         if required:
             msg += "\n\nThis model is REQUIRED — the app won't work without it."
-        reply = QMessageBox.question(
-            self, "Delete model", msg,
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if reply == QMessageBox.StandardButton.Yes:
+        # A REQUIRED model can never be suppressed/auto-confirmed — silently
+        # auto-deleting it would brick the app.
+        if confirm(
+            self, "delete_model", "Delete model", msg, suppressible=not required
+        ):
             model_cache.delete_model(name)
             self._refresh_row(self._row_for(name))
             self._refresh_summary()

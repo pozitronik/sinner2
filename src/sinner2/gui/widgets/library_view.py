@@ -36,12 +36,12 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListView,
     QMenu,
-    QMessageBox,
     QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
+from sinner2.gui.confirm import confirm
 from sinner2.library.library_model import (
     ROLE_PATH,
     LibraryItemModel,
@@ -742,14 +742,7 @@ class QLibraryView(QWidget):
             msg = f"Remove the 1 entry from this library{scan_note}?"
         else:
             msg = f"Remove all {visible_count} entries from this library{scan_note}?"
-        reply = QMessageBox.question(
-            self,
-            "Clear library",
-            msg,
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if reply == QMessageBox.StandardButton.Yes:
+        if confirm(self, "clear_library", "Clear library", msg):
             self.clear()
 
     def _open_add_files_dialog(self) -> None:

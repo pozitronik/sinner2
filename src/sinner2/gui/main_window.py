@@ -42,6 +42,11 @@ from sinner2.pipeline.processors.swapper_models import (
 )
 from sinner2.pipeline.processors.upscaler import model_filename
 from sinner2.gui.cache_controller import default_cache_root
+from sinner2.gui.confirm import (
+    SuppressionStore,
+    confirm,
+    set_default_suppression_store,
+)
 from sinner2.gui.live_controller import LiveController
 from sinner2.gui.player_controller import PlayerController
 from sinner2.gui.session_capabilities import (
@@ -138,6 +143,16 @@ class SinnerMainWindow(QMainWindow):
         self.setWindowTitle("sinner2")
         self.setWindowIcon(app_icon())
         self._settings = user_settings.load()
+        # Install the process-wide store backing every "Don't ask me again"
+        # checkbox. Reads/writes the persisted suppression map through the same
+        # authoritative _update_settings path, so child widgets that show a
+        # confirm() dialog need no Settings reference of their own.
+        set_default_suppression_store(
+            SuppressionStore(
+                load=lambda: dict(self._settings.confirm_suppressed or {}),
+                save=lambda m: self._update_settings(confirm_suppressed=m),
+            )
+        )
         # Apply configurable accepted file extensions app-wide (library accept
         # filters, file-dialog filters, Target.kind) BEFORE building the side
         # panel, which reads them to build its libraries + dialog filters.
@@ -559,12 +574,12 @@ class SinnerMainWindow(QMainWindow):
     def _on_invalidate_session(self) -> None:
         if self._controller.executor() is None:
             return
-        confirmed = QMessageBox.question(
+        if not confirm(
             self,
+            "invalidate_session",
             "Invalidate current session",
             "Drop all cached frames for this session and reprocess from scratch?",
-        )
-        if confirmed != QMessageBox.StandardButton.Yes:
+        ):
             return
         self._controller.invalidate_current_session()
 
@@ -586,13 +601,13 @@ class SinnerMainWindow(QMainWindow):
             )
             return
         total = sum(e.size_bytes for e in deletable)
-        confirmed = QMessageBox.question(
+        if not confirm(
             self,
+            "clear_all_caches",
             "Clear all caches",
             f"Delete {len(deletable)} cache entries ({_fmt_size(total)})?\n"
             "The currently active session will be spared.",
-        )
-        if confirmed != QMessageBox.StandardButton.Yes:
+        ):
             return
         self._controller.clear_all_caches()
 

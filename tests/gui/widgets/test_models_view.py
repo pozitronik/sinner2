@@ -3,7 +3,6 @@ background download queue (with a fake download_model, no network)."""
 from __future__ import annotations
 
 import pytest
-from PySide6.QtWidgets import QMessageBox
 
 from sinner2.pipeline import model_cache
 from sinner2.pipeline.models_catalog import MODEL_CATALOG
@@ -104,8 +103,7 @@ class TestDelete:
         f.write_bytes(b"weights")
         view.refresh()
         monkeypatch.setattr(
-            QMessageBox, "question",
-            lambda *a, **k: QMessageBox.StandardButton.Yes,
+            "sinner2.gui.widgets.models_view.confirm", lambda *a, **k: True
         )
         view._delete("span_kendata_x4.onnx")  # noqa: SLF001
         assert not f.exists()
@@ -115,11 +113,21 @@ class TestDelete:
         f = models_dir / "span_kendata_x4.onnx"
         f.write_bytes(b"weights")
         monkeypatch.setattr(
-            QMessageBox, "question",
-            lambda *a, **k: QMessageBox.StandardButton.No,
+            "sinner2.gui.widgets.models_view.confirm", lambda *a, **k: False
         )
         view._delete("span_kendata_x4.onnx")  # noqa: SLF001
         assert f.exists()
+
+    def test_required_model_delete_is_not_suppressible(self, view, monkeypatch):
+        # A REQUIRED model's delete confirm must pass suppressible=False so it
+        # can never be silently auto-confirmed (that would brick the app).
+        captured: dict = {}
+        monkeypatch.setattr(
+            "sinner2.gui.widgets.models_view.confirm",
+            lambda *a, **k: captured.update(k) or False,
+        )
+        view._delete("inswapper_128.onnx")  # noqa: SLF001  (REQUIRED)
+        assert captured.get("suppressible") is False
 
 
 class TestDownloadQueue:
@@ -179,8 +187,7 @@ class TestDownloadQueue:
                 (models_dir / name).write_bytes(b"w")
         view.refresh()
         monkeypatch.setattr(
-            QMessageBox, "question",
-            lambda *a, **k: QMessageBox.StandardButton.Yes,
+            "sinner2.gui.widgets.models_view.confirm", lambda *a, **k: True
         )
         monkeypatch.setattr(
             model_cache, "download_model", self._fake_download(models_dir)

@@ -28,7 +28,7 @@ class TestEnsureModelsPresent:
         monkeypatch.setattr(model_download.model_cache, "missing_models", lambda: [])
         asked = []
         monkeypatch.setattr(
-            QMessageBox, "question", lambda *a, **k: asked.append(1)
+            model_download, "confirm", lambda *a, **k: asked.append(1) or False
         )
         ensure_models_present(parent)
         assert asked == []  # never prompted
@@ -42,11 +42,7 @@ class TestEnsureModelsPresent:
         monkeypatch.setattr(
             model_download.model_cache, "get_models_dir", lambda: Path("/models")
         )
-        monkeypatch.setattr(
-            QMessageBox,
-            "question",
-            lambda *a, **k: QMessageBox.StandardButton.No,
-        )
+        monkeypatch.setattr(model_download, "confirm", lambda *a, **k: False)
         info: list = []
         monkeypatch.setattr(
             QMessageBox, "information", lambda *a, **k: info.append(a)

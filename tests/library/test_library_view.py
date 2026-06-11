@@ -650,8 +650,8 @@ class TestClearButton:
         # at all (and certainly shouldn't fire rootsChanged).
         prompted: list[object] = []
         monkeypatch.setattr(
-            "PySide6.QtWidgets.QMessageBox.question",
-            lambda *_a, **_k: (prompted.append(True), None)[1],
+            "sinner2.gui.widgets.library_view.confirm",
+            lambda *_a, **_k: (prompted.append(True), False)[1],
         )
         with qtbot.assertNotEmitted(view.rootsChanged, wait=100):
             view._confirm_clear()  # noqa: SLF001
@@ -660,12 +660,10 @@ class TestClearButton:
     def test_confirm_clear_yes_wipes_library(
         self, view, qtbot, tmp_path, monkeypatch
     ):
-        from PySide6.QtWidgets import QMessageBox
-
         view.ingest_files_and_folders([_make_image(tmp_path / "a.png")])
         monkeypatch.setattr(
-            "PySide6.QtWidgets.QMessageBox.question",
-            lambda *_a, **_k: QMessageBox.StandardButton.Yes,
+            "sinner2.gui.widgets.library_view.confirm",
+            lambda *_a, **_k: True,
         )
         with qtbot.waitSignal(view.rootsChanged, timeout=1000):
             view._confirm_clear()  # noqa: SLF001
@@ -681,7 +679,6 @@ class TestClearButton:
         # looking at. Capture the message body and assert it reflects
         # the grid count.
         import time as _time
-        from PySide6.QtWidgets import QMessageBox
 
         folder = tmp_path / "lib"
         folder.mkdir()
@@ -694,10 +691,10 @@ class TestClearButton:
             qtbot.wait(50)
         captured: list[str] = []
         monkeypatch.setattr(
-            "PySide6.QtWidgets.QMessageBox.question",
-            lambda _self, _title, msg, *_a, **_k: (
+            "sinner2.gui.widgets.library_view.confirm",
+            lambda _self, _dialog_id, _title, msg, *_a, **_k: (
                 captured.append(msg),
-                QMessageBox.StandardButton.No,
+                False,
             )[1],
         )
         view._confirm_clear()  # noqa: SLF001
@@ -709,8 +706,6 @@ class TestClearButton:
     def test_confirm_message_notes_scan_in_progress(
         self, view, qtbot, tmp_path, monkeypatch
     ):
-        from PySide6.QtWidgets import QMessageBox
-
         folder = tmp_path / "lib"
         folder.mkdir()
         # Many files so the scan is still running when we click clear.
@@ -720,10 +715,10 @@ class TestClearButton:
         # Don't wait for completion — click clear mid-scan.
         captured: list[str] = []
         monkeypatch.setattr(
-            "PySide6.QtWidgets.QMessageBox.question",
-            lambda _self, _title, msg, *_a, **_k: (
+            "sinner2.gui.widgets.library_view.confirm",
+            lambda _self, _dialog_id, _title, msg, *_a, **_k: (
                 captured.append(msg),
-                QMessageBox.StandardButton.No,
+                False,
             )[1],
         )
         view._confirm_clear()  # noqa: SLF001
@@ -737,13 +732,11 @@ class TestClearButton:
     def test_confirm_clear_no_keeps_library(
         self, view, qtbot, tmp_path, monkeypatch
     ):
-        from PySide6.QtWidgets import QMessageBox
-
         f = _make_image(tmp_path / "a.png")
         view.ingest_files_and_folders([f])
         monkeypatch.setattr(
-            "PySide6.QtWidgets.QMessageBox.question",
-            lambda *_a, **_k: QMessageBox.StandardButton.No,
+            "sinner2.gui.widgets.library_view.confirm",
+            lambda *_a, **_k: False,
         )
         with qtbot.assertNotEmitted(view.rootsChanged, wait=100):
             view._confirm_clear()  # noqa: SLF001

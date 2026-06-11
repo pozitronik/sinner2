@@ -117,6 +117,15 @@ class TestExtendedFieldsRoundtrip:
         settings.save(settings.Settings(realtime_workers=7))
         assert settings.load().realtime_workers == 7
 
+    def test_confirm_suppressed_map(self):
+        settings.save(
+            settings.Settings(confirm_suppressed={"delete_task": True, "clear": False})
+        )
+        assert settings.load().confirm_suppressed == {
+            "delete_task": True,
+            "clear": False,
+        }
+
     def test_strategy_name(self):
         settings.save(settings.Settings(strategy_name="SyncedStrategy"))
         assert settings.load().strategy_name == "SyncedStrategy"

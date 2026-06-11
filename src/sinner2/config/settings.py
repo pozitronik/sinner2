@@ -116,6 +116,10 @@ class Settings(SinnerBaseModel):
     batch_global_output_path: str | None = None  # default: next to target
     batch_default_format: str | None = None  # "video" / "frames"
     batch_default_cleanup: str | None = None  # "keep" / "auto" / "drop_at_end"
+    # Per-dialog "don't ask me again" map: dialog_id -> remembered yes/no answer.
+    # A present key means the confirmation is suppressed and its stored answer
+    # reused. None = nothing suppressed yet.
+    confirm_suppressed: dict[str, bool] | None = None
 
 
 def settings_path() -> Path:

@@ -20,6 +20,7 @@ import threading
 from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
 from PySide6.QtWidgets import QMessageBox, QProgressDialog, QWidget
 
+from sinner2.gui.confirm import confirm
 from sinner2.pipeline import model_cache
 
 
@@ -115,15 +116,14 @@ def ensure_models(parent: QWidget, names: list[str]) -> bool:
 
     models_dir = model_cache.get_models_dir()
     listed = ", ".join(missing)
-    answer = QMessageBox.question(
+    if not confirm(
         parent,
+        "download_models",
         "Download models?",
         f"Model file(s) are missing:\n\n    {listed}\n\n"
         "Download them now from the official sources?",
-        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        QMessageBox.StandardButton.Yes,
-    )
-    if answer != QMessageBox.StandardButton.Yes:
+        default_yes=True,
+    ):
         QMessageBox.information(
             parent,
             "Models needed",
