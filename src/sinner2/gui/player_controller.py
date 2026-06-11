@@ -364,13 +364,17 @@ class PlayerController(QObject):
         self.sessionScratchDirChanged.emit(bundle.cache_dir)
         self.cacheStorageStatsChanged.emit()
         self.targetNativeSizeChanged.emit(bundle.native_size)
-        # Reload audio for the (possibly new) target — a no-op in the backend
-        # when the path is unchanged (source-only swap) — then restore the
-        # position + play state so sound resumes with the picture.
+        # Reload audio for the (possibly new) target, then restore the position
+        # + play state so sound resumes with the picture. load() switches media
+        # when the target changed; on a source-only swap the target is unchanged
+        # so load() no-ops — reload() then forces a fresh setSource to re-arm the
+        # deferred play/seek, otherwise the restore's resume is a bare play() on a
+        # just-paused player and audio stays silent until a manual stop/restart.
         backend = self.audio_backend()
         if backend is not None:
             try:
                 backend.load(bundle.target_path)
+                backend.reload()
             except Exception as exc:
                 self.errorOccurred.emit(f"audio load failed: {exc}")
         self._restore_audio_state()

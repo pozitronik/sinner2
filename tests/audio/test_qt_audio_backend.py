@@ -161,6 +161,37 @@ class TestLoadResetsState:
         fake.play.assert_not_called()
 
 
+class TestReload:
+    """reload() re-issues setSource for the already-loaded media and resets the
+    ready/pending state, so a resume after an async source swap goes through the
+    same deferred-play path a media switch uses (audio dying on a source change)."""
+
+    def test_reload_reissues_source_and_resets_ready(self, backend, tmp_path: Path):
+        fake = _prime_player(backend)
+        backend.load(tmp_path / "clip.mp4")
+        backend._on_media_status_changed(  # noqa: SLF001
+            QMediaPlayer.MediaStatus.LoadedMedia
+        )
+        assert backend._media_ready is True  # noqa: SLF001
+        fake.setSource.reset_mock()
+        backend.reload()
+        # Same media re-issued (load() would have skipped it) and ready reset.
+        fake.setSource.assert_called_once()
+        assert backend._media_ready is False  # noqa: SLF001
+        # A play() now defers until the re-load reports ready (the proven path).
+        backend.play()
+        fake.play.assert_not_called()
+        backend._on_media_status_changed(  # noqa: SLF001
+            QMediaPlayer.MediaStatus.LoadedMedia
+        )
+        fake.play.assert_called_once()
+
+    def test_reload_without_loaded_media_is_noop(self, backend):
+        fake = _prime_player(backend)
+        backend.reload()
+        fake.setSource.assert_not_called()
+
+
 class TestInvalidMediaClearsPending:
     def test_invalid_media_drops_pending_play(self, backend):
         fake = _prime_player(backend)

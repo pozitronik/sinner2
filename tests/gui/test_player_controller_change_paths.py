@@ -228,6 +228,19 @@ class TestAudioRestoredOnSwap:
         audio.play.assert_called_once_with()
         ctrl.shutdown()
 
+    def test_source_change_reloads_audio_backend_to_rearm(self, widgets, monkeypatch):
+        # A source-only swap leaves the target unchanged, so load() no-ops; the
+        # adopt path must force reload() to re-arm the deferred play/seek,
+        # otherwise the resume is a bare play() on a just-paused player that MF
+        # silently drops (audio dies on source change until manual restart).
+        ctrl = _make_controller(widgets)
+        _attach_fake_session(ctrl, playing=True, current_frame=60)
+        _stub_build(ctrl, monkeypatch)
+        audio = self._attach_audio(ctrl)
+        ctrl.change_source(Path("/new/source.png"))
+        audio.reload.assert_called_once_with()
+        ctrl.shutdown()
+
     def test_keeps_audio_paused_when_not_playing(self, widgets, monkeypatch):
         ctrl = _make_controller(widgets)
         _attach_fake_session(ctrl, playing=False, current_frame=10)

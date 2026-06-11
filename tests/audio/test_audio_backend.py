@@ -32,6 +32,9 @@ class FakeAudioBackend:
         self.loaded = media_path
         self.calls.append(("load", media_path))
 
+    def reload(self) -> None:
+        self.calls.append(("reload", None))
+
     def play(self) -> None:
         self.is_playing = True
         self.calls.append(("play", None))

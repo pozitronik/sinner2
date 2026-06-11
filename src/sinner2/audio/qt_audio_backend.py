@@ -89,16 +89,33 @@ class QtMediaAudioBackend(QObject):
     def load(self, media_path: Path) -> None:
         if self._loaded_path == media_path:
             return
+        self._loaded_path = media_path
+        self._reissue_source()
+
+    def reload(self) -> None:
+        # Force a fresh setSource for the already-loaded media so the deferred
+        # play/seek machinery is re-armed. load() skips a same-path reload, which
+        # after an async session swap (source-only change: target unchanged)
+        # would leave the controller's restore issuing a bare play() to resume a
+        # just-paused player — unreliable on Windows Media Foundation (the
+        # symptom: audio dies on a source change until the user stops + restarts
+        # playback). Re-issuing setSource routes the resume through the same
+        # LoadedMedia path a target change uses. No-op if nothing is loaded.
+        if self._loaded_path is None:
+            return
+        self._reissue_source()
+
+    def _reissue_source(self) -> None:
+        """(Re)issue setSource for _loaded_path and reset ready/pending state so
+        any play()/seek() arriving during the window between setSource() and
+        mediaStatusChanged(Loaded) is queued by _on_media_status_changed."""
+        assert self._loaded_path is not None
         player, _ = self._ensure_player()
         player.stop()
-        # Reset readiness — any play()/seek() that arrives during the
-        # window between setSource() and mediaStatusChanged(Loaded) will
-        # be queued by _on_media_status_changed.
         self._media_ready = False
         self._pending_play = False
         self._pending_position_ms = None
-        player.setSource(QUrl.fromLocalFile(str(media_path)))
-        self._loaded_path = media_path
+        player.setSource(QUrl.fromLocalFile(str(self._loaded_path)))
 
     def play(self) -> None:
         if self._player is None:

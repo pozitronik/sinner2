@@ -45,6 +45,14 @@ class AudioBackend(Protocol):
         may detect "no audio track" lazily; callers should not assume
         has_audio() is truthy until at least one play() attempt."""
 
+    def reload(self) -> None:
+        """Re-point at the currently-loaded media, re-arming any deferred
+        play/seek. Unlike load(), does NOT skip when the path is unchanged.
+        Used after an async session swap so a resume runs through the same
+        load→ready path a media switch uses (a bare play() to resume a
+        just-paused player is unreliable on some backends). No-op if nothing
+        is loaded."""
+
     def play(self) -> None: ...
 
     def pause(self) -> None: ...
