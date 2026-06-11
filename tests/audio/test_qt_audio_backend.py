@@ -162,11 +162,13 @@ class TestLoadResetsState:
 
 
 class TestReload:
-    """reload() re-issues setSource for the already-loaded media and resets the
-    ready/pending state, so a resume after an async source swap goes through the
-    same deferred-play path a media switch uses (audio dying on a source change)."""
+    """reload() CLEARS the source then re-sets it (clear-then-set), so a resume
+    after an async source swap goes through a real LoadedMedia transition. A
+    plain same-URL setSource leaves the player Stopped@0 and the deferred play
+    never fires — the "audio dies on a source change" bug (verified by
+    scripts/audio_resume_test.py: same-URL SILENT, clear-then-set RESUMES)."""
 
-    def test_reload_reissues_source_and_resets_ready(self, backend, tmp_path: Path):
+    def test_reload_clears_then_reissues_source(self, backend, tmp_path: Path):
         fake = _prime_player(backend)
         backend.load(tmp_path / "clip.mp4")
         backend._on_media_status_changed(  # noqa: SLF001
@@ -175,8 +177,13 @@ class TestReload:
         assert backend._media_ready is True  # noqa: SLF001
         fake.setSource.reset_mock()
         backend.reload()
-        # Same media re-issued (load() would have skipped it) and ready reset.
-        fake.setSource.assert_called_once()
+        # Cleared first (empty URL) THEN re-set to the real file — the clear is
+        # what forces Qt to actually reload an unchanged source.
+        assert fake.setSource.call_count == 2
+        assert fake.setSource.call_args_list[0].args[0].isEmpty()
+        assert fake.setSource.call_args_list[1].args[0].toLocalFile().endswith(
+            "clip.mp4"
+        )
         assert backend._media_ready is False  # noqa: SLF001
         # A play() now defers until the re-load reports ready (the proven path).
         backend.play()
