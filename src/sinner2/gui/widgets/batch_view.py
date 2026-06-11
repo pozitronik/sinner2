@@ -377,15 +377,14 @@ class QBatchView(QWidget):
         self._throughput.pop(task_id, None)
         self._refresh_row(task_id)
 
-    def _on_task_failed(self, task_id: str, message: str) -> None:
+    def _on_task_failed(self, task_id: str, _message: str) -> None:
         self._throughput.pop(task_id, None)
+        # Flip the row to its failed state — Status reads "failed" with the
+        # reason on hover (set in _refresh_row from the task's error_message).
+        # The prominent, can't-miss surfacing of the message lives in
+        # main_window (a consolidated error dialog when the queue goes idle),
+        # which owns the modal surface; this widget just updates the row.
         self._refresh_row(task_id)
-        # No modal — failures are common (missing model, codec) and
-        # spamming a popup per failure would be annoying. The Status
-        # cell shows "failed" and the tooltip on the row could hold
-        # the message; for v1 we keep the message in the task file
-        # itself (visible via Edit).
-        _ = message
 
     # ---- Context menu ----
 

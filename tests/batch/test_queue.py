@@ -237,6 +237,63 @@ class TestStopPausesNotCancels:
         driver.cancel.assert_not_called()   # no cache wipe
 
 
+class TestFailureHaltsQueue:
+    """A FAILED task halts the queue by default (so the user sees the error and
+    can recover without restarting) — unless it opted into continue-on-error,
+    in which case the queue auto-skips it and rolls on to the next pending task.
+    Driven at the _on_completed level (the stub chain always succeeds)."""
+
+    def _arm(self, queue, task):
+        queue._current_task = task  # noqa: SLF001
+        queue._worker = None  # noqa: SLF001
+        queue._thread = None  # noqa: SLF001
+        queue._paused = False  # noqa: SLF001
+        scheduled: list[bool] = []
+        queue._schedule_next = lambda: scheduled.append(True)  # noqa: SLF001
+        idle: list[bool] = []
+        queue.queueIdle.connect(lambda: idle.append(True))
+        return scheduled, idle
+
+    def test_failure_without_continue_halts_and_pauses(self, queue, store, tmp_path):
+        task = _make_task(tmp_path, "a")
+        task.continue_on_error = False
+        store.save(task)
+        scheduled, idle = self._arm(queue, task)
+        queue._on_completed(task.id, BatchTaskStatus.FAILED.value)  # noqa: SLF001
+        assert scheduled == []          # did NOT roll on
+        assert idle == [True]           # went idle (lock releases)
+        assert queue._paused is True    # noqa: SLF001  halted
+
+    def test_failure_with_continue_schedules_next(self, queue, store, tmp_path):
+        task = _make_task(tmp_path, "a")
+        task.continue_on_error = True
+        store.save(task)
+        scheduled, idle = self._arm(queue, task)
+        queue._on_completed(task.id, BatchTaskStatus.FAILED.value)  # noqa: SLF001
+        assert scheduled == [True]      # auto-skipped → next pending
+        assert queue._paused is False   # noqa: SLF001  queue keeps running
+
+    def test_failure_emits_taskfailed_with_message(self, queue, store, tmp_path):
+        task = _make_task(tmp_path, "a")
+        task.error_message = "boom on target frame 3"
+        store.save(task)
+        failures: list[tuple[str, str]] = []
+        queue.taskFailed.connect(lambda tid, msg: failures.append((tid, msg)))
+        queue._current_task = task  # noqa: SLF001
+        queue._worker = None  # noqa: SLF001
+        queue._thread = None  # noqa: SLF001
+        queue._on_completed(task.id, BatchTaskStatus.FAILED.value)  # noqa: SLF001
+        assert failures == [(task.id, "boom on target frame 3")]
+
+    def test_completed_task_still_schedules_next(self, queue, store, tmp_path):
+        task = _make_task(tmp_path, "a")
+        store.save(task)
+        scheduled, idle = self._arm(queue, task)
+        queue._on_completed(task.id, BatchTaskStatus.COMPLETED.value)  # noqa: SLF001
+        assert scheduled == [True]      # success rolls on
+        assert queue._paused is False   # noqa: SLF001
+
+
 class TestPauseTaskDoesNotAutostartNext:
     """Pausing the current task (pause_task) must stop the queue, NOT roll on to
     the next pending task — PAUSED was treated like COMPLETED and scheduled the

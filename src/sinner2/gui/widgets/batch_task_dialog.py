@@ -423,6 +423,14 @@ class QBatchTaskDialog(QDialog):
             "intermediates after the final output. The output is always kept."
         )
         exec_form.addRow("Intermediate frames:", self._cleanup_combo)
+        self._continue_on_error = QCheckBox()
+        self._continue_on_error.setChecked(task.continue_on_error)
+        self._continue_on_error.setToolTip(
+            "If this task fails, keep processing the rest of the queue instead "
+            "of halting. Off (default): a failure stops the queue so you can "
+            "see the error and decide (then Start / right-click → Resume)."
+        )
+        exec_form.addRow("Continue queue on error:", self._continue_on_error)
 
         # ---- Output encoding group ----
         out_box = QGroupBox("Output encoding (frames mode + ffmpeg input)")
@@ -586,6 +594,7 @@ class QBatchTaskDialog(QDialog):
                 "cleanup_mode": BatchCleanupMode(
                     self._cleanup_combo.currentData()
                 ),
+                "continue_on_error": self._continue_on_error.isChecked(),
                 "image_format": ImageFormat(self._image_format.currentData()),
                 "image_quality": self._image_quality.value(),
             }

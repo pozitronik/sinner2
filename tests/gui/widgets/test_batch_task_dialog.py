@@ -180,6 +180,15 @@ class TestWritebackToTask:
         # Original is unchanged (model_copy returns a new instance).
         assert t.swapper_execution.workers == 1
 
+    def test_continue_on_error_round_trips(self, qtbot, tmp_path):
+        t = _task(tmp_path, continue_on_error=False)
+        dlg = QBatchTaskDialog.from_task(t)
+        qtbot.addWidget(dlg)
+        assert dlg._continue_on_error.isChecked() is False  # noqa: SLF001
+        dlg._continue_on_error.setChecked(True)  # noqa: SLF001
+        assert dlg.to_task().continue_on_error is True
+        assert t.continue_on_error is False  # original untouched
+
     def test_to_task_writes_execution_profiles(self, qtbot, tmp_path):
         t = _task(
             tmp_path,

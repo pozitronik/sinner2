@@ -148,6 +148,10 @@ class SinnerMainWindow(QMainWindow):
         # True while a batch task renders — locks the live-editing surface so
         # the display acts purely as a render preview (DaVinci-style).
         self._batch_active = False
+        # Failures collected during the CURRENT batch run (label, message),
+        # reported in one consolidated dialog when the queue goes idle so a
+        # continue-on-error run doesn't spam a modal per failed task.
+        self._batch_failures: list[tuple[str, str]] = []
         # Non-modal poll that refreshes the failed-provider highlight AFTER an
         # async chain rebuild records the real providers (see
         # _schedule_provider_highlight_refresh). One at a time — a newer toggle
@@ -1650,6 +1654,8 @@ class SinnerMainWindow(QMainWindow):
         # lock the ENTIRE editing surface. Two simultaneous ORT sessions
         # contend for the GPU (OOM risk), and — more importantly — the
         # display must act purely as a render preview, not a live edit.
+        if not self._batch_active:
+            self._batch_failures = []  # first task of a fresh run
         self._batch_active = True
         self._batch_slider_total = -1  # re-arm the position bar for this task
         if self._controller.executor() is not None:
@@ -1676,11 +1682,42 @@ class SinnerMainWindow(QMainWindow):
         self._status_bar.show_message(
             "Batch queue idle — editing unlocked", 3000
         )
+        # Surface the real failure reason(s) prominently now the run is done —
+        # one dialog for the whole run (a continue-on-error run can fail many).
+        self._report_batch_failures()
 
-    def _on_batch_task_failed(self, _task_id: str, message: str) -> None:
-        # Failures are otherwise quiet (Status cell + its hover tooltip); a
-        # status-bar notice makes sure the user notices something stopped.
-        self._status_bar.show_message(f"Batch task failed: {message}", 12000)
+    def _on_batch_task_failed(self, task_id: str, message: str) -> None:
+        # Collect for the consolidated dialog at queue-idle (avoids modal spam
+        # mid-run); a short status note flags it immediately. The row itself
+        # shows "failed" with the reason on hover (batch_view._refresh_row).
+        label = self._batch_task_label(task_id)
+        self._batch_failures.append((label, message or "unknown error"))
+        self._status_bar.show_message(f"Batch task failed: {label}", 8000)
+
+    def _batch_task_label(self, task_id: str) -> str:
+        """A readable 'source → target' label for a task id, or the id if the
+        task can't be loaded."""
+        try:
+            if self._batch_store.exists(task_id):
+                task = self._batch_store.load(task_id)
+                return f"{task.source_path.name} → {task.target_path.name}"
+        except Exception:
+            pass
+        return task_id
+
+    def _report_batch_failures(self) -> None:
+        """Show one error dialog summarising every task that failed this run,
+        then clear the list. No-op when nothing failed."""
+        failures = self._batch_failures
+        self._batch_failures = []
+        if not failures:
+            return
+        if len(failures) == 1:
+            label, msg = failures[0]
+            self._show_error(f"Batch task failed — {label}:\n\n{msg}")
+            return
+        lines = "\n\n".join(f"• {label}:\n  {msg}" for label, msg in failures)
+        self._show_error(f"{len(failures)} batch tasks failed:\n\n{lines}")
 
     def _on_batch_preview(self, _task_id: str, frame: Frame) -> None:
         # Show what the batch is producing on the (idle) preview surface.

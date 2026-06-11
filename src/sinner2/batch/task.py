@@ -166,6 +166,12 @@ class BatchTask(SinnerBaseModel):
     cleanup_mode: BatchCleanupMode = BatchCleanupMode.KEEP
     extraction_mode: BatchExtractionMode = BatchExtractionMode.STREAM
 
+    # ---- Queue scheduling policy ----
+    # When True, a failure of THIS task does NOT halt the queue — the scheduler
+    # records it and rolls on to the next pending task. Default False: a failure
+    # stops the queue so the user sees the error and decides what to do.
+    continue_on_error: bool = False
+
     # ---- Runtime state ----
     status: BatchTaskStatus = BatchTaskStatus.PENDING
     last_completed_frame: int = -1

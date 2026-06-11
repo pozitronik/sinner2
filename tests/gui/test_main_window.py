@@ -546,6 +546,30 @@ class TestBatchIntegration:
         assert window._pickers.isEnabled()  # noqa: SLF001
         assert window._processors.isEnabled()  # noqa: SLF001
 
+    def test_failure_surfaces_consolidated_error_at_idle(
+        self, window, monkeypatch
+    ):
+        # A failure is collected during the run and surfaced in ONE error dialog
+        # when the queue goes idle (no modal spam per task), and the editing
+        # lock always releases on idle so the user can recover without restart.
+        errors: list[str] = []
+        monkeypatch.setattr(window, "_show_error", errors.append)  # noqa: SLF001
+        window._batch_queue.taskStarted.emit("x")  # noqa: SLF001  fresh run
+        window._batch_queue.taskFailed.emit("x", "ffmpeg not found")  # noqa: SLF001
+        assert errors == []  # nothing modal mid-run
+        window._batch_queue.queueIdle.emit()  # noqa: SLF001
+        assert len(errors) == 1
+        assert "ffmpeg not found" in errors[0]
+        assert not window._batch_active  # noqa: SLF001  unlocked
+        assert window._pickers.isEnabled()  # noqa: SLF001
+
+    def test_no_failures_shows_no_error_dialog(self, window, monkeypatch):
+        errors: list[str] = []
+        monkeypatch.setattr(window, "_show_error", errors.append)  # noqa: SLF001
+        window._batch_queue.taskStarted.emit("x")  # noqa: SLF001
+        window._batch_queue.queueIdle.emit()  # noqa: SLF001
+        assert errors == []  # clean run → no error popup
+
     def test_config_change_ignored_while_batch_active(
         self, window, monkeypatch
     ):

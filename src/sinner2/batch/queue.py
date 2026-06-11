@@ -92,6 +92,10 @@ class BatchQueue(QObject):
         self._thread: QThread | None = None
         self._worker: _DriverWorker | None = None
         self._current_task_id: str | None = None
+        # The BatchTask the runner is driving — captured here (not read off the
+        # worker) so _on_completed can always persist + report the terminal
+        # state even if a teardown raced the queued completion signal.
+        self._current_task: BatchTask | None = None
         self._paused = False  # queue-level pause
         # Throttle progress persistence: _on_progress fires per-frame, but the
         # full task JSON only needs to hit disk occasionally (resume reads the
@@ -141,6 +145,7 @@ class BatchQueue(QObject):
         self._thread = None
         self._worker = None
         self._current_task_id = None
+        self._current_task = None
 
     # ---- Per-task controls ----
 
@@ -217,6 +222,7 @@ class BatchQueue(QObject):
 
     def _spawn_runner(self, task: BatchTask) -> None:
         self._current_task_id = task.id
+        self._current_task = task
         self._driver = BatchDriver(
             cache_root=self._cache_root,
             global_output_dir=self._global_output_dir,
@@ -272,29 +278,29 @@ class BatchQueue(QObject):
         self.taskPreview.emit(task_id, frame)
 
     def _on_completed(self, task_id: str, status_value: str) -> None:
-        # The driver mutated the task in place inside the worker
-        # thread, but the in-memory instance we have is on THAT
-        # thread's side of memory — re-load fresh from disk (the
-        # driver's run() persists nothing; the queue saves below).
-        # Actually the worker's BatchTask object IS shared — we passed
-        # it by reference. So reading current state is just the
-        # instance we kept in _spawn_runner... but we didn't. Re-load
-        # from disk after writing on this side.
         terminal = BatchTaskStatus(status_value)
-        # Persist the final state by reading the in-memory task off
-        # the worker. The worker's `_task` reference IS the same
-        # object the driver mutated; safe to read here on GUI thread
-        # because the worker thread has exited (completed signal is
-        # its last emission before run() returns).
-        if self._worker is not None:
-            task = self._worker._task  # noqa: SLF001
+        # The worker mutated this BatchTask in place; it's the same object we
+        # captured in _spawn_runner, safe to read here on the GUI thread (the
+        # worker thread has exited — `completed` is its last emission). Captured
+        # on the queue, not read off _worker, so a teardown race can't drop the
+        # terminal signals.
+        task = self._current_task
+        if task is not None:
             self._store.save(task)
             if terminal is BatchTaskStatus.FAILED:
                 self.taskFailed.emit(task_id, task.error_message or "")
         self.taskCompleted.emit(task_id)
         self._teardown_runner()
-        # Auto-pick next pending task unless we're paused or the task reached a
-        # user-intent stop: Cancel OR Pause (pause_task pauses just the current
+        # A FAILED task HALTS the queue (so the user sees the error and decides)
+        # unless it opted into continue-on-error — then auto-skip it and roll on.
+        # Pause the queue on a halt so a stray _schedule_next won't advance; the
+        # user clears it via start() / resume_task().
+        if terminal is BatchTaskStatus.FAILED and not (
+            task is not None and task.continue_on_error
+        ):
+            self._paused = True
+        # Auto-pick the next pending task unless we're paused or the task reached
+        # a user-intent stop: Cancel OR Pause (pause_task pauses just the current
         # task without setting the queue-level _paused flag, so PAUSED must also
         # halt scheduling — else pausing one task silently starts the next).
         if not self._paused and terminal not in (
@@ -316,3 +322,4 @@ class BatchQueue(QObject):
         self._worker = None
         self._driver = None
         self._current_task_id = None
+        self._current_task = None

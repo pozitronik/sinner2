@@ -185,6 +185,15 @@ class TestStageConfigDefaults:
     def test_completed_stages_starts_zero(self, tmp_path):
         assert _task(tmp_path).completed_stages == 0
 
+    def test_continue_on_error_defaults_false(self, tmp_path):
+        # Default: a failure halts the queue (the user sees the error).
+        assert _task(tmp_path).continue_on_error is False
+
+    def test_continue_on_error_roundtrips(self, tmp_path):
+        t = _task(tmp_path, continue_on_error=True)
+        back = BatchTask.model_validate_json(t.model_dump_json())
+        assert back.continue_on_error is True
+
     def test_stage_config_roundtrips(self, tmp_path):
         t = _task(
             tmp_path,
