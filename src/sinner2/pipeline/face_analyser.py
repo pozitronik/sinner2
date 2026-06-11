@@ -42,7 +42,10 @@ def _get_shared_face_analysis(
             from insightface.app import FaceAnalysis
 
             from sinner2.config.execution import DEFAULT_ONNX_PROVIDERS
-            from sinner2.pipeline.model_cache import build_provider_options
+            from sinner2.pipeline.model_cache import (
+                build_provider_options,
+                get_models_dir,
+            )
 
             # None → platform default; an explicit [] stays empty (the user chose
             # no providers → ORT runs on CPU). Only unspecified falls back.
@@ -61,8 +64,15 @@ def _get_shared_face_analysis(
                 # (no providers selected) stays empty.
                 stripped = list(DEFAULT_ONNX_PROVIDERS)
             eps = stripped
+            # Pin the download/cache root to the project models dir — otherwise
+            # insightface defaults to ~/.insightface and the buffalo_l pack lands
+            # outside the chosen models folder (where every other model lives).
+            # insightface forces a "models" subdir under root, so the pack ends up
+            # at <models_dir>/models/buffalo_l; passing get_models_dir() (not its
+            # parent) keeps it inside the chosen dir even under SINNER2_MODELS_DIR.
             app = FaceAnalysis(
                 name=_FACE_MODEL_NAME,
+                root=str(get_models_dir()),
                 providers=eps,
                 provider_options=build_provider_options(eps),
             )

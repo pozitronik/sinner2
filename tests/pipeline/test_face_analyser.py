@@ -305,3 +305,41 @@ class TestSharedFaceAnalysisProviders:
         captured = self._capture(monkeypatch)
         face_analyser._get_shared_face_analysis(["TensorrtExecutionProvider"])
         assert captured["providers"] == ["CUDAExecutionProvider", "CPUExecutionProvider"]
+
+
+class TestModelDownloadRoot:
+    """buffalo_l must download into the project models dir, not insightface's
+    default ~/.insightface. Regression: FaceAnalysis was built without root=,
+    so the pack landed outside the chosen models folder."""
+
+    def _capture_root(self, monkeypatch: pytest.MonkeyPatch) -> dict:
+        import sys
+        import types
+
+        captured: dict = {}
+
+        class FakeFaceAnalysis:
+            def __init__(
+                self, name=None, root=None, providers=None, provider_options=None, **kw
+            ):
+                captured["root"] = root
+
+            def prepare(self, ctx_id=0, det_size=None):  # noqa: ARG002
+                pass
+
+        app_mod = types.ModuleType("insightface.app")
+        app_mod.FaceAnalysis = FakeFaceAnalysis  # type: ignore[attr-defined]
+        pkg = sys.modules.get("insightface") or types.ModuleType("insightface")
+        monkeypatch.setitem(sys.modules, "insightface", pkg)
+        monkeypatch.setitem(sys.modules, "insightface.app", app_mod)
+        return captured
+
+    def test_download_root_is_project_models_dir(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ):
+        from sinner2.pipeline import model_cache
+
+        monkeypatch.setattr(model_cache, "get_models_dir", lambda: tmp_path)
+        captured = self._capture_root(monkeypatch)
+        face_analyser._get_shared_face_analysis(None)
+        assert captured["root"] == str(tmp_path)
