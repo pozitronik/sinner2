@@ -1,3 +1,4 @@
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -6,6 +7,113 @@ import pytest
 from sinner2.pipeline import face_analyser
 from sinner2.pipeline.face_analyser import FaceAnalyser, reset_shared_face_analysis
 from sinner2.types import Frame
+
+
+class TestLoadNotifier:
+    def teardown_method(self):
+        face_analyser.set_load_notifier(None)
+        reset_shared_face_analysis()
+
+    def test_notify_calls_installed_notifier(self):
+        seen: list[str] = []
+        face_analyser.set_load_notifier(seen.append)
+        face_analyser._notify_load("hi")  # noqa: SLF001
+        face_analyser._notify_load("")  # noqa: SLF001
+        assert seen == ["hi", ""]
+
+    def test_notify_noop_without_listener(self):
+        face_analyser.set_load_notifier(None)
+        face_analyser._notify_load("nobody")  # noqa: SLF001  # must not raise
+
+    def test_notify_swallows_listener_errors(self):
+        face_analyser.set_load_notifier(lambda _m: (_ for _ in ()).throw(RuntimeError()))
+        face_analyser._notify_load("x")  # noqa: SLF001  # must not propagate
+
+    def test_first_run_flags_download_then_clears(self, monkeypatch, tmp_path):
+        import insightface.app
+
+        from sinner2.pipeline import model_cache
+
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        monkeypatch.setattr(model_cache, "get_models_dir", lambda: models_dir)
+
+        class _Fake:
+            def __init__(self, **kw):
+                pass
+
+            def prepare(self, **kw):
+                pass
+
+        monkeypatch.setattr(insightface.app, "FaceAnalysis", _Fake)
+        seen: list[str] = []
+        face_analyser.set_load_notifier(seen.append)
+        reset_shared_face_analysis()
+        face_analyser._get_shared_face_analysis()  # noqa: SLF001
+        assert seen and seen[0].startswith("Downloading")
+        assert seen[-1] == ""
+
+    def test_present_pack_does_not_flag(self, monkeypatch, tmp_path):
+        import insightface.app
+
+        from sinner2.pipeline import model_cache
+
+        models_dir = tmp_path / "models"
+        (models_dir / "buffalo_l").mkdir(parents=True)  # clean location present
+        monkeypatch.setattr(model_cache, "get_models_dir", lambda: models_dir)
+
+        class _Fake:
+            def __init__(self, **kw):
+                pass
+
+            def prepare(self, **kw):
+                pass
+
+        monkeypatch.setattr(insightface.app, "FaceAnalysis", _Fake)
+        seen: list[str] = []
+        face_analyser.set_load_notifier(seen.append)
+        reset_shared_face_analysis()
+        face_analyser._get_shared_face_analysis()  # noqa: SLF001
+        assert seen == []  # nothing to download → no flag
+
+
+class TestBuffaloPackLocation:
+    def test_default_models_dir_uses_clean_path(self):
+        # Models dir named "models" → root is its parent so insightface's
+        # hardcoded /models segment yields <models_dir>/buffalo_l, not doubled.
+        models = Path("/app/models")
+        root, pack = face_analyser._buffalo_root_and_pack(models)  # noqa: SLF001
+        assert root == Path("/app")
+        assert pack == Path("/app/models/buffalo_l")
+
+    def test_custom_models_dir_keeps_nested(self):
+        models = Path("/data/sinnermodels")  # not named "models"
+        root, pack = face_analyser._buffalo_root_and_pack(models)  # noqa: SLF001
+        assert root == models
+        assert pack == Path("/data/sinnermodels/models/buffalo_l")
+
+    def test_migrates_legacy_double_nested_pack(self, tmp_path):
+        models = tmp_path / "models"
+        legacy = models / "models" / "buffalo_l"
+        legacy.mkdir(parents=True)
+        (legacy / "det.onnx").write_bytes(b"x")
+        clean = models / "buffalo_l"
+        face_analyser._migrate_legacy_buffalo_pack(models, clean)  # noqa: SLF001
+        assert clean.is_dir()
+        assert (clean / "det.onnx").is_file()
+        assert not legacy.exists()  # moved, and empty intermediate removed
+
+    def test_migration_noop_when_clean_present(self, tmp_path):
+        models = tmp_path / "models"
+        clean = models / "buffalo_l"
+        clean.mkdir(parents=True)
+        (clean / "real.onnx").write_bytes(b"keep")
+        legacy = models / "models" / "buffalo_l"
+        legacy.mkdir(parents=True)
+        (legacy / "stale.onnx").write_bytes(b"old")
+        face_analyser._migrate_legacy_buffalo_pack(models, clean)  # noqa: SLF001
+        assert (clean / "real.onnx").read_bytes() == b"keep"  # not clobbered
+        assert legacy.is_dir()  # left as-is
 
 
 @pytest.fixture

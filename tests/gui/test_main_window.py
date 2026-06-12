@@ -49,6 +49,24 @@ class TestSinnerMainWindow:
         assert window._controller.executor() is None  # noqa: SLF001
 
 
+class TestModelDownloadDialog:
+    def test_event_shows_then_hides_busy_dialog(self, window):
+        assert window._model_load_dialog is None  # noqa: SLF001
+        window._on_model_load_event("Downloading face-analysis models…")  # noqa: SLF001
+        dlg = window._model_load_dialog  # noqa: SLF001
+        assert dlg is not None
+        assert dlg.maximum() == 0 and dlg.minimum() == 0  # indeterminate busy
+        assert "Downloading" in dlg.labelText()
+        window._on_model_load_event("")  # noqa: SLF001 — download done
+        assert window._model_load_dialog is None  # noqa: SLF001
+
+    def test_notifier_installed_on_face_analyser(self, window):
+        from sinner2.pipeline import face_analyser
+
+        # The window wired its relay's emit as the global notifier at startup.
+        assert face_analyser._load_notifier is not None  # noqa: SLF001
+
+
 class TestModelsTab:
     def test_side_panel_has_models_tab(self, window):
         panel = window._side_panel  # noqa: SLF001

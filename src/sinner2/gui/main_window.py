@@ -147,6 +147,9 @@ class SinnerMainWindow(QMainWindow):
 
     # Cross-thread request to the detection probe (runs on its own QThread).
     _requestDetection = Signal(object, int, int)  # frame, width, height
+    # Relays the face-analyser's buffalo_l download start/end across the thread
+    # it fires on (a session-setup worker) onto the GUI thread.
+    _modelLoadEvent = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -259,6 +262,14 @@ class SinnerMainWindow(QMainWindow):
         # while fullscreen is active and reveals when the cursor nears the
         # bottom edge. Idle (timer stopped) outside fullscreen.
         self._fs_controls = FullscreenControlBar(self._display)
+        # Surface the one-time buffalo_l pack download (insightface fetches it
+        # silently inside the first session build, on a worker thread). The
+        # notifier hops onto the GUI thread via _modelLoadEvent and shows an
+        # indeterminate progress dialog; cleared in closeEvent.
+        self._model_load_dialog: QProgressDialog | None = None
+        self._modelLoadEvent.connect(self._on_model_load_event)
+        from sinner2.pipeline import face_analyser
+        face_analyser.set_load_notifier(self._modelLoadEvent.emit)
         # When the swapper is running, the overlay shows ITS pre-swap
         # detections (published to this sink) rather than re-detecting the
         # swapped output. A timer polls the sink while the overlay is on.
@@ -1434,8 +1445,31 @@ class SinnerMainWindow(QMainWindow):
             self._initial_session_started = True
             QTimer.singleShot(0, self._start_deferred_initial_session)
 
+    def _on_model_load_event(self, text: str) -> None:
+        """Show/hide an indeterminate busy dialog for the buffalo_l download
+        (non-empty text = a download is in progress; "" = done). Runs on the
+        GUI thread via the _modelLoadEvent relay."""
+        if text:
+            if self._model_load_dialog is None:
+                dialog = QProgressDialog(text, "", 0, 0, self)  # 0,0 = busy spinner
+                dialog.setWindowTitle("Preparing models")
+                dialog.setCancelButton(None)  # insightface's fetch can't be cancelled
+                dialog.setWindowModality(Qt.WindowModality.WindowModal)
+                dialog.setMinimumDuration(0)
+                dialog.setAutoClose(False)
+                dialog.setAutoReset(False)
+                self._model_load_dialog = dialog
+                dialog.show()
+            else:
+                self._model_load_dialog.setLabelText(text)
+        elif self._model_load_dialog is not None:
+            self._model_load_dialog.close()
+            self._model_load_dialog = None
+
     def closeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         self._persist_geometry_to_settings()
+        from sinner2.pipeline import face_analyser
+        face_analyser.set_load_notifier(None)  # drop the bound-signal reference
         # Stop the batch queue FIRST so its runner thread joins
         # before the controller / side panel start tearing down
         # shared resources (models, etc.).

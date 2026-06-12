@@ -1,4 +1,5 @@
 import threading
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
@@ -6,6 +7,28 @@ import numpy as np
 from sinner2.types import Frame
 
 _FACE_MODEL_NAME = "buffalo_l"
+# Optional progress notifier for the (insightface-internal) buffalo_l pack
+# download. insightface has no progress hook, so we just flag the START
+# (non-empty message) and END (empty message) so the GUI can show a busy
+# indicator instead of a silent multi-minute hang on the first run. Set once
+# at GUI startup; None = no listener (headless / tests).
+_load_notifier: Callable[[str], None] | None = None
+
+
+def set_load_notifier(notifier: Callable[[str], None] | None) -> None:
+    """Install (or clear) the model-load progress notifier — called with a
+    message when the buffalo_l download starts and "" when it finishes."""
+    global _load_notifier
+    _load_notifier = notifier
+
+
+def _notify_load(message: str) -> None:
+    notifier = _load_notifier
+    if notifier is not None:
+        try:
+            notifier(message)
+        except Exception:  # noqa: BLE001 — a UI hint must never break a load
+            pass
 _DEFAULT_DET_SIZE = 640
 # SCRFD (the buffalo_l detector) downsamples by strides 8/16/32, so its input
 # must be a multiple of 32. Align any requested det_size down to the nearest
@@ -16,6 +39,40 @@ _DET_SIZE_ALIGN = 32
 def _normalize_det_size(size: int) -> tuple[int, int]:
     aligned = max(_DET_SIZE_ALIGN, (int(size) // _DET_SIZE_ALIGN) * _DET_SIZE_ALIGN)
     return (aligned, aligned)
+
+
+def _buffalo_root_and_pack(models_dir: Any) -> tuple[Any, Any]:
+    """The insightface ``root`` to pass and the resulting pack directory.
+
+    insightface stores at ``<root>/models/<name>``. When the models dir is
+    named "models" (the default), root = its parent → the pack lands at
+    ``<models_dir>/buffalo_l``. Otherwise root = the models dir itself → the
+    pack nests at ``<models_dir>/models/buffalo_l`` (kept inside the chosen
+    folder; the parent could place it outside)."""
+    if models_dir.name == "models":
+        return models_dir.parent, models_dir / _FACE_MODEL_NAME
+    return models_dir, models_dir / "models" / _FACE_MODEL_NAME
+
+
+def _migrate_legacy_buffalo_pack(models_dir: Any, pack_dir: Any) -> None:
+    """Move a previously double-nested pack (``<models_dir>/models/buffalo_l``)
+    to the clean ``pack_dir`` so the path fix doesn't trigger a ~300MB
+    re-download. Best-effort: a failure just falls through to a fresh download."""
+    legacy = models_dir / "models" / _FACE_MODEL_NAME
+    if pack_dir.is_dir() or not legacy.is_dir() or legacy.resolve() == pack_dir.resolve():
+        return
+    import shutil
+
+    try:
+        pack_dir.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(legacy), str(pack_dir))
+        # Drop the now-empty intermediate "models" dir if nothing else uses it.
+        try:
+            legacy.parent.rmdir()
+        except OSError:
+            pass
+    except OSError:
+        pass
 
 
 _shared_app: Any = None
@@ -66,19 +123,33 @@ def _get_shared_face_analysis(
                 # (no providers selected) stays empty.
                 stripped = list(DEFAULT_ONNX_PROVIDERS)
             eps = stripped
-            # Pin the download/cache root to the project models dir — otherwise
-            # insightface defaults to ~/.insightface and the buffalo_l pack lands
-            # outside the chosen models folder (where every other model lives).
-            # insightface forces a "models" subdir under root, so the pack ends up
-            # at <models_dir>/models/buffalo_l; passing get_models_dir() (not its
-            # parent) keeps it inside the chosen dir even under SINNER2_MODELS_DIR.
-            app = FaceAnalysis(
-                name=_FACE_MODEL_NAME,
-                root=str(get_models_dir()),
-                providers=eps,
-                provider_options=build_provider_options(eps),
-            )
-            app.prepare(ctx_id=0, det_size=_normalize_det_size(det_size))
+            # insightface ALWAYS stores the pack at <root>/models/<name> (the
+            # "models" segment is hardcoded). The models dir is normally named
+            # "models", so passing its PARENT as root lands the pack cleanly at
+            # <models_dir>/buffalo_l instead of the doubled
+            # <models_dir>/models/buffalo_l. For a custom models dir NOT named
+            # "models" we keep the dir itself as root (nested, but still inside
+            # the chosen folder — the parent could place it outside).
+            root, pack_dir = _buffalo_root_and_pack(get_models_dir())
+            _migrate_legacy_buffalo_pack(get_models_dir(), pack_dir)
+            # First run downloads the pack (~300MB) from inside insightface with
+            # no progress hook. Flag start/end so the GUI can show a busy
+            # indicator; the empty message in `finally` clears it on success or
+            # failure alike.
+            pack_present = pack_dir.is_dir()
+            if not pack_present:
+                _notify_load("Downloading face-analysis models (~300 MB)…")
+            try:
+                app = FaceAnalysis(
+                    name=_FACE_MODEL_NAME,
+                    root=str(root),
+                    providers=eps,
+                    provider_options=build_provider_options(eps),
+                )
+                app.prepare(ctx_id=0, det_size=_normalize_det_size(det_size))
+            finally:
+                if not pack_present:
+                    _notify_load("")
             _shared_app = app
         return _shared_app
 
