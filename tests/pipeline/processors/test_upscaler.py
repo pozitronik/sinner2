@@ -97,6 +97,20 @@ class TestModelRegistry:
             assert model in _MODEL_SPECS
             assert model_filename(model)  # non-empty
 
+    def test_rrdb_family_defaults_to_tiling(self):
+        # RRDB nets can't run whole-frame at FullHD (VRAM blowout → system-
+        # memory fallback, measured 34-69 s/frame); tile=0 falls back to the
+        # spec's 256 default — facefusion's own tiling size for them.
+        for m in (
+            UpscalerModel.X4PLUS,
+            UpscalerModel.X2PLUS,
+            UpscalerModel.REAL_ESRGAN_X4_FP16,
+            UpscalerModel.REAL_ESRGAN_X2_FP16,
+        ):
+            assert _MODEL_SPECS[m].default_tile == 256
+        assert _MODEL_SPECS[UpscalerModel.GENERAL_X4V3].default_tile == 0
+        assert _MODEL_SPECS[UpscalerModel.SPAN_X4].default_tile == 0
+
     def test_fp16_exports_are_onnx_with_right_scales(self):
         # facefusion's upstream-validated fp16 exports: fp32 I/O contract
         # (same as every other ONNX upscaler), fp16 weights inside.

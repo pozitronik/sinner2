@@ -54,6 +54,12 @@ class _ModelSpec:
     build: Callable[[], Any] | None = None  # torch arch builder; None for onnx
     align: int = 1  # input H,W must be a multiple of this (SwinIR window = 8)
     fp16_ok: bool = True  # SwinIR's attention errors in half precision → False
+    # Tile size used when the user leaves Tile at 0 ("whole frame"). The RRDB
+    # (Real-ESRGAN plus-family) nets CANNOT run whole-frame at FullHD — the
+    # activations blow past VRAM and CUDA falls back to system memory (measured
+    # 34-69 s/frame vs seconds tiled). facefusion always tiles them at 256.
+    # 0 = whole frame genuinely works (compact/windowed nets).
+    default_tile: int = 0
 
 
 def _build_srvgg_x4v3() -> Any:
@@ -93,10 +99,12 @@ _MODEL_SPECS: dict[UpscalerModel, _ModelSpec] = {
         "realesr-general-x4v3.pth", 4, "torch", _build_srvgg_x4v3
     ),
     UpscalerModel.X4PLUS: _ModelSpec(
-        "RealESRGAN_x4plus.pth", 4, "torch", lambda: _build_rrdb(4)
+        "RealESRGAN_x4plus.pth", 4, "torch", lambda: _build_rrdb(4),
+        default_tile=256,
     ),
     UpscalerModel.X2PLUS: _ModelSpec(
-        "RealESRGAN_x2plus.pth", 2, "torch", lambda: _build_rrdb(2)
+        "RealESRGAN_x2plus.pth", 2, "torch", lambda: _build_rrdb(2),
+        default_tile=256,
     ),
     UpscalerModel.SWINIR_M: _ModelSpec(
         "swinir_realsr_m_x4.pth", 4, "torch", _build_swinir, align=8, fp16_ok=False
@@ -105,10 +113,10 @@ _MODEL_SPECS: dict[UpscalerModel, _ModelSpec] = {
     UpscalerModel.ULTRASHARP_X4: _ModelSpec("ultra_sharp_x4.onnx", 4, "onnx"),
     UpscalerModel.SPAN_X4: _ModelSpec("span_kendata_x4.onnx", 4, "onnx"),
     UpscalerModel.REAL_ESRGAN_X4_FP16: _ModelSpec(
-        "real_esrgan_x4_fp16.onnx", 4, "onnx"
+        "real_esrgan_x4_fp16.onnx", 4, "onnx", default_tile=256
     ),
     UpscalerModel.REAL_ESRGAN_X2_FP16: _ModelSpec(
-        "real_esrgan_x2_fp16.onnx", 2, "onnx"
+        "real_esrgan_x2_fp16.onnx", 2, "onnx", default_tile=256
     ),
 }
 
@@ -395,13 +403,18 @@ class Upscaler:
             self._model = _load_model(spec, device, self._fp16)
 
     def process(self, frame: Frame) -> Frame:
+        # User tile wins; 0 falls back to the model's default_tile — the RRDB
+        # nets can't run whole-frame at FullHD (VRAM blowout → sysmem fallback,
+        # measured at 34-69 s/frame), so "whole frame" silently meaning "30x
+        # slower" would be a footgun for them.
+        tile = self._params.tile or _MODEL_SPECS[self._params.model].default_tile
         if self._runtime == "onnx":
             if self._session is None:
                 raise RuntimeError("Upscaler.process called before setup()")
             with self._lock:
                 return _onnx_upscale(
                     self._session, frame, scale=self._scale,
-                    tile=self._params.tile, in_name=self._in_name,
+                    tile=tile, in_name=self._in_name,
                     out_name=self._out_name, fixed_size=self._onnx_fixed_size,
                 )
         model = self._model
@@ -411,7 +424,7 @@ class Upscaler:
             return _upscale(
                 model, frame,
                 scale=self._scale, device=self._device,
-                fp16=self._fp16, tile=self._params.tile, align=self._align,
+                fp16=self._fp16, tile=tile, align=self._align,
             )
 
     def cache_identity(self) -> str:
