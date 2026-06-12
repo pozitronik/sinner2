@@ -147,6 +147,21 @@ class TestLatestIndexAtOrBelow:
             buf.put(i, _frame())
         assert buf.latest_index_at_or_below(10) is None
 
+    def test_skips_invalidated_indices(self):
+        # An invalidated (tombstoned) index must not be offered as a fallback —
+        # get() would return None for it, stalling the playback fallback for a
+        # tick (audit rank 28). The next-lower valid index is the right answer.
+        buf, *_ = _mock_buffer()
+        for i in [3, 7, 12]:
+            buf.put(i, _frame())
+        buf.invalidate(12)
+        assert buf.latest_index_at_or_below(15) == 7
+        buf.invalidate(7)
+        assert buf.latest_index_at_or_below(15) == 3
+        # put() supersedes the tombstone — the index becomes a candidate again.
+        buf.put(12, _frame())
+        assert buf.latest_index_at_or_below(15) == 12
+
     def test_handles_out_of_order_puts(self):
         buf, *_ = _mock_buffer()
         for i in [10, 5, 20, 3, 15]:

@@ -150,9 +150,15 @@ class FrameBuffer:
         Backed by a bounded deque of recent put() indices; for windows
         larger than the deque cap (1024), older frames are forgotten and
         won't be candidates even if still in the store.
+
+        Tombstoned (invalidated) indices are excluded: get() answers None
+        for them, so offering one would stall the fallback for a tick.
         """
         with self._lock:
-            candidates = [i for i in self._recent_indices if i <= target]
+            candidates = [
+                i for i in self._recent_indices
+                if i <= target and i not in self._invalidated
+            ]
         return max(candidates) if candidates else None
 
     def invalidate_from(self, index: FrameIndex) -> None:
