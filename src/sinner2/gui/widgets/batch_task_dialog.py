@@ -228,19 +228,8 @@ class QBatchTaskDialog(QDialog):
         )
         self._occlusion_mask.toggled.connect(self._update_occlusion_rows)
         swap_form.addRow("Occlusion mask:", self._occlusion_mask)
-        self._occlusion_parser = QComboBox()
-        for value, label in (
-            ("bisenet", "BiSeNet (torch, sharper)"),
-            ("parsenet", "ParseNet (torch, GFPGAN default)"),
-            ("bisenet_onnx_34", "BiSeNet-34 (ONNX, parallel workers)"),
-            ("bisenet_onnx_18", "BiSeNet-18 (ONNX, parallel + faster)"),
-        ):
-            self._occlusion_parser.addItem(label, value)
-            if value == task.swapper_occlusion_parser:
-                self._occlusion_parser.setCurrentIndex(
-                    self._occlusion_parser.count() - 1
-                )
-        swap_form.addRow("Mask parser:", self._occlusion_parser)
+        # The mode comes FIRST in the form — it decides which of the two
+        # dependent rows below it (parser / occluder) apply.
         self._occlusion_mode = QComboBox()
         for value, label in (
             ("region", "Region (face parser)"),
@@ -256,6 +245,19 @@ class QBatchTaskDialog(QDialog):
             self._update_occlusion_rows
         )
         swap_form.addRow("Mask source:", self._occlusion_mode)
+        self._occlusion_parser = QComboBox()
+        for value, label in (
+            ("bisenet", "BiSeNet (torch, sharper)"),
+            ("parsenet", "ParseNet (torch, GFPGAN default)"),
+            ("bisenet_onnx_34", "BiSeNet-34 (ONNX, parallel workers)"),
+            ("bisenet_onnx_18", "BiSeNet-18 (ONNX, parallel + faster)"),
+        ):
+            self._occlusion_parser.addItem(label, value)
+            if value == task.swapper_occlusion_parser:
+                self._occlusion_parser.setCurrentIndex(
+                    self._occlusion_parser.count() - 1
+                )
+        swap_form.addRow("Mask parser:", self._occlusion_parser)
         self._occluder_model = QComboBox()
         for value, label in (
             ("xseg_1", "XSeg 1"),

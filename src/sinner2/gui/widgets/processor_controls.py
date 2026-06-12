@@ -290,20 +290,8 @@ class QProcessorControls(QWidget):
         self._occlusion_mask.toggled.connect(self.configChanged)
         self._occlusion_mask.toggled.connect(self._update_occlusion_rows)
         swapper_form.addRow("Occlusion mask", self._occlusion_mask)
-        self._occlusion_parser = QComboBox()
-        for value, label in _OCCLUSION_PARSERS:
-            self._occlusion_parser.addItem(label, value)
-            if value == swapper_defaults.occlusion_parser.value:
-                self._occlusion_parser.setCurrentIndex(
-                    self._occlusion_parser.count() - 1
-                )
-        self._occlusion_parser.setToolTip(
-            "Face parser for the occlusion mask. BiSeNet (the academic\n"
-            "face-parser) tends to give sharper boundaries; ParseNet is the\n"
-            "one GFPGAN/CodeFormer use. Try both. Each downloads on first use."
-        )
-        self._occlusion_parser.currentIndexChanged.connect(self.configChanged)
-        swapper_form.addRow("Mask parser", self._occlusion_parser)
+        # The mode comes FIRST in the form — it decides which of the two
+        # dependent rows below it (parser / occluder) apply.
         self._occlusion_mode = QComboBox()
         for value, label in _OCCLUSION_MODES:
             self._occlusion_mode.addItem(label, value)
@@ -323,6 +311,20 @@ class QProcessorControls(QWidget):
             self._update_occlusion_rows
         )
         swapper_form.addRow("Mask source", self._occlusion_mode)
+        self._occlusion_parser = QComboBox()
+        for value, label in _OCCLUSION_PARSERS:
+            self._occlusion_parser.addItem(label, value)
+            if value == swapper_defaults.occlusion_parser.value:
+                self._occlusion_parser.setCurrentIndex(
+                    self._occlusion_parser.count() - 1
+                )
+        self._occlusion_parser.setToolTip(
+            "Face parser for the occlusion mask. BiSeNet (the academic\n"
+            "face-parser) tends to give sharper boundaries; ParseNet is the\n"
+            "one GFPGAN/CodeFormer use. Try both. Each downloads on first use."
+        )
+        self._occlusion_parser.currentIndexChanged.connect(self.configChanged)
+        swapper_form.addRow("Mask parser", self._occlusion_parser)
         self._occluder_model = QComboBox()
         for value, label in _OCCLUDER_MODELS:
             self._occluder_model.addItem(label, value)
