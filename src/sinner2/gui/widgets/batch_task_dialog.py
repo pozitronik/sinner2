@@ -236,6 +236,31 @@ class QBatchTaskDialog(QDialog):
                     self._occlusion_parser.count() - 1
                 )
         swap_form.addRow("Mask parser:", self._occlusion_parser)
+        self._occlusion_mode = QComboBox()
+        for value, label in (
+            ("region", "Region (face parser)"),
+            ("occluder", "Occluder (XSeg — sees hands/objects)"),
+            ("both", "Both (strictest)"),
+        ):
+            self._occlusion_mode.addItem(label, value)
+            if value == task.swapper_occlusion_mode:
+                self._occlusion_mode.setCurrentIndex(
+                    self._occlusion_mode.count() - 1
+                )
+        swap_form.addRow("Mask source:", self._occlusion_mode)
+        self._occluder_model = QComboBox()
+        for value, label in (
+            ("xseg_1", "XSeg 1"),
+            ("xseg_2", "XSeg 2"),
+            ("xseg_3", "XSeg 3"),
+            ("xseg_many", "XSeg all three (strictest, 3x cost)"),
+        ):
+            self._occluder_model.addItem(label, value)
+            if value == task.swapper_occluder_model:
+                self._occluder_model.setCurrentIndex(
+                    self._occluder_model.count() - 1
+                )
+        swap_form.addRow("Occluder:", self._occluder_model)
         self._swapper_workers = QSpinBox()
         self._swapper_workers.setRange(1, 16)
         self._swapper_workers.setValue(task.swapper_execution.workers)
@@ -576,7 +601,9 @@ class QBatchTaskDialog(QDialog):
                 "swapper_rotation_redetect": self._rotation_redetect.isChecked(),
                 "swapper_rotation_angle_source": self._rotation_source.currentData(),
                 "swapper_occlusion_mask": self._occlusion_mask.isChecked(),
+                "swapper_occlusion_mode": self._occlusion_mode.currentData(),
                 "swapper_occlusion_parser": self._occlusion_parser.currentData(),
+                "swapper_occluder_model": self._occluder_model.currentData(),
                 "enhancer_enabled": self._enhancer_box.isChecked(),
                 "enhancer_model": self._enhancer_model.currentData(),
                 "enhancer_upscale": self._upscale.value(),

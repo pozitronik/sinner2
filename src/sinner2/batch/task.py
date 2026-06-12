@@ -126,7 +126,9 @@ class BatchTask(SinnerBaseModel):
     swapper_rotation_redetect: bool = True
     swapper_rotation_angle_source: str = "pose"  # keypoints | pose
     swapper_occlusion_mask: bool = False
-    swapper_occlusion_parser: str = "bisenet"  # bisenet | parsenet
+    swapper_occlusion_mode: str = "region"  # region | occluder | both
+    swapper_occlusion_parser: str = "bisenet"  # a FaceParser value
+    swapper_occluder_model: str = "xseg_1"  # an OccluderModel value
     enhancer_enabled: bool = True
     enhancer_model: str = "gfpgan_onnx"  # an EnhancerModel value
     enhancer_upscale: int = 1

@@ -337,7 +337,7 @@ class TestModelDispatch:
                 return None
 
         monkeypatch.setattr(
-            face_swapper, "build_parser_masker", lambda *a, **k: _StubMasker()
+            face_swapper, "build_occlusion_masker", lambda *a, **k: _StubMasker()
         )
         called: list = []
         monkeypatch.setattr(

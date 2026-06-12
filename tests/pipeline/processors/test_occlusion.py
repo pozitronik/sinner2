@@ -231,6 +231,223 @@ class TestBuildParserMasker:
         }
 
 
+class _XsegSpySession:
+    """Records the input blob; returns a constant occlusion probability map
+    with an 'occluded' low-probability corner. Output shaped (1, 256, 256, 1)
+    — facefusion indexes it [0][0]... [0] here, then clips/resizes."""
+
+    def __init__(self, value: float = 1.0, low_corner: bool = True) -> None:
+        self.blobs: list[np.ndarray] = []
+        self._value = value
+        self._low_corner = low_corner
+
+    def get_inputs(self):
+        return [SimpleNamespace(name="input")]
+
+    def get_outputs(self):
+        return [SimpleNamespace(name="output")]
+
+    def run(self, _names, feeds):
+        blob = feeds["input"]
+        self.blobs.append(blob)
+        mask = np.full((256, 256, 1), self._value, np.float32)
+        if self._low_corner:
+            mask[:64, :64] = 0.0  # an occluder in the top-left corner
+        return [mask[None]]
+
+
+class TestXsegOccluderMasker:
+    def _masker(self, monkeypatch, sessions):
+        from sinner2.pipeline import model_cache
+        from sinner2.pipeline.processors.occlusion import (
+            OccluderModel,
+            XsegOccluderMasker,
+        )
+
+        it = iter(sessions)
+        monkeypatch.setattr(
+            model_cache, "get_onnx_session", lambda *a, **k: next(it)
+        )
+        model = (
+            OccluderModel.XSEG_MANY if len(sessions) > 1 else OccluderModel.XSEG_1
+        )
+        m = XsegOccluderMasker(model)
+        m.setup()
+        return m
+
+    def test_thread_safe(self):
+        from sinner2.pipeline.processors.occlusion import XsegOccluderMasker
+
+        assert XsegOccluderMasker.thread_safe is True
+
+    def test_preprocessing_contract(self, monkeypatch):
+        # facefusion verbatim: resize to 256, NHWC, BGR as-is, float32/255.
+        session = _XsegSpySession()
+        m = self._masker(monkeypatch, [session])
+        aligned = np.zeros((512, 512, 3), np.uint8)
+        aligned[:, :, 0] = 255  # pure blue in BGR — must stay channel 0
+        m.face_mask(aligned)
+        blob = session.blobs[0]
+        assert blob.shape == (1, 256, 256, 3)
+        assert blob.dtype == np.float32
+        assert np.isclose(blob[0, 0, 0, 0], 1.0)  # blue / 255 in place (no flip)
+        assert np.isclose(blob[0, 0, 0, 2], 0.0)
+
+    def test_mask_resized_and_hardened(self, monkeypatch):
+        m = self._masker(monkeypatch, [_XsegSpySession()])
+        mask = m.face_mask(np.zeros((512, 512, 3), np.uint8))
+        assert mask.shape == (512, 512)
+        # Unoccluded area → 1.0 after the (clip(0.5,1)-0.5)*2 hardening;
+        # the occluded corner → 0.0 (its blurred tail clipped at 0.5).
+        assert mask[400, 400] == pytest.approx(1.0)
+        assert mask[10, 10] == pytest.approx(0.0)
+
+    def test_many_min_combines_all_three(self, monkeypatch):
+        # xseg_many runs all three sessions and takes the per-pixel minimum:
+        # one model flagging an occluder is enough to keep the original.
+        sessions = [
+            _XsegSpySession(low_corner=False),
+            _XsegSpySession(low_corner=True),   # only this one sees the hand
+            _XsegSpySession(low_corner=False),
+        ]
+        m = self._masker(monkeypatch, sessions)
+        mask = m.face_mask(np.zeros((512, 512, 3), np.uint8))
+        assert all(len(s.blobs) == 1 for s in sessions)
+        assert mask[10, 10] == pytest.approx(0.0)   # min wins
+        assert mask[400, 400] == pytest.approx(1.0)
+
+    def test_release_evicts_every_session(self, monkeypatch):
+        from sinner2.pipeline import model_cache
+
+        m = self._masker(
+            monkeypatch,
+            [_XsegSpySession(), _XsegSpySession(), _XsegSpySession()],
+        )
+        evicted: list[str] = []
+        monkeypatch.setattr(
+            model_cache, "release_onnx_session",
+            lambda name, providers=None: evicted.append(name),
+        )
+        m.release()
+        assert evicted == ["xseg_1.onnx", "xseg_2.onnx", "xseg_3.onnx"]
+
+    def test_face_mask_before_setup_raises(self):
+        from sinner2.pipeline.processors.occlusion import XsegOccluderMasker
+
+        with pytest.raises(RuntimeError, match="before setup"):
+            XsegOccluderMasker().face_mask(np.zeros((512, 512, 3), np.uint8))
+
+
+class TestCombinedMasker:
+    class _Const:
+        def __init__(self, value: float, thread_safe: bool = True) -> None:
+            self._v = value
+            self.thread_safe = thread_safe
+            self.setups = 0
+            self.releases = 0
+
+        def setup(self):
+            self.setups += 1
+
+        def face_mask(self, _a):
+            return np.full((512, 512), self._v, np.float32)
+
+        def release(self):
+            self.releases += 1
+
+    def test_min_combination_and_lifecycle(self):
+        from sinner2.pipeline.processors.occlusion import CombinedMasker
+
+        a, b = self._Const(0.8), self._Const(0.3)
+        c = CombinedMasker([a, b])
+        c.setup()
+        mask = c.face_mask(np.zeros((512, 512, 3), np.uint8))
+        assert mask[0, 0] == pytest.approx(0.3)  # min of the parts
+        c.release()
+        assert (a.setups, b.setups, a.releases, b.releases) == (1, 1, 1, 1)
+
+    def test_thread_safe_only_when_all_parts_are(self):
+        from sinner2.pipeline.processors.occlusion import CombinedMasker
+
+        assert CombinedMasker([self._Const(1), self._Const(1)]).thread_safe
+        assert not CombinedMasker(
+            [self._Const(1), self._Const(1, thread_safe=False)]
+        ).thread_safe
+
+
+class TestBuildOcclusionMasker:
+    def test_region_builds_parser_only(self):
+        from sinner2.pipeline.processors.occlusion import (
+            FaceParser,
+            OccluderModel,
+            OcclusionMaskMode,
+            OnnxParserMasker,
+            build_occlusion_masker,
+        )
+
+        m = build_occlusion_masker(
+            OcclusionMaskMode.REGION, FaceParser.BISENET_ONNX_34,
+            OccluderModel.XSEG_1,
+        )
+        assert isinstance(m, OnnxParserMasker)
+
+    def test_occluder_builds_xseg_only(self):
+        from sinner2.pipeline.processors.occlusion import (
+            FaceParser,
+            OccluderModel,
+            OcclusionMaskMode,
+            XsegOccluderMasker,
+            build_occlusion_masker,
+        )
+
+        m = build_occlusion_masker(
+            OcclusionMaskMode.OCCLUDER, FaceParser.BISENET,
+            OccluderModel.XSEG_2,
+        )
+        assert isinstance(m, XsegOccluderMasker)
+        assert m._files == ["xseg_2.onnx"]  # noqa: SLF001
+
+    def test_both_builds_combined(self):
+        from sinner2.pipeline.processors.occlusion import (
+            CombinedMasker,
+            FaceParser,
+            OccluderModel,
+            OcclusionMaskMode,
+            build_occlusion_masker,
+        )
+
+        m = build_occlusion_masker(
+            OcclusionMaskMode.BOTH, FaceParser.BISENET_ONNX_18,
+            OccluderModel.XSEG_MANY,
+        )
+        assert isinstance(m, CombinedMasker)
+        assert m.thread_safe is True  # ONNX parser + xseg → both lock-free
+
+    def test_both_with_torch_parser_not_thread_safe(self):
+        from sinner2.pipeline.processors.occlusion import (
+            FaceParser,
+            OccluderModel,
+            OcclusionMaskMode,
+            build_occlusion_masker,
+        )
+
+        m = build_occlusion_masker(
+            OcclusionMaskMode.BOTH, FaceParser.BISENET, OccluderModel.XSEG_1,
+        )
+        assert m.thread_safe is False  # torch parser serializes the combo
+
+    def test_occluder_model_files(self):
+        from sinner2.pipeline.processors.occlusion import (
+            OccluderModel,
+            occluder_model_files,
+        )
+
+        assert occluder_model_files(OccluderModel.XSEG_1) == ["xseg_1.onnx"]
+        assert occluder_model_files(OccluderModel.XSEG_MANY) == [
+            "xseg_1.onnx", "xseg_2.onnx", "xseg_3.onnx",
+        ]
+
+
 class TestRelease:
     def test_release_frees_cuda_and_nulls_model(self, monkeypatch):
         from unittest.mock import MagicMock

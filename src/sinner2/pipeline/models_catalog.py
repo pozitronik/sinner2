@@ -135,6 +135,15 @@ MODEL_CATALOG: dict[str, ModelInfo] = {
     "bisenet_resnet_18.onnx": _e(
         "bisenet_resnet_18.onnx", "BiSeNet-18 (ONNX)", _C.MASK_PARSER,
         "Lighter ONNX face parser — parallel masking, faster.", 50),
+    "xseg_1.onnx": _e(
+        "xseg_1.onnx", "XSeg occluder 1", _C.MASK_PARSER,
+        "Occluder segmentation — masks hands/objects over the face.", 67),
+    "xseg_2.onnx": _e(
+        "xseg_2.onnx", "XSeg occluder 2", _C.MASK_PARSER,
+        "Occluder segmentation — alternative XSeg training.", 67),
+    "xseg_3.onnx": _e(
+        "xseg_3.onnx", "XSeg occluder 3", _C.MASK_PARSER,
+        "Occluder segmentation — alternative XSeg training.", 67),
 }
 
 

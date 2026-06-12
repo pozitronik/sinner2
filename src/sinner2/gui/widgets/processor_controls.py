@@ -32,7 +32,11 @@ from sinner2.pipeline.processors.face_enhancer import (
     EnhancerModel,
     FaceEnhancerParams,
 )
-from sinner2.pipeline.processors.occlusion import FaceParser
+from sinner2.pipeline.processors.occlusion import (
+    FaceParser,
+    OccluderModel,
+    OcclusionMaskMode,
+)
 from sinner2.pipeline.processors.upscaler import (
     UpscalerModel,
     UpscalerParams,
@@ -133,6 +137,19 @@ _OCCLUSION_PARSERS: list[tuple[str, str]] = [
     (FaceParser.PARSENET.value, "ParseNet (torch, GFPGAN default)"),
     (FaceParser.BISENET_ONNX_34.value, "BiSeNet-34 (ONNX, parallel workers)"),
     (FaceParser.BISENET_ONNX_18.value, "BiSeNet-18 (ONNX, parallel + faster)"),
+]
+
+_OCCLUSION_MODES: list[tuple[str, str]] = [
+    (OcclusionMaskMode.REGION.value, "Region (face parser)"),
+    (OcclusionMaskMode.OCCLUDER.value, "Occluder (XSeg — sees hands/objects)"),
+    (OcclusionMaskMode.BOTH.value, "Both (strictest)"),
+]
+
+_OCCLUDER_MODELS: list[tuple[str, str]] = [
+    (OccluderModel.XSEG_1.value, "XSeg 1"),
+    (OccluderModel.XSEG_2.value, "XSeg 2"),
+    (OccluderModel.XSEG_3.value, "XSeg 3"),
+    (OccluderModel.XSEG_MANY.value, "XSeg all three (strictest, 3x cost)"),
 ]
 
 
@@ -280,6 +297,37 @@ class QProcessorControls(QWidget):
         )
         self._occlusion_parser.currentIndexChanged.connect(self.configChanged)
         swapper_form.addRow("Mask parser", self._occlusion_parser)
+        self._occlusion_mode = QComboBox()
+        for value, label in _OCCLUSION_MODES:
+            self._occlusion_mode.addItem(label, value)
+            if value == swapper_defaults.occlusion_mode.value:
+                self._occlusion_mode.setCurrentIndex(
+                    self._occlusion_mode.count() - 1
+                )
+        self._occlusion_mode.setToolTip(
+            "What builds the mask. Region: face-parser classes (hair/glasses/\n"
+            "hats keep the original, but a hand over the cheek parses as skin\n"
+            "and gets swapped over). Occluder: XSeg segmentation of the\n"
+            "VISIBLE face — hands, mics, any object in front stays original.\n"
+            "Both: strictest (facial region AND unoccluded)."
+        )
+        self._occlusion_mode.currentIndexChanged.connect(self.configChanged)
+        swapper_form.addRow("Mask source", self._occlusion_mode)
+        self._occluder_model = QComboBox()
+        for value, label in _OCCLUDER_MODELS:
+            self._occluder_model.addItem(label, value)
+            if value == swapper_defaults.occluder_model.value:
+                self._occluder_model.setCurrentIndex(
+                    self._occluder_model.count() - 1
+                )
+        self._occluder_model.setToolTip(
+            "Occluder model (used by Occluder / Both). The three XSeg\n"
+            "trainings differ slightly per footage — try them; 'all three'\n"
+            "min-combines them (strictest, 3x inference). ~67MB each,\n"
+            "downloads on first use."
+        )
+        self._occluder_model.currentIndexChanged.connect(self.configChanged)
+        swapper_form.addRow("Occluder", self._occluder_model)
 
         # ONNX execution providers — multi-select for the swapper + analyser
         # (both ONNX). Order matters: ORT tries providers in the order listed,
@@ -1002,7 +1050,9 @@ class QProcessorControls(QWidget):
             rotation_redetect=self._rotation_redetect.isChecked(),
             rotation_angle_source=self._rotation_source.currentData(),
             occlusion_mask=self._occlusion_mask.isChecked(),
+            occlusion_mode=self._occlusion_mode.currentData(),
             occlusion_parser=self._occlusion_parser.currentData(),
+            occluder_model=self._occluder_model.currentData(),
         )
 
     def swapper_model(self) -> str:
@@ -1341,7 +1391,9 @@ class QProcessorControls(QWidget):
         swapper_fast_paste: bool | None = None,
         swapper_target_sex: str | None,
         swapper_occlusion_mask: bool | None,
+        swapper_occlusion_mode: str | None = None,
         swapper_occlusion_parser: str | None,
+        swapper_occluder_model: str | None = None,
         swapper_rotation_compensation: bool | None,
         swapper_rotation_threshold_deg: int | None,
         swapper_rotation_redetect: bool | None,
@@ -1386,7 +1438,9 @@ class QProcessorControls(QWidget):
             self._fast_paste,
             self._target_sex,
             self._occlusion_mask,
+            self._occlusion_mode,
             self._occlusion_parser,
+            self._occluder_model,
             self._rotation_enabled,
             self._rotation_threshold,
             self._rotation_redetect,
@@ -1447,6 +1501,16 @@ class QProcessorControls(QWidget):
                 for i in range(self._occlusion_parser.count()):
                     if self._occlusion_parser.itemData(i) == swapper_occlusion_parser:
                         self._occlusion_parser.setCurrentIndex(i)
+                        break
+            if swapper_occlusion_mode is not None:
+                for i in range(self._occlusion_mode.count()):
+                    if self._occlusion_mode.itemData(i) == swapper_occlusion_mode:
+                        self._occlusion_mode.setCurrentIndex(i)
+                        break
+            if swapper_occluder_model is not None:
+                for i in range(self._occluder_model.count()):
+                    if self._occluder_model.itemData(i) == swapper_occluder_model:
+                        self._occluder_model.setCurrentIndex(i)
                         break
             if swapper_rotation_compensation is not None:
                 self._rotation_enabled.setChecked(swapper_rotation_compensation)

@@ -70,7 +70,11 @@ from sinner2.pipeline.processors.face_swapper import (
     SwapperModel,
     TargetSex,
 )
-from sinner2.pipeline.processors.occlusion import FaceParser
+from sinner2.pipeline.processors.occlusion import (
+    FaceParser,
+    OccluderModel,
+    OcclusionMaskMode,
+)
 from sinner2.pipeline.processors.upscaler import (
     Upscaler,
     UpscalerModel,
@@ -366,7 +370,9 @@ class BatchDriver:
                     task.swapper_rotation_angle_source
                 ),
                 occlusion_mask=task.swapper_occlusion_mask,
+                occlusion_mode=OcclusionMaskMode(task.swapper_occlusion_mode),
                 occlusion_parser=FaceParser(task.swapper_occlusion_parser),
+                occluder_model=OccluderModel(task.swapper_occluder_model),
             )
             providers = list(task.swapper_execution.providers)
             stages.append(StageSpec(

@@ -68,6 +68,51 @@ _ONNX_PARSER_FILES: dict[FaceParser, str] = {
 }
 
 
+class OcclusionMaskMode(str, Enum):
+    """What the occlusion mask is built from.
+
+    REGION   — face-parser classes (skin/brows/eyes/nose/mouth). Handles hair,
+               glasses, hats, boundaries — anything that is a PARSE CLASS — but
+               cannot see arbitrary occluders (a hand over the cheek parses as
+               skin). This is the original behaviour.
+    OCCLUDER — a dedicated occluder-segmentation model (XSeg / depth) that
+               segments the VISIBLE face surface, excluding any object in
+               front of it: hands, microphones, food, hair strands.
+    BOTH     — minimum of the two (strictest: a pixel must be facial-region
+               AND unoccluded to take the swap).
+    """
+
+    REGION = "region"
+    OCCLUDER = "occluder"
+    BOTH = "both"
+
+
+class OccluderModel(str, Enum):
+    """Occluder-segmentation backend (OCCLUDER / BOTH modes). The XSeg trio
+    are DeepFaceLab-lineage community models exported by facefusion — the
+    de-facto standard for arbitrary-object face occlusion. XSEG_MANY runs all
+    three and takes the minimum (strictest, 3x the inference cost)."""
+
+    XSEG_1 = "xseg_1"
+    XSEG_2 = "xseg_2"
+    XSEG_3 = "xseg_3"
+    XSEG_MANY = "xseg_many"
+
+
+_XSEG_FILES: dict[OccluderModel, list[str]] = {
+    OccluderModel.XSEG_1: ["xseg_1.onnx"],
+    OccluderModel.XSEG_2: ["xseg_2.onnx"],
+    OccluderModel.XSEG_3: ["xseg_3.onnx"],
+    OccluderModel.XSEG_MANY: ["xseg_1.onnx", "xseg_2.onnx", "xseg_3.onnx"],
+}
+
+
+def occluder_model_files(model: OccluderModel) -> list[str]:
+    """The weight file(s) an occluder choice needs (so the GUI can confirm +
+    download before enabling it). XSEG_MANY needs all three."""
+    return list(_XSEG_FILES[model])
+
+
 def parser_model_file(parser: FaceParser) -> str:
     """The weights filename for a parser (so the GUI can confirm + download it
     before enabling occlusion)."""
@@ -221,6 +266,94 @@ class OnnxParserMasker:
         release_onnx_session(self._model_file, self._providers)
 
 
+class XsegOccluderMasker:
+    """XSeg occluder segmentation → a visible-face mask (1 = unoccluded face,
+    0 = occluder/background). Thread-safe (shared ORT sessions).
+
+    Contract VERBATIM from facefusion's create_occlusion_mask: crop resized to
+    the model size (256), NHWC, BGR as-is, float32/255; output [0][0], clipped,
+    resized back; multiple models min-reduced; then the facefusion hardening
+    blur ((GaussianBlur(σ5).clip(0.5,1) - 0.5) * 2) which anchors the boundary
+    at probability 0.5 — kept inside this backend so the mask matches the look
+    facefusion validated."""
+
+    thread_safe = True
+    _MODEL_SIZE = 256
+
+    def __init__(
+        self, model: OccluderModel = OccluderModel.XSEG_1,
+        providers: list[str] | None = None,
+    ) -> None:
+        from sinner2.config.execution import DEFAULT_ONNX_PROVIDERS
+
+        self._files = list(_XSEG_FILES[model])
+        self._providers = (
+            list(providers) if providers else list(DEFAULT_ONNX_PROVIDERS)
+        )
+        self._sessions: list[Any] = []
+        self._io_names: list[tuple[str, str]] = []
+
+    def setup(self) -> None:
+        from sinner2.pipeline.model_cache import get_onnx_session
+
+        self._sessions = [
+            get_onnx_session(f, providers=self._providers) for f in self._files
+        ]
+        self._io_names = [
+            (s.get_inputs()[0].name, s.get_outputs()[0].name)
+            for s in self._sessions
+        ]
+
+    def face_mask(self, aligned_bgr: Frame) -> np.ndarray:
+        """Visible-face float mask for an aligned BGR crop (same surface as the
+        parser maskers, so the composite + combiner treat all maskers alike)."""
+        if not self._sessions:
+            raise RuntimeError("XsegOccluderMasker.face_mask called before setup()")
+        size = aligned_bgr.shape[0]
+        prep = cv2.resize(aligned_bgr, (self._MODEL_SIZE, self._MODEL_SIZE))
+        blob = np.expand_dims(prep, axis=0).astype(np.float32) / 255.0
+        masks = []
+        for session, (in_name, out_name) in zip(self._sessions, self._io_names):
+            out = session.run([out_name], {in_name: blob})[0][0]
+            mask = np.clip(out, 0.0, 1.0).astype(np.float32)
+            masks.append(cv2.resize(mask, (size, size)))
+        combined = np.minimum.reduce(masks)
+        return (
+            cv2.GaussianBlur(combined.clip(0.0, 1.0), (0, 0), 5).clip(0.5, 1.0)
+            - 0.5
+        ) * 2.0
+
+    def release(self) -> None:
+        from sinner2.pipeline.model_cache import release_onnx_session
+
+        self._sessions = []
+        self._io_names = []
+        for f in self._files:
+            release_onnx_session(f, self._providers)
+
+
+class CombinedMasker:
+    """Minimum of several maskers' masks (BOTH mode: facial-region AND
+    unoccluded). Thread-safe only if every part is."""
+
+    def __init__(self, maskers: list[Any]) -> None:
+        self._maskers = maskers
+        self.thread_safe = all(
+            getattr(m, "thread_safe", False) for m in maskers
+        )
+
+    def setup(self) -> None:
+        for m in self._maskers:
+            m.setup()
+
+    def face_mask(self, aligned_bgr: Frame) -> np.ndarray:
+        return np.minimum.reduce([m.face_mask(aligned_bgr) for m in self._maskers])
+
+    def release(self) -> None:
+        for m in self._maskers:
+            m.release()
+
+
 def build_parser_masker(
     parser: FaceParser,
     device: str = "auto",
@@ -232,6 +365,23 @@ def build_parser_masker(
     if parser in _ONNX_PARSER_FILES:
         return OnnxParserMasker(_ONNX_PARSER_FILES[parser], providers=providers)
     return OcclusionMasker(parser=parser, device=device)
+
+
+def build_occlusion_masker(
+    mode: OcclusionMaskMode,
+    parser: FaceParser,
+    occluder: OccluderModel,
+    device: str = "auto",
+    providers: list[str] | None = None,
+) -> Any:
+    """Compose the masker for an occlusion-mode choice: the region parser, the
+    occluder model, or the min-combination of both."""
+    maskers: list[Any] = []
+    if mode in (OcclusionMaskMode.REGION, OcclusionMaskMode.BOTH):
+        maskers.append(build_parser_masker(parser, device=device, providers=providers))
+    if mode in (OcclusionMaskMode.OCCLUDER, OcclusionMaskMode.BOTH):
+        maskers.append(XsegOccluderMasker(occluder, providers=providers))
+    return maskers[0] if len(maskers) == 1 else CombinedMasker(maskers)
 
 
 def apply_occlusion(

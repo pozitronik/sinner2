@@ -22,8 +22,10 @@ from sinner2.pipeline.processors.face_swapper_types import (
 )
 from sinner2.pipeline.processors.occlusion import (
     FaceParser,
+    OccluderModel,
+    OcclusionMaskMode,
     apply_occlusion,
-    build_parser_masker,
+    build_occlusion_masker,
 )
 from sinner2.pipeline.processors.rotation_compensation import (
     compute_roll,
@@ -101,14 +103,25 @@ class FaceSwapperParams(SinnerBaseModel):
         description="Measure roll from eye keypoints or the 3D pose estimate",
     )
     # ---- Occlusion-aware masking ----
-    # Mask the swap to the facial-skin region (BiSeNet parse) so hair, glasses,
-    # hats, and the neck/boundary keep the original. Output-affecting.
+    # Mask the swap to the facial-skin region (parser) and/or the visible
+    # (unoccluded) face surface (XSeg occluder). Output-affecting.
     occlusion_mask: bool = Field(
         default=False, description="Mask the swap to the real face region"
     )
+    occlusion_mode: OcclusionMaskMode = Field(
+        default=OcclusionMaskMode.REGION,
+        description="Mask source: region (face parser), occluder (XSeg — sees "
+        "hands/objects over the face), or both (strictest)",
+    )
     occlusion_parser: FaceParser = Field(
         default=FaceParser.BISENET,
-        description="Face parser for the mask: bisenet (accurate) or parsenet (fast)",
+        description="Face parser for the region mask: torch bisenet/parsenet "
+        "or the thread-safe ONNX exports",
+    )
+    occluder_model: OccluderModel = Field(
+        default=OccluderModel.XSEG_1,
+        description="Occluder model: xseg_1/2/3 or xseg_many (all three, "
+        "strictest)",
     )
 
 
@@ -250,10 +263,13 @@ class FaceSwapper:
             backend.prepare_source(source_img, self._source_face)
         self._swapper = backend
         if self._params.occlusion_mask:
-            # ONNX parsers share the swapper's EP profile; torch parsers
+            # ONNX maskers share the swapper's EP profile; torch parsers
             # resolve their own device ("auto" → CUDA when available).
-            self._masker = build_parser_masker(
-                self._params.occlusion_parser, providers=providers
+            self._masker = build_occlusion_masker(
+                self._params.occlusion_mode,
+                self._params.occlusion_parser,
+                self._params.occluder_model,
+                providers=providers,
             )
             self._masker.setup()
 

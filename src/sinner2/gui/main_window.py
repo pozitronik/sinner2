@@ -36,7 +36,11 @@ from sinner2.pipeline.processors.face_enhancer import (
     enhancer_onnx_model_file,
 )
 from sinner2.pipeline.processors.face_swapper import SwapperModel
-from sinner2.pipeline.processors.occlusion import parser_model_file
+from sinner2.pipeline.processors.occlusion import (
+    OcclusionMaskMode,
+    occluder_model_files,
+    parser_model_file,
+)
 from sinner2.pipeline.processors.swapper_models import (
     model_files as swapper_model_files,
 )
@@ -776,10 +780,16 @@ class SinnerMainWindow(QMainWindow):
             ):
                 self._processors.set_swapper_model(SwapperModel.INSWAPPER_128.value)
         swapper_cfg = self._processors.swapper_params()
-        if swapper_cfg.occlusion_mask and not ensure_models(
-            self, [parser_model_file(swapper_cfg.occlusion_parser)]
-        ):
-            self._processors.set_occlusion_checked(False)
+        if swapper_cfg.occlusion_mask:
+            # Collect every weight the selected mask mode needs: the parser
+            # for region/both, the occluder model(s) for occluder/both.
+            needed: list[str] = []
+            if swapper_cfg.occlusion_mode is not OcclusionMaskMode.OCCLUDER:
+                needed.append(parser_model_file(swapper_cfg.occlusion_parser))
+            if swapper_cfg.occlusion_mode is not OcclusionMaskMode.REGION:
+                needed.extend(occluder_model_files(swapper_cfg.occluder_model))
+            if not ensure_models(self, needed):
+                self._processors.set_occlusion_checked(False)
         # A detection-only detector (yoloface / scrfd) needs its weight; confirm
         # the download. Decline reverts to buffalo_l (the always-present pack).
         if swapper_cfg.detector is not DetectorModel.BUFFALO_L and not ensure_models(
@@ -1441,7 +1451,9 @@ class SinnerMainWindow(QMainWindow):
             swapper_rotation_redetect=self._settings.swapper_rotation_redetect,
             swapper_rotation_angle_source=self._settings.swapper_rotation_angle_source,
             swapper_occlusion_mask=self._settings.swapper_occlusion_mask,
+            swapper_occlusion_mode=self._settings.swapper_occlusion_mode,
             swapper_occlusion_parser=self._settings.swapper_occlusion_parser,
+            swapper_occluder_model=self._settings.swapper_occluder_model,
             enhancer_model=self._settings.enhancer_model,
             enhancer_upscale=self._settings.enhancer_upscale,
             enhancer_only_center_face=self._settings.enhancer_only_center_face,

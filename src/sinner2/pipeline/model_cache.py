@@ -81,6 +81,22 @@ MODEL_SOURCES: dict[str, str] = {
         "https://github.com/facefusion/facefusion-assets/releases/download/"
         "models-3.1.0/bisenet_resnet_18.onnx"
     ),
+    # XSeg occluder segmentation (DeepFaceLab-lineage, facefusion exports) —
+    # segments the VISIBLE face surface, excluding any object in front of it
+    # (hands, mics, food). Drives the occlusion "occluder"/"both" mask modes.
+    # Note xseg_3 lives on a different release tag than 1/2.
+    "xseg_1.onnx": (
+        "https://github.com/facefusion/facefusion-assets/releases/download/"
+        "models-3.1.0/xseg_1.onnx"
+    ),
+    "xseg_2.onnx": (
+        "https://github.com/facefusion/facefusion-assets/releases/download/"
+        "models-3.1.0/xseg_2.onnx"
+    ),
+    "xseg_3.onnx": (
+        "https://github.com/facefusion/facefusion-assets/releases/download/"
+        "models-3.2.0/xseg_3.onnx"
+    ),
     # CodeFormer face-restorer (ONNX, facefusion-assets). The `w` fidelity is a
     # scalar model input. ~377 MB.
     "codeformer.onnx": (
