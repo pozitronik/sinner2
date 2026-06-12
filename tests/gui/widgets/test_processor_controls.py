@@ -766,6 +766,57 @@ class TestFaceDetectorGroup:
         assert not widget._rotation_redetect.isEnabled()  # noqa: SLF001
         assert not widget._rotation_source.isEnabled()  # noqa: SLF001
 
+    def test_occlusion_subcontrols_follow_checkbox(self, widget):
+        widget._occlusion_mask.setChecked(False)  # noqa: SLF001
+        assert not widget._occlusion_mode.isEnabled()  # noqa: SLF001
+        assert not widget._occlusion_parser.isEnabled()  # noqa: SLF001
+        assert not widget._occluder_model.isEnabled()  # noqa: SLF001
+        widget._occlusion_mask.setChecked(True)  # noqa: SLF001
+        assert widget._occlusion_mode.isEnabled()  # noqa: SLF001
+        # Default mode is region → parser relevant, occluder not.
+        assert widget._occlusion_parser.isEnabled()  # noqa: SLF001
+        assert not widget._occluder_model.isEnabled()  # noqa: SLF001
+
+    def test_occlusion_mode_links_parser_and_occluder(self, widget):
+        from sinner2.pipeline.processors.occlusion import OcclusionMaskMode
+
+        widget._occlusion_mask.setChecked(True)  # noqa: SLF001
+
+        def set_mode(value: str) -> None:
+            combo = widget._occlusion_mode  # noqa: SLF001
+            combo.setCurrentIndex(combo.findData(value))
+
+        set_mode(OcclusionMaskMode.OCCLUDER.value)
+        assert not widget._occlusion_parser.isEnabled()  # noqa: SLF001
+        assert widget._occluder_model.isEnabled()  # noqa: SLF001
+        set_mode(OcclusionMaskMode.BOTH.value)
+        assert widget._occlusion_parser.isEnabled()  # noqa: SLF001
+        assert widget._occluder_model.isEnabled()  # noqa: SLF001
+        set_mode(OcclusionMaskMode.REGION.value)
+        assert widget._occlusion_parser.isEnabled()  # noqa: SLF001
+        assert not widget._occluder_model.isEnabled()  # noqa: SLF001
+
+    def test_fast_paste_greyed_for_generic_swappers(self, widget):
+        combo = widget._swapper_model  # noqa: SLF001
+        combo.setCurrentIndex(combo.findData("ghost_1_256"))
+        assert not widget._fast_paste.isEnabled()  # noqa: SLF001
+        combo.setCurrentIndex(combo.findData("inswapper_128"))
+        assert widget._fast_paste.isEnabled()  # noqa: SLF001
+
+    def test_enhancer_device_follows_gfpgan(self, widget):
+        combo = widget._enhancer_model  # noqa: SLF001
+        combo.setCurrentIndex(combo.findData("gfpgan"))
+        assert widget._enhancer_device.isEnabled()  # noqa: SLF001
+        combo.setCurrentIndex(combo.findData("gfpgan_onnx"))
+        assert not widget._enhancer_device.isEnabled()  # noqa: SLF001
+
+    def test_upscaler_device_greyed_for_onnx_models(self, widget):
+        combo = widget._upscaler_model  # noqa: SLF001
+        combo.setCurrentIndex(combo.findData("hat-x4"))  # ONNX
+        assert not widget._upscaler_device.isEnabled()  # noqa: SLF001
+        combo.setCurrentIndex(combo.findData("x4plus"))  # torch
+        assert widget._upscaler_device.isEnabled()  # noqa: SLF001
+
     def test_enabling_comparison_checks_overlay(self, widget):
         # The widget-level link: checking comparison checks the overlay box too.
         assert widget._overlay_enabled.isChecked() is False  # noqa: SLF001

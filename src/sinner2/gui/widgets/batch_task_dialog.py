@@ -144,6 +144,9 @@ class QBatchTaskDialog(QDialog):
             "Face-swap model. Non-default weights download on first run of the "
             "task."
         )
+        self._swapper_model.currentIndexChanged.connect(
+            self._update_swapper_model_rows
+        )
         swap_form.addRow("Model:", self._swapper_model)
         self._detection_interval = QSpinBox()
         self._detection_interval.setRange(1, 30)
@@ -194,6 +197,7 @@ class QBatchTaskDialog(QDialog):
         # Rotation compensation (experimental) — see the realtime panel tooltip.
         self._rotation_enabled = QCheckBox()
         self._rotation_enabled.setChecked(task.swapper_rotation_compensation)
+        self._rotation_enabled.toggled.connect(self._update_rotation_rows)
         self._rotation_enabled.setToolTip(
             "Experimental: upright faces tilted past the threshold before "
             "swapping, then composite back. Affects output."
@@ -222,6 +226,7 @@ class QBatchTaskDialog(QDialog):
             "Mask the swap to the real face region (hair/glasses/boundary keep "
             "the original). Parser model downloads on first batch run."
         )
+        self._occlusion_mask.toggled.connect(self._update_occlusion_rows)
         swap_form.addRow("Occlusion mask:", self._occlusion_mask)
         self._occlusion_parser = QComboBox()
         for value, label in (
@@ -247,6 +252,9 @@ class QBatchTaskDialog(QDialog):
                 self._occlusion_mode.setCurrentIndex(
                     self._occlusion_mode.count() - 1
                 )
+        self._occlusion_mode.currentIndexChanged.connect(
+            self._update_occlusion_rows
+        )
         swap_form.addRow("Mask source:", self._occlusion_mode)
         self._occluder_model = QComboBox()
         for value, label in (
@@ -548,17 +556,52 @@ class QBatchTaskDialog(QDialog):
         self._target_edit.textChanged.connect(self._refresh_scale_dims)
         self._refresh_scale_dims()  # initial probe for the task's target
         self._update_enhancer_rows()  # gray out the inactive model's knob
+        self._update_occlusion_rows()  # occlusion subknobs follow the checkbox
+        self._update_rotation_rows()  # rotation knobs follow the toggle
+        self._update_swapper_model_rows()  # fast-paste follows the swap model
 
     def _update_detector_rows(self) -> None:
         """Gray the gender filter for detection-only detectors (no .sex)."""
         self._target_sex.setEnabled(self._detector.currentData() == "buffalo_l")
 
     def _update_enhancer_rows(self) -> None:
-        """Enable only the knob the selected enhancer model uses — Upscale for
-        GFPGAN, Fidelity for CodeFormer; GPEN / RestoreFormer++ have neither."""
+        """Enable only the knobs the selected enhancer model uses — Upscale /
+        fp16 / torch device for GFPGAN, Fidelity for CodeFormer; the ONNX
+        restorers have none (they run on ORT EPs, not a torch device)."""
         model = self._enhancer_model.currentData()
-        self._upscale.setEnabled(model == "gfpgan")
+        is_gfpgan = model == "gfpgan"
+        self._upscale.setEnabled(is_gfpgan)
         self._enhancer_fidelity.setEnabled(model == "codeformer")
+        self._enhancer_fp16.setEnabled(is_gfpgan)
+        self._enhancer_device.setEnabled(is_gfpgan)
+
+    def _update_occlusion_rows(self) -> None:
+        """Link the occlusion sub-controls to the master checkbox and to each
+        other: all gray when the mask is off; the parser applies to region/
+        both, the occluder model to occluder/both."""
+        on = self._occlusion_mask.isChecked()
+        mode = self._occlusion_mode.currentData()
+        self._occlusion_mode.setEnabled(on)
+        self._occlusion_parser.setEnabled(on and mode != "occluder")
+        self._occluder_model.setEnabled(on and mode != "region")
+
+    def _update_rotation_rows(self) -> None:
+        """Gray the rotation knobs when rotation compensation is off."""
+        on = self._rotation_enabled.isChecked()
+        self._rotation_threshold.setEnabled(on)
+        self._rotation_redetect.setEnabled(on)
+        self._rotation_source.setEnabled(on)
+
+    def _update_swapper_model_rows(self) -> None:
+        """Gray fast-paste for the 256px swappers (always fast-pasted); the
+        toggle only applies to inswapper / reswapper."""
+        from sinner2.pipeline.processors.swapper_models import (
+            SwapperModel,
+            is_insightface_model,
+        )
+
+        model = SwapperModel(self._swapper_model.currentData())
+        self._fast_paste.setEnabled(is_insightface_model(model))
 
     @classmethod
     def from_task(

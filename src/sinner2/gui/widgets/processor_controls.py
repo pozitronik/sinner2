@@ -37,9 +37,11 @@ from sinner2.pipeline.processors.occlusion import (
     OccluderModel,
     OcclusionMaskMode,
 )
+from sinner2.pipeline.processors.swapper_models import is_insightface_model
 from sinner2.pipeline.processors.upscaler import (
     UpscalerModel,
     UpscalerParams,
+    model_runtime,
     model_supports_fp16,
 )
 from sinner2.pipeline.detectors import DetectorModel
@@ -238,6 +240,9 @@ class QProcessorControls(QWidget):
             "SimSwap is CC-BY-NC (non-commercial)."
         )
         self._swapper_model.currentIndexChanged.connect(self.configChanged)
+        self._swapper_model.currentIndexChanged.connect(
+            self._update_swapper_model_rows
+        )
         swapper_form.addRow("Model", self._swapper_model)
         self._many_faces = QCheckBox()
         self._many_faces.setChecked(swapper_defaults.many_faces)
@@ -283,6 +288,7 @@ class QProcessorControls(QWidget):
             "output; the parser model downloads on first enable."
         )
         self._occlusion_mask.toggled.connect(self.configChanged)
+        self._occlusion_mask.toggled.connect(self._update_occlusion_rows)
         swapper_form.addRow("Occlusion mask", self._occlusion_mask)
         self._occlusion_parser = QComboBox()
         for value, label in _OCCLUSION_PARSERS:
@@ -313,6 +319,9 @@ class QProcessorControls(QWidget):
             "Both: strictest (facial region AND unoccluded)."
         )
         self._occlusion_mode.currentIndexChanged.connect(self.configChanged)
+        self._occlusion_mode.currentIndexChanged.connect(
+            self._update_occlusion_rows
+        )
         swapper_form.addRow("Mask source", self._occlusion_mode)
         self._occluder_model = QComboBox()
         for value, label in _OCCLUDER_MODELS:
@@ -616,6 +625,8 @@ class QProcessorControls(QWidget):
         face_form.addRow("Show orig/swapped", self._comparison_enabled)
         self._face_box = face_box
         self._update_rotation_rows()  # reflect the default rotation-on state
+        self._update_occlusion_rows()  # occlusion subknobs follow the checkbox
+        self._update_swapper_model_rows()  # fast-paste follows the swap model
         self._update_detector_rows()  # gray gender filter for detection-only
         self._update_upscaler_rows()  # gray fp16 for ONNX upscalers
 
@@ -1086,6 +1097,7 @@ class QProcessorControls(QWidget):
         self._occlusion_mask.blockSignals(True)
         self._occlusion_mask.setChecked(bool(on))
         self._occlusion_mask.blockSignals(False)
+        self._update_occlusion_rows()  # blocked signal → refresh manually
 
     def _update_enhancer_model_rows(self) -> None:
         """Enable only the knob that applies to the selected enhancer model —
@@ -1095,8 +1107,10 @@ class QProcessorControls(QWidget):
         is_gfpgan = model == EnhancerModel.GFPGAN.value
         self._upscale.setEnabled(is_gfpgan)
         self._enhancer_fidelity.setEnabled(model == EnhancerModel.CODEFORMER.value)
-        # fp16 is a GFPGAN-only knob (the ONNX restorers don't use it).
+        # fp16 + torch device are GFPGAN-only knobs (the ONNX restorers use
+        # the swapper's EP providers, not a torch device).
         self._enhancer_fp16.setEnabled(is_gfpgan)
+        self._enhancer_device.setEnabled(is_gfpgan)
 
     def enhancer_model(self) -> str:
         return self._enhancer_model.currentData()
@@ -1190,13 +1204,34 @@ class QProcessorControls(QWidget):
         full_pack = self._detector.currentData() == DetectorModel.BUFFALO_L.value
         self._target_sex.setEnabled(full_pack)
 
+    def _update_occlusion_rows(self) -> None:
+        """Link the occlusion sub-controls to the master checkbox and to each
+        other: everything grays out when the mask is off; the parser applies
+        only to region/both, the occluder model only to occluder/both."""
+        on = self._occlusion_mask.isChecked()
+        mode = self._occlusion_mode.currentData()
+        self._occlusion_mode.setEnabled(on)
+        self._occlusion_parser.setEnabled(
+            on and mode != OcclusionMaskMode.OCCLUDER.value
+        )
+        self._occluder_model.setEnabled(
+            on and mode != OcclusionMaskMode.REGION.value
+        )
+
+    def _update_swapper_model_rows(self) -> None:
+        """Gray the fast-paste knob for the 256px swappers — they ALWAYS blend
+        through the fast ROI paste; the toggle only applies to the insightface
+        models (inswapper / reswapper), whose original blend it replaces."""
+        model = SwapperModel(self._swapper_model.currentData())
+        self._fast_paste.setEnabled(is_insightface_model(model))
+
     def _update_upscaler_rows(self) -> None:
         """Gray the fp16 knob for models it doesn't apply to — the ONNX
-        upscalers (no effect) and SwinIR (its attention can't run in half)."""
-        supported = model_supports_fp16(
-            UpscalerModel(self._upscaler_model.currentData())
-        )
-        self._upscaler_fp16.setEnabled(supported)
+        upscalers (no effect) and SwinIR (its attention can't run in half) —
+        and the torch device for the ONNX upscalers (they run on ORT EPs)."""
+        model = UpscalerModel(self._upscaler_model.currentData())
+        self._upscaler_fp16.setEnabled(model_supports_fp16(model))
+        self._upscaler_device.setEnabled(model_runtime(model) == "torch")
 
     def _couple_comparison_to_overlay(self, on: bool) -> None:
         """The comparison thumbnails draw on the detection overlay, so enabling
@@ -1629,4 +1664,6 @@ class QProcessorControls(QWidget):
         self._update_rotation_rows()  # reflect a restored rotation-compensation state
         self._update_detector_rows()  # reflect a restored detector choice
         self._update_upscaler_rows()  # reflect a restored upscaler model
+        self._update_occlusion_rows()  # reflect restored occlusion mask/mode
+        self._update_swapper_model_rows()  # reflect a restored swap model
         self.configChanged.emit()

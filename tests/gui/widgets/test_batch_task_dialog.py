@@ -36,6 +36,55 @@ class TestProviderFloor:
         assert dlg.to_task().swapper_execution.providers == ["CPUExecutionProvider"]
 
 
+class TestDependentRows:
+    """Dependent controls' accessibility is linked: occlusion subknobs follow
+    the master checkbox + mode, rotation knobs follow the toggle, fast-paste
+    follows the swap model, GFPGAN-only knobs follow the enhancer model."""
+
+    def test_occlusion_subcontrols_follow_checkbox_and_mode(self, qtbot, tmp_path):
+        dlg = QBatchTaskDialog.from_task(_task(tmp_path))  # occlusion off
+        qtbot.addWidget(dlg)
+        assert not dlg._occlusion_mode.isEnabled()  # noqa: SLF001
+        assert not dlg._occlusion_parser.isEnabled()  # noqa: SLF001
+        assert not dlg._occluder_model.isEnabled()  # noqa: SLF001
+        dlg._occlusion_mask.setChecked(True)  # noqa: SLF001
+        assert dlg._occlusion_parser.isEnabled()  # noqa: SLF001 — region default
+        assert not dlg._occluder_model.isEnabled()  # noqa: SLF001
+        mode = dlg._occlusion_mode  # noqa: SLF001
+        mode.setCurrentIndex(mode.findData("occluder"))
+        assert not dlg._occlusion_parser.isEnabled()  # noqa: SLF001
+        assert dlg._occluder_model.isEnabled()  # noqa: SLF001
+
+    def test_rotation_knobs_follow_toggle(self, qtbot, tmp_path):
+        dlg = QBatchTaskDialog.from_task(
+            _task(tmp_path, swapper_rotation_compensation=False)
+        )
+        qtbot.addWidget(dlg)
+        assert not dlg._rotation_threshold.isEnabled()  # noqa: SLF001
+        assert not dlg._rotation_redetect.isEnabled()  # noqa: SLF001
+        assert not dlg._rotation_source.isEnabled()  # noqa: SLF001
+        dlg._rotation_enabled.setChecked(True)  # noqa: SLF001
+        assert dlg._rotation_threshold.isEnabled()  # noqa: SLF001
+
+    def test_fast_paste_follows_swap_model(self, qtbot, tmp_path):
+        dlg = QBatchTaskDialog.from_task(_task(tmp_path, swapper_model="ghost_1_256"))
+        qtbot.addWidget(dlg)
+        assert not dlg._fast_paste.isEnabled()  # noqa: SLF001
+        combo = dlg._swapper_model  # noqa: SLF001
+        combo.setCurrentIndex(combo.findData("inswapper_128"))
+        assert dlg._fast_paste.isEnabled()  # noqa: SLF001
+
+    def test_gfpgan_only_knobs_follow_enhancer_model(self, qtbot, tmp_path):
+        dlg = QBatchTaskDialog.from_task(_task(tmp_path, enhancer_model="gfpgan"))
+        qtbot.addWidget(dlg)
+        assert dlg._enhancer_fp16.isEnabled()  # noqa: SLF001
+        assert dlg._enhancer_device.isEnabled()  # noqa: SLF001
+        combo = dlg._enhancer_model  # noqa: SLF001
+        combo.setCurrentIndex(combo.findData("gfpgan_onnx"))
+        assert not dlg._enhancer_fp16.isEnabled()  # noqa: SLF001
+        assert not dlg._enhancer_device.isEnabled()  # noqa: SLF001
+
+
 class TestPrefill:
     def test_dialog_fields_match_task(self, qtbot, tmp_path):
         t = _task(
