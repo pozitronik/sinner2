@@ -63,6 +63,11 @@ class _Sentinel:
 
 _SENTINEL = _Sentinel()
 
+# "No source-face has been requested yet" — distinct from a real source value
+# (which may be any object) so the initial chain install knows to skip the
+# source reconcile rather than clobbering the swapper with a bogus source.
+_UNSET: object = object()
+
 _WorkItem = tuple[int, Frame, int]  # (seq, frame, generation)
 
 
@@ -95,6 +100,11 @@ class LiveLoop:
         # (empty == raw passthrough until the first chain is installed).
         self._active: list[Processor] = []
         self._generation = 0
+        # Last source-face requested via set_source(), re-applied to every newly
+        # installed chain so a source change survives a chain hot-swap (enhancer
+        # etc.) and is never lost to a set_source/set_chain install race. Read +
+        # written only under _lock.
+        self._current_source: object = _UNSET
         self._loop_done = False
         self._lock = threading.Lock()        # guards _active/_generation/_last_emitted_seq/_loop_done + the emit
         self._setup_lock = threading.Lock()  # serialize model loads
@@ -174,11 +184,19 @@ class LiveLoop:
                         # Loop gone before we installed -> release our own chain.
                         old_gen: int | None = None
                         to_release: list[Processor] = chain
+                        source: object = _UNSET
                     else:
                         old_gen = self._generation
                         to_release, self._active = self._active, chain
                         self._generation += 1
                         self._last_emitted_seq = -1  # new chain's first frame always shows
+                        # Snapshot the current source UNDER the same lock that
+                        # set_source writes it: whichever critical section runs
+                        # second sees the other's effect, so the source can't be
+                        # lost to the install race (and survives this hot-swap).
+                        source = self._current_source
+            if source is not _UNSET:
+                self._apply_source_to(chain, source)
             if to_release:
                 if old_gen is not None:
                     self._wait_for_gen_drain(old_gen, 5.0)
@@ -193,24 +211,35 @@ class LiveLoop:
         source WITHOUT rebuilding the chain, so the enhancer/upscaler per-worker
         instances are NOT torn down + reloaded. Runs on a side thread (the source
         re-analysis is off the caller's thread); no-op if no processor accepts a
-        source. The swapper's set_source is internally thread-safe vs workers."""
+        source. The swapper's set_source is internally thread-safe vs workers.
+
+        The source is also persisted (under _lock) so it's re-applied to any chain
+        installed later (a hot-swap) and survives a concurrent set_chain install
+        without being lost to the read-active/install race."""
         def _apply() -> None:
             with self._lock:
+                self._current_source = source
                 chain = self._active
-            for processor in chain:
-                setter = getattr(processor, "set_source", None)
-                if not callable(setter):
-                    continue
-                try:
-                    setter(source)
-                except Exception as exc:  # noqa: BLE001
-                    print(f"[live] set_source failed for "
-                          f"{getattr(processor, 'name', '?')}: {exc}",
-                          file=sys.stderr)
+            self._apply_source_to(chain, source)
 
         threading.Thread(
             target=_apply, name="sinner2-live-source", daemon=True
         ).start()
+
+    def _apply_source_to(self, chain: list[Processor], source: object) -> None:
+        """Push `source` to every processor in `chain` that accepts one. Called
+        off the caller's thread; the swapper's set_source is internally thread-safe
+        vs concurrent process() on worker threads."""
+        for processor in chain:
+            setter = getattr(processor, "set_source", None)
+            if not callable(setter):
+                continue
+            try:
+                setter(source)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[live] set_source failed for "
+                      f"{getattr(processor, 'name', '?')}: {exc}",
+                      file=sys.stderr)
 
     def _wait_for_gen_drain(self, gen: int, timeout: float) -> None:
         deadline = time.monotonic() + timeout

@@ -345,6 +345,45 @@ def test_set_source_applies_to_active_swapper_without_rebuild():
         loop.stop()
 
 
+def test_set_source_survives_chain_hot_swap():
+    """A source set via set_source() must be re-applied to a chain installed
+    later by set_chain() (e.g. the user changes the enhancer). Otherwise the
+    hot-swap silently reverts the swapper to its default source face."""
+    class _SwapSpy:
+        def __init__(self, name):
+            self.name = name
+            self.sources = []
+            self.setup_calls = 0
+
+        def setup(self):
+            self.setup_calls += 1
+
+        def release(self):
+            pass
+
+        def process(self, frame):
+            return frame
+
+        def set_source(self, source):
+            self.sources.append(source)
+
+    old = _SwapSpy("old")
+    new = _SwapSpy("new")
+    loop = LiveLoop(_CountingSource(), [old], [_SpySink()], workers=2, fps=1000)
+    loop.start()
+    try:
+        assert _wait_until(lambda: old.setup_calls == 1)
+        loop.set_source("FACE2")
+        assert _wait_until(lambda: old.sources == ["FACE2"])
+        loop.set_chain([new])  # hot-swap the whole chain
+        # The persisted source is re-applied to the new swapper with no manual
+        # set_source — exactly once.
+        assert _wait_until(lambda: new.sources == ["FACE2"])
+        assert new.setup_calls == 1
+    finally:
+        loop.stop()
+
+
 def test_set_source_skips_processors_without_setter():
     loop = LiveLoop(_CountingSource(), [_SpyProcessor("noop")], [_SpySink()],
                     workers=1, fps=1000)
