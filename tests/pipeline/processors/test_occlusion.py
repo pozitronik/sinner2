@@ -338,6 +338,100 @@ class TestXsegOccluderMasker:
             XsegOccluderMasker().face_mask(np.zeros((512, 512, 3), np.uint8))
 
 
+class TestDepthOccluderMasker:
+    class _DepthSpySession:
+        """Inverse-depth map: face plane at 10.0, a closer blob (30.0) in the
+        top-left corner, a farther background strip (1.0) on the right."""
+
+        def __init__(self) -> None:
+            self.blobs: list[np.ndarray] = []
+
+        def get_inputs(self):
+            return [SimpleNamespace(name="pixel_values")]
+
+        def get_outputs(self):
+            return [SimpleNamespace(name="predicted_depth")]
+
+        def run(self, _names, feeds):
+            blob = feeds["pixel_values"]
+            self.blobs.append(blob)
+            depth = np.full((518, 518), 10.0, np.float32)
+            depth[:130, :130] = 30.0   # occluder: much closer than the face
+            depth[:, 390:] = 1.0       # background: farther
+            return [depth[None]]
+
+    def _masker(self, monkeypatch):
+        from sinner2.pipeline import model_cache
+        from sinner2.pipeline.processors.occlusion import DepthOccluderMasker
+
+        session = self._DepthSpySession()
+        monkeypatch.setattr(
+            model_cache, "get_onnx_session", lambda *a, **k: session
+        )
+        m = DepthOccluderMasker()
+        m.setup()
+        return m, session
+
+    def test_preprocessing_contract(self, monkeypatch):
+        # 518x518, BGR→RGB, /255 then ImageNet mean/std, NCHW (from the HF
+        # preprocessor config).
+        m, session = self._masker(monkeypatch)
+        aligned = np.zeros((512, 512, 3), np.uint8)
+        aligned[:, :, 2] = 255  # pure red in BGR
+        m.face_mask(aligned)
+        blob = session.blobs[0]
+        assert blob.shape == (1, 3, 518, 518)
+        assert np.isclose(blob[0, 0, 0, 0], (1.0 - 0.485) / 0.229, atol=1e-5)
+
+    def test_closer_pixels_masked_face_and_background_kept(self, monkeypatch):
+        m, _ = self._masker(monkeypatch)
+        mask = m.face_mask(np.zeros((512, 512, 3), np.uint8))
+        assert mask.shape == (512, 512)
+        assert mask[10, 10] == pytest.approx(0.0)    # closer blob → occluder
+        assert mask[300, 200] == pytest.approx(1.0)  # face plane kept
+        assert mask[300, 480] == pytest.approx(1.0)  # farther background kept
+
+    def test_flat_depth_yields_no_occlusion(self, monkeypatch):
+        from sinner2.pipeline import model_cache
+        from sinner2.pipeline.processors.occlusion import DepthOccluderMasker
+
+        class _Flat(self._DepthSpySession):
+            def run(self, _names, feeds):
+                return [np.full((1, 518, 518), 5.0, np.float32)]
+
+        monkeypatch.setattr(
+            model_cache, "get_onnx_session", lambda *a, **k: _Flat()
+        )
+        m = DepthOccluderMasker()
+        m.setup()
+        mask = m.face_mask(np.zeros((512, 512, 3), np.uint8))
+        assert mask.min() == pytest.approx(1.0)  # no spread → no thresholding
+
+    def test_builder_dispatches_depth(self):
+        from sinner2.pipeline.processors.occlusion import (
+            DepthOccluderMasker,
+            FaceParser,
+            OccluderModel,
+            OcclusionMaskMode,
+            build_occlusion_masker,
+        )
+
+        m = build_occlusion_masker(
+            OcclusionMaskMode.OCCLUDER, FaceParser.BISENET, OccluderModel.DEPTH,
+        )
+        assert isinstance(m, DepthOccluderMasker)
+
+    def test_occluder_model_files_depth(self):
+        from sinner2.pipeline.processors.occlusion import (
+            OccluderModel,
+            occluder_model_files,
+        )
+
+        assert occluder_model_files(OccluderModel.DEPTH) == [
+            "depth_anything_v2_small.onnx"
+        ]
+
+
 class TestCombinedMasker:
     class _Const:
         def __init__(self, value: float, thread_safe: bool = True) -> None:

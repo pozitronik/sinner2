@@ -150,6 +150,7 @@ _OCCLUDER_MODELS: list[tuple[str, str]] = [
     (OccluderModel.XSEG_2.value, "XSeg 2"),
     (OccluderModel.XSEG_3.value, "XSeg 3"),
     (OccluderModel.XSEG_MANY.value, "XSeg all three (strictest, 3x cost)"),
+    (OccluderModel.DEPTH.value, "Depth (experimental, closer-than-face)"),
 ]
 
 

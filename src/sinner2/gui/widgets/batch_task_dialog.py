@@ -254,6 +254,7 @@ class QBatchTaskDialog(QDialog):
             ("xseg_2", "XSeg 2"),
             ("xseg_3", "XSeg 3"),
             ("xseg_many", "XSeg all three (strictest, 3x cost)"),
+            ("depth", "Depth (experimental, closer-than-face)"),
         ):
             self._occluder_model.addItem(label, value)
             if value == task.swapper_occluder_model:

@@ -97,6 +97,12 @@ MODEL_SOURCES: dict[str, str] = {
         "https://github.com/facefusion/facefusion-assets/releases/download/"
         "models-3.2.0/xseg_3.onnx"
     ),
+    # Depth-Anything V2 small (HF onnx-community export) — drives the
+    # EXPERIMENTAL depth-based occluder (mask anything closer than the face).
+    "depth_anything_v2_small.onnx": (
+        "https://huggingface.co/onnx-community/depth-anything-v2-small/"
+        "resolve/main/onnx/model.onnx"
+    ),
     # CodeFormer face-restorer (ONNX, facefusion-assets). The `w` fidelity is a
     # scalar model input. ~377 MB.
     "codeformer.onnx": (

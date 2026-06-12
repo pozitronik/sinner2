@@ -91,12 +91,15 @@ class OccluderModel(str, Enum):
     """Occluder-segmentation backend (OCCLUDER / BOTH modes). The XSeg trio
     are DeepFaceLab-lineage community models exported by facefusion — the
     de-facto standard for arbitrary-object face occlusion. XSEG_MANY runs all
-    three and takes the minimum (strictest, 3x the inference cost)."""
+    three and takes the minimum (strictest, 3x the inference cost). DEPTH is
+    EXPERIMENTAL: monocular depth, masking anything meaningfully closer than
+    the face plane — object-agnostic but with softer boundaries than XSeg."""
 
     XSEG_1 = "xseg_1"
     XSEG_2 = "xseg_2"
     XSEG_3 = "xseg_3"
     XSEG_MANY = "xseg_many"
+    DEPTH = "depth"
 
 
 _XSEG_FILES: dict[OccluderModel, list[str]] = {
@@ -106,10 +109,14 @@ _XSEG_FILES: dict[OccluderModel, list[str]] = {
     OccluderModel.XSEG_MANY: ["xseg_1.onnx", "xseg_2.onnx", "xseg_3.onnx"],
 }
 
+_DEPTH_MODEL_FILE = "depth_anything_v2_small.onnx"
+
 
 def occluder_model_files(model: OccluderModel) -> list[str]:
     """The weight file(s) an occluder choice needs (so the GUI can confirm +
     download before enabling it). XSEG_MANY needs all three."""
+    if model is OccluderModel.DEPTH:
+        return [_DEPTH_MODEL_FILE]
     return list(_XSEG_FILES[model])
 
 
@@ -332,6 +339,79 @@ class XsegOccluderMasker:
             release_onnx_session(f, self._providers)
 
 
+class DepthOccluderMasker:
+    """EXPERIMENTAL depth-based occluder: estimates relative depth for the
+    aligned crop and masks pixels meaningfully CLOSER than the face plane —
+    object-agnostic (anything in front of the face counts) but with softer
+    boundaries than XSeg on thin occluders like fingers.
+
+    Depth-Anything V2 small (ONNX, HF onnx-community export). Contract from
+    its preprocessor config: 518×518, RGB, /255 then ImageNet mean/std, NCHW;
+    output relative INVERSE depth (HIGHER = CLOSER). The face's own depth is
+    the median over the crop's central region (the aligned face fills the
+    center by construction); pixels closer than that by >15% of the scene's
+    depth spread (p95−p5, normalizing the unitless relative scale) are
+    occluders. A near-flat depth map (no spread) yields no occlusion rather
+    than thresholding noise."""
+
+    thread_safe = True
+    _SIZE = 518
+    _MARGIN = 0.15
+    _MEAN = np.array([0.485, 0.456, 0.406], np.float32)
+    _STD = np.array([0.229, 0.224, 0.225], np.float32)
+
+    def __init__(self, providers: list[str] | None = None) -> None:
+        from sinner2.config.execution import DEFAULT_ONNX_PROVIDERS
+
+        self._providers = (
+            list(providers) if providers else list(DEFAULT_ONNX_PROVIDERS)
+        )
+        self._session: Any = None
+        self._in_name = "pixel_values"
+        self._out_name = "predicted_depth"
+
+    def setup(self) -> None:
+        from sinner2.pipeline.model_cache import get_onnx_session
+
+        self._session = get_onnx_session(
+            _DEPTH_MODEL_FILE, providers=self._providers
+        )
+        self._in_name = self._session.get_inputs()[0].name
+        self._out_name = self._session.get_outputs()[0].name
+
+    def face_mask(self, aligned_bgr: Frame) -> np.ndarray:
+        if self._session is None:
+            raise RuntimeError("DepthOccluderMasker.face_mask called before setup()")
+        size = aligned_bgr.shape[0]
+        prep = cv2.resize(aligned_bgr, (self._SIZE, self._SIZE))
+        rgb = prep[:, :, ::-1].astype(np.float32) / 255.0
+        blob = np.ascontiguousarray(
+            ((rgb - self._MEAN) / self._STD).transpose(2, 0, 1)[None], np.float32
+        )
+        depth = self._session.run([self._out_name], {self._in_name: blob})[0]
+        while depth.ndim > 2:
+            depth = depth[0]
+        c0, c1 = self._SIZE // 4, self._SIZE * 3 // 4
+        face_depth = float(np.median(depth[c0:c1, c0:c1]))
+        spread = float(np.percentile(depth, 95) - np.percentile(depth, 5))
+        if spread <= 1e-6:
+            return np.ones((size, size), np.float32)  # flat scene → no occluders
+        visible = (depth <= face_depth + self._MARGIN * spread).astype(np.float32)
+        visible = cv2.resize(visible, (size, size))
+        # Same boundary treatment as the XSeg backend (facefusion's hardening
+        # blur) so the two occluder flavors compose identically downstream.
+        return (
+            cv2.GaussianBlur(visible.clip(0.0, 1.0), (0, 0), 5).clip(0.5, 1.0)
+            - 0.5
+        ) * 2.0
+
+    def release(self) -> None:
+        from sinner2.pipeline.model_cache import release_onnx_session
+
+        self._session = None
+        release_onnx_session(_DEPTH_MODEL_FILE, self._providers)
+
+
 class CombinedMasker:
     """Minimum of several maskers' masks (BOTH mode: facial-region AND
     unoccluded). Thread-safe only if every part is."""
@@ -380,7 +460,10 @@ def build_occlusion_masker(
     if mode in (OcclusionMaskMode.REGION, OcclusionMaskMode.BOTH):
         maskers.append(build_parser_masker(parser, device=device, providers=providers))
     if mode in (OcclusionMaskMode.OCCLUDER, OcclusionMaskMode.BOTH):
-        maskers.append(XsegOccluderMasker(occluder, providers=providers))
+        if occluder is OccluderModel.DEPTH:
+            maskers.append(DepthOccluderMasker(providers=providers))
+        else:
+            maskers.append(XsegOccluderMasker(occluder, providers=providers))
     return maskers[0] if len(maskers) == 1 else CombinedMasker(maskers)
 
 

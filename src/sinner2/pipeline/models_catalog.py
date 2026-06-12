@@ -144,6 +144,9 @@ MODEL_CATALOG: dict[str, ModelInfo] = {
     "xseg_3.onnx": _e(
         "xseg_3.onnx", "XSeg occluder 3", _C.MASK_PARSER,
         "Occluder segmentation — alternative XSeg training.", 67),
+    "depth_anything_v2_small.onnx": _e(
+        "depth_anything_v2_small.onnx", "Depth occluder (exp.)", _C.MASK_PARSER,
+        "Depth-based occluder — masks anything closer than the face.", 95),
 }
 
 
