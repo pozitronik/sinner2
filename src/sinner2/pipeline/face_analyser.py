@@ -1,6 +1,8 @@
 import threading
 from typing import Any
 
+import numpy as np
+
 from sinner2.types import Frame
 
 _FACE_MODEL_NAME = "buffalo_l"
@@ -104,11 +106,20 @@ class FaceAnalyser:
         providers: list[str] | None = None,
         detection_size: int = _DEFAULT_DET_SIZE,
         detector: Any = None,
+        detection_only: bool = False,
     ) -> None:
         if detection_interval < 1:
             raise ValueError(f"detection_interval must be >= 1; got {detection_interval}")
         self._detection_interval = detection_interval
         self._detection_size = detection_size
+        # detection_only drives the shared buffalo_l pack's DET model alone:
+        # `.get()` runs four aux models (two landmark nets, genderage,
+        # recognition) per face, but consumers that only ALIGN BY KEYPOINTS
+        # (the ONNX restorer backends) need none of them — at FullHD the aux
+        # passes roughly doubled detection cost (scripts/enhancer_bench.py).
+        # Same detector, same boxes/kps; faces are FaceLite (no sex/pose).
+        # Ignored when a standalone detector is set (already detection-only).
+        self._detection_only = bool(detection_only)
         # Optional standalone TARGET detector (yoloface / scrfd). None = the full
         # buffalo_l pack. Built + loaded eagerly here (single-threaded
         # construction, so the N-worker pool that later shares this analyser
@@ -148,6 +159,8 @@ class FaceAnalyser:
             return list(cached or [])
         if self._detector is not None:
             faces = self._detector.detect(frame)
+        elif self._detection_only:
+            faces = self._detect_kps_only(frame)
         else:
             faces = _get_shared_face_analysis(
                 self._providers, self._detection_size
@@ -155,6 +168,25 @@ class FaceAnalyser:
         with self._lock:
             self._cached_faces = faces
         return list(faces or [])
+
+    def _detect_kps_only(self, frame: Frame) -> list[Any]:
+        """Run ONLY the shared pack's detection model (det_10g) — the exact
+        call `.get()` starts with — and wrap results as FaceLite, skipping the
+        per-face aux models. Thread-safety matches `.get()` (same det call)."""
+        from sinner2.pipeline.detectors import FaceLite
+
+        app = _get_shared_face_analysis(self._providers, self._detection_size)
+        bboxes, kpss = app.det_model.detect(frame, max_num=0, metric="default")
+        faces: list[Any] = []
+        for i in range(len(bboxes)):
+            faces.append(
+                FaceLite(
+                    bbox=np.asarray(bboxes[i][:4], np.float32),
+                    kps=np.asarray(kpss[i], np.float32),
+                    det_score=float(bboxes[i][4]),
+                )
+            )
+        return faces
 
     def analyse_uncached(self, frame: Frame) -> list[Any]:
         # Always the full buffalo_l pack — this is the path the SOURCE face uses,
@@ -165,9 +197,9 @@ class FaceAnalyser:
 
     def provides_gender(self) -> bool:
         """Whether detected faces carry insightface's `.sex` (only the full
-        buffalo_l pack does — standalone detectors are box+keypoints only). The
-        swapper gates its gender filter on this."""
-        return self._detector is None
+        buffalo_l pack does — standalone detectors and detection_only mode are
+        box+keypoints only). The swapper gates its gender filter on this."""
+        return self._detector is None and not self._detection_only
 
     def reset_cache(self) -> None:
         with self._lock:

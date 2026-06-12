@@ -88,7 +88,9 @@ class PlainBfrBackend:
         self._out_name = self._session.get_outputs()[0].name
         self._align_size = _derive_align_size(inp.shape)
         self._mask = feather_mask(self._align_size)
-        self._analyser = FaceAnalyser(providers=self._providers)
+        # detection_only: alignment needs box+kps only — skips the four aux
+        # models buffalo_l's .get() runs per face (≈half the detect cost).
+        self._analyser = FaceAnalyser(providers=self._providers, detection_only=True)
 
     def enhance(self, img: Frame) -> Frame:
         """Restore every detected face in `img`. Best-effort per face — a

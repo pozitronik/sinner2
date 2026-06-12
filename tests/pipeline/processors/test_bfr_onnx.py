@@ -58,6 +58,26 @@ def test_restore_aligned_uses_dynamic_io_names():
     assert captured["in_keys"] == ["x"]
 
 
+def test_setup_builds_detection_only_analyser(monkeypatch):
+    # The backend only aligns by keypoints, so its analyser must skip the four
+    # aux models buffalo_l's .get() runs per face (detection_only=True).
+    from sinner2.pipeline.processors import bfr_onnx
+
+    fake_session = SimpleNamespace(
+        get_inputs=lambda: [SimpleNamespace(name="input", shape=[1, 3, 512, 512])],
+        get_outputs=lambda: [SimpleNamespace(name="output")],
+    )
+    monkeypatch.setattr(bfr_onnx, "get_onnx_session", lambda *a, **k: fake_session)
+    captured: dict = {}
+    monkeypatch.setattr(
+        bfr_onnx, "FaceAnalyser",
+        lambda **kw: captured.update(kw) or SimpleNamespace(),
+    )
+    backend = PlainBfrBackend("gpen_bfr_512.onnx")
+    backend.setup()
+    assert captured.get("detection_only") is True
+
+
 class TestDeriveAlignSize:
     def test_static_square_input_drives_size(self):
         assert _derive_align_size([1, 3, 1024, 1024], default=512) == 1024

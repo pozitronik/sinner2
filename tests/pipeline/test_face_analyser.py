@@ -12,6 +12,12 @@ from sinner2.types import Frame
 def stub_insightface(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     stub = MagicMock()
     stub.get = MagicMock(return_value=[MagicMock(name="Face")])
+    stub.det_model.detect = MagicMock(
+        return_value=(
+            np.array([[1.0, 2.0, 30.0, 40.0, 0.9]], np.float32),
+            np.array([[[3.0, 4.0]] * 5], np.float32),
+        )
+    )
     monkeypatch.setattr(face_analyser, "_get_shared_face_analysis", lambda *a, **k: stub)
     return stub
 
@@ -77,6 +83,45 @@ class TestFaceAnalyser:
         faces = a.analyse(_blank_frame())
         faces.append("extra")
         assert a.analyse(_blank_frame()) == [face]
+
+
+class TestDetectionOnly:
+    """detection_only mode: the shared pack's det model alone, no aux models.
+    For consumers that only align by keypoints (the ONNX restorer backends) —
+    buffalo_l's .get() runs four extra models per face they never read."""
+
+    def test_uses_det_model_not_get(self, stub_insightface: MagicMock):
+        a = FaceAnalyser(detection_only=True)
+        faces = a.analyse(_blank_frame())
+        stub_insightface.det_model.detect.assert_called_once()
+        stub_insightface.get.assert_not_called()
+        assert len(faces) == 1
+
+    def test_faces_carry_bbox_kps_score(self, stub_insightface: MagicMock):
+        a = FaceAnalyser(detection_only=True)
+        face = a.analyse(_blank_frame())[0]
+        assert np.allclose(face.bbox, [1.0, 2.0, 30.0, 40.0])
+        assert face.kps.shape == (5, 2)
+        assert face.det_score == pytest.approx(0.9)
+        # FaceLite: deliberately NO sex/pose — getattr-guarded paths degrade.
+        assert not hasattr(face, "sex")
+
+    def test_does_not_provide_gender(self, stub_insightface: MagicMock):
+        assert FaceAnalyser(detection_only=True).provides_gender() is False
+        assert FaceAnalyser().provides_gender() is True
+
+    def test_interval_caching_still_applies(self, stub_insightface: MagicMock):
+        a = FaceAnalyser(detection_interval=3, detection_only=True)
+        for _ in range(9):
+            a.analyse(_blank_frame())
+        assert stub_insightface.det_model.detect.call_count == 3
+
+    def test_no_faces_detected(self, stub_insightface: MagicMock):
+        stub_insightface.det_model.detect.return_value = (
+            np.zeros((0, 5), np.float32), np.zeros((0, 5, 2), np.float32),
+        )
+        a = FaceAnalyser(detection_only=True)
+        assert a.analyse(_blank_frame()) == []
 
 
 class TestDetectionSize:

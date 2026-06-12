@@ -59,7 +59,9 @@ class CodeFormerBackend:
         # get_onnx_session raises if the model is missing — the GUI ensures it
         # (with a download confirmation) before enabling CodeFormer.
         self._session = get_onnx_session(MODEL_FILE, providers=self._providers)
-        self._analyser = FaceAnalyser(providers=self._providers)
+        # detection_only: alignment needs box+kps only — skips the four aux
+        # models buffalo_l's .get() runs per face (≈half the detect cost).
+        self._analyser = FaceAnalyser(providers=self._providers, detection_only=True)
 
     def enhance(self, img: Frame) -> Frame:
         """Restore every detected face in `img`. Best-effort per face — a

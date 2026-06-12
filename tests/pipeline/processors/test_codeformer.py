@@ -27,6 +27,24 @@ def test_restore_aligned_shape_and_dtype():
     assert out.dtype == np.uint8
 
 
+def test_setup_builds_detection_only_analyser(monkeypatch):
+    # The backend only aligns by keypoints, so its analyser must skip the four
+    # aux models buffalo_l's .get() runs per face (detection_only=True).
+    from sinner2.pipeline.processors import codeformer
+
+    monkeypatch.setattr(
+        codeformer, "get_onnx_session", lambda *a, **k: _IdentitySession()
+    )
+    captured: dict = {}
+    monkeypatch.setattr(
+        codeformer, "FaceAnalyser",
+        lambda **kw: captured.update(kw) or SimpleNamespace(),
+    )
+    backend = CodeFormerBackend(fidelity=0.5)
+    backend.setup()
+    assert captured.get("detection_only") is True
+
+
 def test_enhance_restores_each_detected_face():
     backend = CodeFormerBackend()
     backend._session = _IdentitySession()  # noqa: SLF001
