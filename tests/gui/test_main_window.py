@@ -691,6 +691,24 @@ class TestTensorRTBuildWait:
         for d in dialogs:
             d.close()
 
+    def test_reentrant_call_does_not_stack_a_second_dialog(self, window, monkeypatch):
+        # Mid-build, an in-flight async swap completing emits
+        # sessionScratchDirChanged and re-enters this function; the guards all
+        # pass during a FIRST build (TRT not recorded yet, no engine on disk),
+        # so without an active-wait flag a second dialog + timer stack over the
+        # first (audit rank 37).
+        from PySide6.QtWidgets import QProgressDialog
+        self._set(window, monkeypatch, requested=["TensorrtExecutionProvider"],
+                  actual=("CUDAExecutionProvider",), has_executor=True)
+        assert window._wait_for_tensorrt_build() is True  # noqa: SLF001
+        assert window._wait_for_tensorrt_build() is True  # noqa: SLF001 — took over, no new dialog
+        visible = [
+            d for d in window.findChildren(QProgressDialog) if d.isVisible()
+        ]
+        assert len(visible) == 1
+        for d in window.findChildren(QProgressDialog):
+            d.close()
+
     def test_no_modal_when_engine_already_cached(self, window, monkeypatch):
         # Toggling TRT off then on: it's not the active provider, but the engine
         # is already compiled on disk → fast load → NO modal flash.

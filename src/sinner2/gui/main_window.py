@@ -171,6 +171,11 @@ class SinnerMainWindow(QMainWindow):
         # reported in one consolidated dialog when the queue goes idle so a
         # continue-on-error run doesn't spam a modal per failed task.
         self._batch_failures: list[tuple[str, str]] = []
+        # Guards _wait_for_tensorrt_build against re-entry: during a FIRST
+        # engine build none of its other guards trip (TRT not recorded yet, no
+        # engine on disk), so a swap completing mid-build would stack a second
+        # dialog + polling timer over the active one.
+        self._trt_wait_active = False
         # Non-modal poll that refreshes the failed-provider highlight AFTER an
         # async chain rebuild records the real providers (see
         # _schedule_provider_highlight_refresh). One at a time — a newer toggle
@@ -859,11 +864,16 @@ class SinnerMainWindow(QMainWindow):
             return False
         if self._controller.executor() is None:
             return False
+        if self._trt_wait_active:
+            # A wait is already showing (re-entered via sessionScratchDirChanged
+            # while the build runs) — don't stack a second dialog + timer.
+            return True
         before = model_cache.get_actual_providers()
         if before is not None and trt in before:
             return False  # a session already built + loaded TRT this run
         if model_cache.tensorrt_engine_cached():
             return False  # engine already compiled on disk → fast load, no modal
+        self._trt_wait_active = True
         dialog = QProgressDialog(
             "Compiling the TensorRT engine for the swap model.\n"
             "One-time step (about 30 seconds); cached for next time.",
@@ -894,6 +904,7 @@ class SinnerMainWindow(QMainWindow):
                 or trt not in self._processors.swapper_providers()
             )
             if built or fell_back or gone or elapsed.elapsed() > 75_000:
+                self._trt_wait_active = False
                 timer.stop()
                 dialog.close()
                 self._highlight_failed_providers()
