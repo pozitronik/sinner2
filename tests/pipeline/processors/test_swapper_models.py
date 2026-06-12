@@ -130,6 +130,33 @@ class TestSourceEmbeddingDispatch:
         backend.prepare_source(np.full((64, 64, 3), 128, np.uint8), face)
         assert backend._source_input.shape == (1, 3, 256, 256)  # noqa: SLF001
 
+    def test_hyperswap_feeds_normalized_embedding_directly(self):
+        # Contract (facefusion): source = source_face.embedding_norm — the
+        # L2-normalized ArcFace vector, NO crossface converter involved.
+        backend = _make_backend(SwapperModel.HYPERSWAP_1A_256)
+        assert backend._converter is None  # noqa: SLF001 — no converter loaded
+        face = SimpleNamespace(
+            embedding=np.arange(1, 513, dtype=np.float32), kps=_KPS
+        )
+        backend.prepare_source(np.zeros((64, 64, 3), np.uint8), face)
+        got = backend._source_input  # noqa: SLF001
+        assert got.shape == (1, 512)
+        assert np.linalg.norm(got) == pytest.approx(1.0, abs=1e-5)
+        expected = face.embedding / np.linalg.norm(face.embedding)
+        np.testing.assert_allclose(got.ravel(), expected, rtol=1e-5)
+
+    def test_hyperswap_specs_registered(self):
+        for model in (
+            SwapperModel.HYPERSWAP_1A_256, SwapperModel.HYPERSWAP_1B_256,
+        ):
+            spec = get_spec(model)
+            assert spec.template == "arcface_128"
+            assert spec.size == 256
+            assert spec.source_mode == "hyperswap"
+            assert spec.denorm_output is True
+            assert spec.converter_file is None
+            assert not is_insightface_model(model)
+
 
 class TestGenericGet:
     def test_get_roundtrips_to_frame_shape(self):

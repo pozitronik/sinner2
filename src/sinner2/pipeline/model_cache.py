@@ -192,6 +192,16 @@ MODEL_SOURCES: dict[str, str] = {
         "https://github.com/facefusion/facefusion-assets/releases/download/"
         "models-3.0.0/uniface_256.onnx"
     ),
+    # Hyperswap — facefusion's newest swapper generation (256px). Fed the
+    # L2-normalized ArcFace embedding directly (no crossface converter).
+    "hyperswap_1a_256.onnx": (
+        "https://github.com/facefusion/facefusion-assets/releases/download/"
+        "models-3.3.0/hyperswap_1a_256.onnx"
+    ),
+    "hyperswap_1b_256.onnx": (
+        "https://github.com/facefusion/facefusion-assets/releases/download/"
+        "models-3.3.0/hyperswap_1b_256.onnx"
+    ),
     # ArcFace→model embedding converters (facefusion crossface). Companion to
     # ghost / simswap respectively; ~22 MB each.
     "crossface_ghost.onnx": (

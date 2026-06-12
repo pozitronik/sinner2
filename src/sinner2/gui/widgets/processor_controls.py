@@ -106,6 +106,8 @@ _SWAPPER_MODELS: list[tuple[str, str]] = [
     (SwapperModel.GHOST_3_256.value, "Ghost 3 (256, heaviest)"),
     (SwapperModel.SIMSWAP_256.value, "SimSwap (256, non-commercial)"),
     (SwapperModel.UNIFACE_256.value, "UniFace (256, pose-aware)"),
+    (SwapperModel.HYPERSWAP_1A_256.value, "Hyperswap 1a (256, newest)"),
+    (SwapperModel.HYPERSWAP_1B_256.value, "Hyperswap 1b (256, newest)"),
 ]
 
 _DETECTOR_MODELS: list[tuple[str, str]] = [

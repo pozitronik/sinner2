@@ -136,6 +136,8 @@ class QBatchTaskDialog(QDialog):
             ("ghost_3_256", "Ghost 3 (256)"),
             ("simswap_256", "SimSwap (256, non-commercial)"),
             ("uniface_256", "UniFace (256)"),
+            ("hyperswap_1a_256", "Hyperswap 1a (256, newest)"),
+            ("hyperswap_1b_256", "Hyperswap 1b (256, newest)"),
         ):
             self._swapper_model.addItem(label, value)
             if value == task.swapper_model:

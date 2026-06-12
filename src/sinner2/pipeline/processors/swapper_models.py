@@ -49,6 +49,8 @@ class SwapperModel(str, Enum):
     GHOST_3_256 = "ghost_3_256"
     SIMSWAP_256 = "simswap_256"       # SimSwap (256px) — CC-BY-NC
     UNIFACE_256 = "uniface_256"       # UniFace (256px, pose-aware)
+    HYPERSWAP_1A_256 = "hyperswap_1a_256"  # newest facefusion-gen swapper (256px)
+    HYPERSWAP_1B_256 = "hyperswap_1b_256"
 
 
 # Warp templates — normalized 5-point destination landmarks (left eye, right
@@ -99,10 +101,10 @@ class SwapperSpec:
     size: int = 0
     mean: tuple[float, float, float] = (0.0, 0.0, 0.0)
     std: tuple[float, float, float] = (1.0, 1.0, 1.0)
-    # How the ONNX 'source' input is built: "embedding" via a crossface
-    # converter (ghost/simswap), or "frame" from an aligned source crop
-    # (uniface). normalize_embedding only applies to the embedding modes.
-    source_mode: str = ""              # "ghost" | "simswap" | "uniface"
+    # How the ONNX 'source' input is built: an ArcFace embedding through a
+    # crossface converter (ghost/simswap), the L2-normalized ArcFace embedding
+    # directly (hyperswap — no converter), or an aligned source crop (uniface).
+    source_mode: str = ""    # "ghost" | "simswap" | "uniface" | "hyperswap"
     denorm_output: bool = False        # de-normalize (x*std+mean) before clip
     converter_file: str | None = None  # crossface_* ONNX (embedding modes)
 
@@ -140,6 +142,21 @@ _SPECS: dict[SwapperModel, SwapperSpec] = {
         "uniface_256.onnx", template="ffhq_512", size=256,
         mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5),
         source_mode="uniface", denorm_output=True,
+        converter_file=None,
+    ),
+    # Hyperswap (facefusion's newest swapper generation): arcface_128 template,
+    # ±0.5 normalize + denorm, and the L2-NORMALIZED ArcFace embedding fed
+    # directly as 'source' — no crossface converter.
+    SwapperModel.HYPERSWAP_1A_256: SwapperSpec(
+        "hyperswap_1a_256.onnx", template="arcface_128", size=256,
+        mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5),
+        source_mode="hyperswap", denorm_output=True,
+        converter_file=None,
+    ),
+    SwapperModel.HYPERSWAP_1B_256: SwapperSpec(
+        "hyperswap_1b_256.onnx", template="arcface_128", size=256,
+        mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5),
+        source_mode="hyperswap", denorm_output=True,
         converter_file=None,
     ),
 }
@@ -285,6 +302,13 @@ class GenericOnnxSwapper:
             self._source_input = np.ascontiguousarray(
                 rgb.transpose(2, 0, 1)[None], np.float32
             )
+            return
+        if mode == "hyperswap":
+            # The L2-normalized ArcFace embedding goes in DIRECTLY (facefusion
+            # feeds source_face.embedding_norm) — no crossface converter.
+            flat = np.asarray(source_face.embedding, np.float32).ravel()
+            normed = flat / np.linalg.norm(flat)
+            self._source_input = normed.reshape(1, -1).astype(np.float32)
             return
         if self._converter is None:
             raise RuntimeError(f"converter not loaded for source mode {mode!r}")

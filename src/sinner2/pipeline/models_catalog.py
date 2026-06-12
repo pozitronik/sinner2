@@ -64,6 +64,12 @@ MODEL_CATALOG: dict[str, ModelInfo] = {
     "uniface_256.onnx": _e(
         "uniface_256.onnx", "UniFace (256)", _C.SWAPPER,
         "UniFace pose-aware face-swap, 256px.", 388),
+    "hyperswap_1a_256.onnx": _e(
+        "hyperswap_1a_256.onnx", "Hyperswap 1a (256)", _C.SWAPPER,
+        "Newest facefusion-generation face-swap, 256px.", 384),
+    "hyperswap_1b_256.onnx": _e(
+        "hyperswap_1b_256.onnx", "Hyperswap 1b (256)", _C.SWAPPER,
+        "Newest facefusion-generation face-swap, 256px (alt training).", 384),
     # ---- Embedding converters (companions to ghost / simswap) ----
     "crossface_ghost.onnx": _e(
         "crossface_ghost.onnx", "CrossFace (Ghost)", _C.CONVERTER,
