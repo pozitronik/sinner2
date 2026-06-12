@@ -401,8 +401,8 @@ class QBatchTaskDialog(QDialog):
             ("hat-x4", "HAT x4 (ONNX, very slow — stills only)"),
             ("ultrasharp-x4", "4x-UltraSharp (ONNX)"),
             ("span-x4", "SPAN x4 (ONNX, fast)"),
-            ("real-esrgan-x4-fp16", "Real-ESRGAN x4 fp16 (ONNX, fast)"),
-            ("real-esrgan-x2-fp16", "Real-ESRGAN x2 fp16 (ONNX, fast)"),
+            ("real-esrgan-x4-fp16", "Real-ESRGAN x4 fp16 (ONNX)"),
+            ("real-esrgan-x2-fp16", "Real-ESRGAN x2 fp16 (ONNX)"),
         ):
             self._upscaler_model.addItem(label, value)
             if value == task.upscaler_model:
