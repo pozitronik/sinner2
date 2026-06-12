@@ -106,6 +106,9 @@ MODEL_CATALOG: dict[str, ModelInfo] = {
     "scrfd_2.5g.onnx": _e(
         "scrfd_2.5g.onnx", "SCRFD 2.5g", _C.DETECTOR,
         "Fast detection-only face detector (SCRFD).", 3),
+    "2dfan4.onnx": _e(
+        "2dfan4.onnx", "2dfan4 landmarker", _C.DETECTOR,
+        "68-point landmarker — refines keypoints on tilted faces.", 93),
     # ---- Upscalers ----
     "realesr-general-x4v3.pth": _e(
         "realesr-general-x4v3.pth", "Real-ESRGAN general x4 v3", _C.UPSCALER,

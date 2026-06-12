@@ -161,6 +161,12 @@ MODEL_SOURCES: dict[str, str] = {
         "https://github.com/facefusion/facefusion-assets/releases/download/"
         "models-3.0.0/scrfd_2.5g.onnx"
     ),
+    # 2dfan4 (FAN) 68-point face landmarker — refines the detector's 5
+    # keypoints on tilted/hard-pose faces for more accurate swap alignment.
+    "2dfan4.onnx": (
+        "https://github.com/facefusion/facefusion-assets/releases/download/"
+        "models-3.0.0/2dfan4.onnx"
+    ),
     # ---- Alternative face-swap models (optional; lazy on selection) ----
     # ReSwapper: clean-room reproduction of inswapper, drop-in via insightface's
     # INSwapper class (same ArcFace embedding contract). Saved under our own
