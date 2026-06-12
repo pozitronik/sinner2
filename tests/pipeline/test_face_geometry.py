@@ -79,6 +79,102 @@ def test_paste_back_is_byte_identical_to_legacy_formula():
     )
 
 
+def _assert_roi_equivalent(actual: np.ndarray, expected: np.ndarray) -> None:
+    """Equivalence contract for a TRANSLATED-ROI paste vs the legacy full-frame
+    blend. cv2's fixed-point warp arithmetic is association-sensitive, so a
+    translated matrix may shift isolated pixels by one interpolation tap —
+    bit-exactness is unattainable there (measured: ~0.05% of subpixels, a few
+    LSB on random noise, ±1 on natural images). Pin that it stays ISOLATED and
+    SMALL: >99.5% of subpixels exactly equal, none beyond one tap's worth."""
+    diff = np.abs(actual.astype(np.int16) - expected.astype(np.int16))
+    assert (diff > 0).mean() < 0.005
+    assert diff.max() <= 8
+
+
+def test_paste_back_small_patch_in_large_frame_matches_full_frame_blend():
+    # The ROI optimization case: a 512 patch mapping to a ~120px face region of
+    # a FullHD-ish frame, against the legacy full-frame blend. Worst case for
+    # the tolerance contract: pure-noise frame AND patch.
+    rng = np.random.default_rng(2)
+    frame = rng.integers(0, 255, (540, 960, 3), dtype=np.uint8)
+    patch = rng.integers(0, 255, (512, 512, 3), dtype=np.uint8)
+    # face at ~(400, 250), aligned-space scale 512/120: x' = 4.27*(x-400)+...
+    m = np.array([[4.27, 0.31, -1700.0], [-0.31, 4.27, -980.0]], np.float32)
+    mask = feather_mask(512)
+    _assert_roi_equivalent(
+        paste_back(frame, patch, m, mask), _legacy_paste(frame, patch, m, mask)
+    )
+
+
+def test_paste_back_small_patch_replicate_clip_matches_full_frame_blend():
+    # Same ROI case through the swapper flavor (BORDER_REPLICATE + clip_mask):
+    # replicate fills the warp band outside the quad, but alpha is 0 there, so
+    # the result must match outside the ROI exactly and inside within tolerance.
+    rng = np.random.default_rng(3)
+    frame = rng.integers(0, 255, (540, 960, 3), dtype=np.uint8)
+    crop = rng.integers(0, 255, (256, 256, 3), dtype=np.uint8)
+    matrix = np.array([[2.1, 0.2, -900.0], [-0.2, 2.1, -300.0]], np.float32)
+    mask = np.zeros((256, 256), np.float32)
+    mask[24:232, 24:232] = 1.0
+    mask = cv2.GaussianBlur(mask, (0, 0), sigmaX=6.0)
+    _assert_roi_equivalent(
+        paste_back(frame, crop, matrix, mask, border_replicate=True, clip_mask=True),
+        _legacy_swapper_paste(frame, crop, mask, matrix),
+    )
+
+
+def test_paste_back_partially_off_frame_matches_full_frame_blend():
+    # Face half-out of frame (common at frame edges): the ROI clamps to the
+    # frame; result must still match the legacy full-frame blend.
+    rng = np.random.default_rng(4)
+    frame = rng.integers(0, 255, (200, 300, 3), dtype=np.uint8)
+    patch = rng.integers(0, 255, (512, 512, 3), dtype=np.uint8)
+    # Maps the patch to a region straddling the frame's left edge.
+    m = np.array([[4.0, 0.0, 200.0], [0.0, 4.0, -300.0]], np.float32)
+    mask = feather_mask(512)
+    _assert_roi_equivalent(
+        paste_back(frame, patch, m, mask), _legacy_paste(frame, patch, m, mask)
+    )
+
+
+def test_paste_back_untouched_region_is_byte_identical():
+    # Outside the warped-patch box the frame must be EXACTLY the input — the
+    # ROI restriction may never leak blend artifacts beyond the face region.
+    rng = np.random.default_rng(6)
+    frame = rng.integers(0, 255, (540, 960, 3), dtype=np.uint8)
+    patch = rng.integers(0, 255, (512, 512, 3), dtype=np.uint8)
+    m = np.array([[4.27, 0.31, -1700.0], [-0.31, 4.27, -980.0]], np.float32)
+    out = paste_back(frame, patch, m, feather_mask(512))
+    changed = np.argwhere((out != frame).any(axis=2))
+    assert len(changed)  # the face region did blend
+    y0, x0 = changed.min(axis=0)
+    y1, x1 = changed.max(axis=0)
+    # All changes confined to a face-sized box, nowhere near frame extents.
+    assert x1 - x0 < 200 and y1 - y0 < 200
+
+
+def test_paste_back_fully_off_frame_returns_frame_unchanged():
+    # Degenerate: the warped patch lands entirely outside the frame. The result
+    # is the input pixels, and the input array is NOT mutated (callers may
+    # reuse the original frame).
+    frame = np.full((100, 100, 3), 77, np.uint8)
+    patch = np.full((512, 512, 3), 200, np.uint8)
+    m = np.array([[1.0, 0.0, -5000.0], [0.0, 1.0, -5000.0]], np.float32)
+    out = paste_back(frame, patch, m, feather_mask(512))
+    assert np.array_equal(out, frame)
+    assert out is not frame
+
+
+def test_paste_back_does_not_mutate_input_frame():
+    rng = np.random.default_rng(5)
+    frame = rng.integers(0, 255, (100, 100, 3), dtype=np.uint8)
+    original = frame.copy()
+    patch = rng.integers(0, 255, (512, 512, 3), dtype=np.uint8)
+    m = np.array([[5.12, 0, 0], [0, 5.12, 0]], np.float32)
+    paste_back(frame, patch, m, feather_mask(512))
+    assert np.array_equal(frame, original)
+
+
 def test_paste_back_flags_are_byte_identical_to_legacy_swapper_formula():
     # The swapper flavor (border_replicate + clip_mask) must reproduce its
     # former inline paste exactly — a feathered box mask in [0,1], a uint8 crop,
