@@ -54,9 +54,18 @@ def _blank() -> Frame:
     return np.zeros((10, 10, 3), dtype=np.uint8)
 
 
+def _gfpgan(**overrides) -> FaceEnhancerParams:
+    """Params pinned to the torch-GFPGAN flavor. The params default is now
+    GFPGAN_ONNX (the faster path), while these tests exercise the torch
+    pipeline (loader / fp16 / device / rotation) specifically."""
+    overrides.setdefault("model", EnhancerModel.GFPGAN)
+    return FaceEnhancerParams(**overrides)
+
+
 class TestFaceEnhancerParams:
     def test_defaults(self):
         p = FaceEnhancerParams()
+        assert p.model is EnhancerModel.GFPGAN_ONNX  # the fast ONNX export
         assert p.upscale == 1
         assert p.only_center_face is False
         assert p.fp16 is True
@@ -86,7 +95,7 @@ class TestFaceEnhancer:
             fe.process(_blank())
 
     def test_setup_enables_process(self, models_dir: Path, stub_restorer: MagicMock):
-        fe = FaceEnhancer()
+        fe = FaceEnhancer(params=_gfpgan())
         fe.setup()
         out = fe.process(_blank())
         assert out.shape == (10, 10, 3)
@@ -95,14 +104,14 @@ class TestFaceEnhancer:
         self, models_dir: Path, stub_restorer: MagicMock
     ):
         stub_restorer.enhance = MagicMock(return_value=([], [], None))
-        fe = FaceEnhancer()
+        fe = FaceEnhancer(params=_gfpgan())
         fe.setup()
         original = _blank()
         out = fe.process(original)
         assert out is original
 
     def test_release_makes_process_raise(self, models_dir: Path, stub_restorer: MagicMock):
-        fe = FaceEnhancer()
+        fe = FaceEnhancer(params=_gfpgan())
         fe.setup()
         fe.release()
         with pytest.raises(RuntimeError):
@@ -121,7 +130,7 @@ class TestFaceEnhancer:
 
         monkeypatch.setattr(face_enhancer, "_load_restorer", fake_load)
 
-        fe = FaceEnhancer(params=FaceEnhancerParams(upscale=2))
+        fe = FaceEnhancer(params=_gfpgan(upscale=2))
         fe.setup()
         assert captured["upscale"] == 2
 
@@ -138,10 +147,10 @@ class TestFaceEnhancer:
 
         monkeypatch.setattr(face_enhancer, "_load_restorer", fake_load)
         monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
-        FaceEnhancer().setup()  # device="auto" → resolves to cpu
+        FaceEnhancer(params=_gfpgan()).setup()  # device="auto" → resolves to cpu
         assert captured["device"].type == "cpu"
         monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-        FaceEnhancer().setup()
+        FaceEnhancer(params=_gfpgan()).setup()
         assert captured["device"].type == "cuda"
 
     def test_explicit_cpu_device_overrides_available_cuda(
@@ -157,13 +166,13 @@ class TestFaceEnhancer:
 
         monkeypatch.setattr(face_enhancer, "_load_restorer", fake_load)
         monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-        FaceEnhancer(device="cpu").setup()
+        FaceEnhancer(device="cpu", params=_gfpgan()).setup()
         assert captured["device"].type == "cpu"
 
     def test_only_center_face_passed_to_enhance(
         self, models_dir: Path, stub_restorer: MagicMock
     ):
-        fe = FaceEnhancer(params=FaceEnhancerParams(only_center_face=True))
+        fe = FaceEnhancer(params=_gfpgan(only_center_face=True))
         fe.setup()
         fe.process(_blank())
         _, kwargs = stub_restorer.enhance.call_args
@@ -185,7 +194,7 @@ class TestFaceEnhancer:
         monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
         empties: list[int] = []
         monkeypatch.setattr(torch.cuda, "empty_cache", lambda: empties.append(1))
-        fe = FaceEnhancer(device="cuda")
+        fe = FaceEnhancer(device="cuda", params=_gfpgan())
         fe.setup()
         fe.release()
         assert empties == [1]
@@ -202,7 +211,7 @@ class TestFaceEnhancer:
         )
         empties: list[int] = []
         monkeypatch.setattr(torch.cuda, "empty_cache", lambda: empties.append(1))
-        fe = FaceEnhancer(device="cpu")
+        fe = FaceEnhancer(device="cpu", params=_gfpgan())
         fe.setup()
         fe.release()
         assert empties == []
@@ -227,7 +236,7 @@ class TestFp16:
 
         captured = self._capture_load(monkeypatch)
         monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-        fe = FaceEnhancer(device="cuda", params=FaceEnhancerParams(fp16=True))
+        fe = FaceEnhancer(device="cuda", params=_gfpgan(fp16=True))
         fe.setup()
         assert captured["fp16"] is True
         assert fe._fp16 is True  # noqa: SLF001
@@ -235,7 +244,7 @@ class TestFp16:
     def test_fp16_disabled_on_cpu_even_when_requested(self, models_dir, monkeypatch):
         captured = self._capture_load(monkeypatch)
         # Explicit CPU device → fp16 is a no-op, so it's forced off.
-        fe = FaceEnhancer(device="cpu", params=FaceEnhancerParams(fp16=True))
+        fe = FaceEnhancer(device="cpu", params=_gfpgan(fp16=True))
         fe.setup()
         assert captured["fp16"] is False
         assert fe._fp16 is False  # noqa: SLF001
@@ -245,7 +254,7 @@ class TestFp16:
 
         captured = self._capture_load(monkeypatch)
         monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
-        fe = FaceEnhancer(device="cuda", params=FaceEnhancerParams(fp16=False))
+        fe = FaceEnhancer(device="cuda", params=_gfpgan(fp16=False))
         fe.setup()
         assert captured["fp16"] is False
         assert fe._fp16 is False  # noqa: SLF001
@@ -277,9 +286,7 @@ class TestRotationCompensation:
         tilted.kps = np.array([[3, 3], [7, 7]], float)  # 45° roll
         stub_face_detection.get.return_value = [tilted]
         fe = FaceEnhancer(
-            params=FaceEnhancerParams(
-                rotation_compensation=True, rotation_threshold_deg=15
-            )
+            params=_gfpgan(rotation_compensation=True, rotation_threshold_deg=15)
         )
         fe.setup()
         fe.process(_blank())
@@ -298,7 +305,7 @@ class TestRotationCompensation:
         upright.bbox = np.array([2, 2, 8, 8], float)
         upright.kps = np.array([[3, 5], [7, 5]], float)  # level eyes → 0°
         stub_face_detection.get.return_value = [upright]
-        fe = FaceEnhancer(params=FaceEnhancerParams())  # rotation on by default
+        fe = FaceEnhancer(params=_gfpgan())  # rotation on by default
         fe.setup()
         fe.process(_blank())
         assert called == []
@@ -306,7 +313,7 @@ class TestRotationCompensation:
     def test_disabled_skips_detection(
         self, models_dir, stub_restorer, stub_face_detection
     ):
-        fe = FaceEnhancer(params=FaceEnhancerParams(rotation_compensation=False))
+        fe = FaceEnhancer(params=_gfpgan(rotation_compensation=False))
         fe.setup()
         assert fe._analyser is None  # noqa: SLF001 — not built when disabled
         fe.process(_blank())
@@ -338,10 +345,27 @@ class TestCodeFormerBackend:
         out = fe.process(_blank())
         assert out.shape == _blank().shape
 
-    def test_gfpgan_is_default(self, models_dir, stub_restorer):
+    def test_gfpgan_onnx_is_default(
+        self, models_dir, stub_face_detection, monkeypatch
+    ):
+        # Default-construct → the GFPGAN-ONNX flavor through PlainBfrBackend
+        # (the fast path), not the torch restorer and not CodeFormer.
+        captured: dict = {}
+
+        class _StubBackend:
+            def __init__(self, model_file, *a, **k):
+                captured["model_file"] = model_file
+
+            def setup(self):
+                pass
+
+        monkeypatch.setattr(face_enhancer, "PlainBfrBackend", _StubBackend)
         fe = FaceEnhancer()
         fe.setup()
-        assert fe._codeformer is None  # noqa: SLF001 — GFPGAN path
+        assert fe._bfr is not None  # noqa: SLF001
+        assert fe._restorer is None  # noqa: SLF001 — torch GFPGAN not loaded
+        assert fe._codeformer is None  # noqa: SLF001
+        assert captured["model_file"] == "gfpgan_1.4.onnx"
 
     def test_release_evicts_codeformer_session(
         self, models_dir, stub_face_detection, monkeypatch

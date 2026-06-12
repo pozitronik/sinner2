@@ -63,7 +63,9 @@ def enhancer_onnx_model_file(model: EnhancerModel) -> str | None:
 
 
 class FaceEnhancerParams(SinnerBaseModel):
-    model: EnhancerModel = Field(default=EnhancerModel.GFPGAN)
+    # GFPGAN-ONNX by default: same v1.4 generator as the torch path but ~4x
+    # faster (no facexlib detect/paste around it — see _BFR_MODEL_FILES note).
+    model: EnhancerModel = Field(default=EnhancerModel.GFPGAN_ONNX)
     upscale: int = Field(default=1, ge=1, le=4, description="Output upscale factor (GFPGAN)")
     only_center_face: bool = Field(
         default=False, description="Enhance only the center face"

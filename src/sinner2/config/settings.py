@@ -47,7 +47,7 @@ class Settings(SinnerBaseModel):
     swapper_detector: str | None = None  # buffalo_l | yoloface | scrfd_2.5g
     swapper_many_faces: bool | None = None
     swapper_target_sex: str | None = None  # "M"/"F"/"B"/"I"
-    enhancer_model: str | None = None  # gfpgan | codeformer
+    enhancer_model: str | None = None  # an EnhancerModel value
     enhancer_upscale: int | None = None
     enhancer_only_center_face: bool | None = None
     enhancer_codeformer_fidelity: float | None = None  # CodeFormer w knob

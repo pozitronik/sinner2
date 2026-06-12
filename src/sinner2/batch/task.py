@@ -127,7 +127,7 @@ class BatchTask(SinnerBaseModel):
     swapper_occlusion_mask: bool = False
     swapper_occlusion_parser: str = "bisenet"  # bisenet | parsenet
     enhancer_enabled: bool = True
-    enhancer_model: str = "gfpgan"  # gfpgan | codeformer
+    enhancer_model: str = "gfpgan_onnx"  # an EnhancerModel value
     enhancer_upscale: int = 1
     enhancer_only_center_face: bool = False
     enhancer_codeformer_fidelity: float = 0.7  # CodeFormer w knob
