@@ -369,6 +369,7 @@ class BatchDriver:
                 rotation_angle_source=RotationAngleSource(
                     task.swapper_rotation_angle_source
                 ),
+                landmark_refine=task.swapper_landmark_refine,
                 occlusion_mask=task.swapper_occlusion_mask,
                 occlusion_mode=OcclusionMaskMode(task.swapper_occlusion_mode),
                 occlusion_parser=FaceParser(task.swapper_occlusion_parser),

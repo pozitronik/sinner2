@@ -35,7 +35,13 @@ from sinner2.pipeline.processors.face_enhancer import (
     EnhancerModel,
     enhancer_onnx_model_file,
 )
-from sinner2.pipeline.processors.face_swapper import SwapperModel
+from sinner2.pipeline.processors.face_swapper import (
+    RotationAngleSource,
+    SwapperModel,
+)
+from sinner2.pipeline.processors.landmarker import (
+    MODEL_FILE as LANDMARKER_MODEL_FILE,
+)
 from sinner2.pipeline.processors.occlusion import (
     OcclusionMaskMode,
     occluder_model_files,
@@ -785,6 +791,13 @@ class SinnerMainWindow(QMainWindow):
             ):
                 self._processors.set_swapper_model(SwapperModel.INSWAPPER_128.value)
         swapper_cfg = self._processors.swapper_params()
+        # 2dfan4 weight is needed when refinement OR the landmark-68 angle
+        # source is selected; decline reverts both to their non-landmark state.
+        if swapper_cfg.landmark_refine or (
+            swapper_cfg.rotation_angle_source is RotationAngleSource.LANDMARK_68
+        ):
+            if not ensure_models(self, [LANDMARKER_MODEL_FILE]):
+                self._processors.disable_landmark_refine()
         if swapper_cfg.occlusion_mask:
             # Collect every weight the selected mask mode needs: the parser
             # for region/both, the occluder model(s) for occluder/both.
@@ -1463,6 +1476,7 @@ class SinnerMainWindow(QMainWindow):
             swapper_detector=self._settings.swapper_detector,
             swapper_many_faces=self._settings.swapper_many_faces,
             swapper_fast_paste=self._settings.swapper_fast_paste,
+            swapper_landmark_refine=self._settings.swapper_landmark_refine,
             swapper_target_sex=self._settings.swapper_target_sex,
             swapper_rotation_compensation=self._settings.swapper_rotation_compensation,
             swapper_rotation_threshold_deg=self._settings.swapper_rotation_threshold_deg,

@@ -217,11 +217,22 @@ class QBatchTaskDialog(QDialog):
         )
         swap_form.addRow("Re-detect uprighted:", self._rotation_redetect)
         self._rotation_source = QComboBox()
-        for label, value in (("Eye keypoints", "keypoints"), ("3D pose estimate", "pose")):
+        for label, value in (
+            ("Eye keypoints", "keypoints"),
+            ("3D pose estimate", "pose"),
+            ("2dfan4 landmarks", "landmark_68"),
+        ):
             self._rotation_source.addItem(label, value)
             if value == task.swapper_rotation_angle_source:
                 self._rotation_source.setCurrentIndex(self._rotation_source.count() - 1)
         swap_form.addRow("Angle source:", self._rotation_source)
+        self._landmark_refine = QCheckBox()
+        self._landmark_refine.setChecked(task.swapper_landmark_refine)
+        self._landmark_refine.setToolTip(
+            "Refine keypoints with the 2dfan4 68-point landmarker (better "
+            "alignment on tilted faces). Downloads 2dfan4 on first batch run."
+        )
+        swap_form.addRow("Landmark refine:", self._landmark_refine)
         self._occlusion_mask = QCheckBox()
         self._occlusion_mask.setChecked(task.swapper_occlusion_mask)
         self._occlusion_mask.setToolTip(
@@ -654,6 +665,7 @@ class QBatchTaskDialog(QDialog):
                 "swapper_detector": self._detector.currentData(),
                 "swapper_many_faces": self._many_faces.isChecked(),
                 "swapper_fast_paste": self._fast_paste.isChecked(),
+                "swapper_landmark_refine": self._landmark_refine.isChecked(),
                 "swapper_target_sex": self._target_sex.currentData(),
                 "swapper_rotation_compensation": self._rotation_enabled.isChecked(),
                 "swapper_rotation_threshold_deg": self._rotation_threshold.value(),

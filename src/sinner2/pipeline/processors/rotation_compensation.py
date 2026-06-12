@@ -37,12 +37,24 @@ _DIFF_THRESHOLD = 8
 _FEATHER_SIGMA = 3.0
 
 
-def compute_roll(face: Any, source: RotationAngleSource) -> float:
+def compute_roll(
+    face: Any, source: RotationAngleSource, landmark_68: Any = None
+) -> float:
     """In-plane roll of a face in degrees (0 = upright).
 
-    POSE reads insightface's 3D estimate (face.pose[2]); KEYPOINTS measures the
-    eye-line angle. POSE falls back to keypoints when the pose model isn't in
-    the pack. Returns 0.0 when neither is available (→ no compensation)."""
+    LANDMARK_68 measures the eye-centre line of the 2dfan4 68 landmarks (the
+    steadiest on tilted faces) when they're supplied; POSE reads insightface's
+    3D estimate (face.pose[2]); KEYPOINTS measures the detector eye-line. Each
+    falls back to the detector eye keypoints when its source is unavailable.
+    Returns 0.0 when nothing usable is present (→ no compensation)."""
+    if source is RotationAngleSource.LANDMARK_68 and landmark_68 is not None:
+        lm = np.asarray(landmark_68, np.float32)
+        if len(lm) >= 48:
+            left = lm[36:42].mean(axis=0)
+            right = lm[42:48].mean(axis=0)
+            return math.degrees(
+                math.atan2(float(right[1] - left[1]), float(right[0] - left[0]))
+            )
     if source is RotationAngleSource.POSE:
         pose = getattr(face, "pose", None)
         if pose is not None and len(pose) >= 3:

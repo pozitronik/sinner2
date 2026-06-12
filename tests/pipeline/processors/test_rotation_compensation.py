@@ -35,6 +35,22 @@ class TestComputeRoll:
     def test_no_data_returns_zero(self):
         assert rc.compute_roll(SimpleNamespace(), RotationAngleSource.KEYPOINTS) == 0.0
 
+    def test_landmark_68_uses_eye_centre_line(self):
+        lm = np.zeros((68, 2), np.float32)
+        lm[36:42] = [40, 50]   # left eye centre
+        lm[42:48] = [60, 70]   # right eye centre → dx=dy=20 → 45°
+        face = SimpleNamespace(kps=np.array([[0, 0], [1, 0]], float))  # would be 0°
+        assert rc.compute_roll(
+            face, RotationAngleSource.LANDMARK_68, lm
+        ) == pytest.approx(45.0)
+
+    def test_landmark_68_falls_back_to_keypoints_when_absent(self):
+        # Source is LANDMARK_68 but no 68 supplied → detector eye-line.
+        face = SimpleNamespace(kps=np.array([[0, 0], [10, 10]], float))
+        assert rc.compute_roll(
+            face, RotationAngleSource.LANDMARK_68, None
+        ) == pytest.approx(45.0)
+
 
 class TestUprightMatrix:
     def test_levels_a_tilted_eye_line(self):

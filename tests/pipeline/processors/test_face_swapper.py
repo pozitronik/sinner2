@@ -71,6 +71,106 @@ class TestThreadSafety:
         assert FaceSwapper.thread_safe is True
 
 
+class TestLandmarkRefine:
+    """landmark_refine builds a 2dfan4 landmarker at setup() and replaces each
+    face's kps with the 68->5 derived points before swapping + publishing."""
+
+    def _stub_landmarker(self, monkeypatch, kps5, score=0.9):
+        from sinner2.pipeline.processors import face_swapper as fs_mod
+
+        class _StubLM:
+            def __init__(self, *a, **k):
+                pass
+
+            def setup(self):
+                pass
+
+            def detect_68(self, frame, bbox):
+                # 68 points whose 36:42 / 42:48 / 30 / 48 / 54 give kps5.
+                lm = np.zeros((68, 2), np.float32)
+                lm[36:42] = kps5[0]
+                lm[42:48] = kps5[1]
+                lm[30] = kps5[2]
+                lm[48] = kps5[3]
+                lm[54] = kps5[4]
+                return lm, score
+
+            def release(self):
+                pass
+
+        monkeypatch.setattr(fs_mod, "FaceLandmarker", _StubLM)
+
+    def test_no_landmarker_built_by_default(
+        self, source_image, models_dir, stub_insightface_app, stub_inswapper
+    ):
+        fs = FaceSwapper(source=Source(path=source_image), params=_params())
+        fs.setup()
+        assert fs._landmarker is None  # noqa: SLF001
+
+    def test_refine_replaces_kps_and_publishes_refined(
+        self, source_image, models_dir, stub_insightface_app, stub_inswapper,
+        monkeypatch,
+    ):
+        from sinner2.pipeline.processor import ChainContext
+
+        refined = np.array(
+            [[1, 1], [2, 2], [3, 3], [4, 4], [5, 5]], np.float32
+        )
+        self._stub_landmarker(monkeypatch, refined)
+        face = MagicMock(name="t")
+        face.bbox = np.array([10, 10, 40, 40], float)
+        face.sex = "M"
+        face.kps = np.zeros((5, 2), np.float32)  # the detector's (to be replaced)
+        stub_insightface_app.get.side_effect = [[MagicMock(name="src")], [face]]
+        fs = FaceSwapper(
+            source=Source(path=source_image),
+            params=_params(landmark_refine=True, rotation_compensation=False),
+        )
+        fs.setup()
+        assert fs._landmarker is not None  # noqa: SLF001
+        ctx = ChainContext()
+        fs.process(_blank(), ctx)
+        np.testing.assert_allclose(face.kps, refined)  # kps refined in place
+        assert ctx.faces[0] is face  # refined face published downstream
+
+    def test_low_score_leaves_detector_kps(
+        self, source_image, models_dir, stub_insightface_app, stub_inswapper,
+        monkeypatch,
+    ):
+        refined = np.array(
+            [[9, 9], [9, 9], [9, 9], [9, 9], [9, 9]], np.float32
+        )
+        self._stub_landmarker(monkeypatch, refined, score=0.2)  # below 0.5
+        original = np.full((5, 2), 7.0, np.float32)
+        face = MagicMock(name="t")
+        face.bbox = np.array([10, 10, 40, 40], float)
+        face.sex = "M"
+        face.kps = original.copy()
+        stub_insightface_app.get.side_effect = [[MagicMock(name="src")], [face]]
+        fs = FaceSwapper(
+            source=Source(path=source_image),
+            params=_params(landmark_refine=True, rotation_compensation=False),
+        )
+        fs.setup()
+        fs.process(_blank())
+        np.testing.assert_allclose(face.kps, original)  # untouched
+
+    def test_landmark_68_angle_source_builds_landmarker(
+        self, source_image, models_dir, stub_insightface_app, stub_inswapper,
+        monkeypatch,
+    ):
+        from sinner2.pipeline.processors.face_swapper import RotationAngleSource
+
+        self._stub_landmarker(monkeypatch, np.zeros((5, 2), np.float32))
+        fs = FaceSwapper(
+            source=Source(path=source_image),
+            params=_params(rotation_angle_source=RotationAngleSource.LANDMARK_68),
+        )
+        fs.setup()
+        # Built even though landmark_refine is False — the angle source needs it.
+        assert fs._landmarker is not None  # noqa: SLF001
+
+
 class TestChainContextPublish:
     def test_publishes_prefilter_faces_to_context(
         self, source_image, models_dir, stub_insightface_app, stub_inswapper
@@ -144,6 +244,7 @@ class TestFaceSwapperParams:
         assert p.detection_interval == 1
         assert p.many_faces is True
         assert p.fast_paste is True  # ROI feather blend is the default
+        assert p.landmark_refine is False  # experimental, opt-in
         assert p.target_sex is TargetSex.BOTH
 
     def test_rejects_zero_interval(self):

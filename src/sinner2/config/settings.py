@@ -47,6 +47,7 @@ class Settings(SinnerBaseModel):
     swapper_detector: str | None = None  # buffalo_l | yoloface | scrfd_2.5g
     swapper_many_faces: bool | None = None
     swapper_fast_paste: bool | None = None  # ROI feather paste vs insightface blend
+    swapper_landmark_refine: bool | None = None  # refine kps with 2dfan4
     swapper_target_sex: str | None = None  # "M"/"F"/"B"/"I"
     enhancer_model: str | None = None  # an EnhancerModel value
     enhancer_upscale: int | None = None

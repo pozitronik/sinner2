@@ -96,6 +96,7 @@ _VIDEO_BACKENDS: dict[str, VideoBackend] = {
 _ROTATION_SOURCES: list[tuple[str, str]] = [
     ("Eye keypoints", RotationAngleSource.KEYPOINTS.value),
     ("3D pose estimate", RotationAngleSource.POSE.value),
+    ("2dfan4 landmarks", RotationAngleSource.LANDMARK_68.value),
 ]
 
 _SWAPPER_MODELS: list[tuple[str, str]] = [
@@ -608,6 +609,17 @@ class QProcessorControls(QWidget):
             lambda _: self.configChanged.emit()
         )
         face_form.addRow("Angle source", self._rotation_source)
+        self._landmark_refine = QCheckBox()
+        self._landmark_refine.setChecked(swapper_defaults.landmark_refine)
+        self._landmark_refine.setToolTip(
+            "Refine each detected face's keypoints with the 2dfan4 68-point\n"
+            "landmarker before swapping — more accurate alignment on tilted /\n"
+            "hard-pose faces (the detector's 5 points degrade there). The\n"
+            "refined geometry also flows to the occlusion mask + enhancer.\n"
+            "Experimental; downloads the 2dfan4 model on first enable."
+        )
+        self._landmark_refine.toggled.connect(self.configChanged)
+        face_form.addRow("Landmark refine", self._landmark_refine)
 
         # Detection overlay toggle (view-only → its own signal, never
         # configChanged). Boxes + sex/age/score/pose on the preview.
@@ -1075,6 +1087,7 @@ class QProcessorControls(QWidget):
             rotation_threshold_deg=self._rotation_threshold.value(),
             rotation_redetect=self._rotation_redetect.isChecked(),
             rotation_angle_source=self._rotation_source.currentData(),
+            landmark_refine=self._landmark_refine.isChecked(),
             occlusion_mask=self._occlusion_mask.isChecked(),
             occlusion_mode=self._occlusion_mode.currentData(),
             occlusion_parser=self._occlusion_parser.currentData(),
@@ -1112,6 +1125,21 @@ class QProcessorControls(QWidget):
         self._occlusion_mask.setChecked(bool(on))
         self._occlusion_mask.blockSignals(False)
         self._update_occlusion_rows()  # blocked signal → refresh manually
+
+    def disable_landmark_refine(self) -> None:
+        """Turn landmark refinement off without firing configChanged — used to
+        revert when the user declines the 2dfan4 model download. Also drops the
+        landmark-68 angle source back to pose (it needs the same model)."""
+        self._landmark_refine.blockSignals(True)
+        self._landmark_refine.setChecked(False)
+        self._landmark_refine.blockSignals(False)
+        if self._rotation_source.currentData() == RotationAngleSource.LANDMARK_68.value:
+            self._rotation_source.blockSignals(True)
+            for i in range(self._rotation_source.count()):
+                if self._rotation_source.itemData(i) == RotationAngleSource.POSE.value:
+                    self._rotation_source.setCurrentIndex(i)
+                    break
+            self._rotation_source.blockSignals(False)
 
     def _update_enhancer_model_rows(self) -> None:
         """Enable only the knob that applies to the selected enhancer model —
@@ -1435,6 +1463,7 @@ class QProcessorControls(QWidget):
         swapper_detector: str | None,
         swapper_many_faces: bool | None,
         swapper_fast_paste: bool | None = None,
+        swapper_landmark_refine: bool | None = None,
         swapper_target_sex: str | None,
         swapper_occlusion_mask: bool | None,
         swapper_occlusion_mode: str | None = None,
@@ -1482,6 +1511,7 @@ class QProcessorControls(QWidget):
             self._detector,
             self._many_faces,
             self._fast_paste,
+            self._landmark_refine,
             self._target_sex,
             self._occlusion_mask,
             self._occlusion_mode,
@@ -1534,6 +1564,8 @@ class QProcessorControls(QWidget):
                 self._many_faces.setChecked(swapper_many_faces)
             if swapper_fast_paste is not None:
                 self._fast_paste.setChecked(swapper_fast_paste)
+            if swapper_landmark_refine is not None:
+                self._landmark_refine.setChecked(swapper_landmark_refine)
             if swapper_target_sex is not None:
                 # Look up by stored token (UserRole data) since the
                 # combo's display text differs from the persisted value.

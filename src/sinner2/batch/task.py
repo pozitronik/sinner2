@@ -119,6 +119,7 @@ class BatchTask(SinnerBaseModel):
     swapper_detector: str = "buffalo_l"  # buffalo_l | yoloface | scrfd_2.5g
     swapper_many_faces: bool = True
     swapper_fast_paste: bool = True  # ROI feather paste vs insightface blend
+    swapper_landmark_refine: bool = False  # refine kps with 2dfan4
     swapper_target_sex: str = "B"  # M/F/B/I (matches FaceSwapperParams)
     # Rotation compensation (shared by the swapper AND the enhancer stages).
     swapper_rotation_compensation: bool = True

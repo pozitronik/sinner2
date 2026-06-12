@@ -31,6 +31,10 @@ from sinner2.pipeline.processors.rotation_compensation import (
     compute_roll,
     swap_with_uprighting,
 )
+from sinner2.pipeline.processors.landmarker import (
+    FaceLandmarker,
+    landmark_68_to_5,
+)
 from sinner2.pipeline.processors.swapper_models import (
     FastPasteSwapper,
     GenericOnnxSwapper,
@@ -100,7 +104,20 @@ class FaceSwapperParams(SinnerBaseModel):
     )
     rotation_angle_source: RotationAngleSource = Field(
         default=RotationAngleSource.POSE,
-        description="Measure roll from eye keypoints or the 3D pose estimate",
+        description="Measure roll from eye keypoints, the 3D pose estimate, "
+        "or the 2dfan4 68-landmark eye-line",
+    )
+    # ---- Landmark refinement (experimental) ----
+    # Replace each detected face's 5 keypoints with the 5 derived from 2dfan4's
+    # 68 landmarks before swapping — more accurate alignment on tilted/hard
+    # faces (the detector's 5 points degrade there). Output-affecting; the
+    # refined geometry also flows to occlusion + enhancer via the ChainContext.
+    landmark_refine: bool = Field(
+        default=False, description="Refine keypoints with the 2dfan4 landmarker"
+    )
+    landmark_min_score: float = Field(
+        default=0.5, ge=0.0, le=1.0,
+        description="Skip refinement when 2dfan4's confidence is below this",
     )
     # ---- Occlusion-aware masking ----
     # Mask the swap to the facial-skin region (parser) and/or the visible
@@ -221,6 +238,9 @@ class FaceSwapper:
         self._analyser: FaceAnalyser | None = None
         self._swapper: Any = None
         self._source_face: Any = None
+        # 2dfan4 landmarker — built only when refinement or the landmark-68
+        # angle source needs it. Shared thread-safe ONNX session.
+        self._landmarker: FaceLandmarker | None = None
         # Occlusion masker — built only when enabled. Torch parsers are NOT
         # thread-safe (serialized via _mask_lock); the ONNX parsers run on a
         # shared thread-safe session and skip the lock (see process()).
@@ -266,6 +286,12 @@ class FaceSwapper:
             # aligned crop) — must run after the source face is detected.
             backend.prepare_source(source_img, self._source_face)
         self._swapper = backend
+        if (
+            self._params.landmark_refine
+            or self._params.rotation_angle_source is RotationAngleSource.LANDMARK_68
+        ):
+            self._landmarker = FaceLandmarker(providers=providers)
+            self._landmarker.setup()
         if self._params.occlusion_mask:
             # ONNX maskers share the swapper's EP profile; torch parsers
             # resolve their own device ("auto" → CUDA when available).
@@ -316,13 +342,34 @@ class FaceSwapper:
         swapper = self._swapper
         source_face = self._source_face
         masker = self._masker
+        landmarker = self._landmarker
         if analyser is None or swapper is None or source_face is None:
             raise RuntimeError("FaceSwapper.process called before setup()")
         faces = analyser.analyse(frame)
+        # Landmark refinement: replace each face's 5 keypoints with the 5
+        # derived from 2dfan4's 68 landmarks (better alignment on tilted
+        # faces), and keep the 68 for the landmark-68 roll source. Best-effort
+        # per face — a low score or failure leaves the detector keypoints.
+        lm68_by_face: dict[int, Any] = {}
+        if landmarker is not None:
+            for face in faces:
+                try:
+                    lm68, score = landmarker.detect_68(frame, face.bbox)
+                except Exception:  # noqa: BLE001 — never break the swap
+                    continue
+                if score < self._params.landmark_min_score:
+                    continue
+                lm68_by_face[id(face)] = lm68
+                if self._params.landmark_refine:
+                    try:
+                        face.kps = landmark_68_to_5(lm68)
+                    except Exception:  # noqa: BLE001
+                        pass
         if ctx is not None:
-            # Publish the PRE-filter list: the enhancer restores every detected
-            # face today (not just swapped ones), so downstream consumers see
-            # exactly what a re-detection would have given them.
+            # Publish the PRE-filter list (already refined): the enhancer
+            # restores every detected face today (not just swapped ones), so
+            # downstream consumers see exactly what a re-detection would have
+            # given them — now with the refined keypoints.
             ctx.faces = list(faces)
         # Publish every detected face (before the sex filter) so the debug
         # overlay shows exactly what the detector saw — including faces that
@@ -343,7 +390,10 @@ class FaceSwapper:
             if gender_filter and not _face_matches(face, target_sex):
                 continue
             before = result
-            result = self._swap_one(before, face, swapper, source_face, analyser)
+            result = self._swap_one(
+                before, face, swapper, source_face, analyser,
+                lm68_by_face.get(id(face)),
+            )
             if self._params.occlusion_mask and masker is not None:
                 # Revert non-facial pixels (hair/glasses/boundary) to the
                 # pre-swap frame. Torch parsers aren't thread-safe → serialize
@@ -390,13 +440,17 @@ class FaceSwapper:
         swapper: Any,
         source_face: Any,
         analyser: FaceAnalyser,
+        landmark_68: Any = None,
     ) -> Frame:
         """Swap a single face — uprighting it first when rotation
         compensation is on and the face is tilted past the threshold,
         otherwise a plain in-place swap. Backend handles are passed in (snapshot
-        from process()) so a concurrent release() can't null them mid-swap."""
+        from process()) so a concurrent release() can't null them mid-swap.
+        ``landmark_68`` (when the landmarker ran) drives the landmark-68 roll."""
         if self._params.rotation_compensation:
-            roll = compute_roll(face, self._params.rotation_angle_source)
+            roll = compute_roll(
+                face, self._params.rotation_angle_source, landmark_68
+            )
             if abs(roll) >= self._params.rotation_threshold_deg:
                 return swap_with_uprighting(
                     result,
@@ -451,7 +505,11 @@ class FaceSwapper:
         # VRAM) rather than just dropping the ref, like the swap backend above.
         if self._masker is not None:
             self._masker.release()
+        # Landmarker owns a shared (refcounted) ONNX session — evict our hold.
+        if self._landmarker is not None:
+            self._landmarker.release()
         self._analyser = None
         self._swapper = None
         self._source_face = None
         self._masker = None
+        self._landmarker = None

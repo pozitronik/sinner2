@@ -22,3 +22,4 @@ class RotationAngleSource(str, Enum):
 
     KEYPOINTS = "keypoints"  # from the eye landmarks (robust, always present)
     POSE = "pose"            # from insightface's 3D pose estimate (face.pose[2])
+    LANDMARK_68 = "landmark_68"  # from the 2dfan4 eye-centre line (steadiest)
