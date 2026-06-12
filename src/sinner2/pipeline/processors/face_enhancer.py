@@ -25,6 +25,7 @@ class EnhancerModel(str, Enum):
     """Face-restoration backend."""
 
     GFPGAN = "gfpgan"          # whole-frame restore; an Upscale knob
+    GFPGAN_ONNX = "gfpgan_onnx"  # ONNX export of the same net; much faster
     CODEFORMER = "codeformer"  # ONNX; a fidelity (w) knob, no upscale
     GPEN_512 = "gpen_512"      # ONNX; plain BFR-512, no knobs (more detail)
     GPEN_1024 = "gpen_1024"    # ONNX; plain BFR-1024 (higher-res restore)
@@ -35,7 +36,16 @@ class EnhancerModel(str, Enum):
 # Plain BFR ONNX restorers (no fidelity knob) → their model filenames. Driven by
 # the shared PlainBfrBackend, which derives the alignment resolution from each
 # model's own declared input shape (512 / 1024 / 2048).
+#
+# GFPGAN_ONNX is the facefusion export of GFPGAN v1.4 — the same generator the
+# torch path runs, but WITHOUT facexlib around it: the torch pipeline's full-res
+# RetinaFace detect + full-frame paste machinery were ~94% of its frame cost
+# (scripts/enhancer_bench.py), so the ONNX route is several times faster. The
+# torch GFPGAN stays available — the export's restore is equivalent but not
+# bit-identical, and its per-face align differs from whole-frame restore.
+# I/O contract verified identical to GPEN's: (1,3,512,512) RGB in [-1,1].
 _BFR_MODEL_FILES: dict[EnhancerModel, str] = {
+    EnhancerModel.GFPGAN_ONNX: "gfpgan_1.4.onnx",
     EnhancerModel.GPEN_512: "gpen_bfr_512.onnx",
     EnhancerModel.GPEN_1024: "gpen_bfr_1024.onnx",
     EnhancerModel.GPEN_2048: "gpen_bfr_2048.onnx",

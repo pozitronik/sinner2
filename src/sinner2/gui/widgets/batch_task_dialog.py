@@ -270,6 +270,7 @@ class QBatchTaskDialog(QDialog):
         self._enhancer_model = QComboBox()
         for value, label in (
             ("gfpgan", "GFPGAN (whole-frame, Upscale knob)"),
+            ("gfpgan_onnx", "GFPGAN (ONNX, much faster)"),
             ("codeformer", "CodeFormer (ONNX, fidelity knob)"),
             ("gpen_512", "GPEN-512 (ONNX, more detail)"),
             ("gpen_1024", "GPEN-1024 (ONNX, higher-res)"),

@@ -110,6 +110,7 @@ _DETECTOR_MODELS: list[tuple[str, str]] = [
 
 _ENHANCER_MODELS: list[tuple[str, str]] = [
     (EnhancerModel.GFPGAN.value, "GFPGAN (whole-frame, Upscale knob)"),
+    (EnhancerModel.GFPGAN_ONNX.value, "GFPGAN (ONNX, much faster)"),
     (EnhancerModel.CODEFORMER.value, "CodeFormer (ONNX, fidelity knob)"),
     (EnhancerModel.GPEN_512.value, "GPEN-512 (ONNX, more detail)"),
     (EnhancerModel.GPEN_1024.value, "GPEN-1024 (ONNX, higher-res)"),

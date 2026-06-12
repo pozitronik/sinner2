@@ -75,6 +75,9 @@ MODEL_CATALOG: dict[str, ModelInfo] = {
     "GFPGANv1.4.pth": _e(
         "GFPGANv1.4.pth", "GFPGAN v1.4", _C.ENHANCER,
         "Default face enhancer (whole-frame restore + upscale knob).", 332),
+    "gfpgan_1.4.onnx": _e(
+        "gfpgan_1.4.onnx", "GFPGAN v1.4 (ONNX)", _C.ENHANCER,
+        "GFPGAN as ONNX — same restorer, much faster pipeline.", 325),
     "codeformer.onnx": _e(
         "codeformer.onnx", "CodeFormer", _C.ENHANCER,
         "Face restorer with a fidelity (w) knob.", 360),

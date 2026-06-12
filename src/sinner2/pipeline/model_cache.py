@@ -76,6 +76,15 @@ MODEL_SOURCES: dict[str, str] = {
         "https://github.com/facefusion/facefusion-assets/releases/download/"
         "models-3.0.0/codeformer.onnx"
     ),
+    # GFPGAN v1.4 as ONNX (facefusion export) — same generator as the bundled
+    # .pth but driven by PlainBfrBackend (per-face align → restore → paste)
+    # instead of the torch+facexlib pipeline, which is several times slower
+    # (its detect + full-frame paste dominated the frame cost). Same [-1,1]
+    # 512px contract as GPEN. Lazy on selection.
+    "gfpgan_1.4.onnx": (
+        "https://github.com/facefusion/facefusion-assets/releases/download/"
+        "models-3.0.0/gfpgan_1.4.onnx"
+    ),
     # GPEN-BFR-512 + RestoreFormer++ — plain ONNX face restorers (no knobs),
     # higher detail than GFPGAN-512. facefusion-assets, verified. Single image
     # input/output in [-1,1]; driven by PlainBfrBackend. Lazy on selection.

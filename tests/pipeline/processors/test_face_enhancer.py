@@ -396,6 +396,7 @@ class TestPlainBfrBackends:
     @pytest.mark.parametrize(
         "model, expected_file",
         [
+            (EnhancerModel.GFPGAN_ONNX, "gfpgan_1.4.onnx"),
             (EnhancerModel.GPEN_512, "gpen_bfr_512.onnx"),
             (EnhancerModel.GPEN_1024, "gpen_bfr_1024.onnx"),
             (EnhancerModel.GPEN_2048, "gpen_bfr_2048.onnx"),
@@ -480,6 +481,7 @@ def test_enhancer_onnx_model_file_mapping():
     from sinner2.pipeline.processors.face_enhancer import enhancer_onnx_model_file
 
     assert enhancer_onnx_model_file(EnhancerModel.GFPGAN) is None
+    assert enhancer_onnx_model_file(EnhancerModel.GFPGAN_ONNX) == "gfpgan_1.4.onnx"
     assert enhancer_onnx_model_file(EnhancerModel.CODEFORMER) == "codeformer.onnx"
     assert enhancer_onnx_model_file(EnhancerModel.GPEN_512) == "gpen_bfr_512.onnx"
     assert enhancer_onnx_model_file(EnhancerModel.GPEN_1024) == "gpen_bfr_1024.onnx"
