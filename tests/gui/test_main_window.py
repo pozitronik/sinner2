@@ -893,24 +893,7 @@ class TestSessionSwitchingDisablesControls:
         win._status_bar = MagicMock()  # noqa: SLF001
         win._session = MagicMock()  # noqa: SLF001
         win._batch_active = False  # noqa: SLF001
-        win._busy_caption = MagicMock()  # noqa: SLF001
-        win._busy_switching = False  # noqa: SLF001
-        win._busy_progress = ""  # noqa: SLF001
         return win
-
-    def test_switching_shows_busy_caption(self):
-        win = self._win()
-        win._on_session_switching(True)  # noqa: SLF001
-        win._busy_caption.show_message.assert_called_with("Switching session…")  # noqa: SLF001
-        win._on_session_switching(False)  # noqa: SLF001
-        win._busy_caption.show_message.assert_called_with("")  # noqa: SLF001
-
-    def test_progress_message_wins_over_swap_notice(self):
-        win = self._win()
-        win._busy_switching = True  # noqa: SLF001
-        win._on_progress_message("Applying settings…")  # noqa: SLF001
-        # Executor progress text takes precedence over the swap notice.
-        win._busy_caption.show_message.assert_called_with("Applying settings…")  # noqa: SLF001
 
     def test_switching_disables_processor_panel_and_transport(self):
         win = self._win()

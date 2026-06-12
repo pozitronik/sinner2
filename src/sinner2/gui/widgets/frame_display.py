@@ -41,9 +41,6 @@ class QFrameDisplayWidget(QWidget):
         # A full-cover child overlay (face-detection debug) kept stretched to
         # the display's rect; None when no overlay is attached.
         self._face_overlay: QWidget | None = None
-        # A second full-cover overlay for the busy caption, kept stretched the
-        # same way (it self-positions its pill at the bottom-centre).
-        self._busy_caption: QWidget | None = None
         self._frameReady.connect(self._on_frame_ready, type=Qt.ConnectionType.QueuedConnection)
         self.setMinimumSize(160, 90)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
@@ -149,19 +146,10 @@ class QFrameDisplayWidget(QWidget):
         if widget is not None:
             widget.setGeometry(self.rect())
 
-    def set_busy_caption(self, widget: QWidget | None) -> None:
-        """Attach the busy-caption overlay, kept stretched to cover the
-        display (it paints only its centred pill)."""
-        self._busy_caption = widget
-        if widget is not None:
-            widget.setGeometry(self.rect())
-
     def resizeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         super().resizeEvent(event)
         if self._face_overlay is not None:
             self._face_overlay.setGeometry(self.rect())
-        if self._busy_caption is not None:
-            self._busy_caption.setGeometry(self.rect())
 
     def paintEvent(self, event: QPaintEvent) -> None:
         painter = QPainter(self)

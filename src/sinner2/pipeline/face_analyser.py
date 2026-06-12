@@ -1,5 +1,4 @@
 import threading
-from collections.abc import Callable
 from typing import Any
 
 import numpy as np
@@ -7,28 +6,6 @@ import numpy as np
 from sinner2.types import Frame
 
 _FACE_MODEL_NAME = "buffalo_l"
-# Optional progress notifier for the (insightface-internal) buffalo_l pack
-# download — there's no progress hook inside insightface, so we just flag the
-# START (non-empty message) and END (empty message) so the GUI can show a
-# "something's happening" caption instead of a silent multi-minute hang on the
-# first run. Set by the executor around chain setup; None = no listener.
-_load_notifier: Callable[[str], None] | None = None
-
-
-def set_load_notifier(notifier: Callable[[str], None] | None) -> None:
-    """Install (or clear) the model-load progress notifier. Called with a
-    message when a long load/download starts and "" when it finishes."""
-    global _load_notifier
-    _load_notifier = notifier
-
-
-def _notify_load(message: str) -> None:
-    notifier = _load_notifier
-    if notifier is not None:
-        try:
-            notifier(message)
-        except Exception:  # noqa: BLE001 — a UI hint must never break a load
-            pass
 _DEFAULT_DET_SIZE = 640
 # SCRFD (the buffalo_l detector) downsamples by strides 8/16/32, so its input
 # must be a multiple of 32. Align any requested det_size down to the nearest
@@ -95,25 +72,13 @@ def _get_shared_face_analysis(
             # insightface forces a "models" subdir under root, so the pack ends up
             # at <models_dir>/models/buffalo_l; passing get_models_dir() (not its
             # parent) keeps it inside the chosen dir even under SINNER2_MODELS_DIR.
-            # First run: the pack isn't on disk yet, so the FaceAnalysis build
-            # below downloads it (~300MB) from inside insightface with no
-            # progress hook. Flag the download so the GUI shows a caption
-            # instead of a silent hang; the empty message in `finally` clears
-            # it whether the build succeeds or raises.
-            pack_present = (get_models_dir() / "models" / _FACE_MODEL_NAME).is_dir()
-            if not pack_present:
-                _notify_load("Downloading face-analysis models (~300MB)…")
-            try:
-                app = FaceAnalysis(
-                    name=_FACE_MODEL_NAME,
-                    root=str(get_models_dir()),
-                    providers=eps,
-                    provider_options=build_provider_options(eps),
-                )
-                app.prepare(ctx_id=0, det_size=_normalize_det_size(det_size))
-            finally:
-                if not pack_present:
-                    _notify_load("")
+            app = FaceAnalysis(
+                name=_FACE_MODEL_NAME,
+                root=str(get_models_dir()),
+                providers=eps,
+                provider_options=build_provider_options(eps),
+            )
+            app.prepare(ctx_id=0, det_size=_normalize_det_size(det_size))
             _shared_app = app
         return _shared_app
 

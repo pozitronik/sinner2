@@ -1060,31 +1060,6 @@ class TestRealtimeExecutorSetChain:
         finally:
             ex.stop()
 
-    def test_set_chain_surfaces_applying_status_then_clears(self, buffer_setup):
-        # The settings/chain apply runs on the dispatcher thread, not the GUI;
-        # the status observable must flag "Applying settings…" during the new
-        # chain's setup and clear when done, so the GUI caption can show it.
-        buffer, timeline, _ = buffer_setup
-        seen: list[str] = []
-        ex = RealtimeExecutor(
-            reader_pool=_pool_for(_MultiFrameReader(1)),
-            buffer=buffer,
-            timeline=Timeline(fps=100.0),
-            chain=[_CountingProcessor()],
-            strategy=BestEffortStrategy(),
-        )
-        try:
-            ex.start()
-            assert _wait_until(lambda: ex.status.get() == "")  # initial load done
-            ex.status.subscribe(lambda s: seen.append(s))
-            new = _CountingProcessor()
-            ex.set_chain([new])
-            assert _wait_until(lambda: new.setup_calls == 1)
-            assert _wait_until(lambda: ex.status.get() == "")  # cleared after
-            assert "Applying settings…" in seen  # flagged during the apply
-        finally:
-            ex.stop()
-
     def test_set_chain_reprocesses_current_frame_without_a_seek(self, buffer_setup):
         # A chain swap must re-render the current frame on its own: the executor
         # invalidates the whole cache + resubmits, so the new chain's output

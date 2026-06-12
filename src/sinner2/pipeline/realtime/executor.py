@@ -1,9 +1,8 @@
 import threading
 import time
 from collections import deque
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Mapping
 from concurrent.futures import CancelledError
-from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
 from queue import Empty, Full, Queue
@@ -295,22 +294,6 @@ class RealtimeExecutor:
         """
         return self._setup_done_event.wait(timeout=timeout)
 
-    @contextmanager
-    def _routing_model_loads(self, base: str) -> Iterator[None]:
-        """While active, route the face-analyser's load/download progress
-        messages into the status observable (so the GUI caption can show the
-        buffalo_l first-run download), restoring `base` when each clears."""
-        from sinner2.pipeline import face_analyser
-
-        def handler(message: str) -> None:
-            self.status.set(message or base)
-
-        face_analyser.set_load_notifier(handler)
-        try:
-            yield
-        finally:
-            face_analyser.set_load_notifier(None)
-
     def _setup_chain_async(self) -> None:
         """Run chain.setup() off the calling thread.
 
@@ -320,11 +303,10 @@ class RealtimeExecutor:
         instead of leaving workers parked forever.
         """
         try:
-            with self._routing_model_loads("loading models…"):
-                for p in self._chain:
-                    if self._stop_event.is_set():
-                        return
-                    p.setup()
+            for p in self._chain:
+                if self._stop_event.is_set():
+                    return
+                p.setup()
         except Exception as e:
             self.status.set(f"chain setup failed: {e}")
             self._stop_event.set()
@@ -751,52 +733,42 @@ class RealtimeExecutor:
             return
         self._drain_work_queue()
         old_chain = self._chain
-        # Surface the apply on the status observable so the GUI caption shows
-        # "Applying settings…" while the new chain's models load (seconds on
-        # weaker hardware) — the apply runs on this dispatcher thread, not the
-        # GUI thread, so without this the change appears to do nothing. Cleared
-        # in `finally` so a stop-abort mid-load can't leave it stuck.
-        self.status.set("Applying settings…")
-        try:
-            # Set up the NEW processors BEFORE exposing the chain. Workers read
-            # self._chain WITHOUT the state lock, so assigning it first would let
-            # a worker call process() on a processor whose model/session is still
-            # None (RuntimeError → fatal worker error → whole-executor teardown).
-            # Setup runs OUTSIDE the state lock so the slow model load doesn't
-            # block workers marking frames complete. Old chain stays live.
-            with self._routing_model_loads("Applying settings…"):
-                for p in chain:
-                    if self._stop_event.is_set():
-                        return
-                    if p not in old_chain:
-                        p.setup()
-            with self._state_lock:
-                self._chain = chain
-                to_release = [p for p in old_chain if p not in chain]
-            # Wait for any worker mid-_apply_chain to finish before releasing
-            # the dropped processors. Without this, release() can null internal
-            # state while a worker is still calling .process() on the instance.
-            if to_release:
-                self._wait_for_inflight()
-                for p in to_release:
-                    p.release()
-            # A chain swap makes EVERY cached frame stale: the cache + store are
-            # keyed by frame index, not by the chain that produced them, so a
-            # frame rendered with the OLD chain would otherwise be served
-            # unchanged on revisit — worse with a large memory cache, where
-            # nothing evicts, so the change appears not to apply at all. Drop
-            # them all and re-render the current frame so the new chain's output
-            # reaches the display at once, paused OR playing, every frame.
-            with self._state_lock:
-                current = self._timeline.current_frame()
-                self._last_submitted = current - 1
-                self._last_completed = min(self._last_completed, current - 1)
-            self._buffer.invalidate_all()
-            self._last_shown_frame_index = None
-            self._submit_specific_frame(current)
-            self._playback_wake.set()
-        finally:
-            self.status.set("")
+        # Set up the NEW processors BEFORE exposing the chain. Workers read
+        # self._chain WITHOUT the state lock, so assigning it first would let a
+        # worker call process() on a processor whose model/session is still None
+        # (RuntimeError → fatal worker error → whole-executor teardown). Setup
+        # also runs OUTSIDE the state lock so the slow model load doesn't block
+        # workers marking frames complete. The old chain stays live during setup.
+        for p in chain:
+            if self._stop_event.is_set():
+                return
+            if p not in old_chain:
+                p.setup()
+        with self._state_lock:
+            self._chain = chain
+            to_release = [p for p in old_chain if p not in chain]
+        # Wait for any worker mid-_apply_chain to finish before releasing
+        # the dropped processors. Without this, release() can null internal
+        # state while a worker is still calling .process() on the instance.
+        if to_release:
+            self._wait_for_inflight()
+            for p in to_release:
+                p.release()
+        # A chain swap makes EVERY cached frame stale: the cache + store are
+        # keyed by frame index, not by the chain that produced them, so a frame
+        # rendered with the OLD chain would otherwise be served unchanged on
+        # revisit — worse with a large memory cache, where nothing evicts, so the
+        # change appears not to apply at all. Drop them all and re-render the
+        # current frame so the new chain's output reaches the display at once,
+        # paused OR playing, every frame (not just the one a seek nudge touched).
+        with self._state_lock:
+            current = self._timeline.current_frame()
+            self._last_submitted = current - 1
+            self._last_completed = min(self._last_completed, current - 1)
+        self._buffer.invalidate_all()
+        self._last_shown_frame_index = None
+        self._submit_specific_frame(current)
+        self._playback_wake.set()
 
     def _wait_for_inflight(self, timeout_s: float = 5.0) -> None:
         deadline = time.monotonic() + timeout_s
