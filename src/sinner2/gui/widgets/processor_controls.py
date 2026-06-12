@@ -223,6 +223,16 @@ class QProcessorControls(QWidget):
         self._many_faces.setChecked(swapper_defaults.many_faces)
         self._many_faces.toggled.connect(self.configChanged)
         swapper_form.addRow("Many faces", self._many_faces)
+        self._fast_paste = QCheckBox()
+        self._fast_paste.setChecked(swapper_defaults.fast_paste)
+        self._fast_paste.toggled.connect(self.configChanged)
+        self._fast_paste.setToolTip(
+            "Blend the swapped face back with the fast ROI feather paste\n"
+            "(~2.7x faster per frame). Off = insightface's original\n"
+            "full-frame diff-based blend (inswapper/reswapper only; the\n"
+            "256px swappers always use the fast blend)."
+        )
+        swapper_form.addRow("Fast paste", self._fast_paste)
         self._target_sex = QComboBox()
         # itemData carries the single-letter token so settings round-trip
         # without coupling to the QComboBox index. Order: most-permissive
@@ -983,6 +993,7 @@ class QProcessorControls(QWidget):
             detection_size=self._detection_size.value(),
             detector=DetectorModel(self._detector.currentData()),
             many_faces=self._many_faces.isChecked(),
+            fast_paste=self._fast_paste.isChecked(),
             target_sex=self._target_sex.currentData(),
             rotation_compensation=self._rotation_enabled.isChecked(),
             rotation_threshold_deg=self._rotation_threshold.value(),
@@ -1325,6 +1336,7 @@ class QProcessorControls(QWidget):
         swapper_detection_size: int | None,
         swapper_detector: str | None,
         swapper_many_faces: bool | None,
+        swapper_fast_paste: bool | None = None,
         swapper_target_sex: str | None,
         swapper_occlusion_mask: bool | None,
         swapper_occlusion_parser: str | None,
@@ -1369,6 +1381,7 @@ class QProcessorControls(QWidget):
             self._detection_size,
             self._detector,
             self._many_faces,
+            self._fast_paste,
             self._target_sex,
             self._occlusion_mask,
             self._occlusion_parser,
@@ -1417,6 +1430,8 @@ class QProcessorControls(QWidget):
                         break
             if swapper_many_faces is not None:
                 self._many_faces.setChecked(swapper_many_faces)
+            if swapper_fast_paste is not None:
+                self._fast_paste.setChecked(swapper_fast_paste)
             if swapper_target_sex is not None:
                 # Look up by stored token (UserRole data) since the
                 # combo's display text differs from the persisted value.

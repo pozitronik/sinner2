@@ -177,6 +177,13 @@ class QBatchTaskDialog(QDialog):
         self._many_faces = QCheckBox()
         self._many_faces.setChecked(task.swapper_many_faces)
         swap_form.addRow("Many faces:", self._many_faces)
+        self._fast_paste = QCheckBox()
+        self._fast_paste.setChecked(task.swapper_fast_paste)
+        self._fast_paste.setToolTip(
+            "Fast ROI feather paste (~2.7x faster). Off = insightface's "
+            "original diff-based blend (inswapper/reswapper only)."
+        )
+        swap_form.addRow("Fast paste:", self._fast_paste)
         self._target_sex = QComboBox()
         for label, value in _TARGET_SEX_OPTIONS:
             self._target_sex.addItem(label, value)
@@ -557,6 +564,7 @@ class QBatchTaskDialog(QDialog):
                 "swapper_detection_size": self._detection_size.value(),
                 "swapper_detector": self._detector.currentData(),
                 "swapper_many_faces": self._many_faces.isChecked(),
+                "swapper_fast_paste": self._fast_paste.isChecked(),
                 "swapper_target_sex": self._target_sex.currentData(),
                 "swapper_rotation_compensation": self._rotation_enabled.isChecked(),
                 "swapper_rotation_threshold_deg": self._rotation_threshold.value(),

@@ -51,6 +51,17 @@ def models_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     return md
 
 
+def _params(**overrides) -> FaceSwapperParams:
+    """Legacy-paste params for the orchestration tests below: their backend
+    stubs echo the frame from get(paste_back=True), which is insightface's
+    ORIGINAL paste surface. The FastPaste adapter (fast_paste=True — the
+    default) consumes get(paste_back=False)'s (crop, matrix) contract instead
+    and has its own dedicated tests; wrapping it here would change what these
+    tests assert (orchestration: filters, sinks, crops — not the blend)."""
+    overrides.setdefault("fast_paste", False)
+    return FaceSwapperParams(**overrides)
+
+
 def _blank() -> Frame:
     return np.zeros((10, 10, 3), dtype=np.uint8)
 
@@ -60,11 +71,35 @@ class TestThreadSafety:
         assert FaceSwapper.thread_safe is True
 
 
+class TestFastPasteWiring:
+    """fast_paste (default ON) wraps the insightface backend in the FastPaste
+    adapter at setup(); OFF keeps insightface's raw backend (original blend)."""
+
+    def test_default_wraps_inswapper(
+        self, source_image, models_dir, stub_insightface_app, stub_inswapper
+    ):
+        fs = FaceSwapper(source=Source(path=source_image))  # defaults
+        fs.setup()
+        wrapped = fs._swapper  # noqa: SLF001
+        assert wrapped.__class__.__name__ == "FastPasteSwapper"
+        assert wrapped._inner is stub_inswapper  # noqa: SLF001
+
+    def test_fast_paste_off_keeps_raw_backend(
+        self, source_image, models_dir, stub_insightface_app, stub_inswapper
+    ):
+        fs = FaceSwapper(
+            source=Source(path=source_image), params=_params()
+        )
+        fs.setup()
+        assert fs._swapper is stub_inswapper  # noqa: SLF001
+
+
 class TestFaceSwapperParams:
     def test_defaults(self):
         p = FaceSwapperParams()
         assert p.detection_interval == 1
         assert p.many_faces is True
+        assert p.fast_paste is True  # ROI feather blend is the default
         assert p.target_sex is TargetSex.BOTH
 
     def test_rejects_zero_interval(self):
@@ -85,10 +120,10 @@ class TestFaceSwapper:
         assert FaceSwapper.name == "FaceSwapper"
 
     def test_compliant_with_processor_protocol(self, source_image: Path):
-        assert isinstance(FaceSwapper(source=Source(path=source_image)), Processor)
+        assert isinstance(FaceSwapper(source=Source(path=source_image), params=_params()), Processor)
 
     def test_process_before_setup_raises(self, source_image: Path):
-        fs = FaceSwapper(source=Source(path=source_image))
+        fs = FaceSwapper(source=Source(path=source_image), params=_params())
         with pytest.raises(RuntimeError, match="before setup"):
             fs.process(_blank())
 
@@ -100,7 +135,7 @@ class TestFaceSwapper:
         stub_inswapper: MagicMock,
     ):
         stub_insightface_app.get.return_value = []
-        fs = FaceSwapper(source=Source(path=source_image))
+        fs = FaceSwapper(source=Source(path=source_image), params=_params())
         with pytest.raises(ValueError, match="no face detected"):
             fs.setup()
 
@@ -111,7 +146,7 @@ class TestFaceSwapper:
         stub_insightface_app: MagicMock,
         stub_inswapper: MagicMock,
     ):
-        fs = FaceSwapper(source=Source(path=source_image))
+        fs = FaceSwapper(source=Source(path=source_image), params=_params())
         fs.setup()
         out = fs.process(_blank())
         assert out.shape == (10, 10, 3)
@@ -127,7 +162,7 @@ class TestFaceSwapper:
             [MagicMock(name="src")],
             [MagicMock(name="t1"), MagicMock(name="t2")],
         ]
-        fs = FaceSwapper(source=Source(path=source_image))
+        fs = FaceSwapper(source=Source(path=source_image), params=_params())
         fs.setup()
         fs.process(_blank())
         assert stub_inswapper.get.call_count == 2
@@ -143,7 +178,7 @@ class TestSetSource:
     ):
         face1, face2 = MagicMock(name="src1"), MagicMock(name="src2")
         stub_insightface_app.get.side_effect = [[face1], [face2]]
-        fs = FaceSwapper(source=Source(path=source_image))
+        fs = FaceSwapper(source=Source(path=source_image), params=_params())
         fs.setup()
         assert fs._source_face is face1  # noqa: SLF001
         analyser, swapper = fs._analyser, fs._swapper  # noqa: SLF001
@@ -156,7 +191,7 @@ class TestSetSource:
         assert fs._source.path == src2   # noqa: SLF001
 
     def test_before_setup_just_records_source(self, source_image, tmp_path):
-        fs = FaceSwapper(source=Source(path=source_image))
+        fs = FaceSwapper(source=Source(path=source_image), params=_params())
         src2 = tmp_path / "s2.png"
         src2.write_bytes(b"x")
         fs.set_source(Source(path=src2))  # no models loaded → record only
@@ -168,7 +203,7 @@ class TestSetSource:
         tmp_path,
     ):
         stub_insightface_app.get.side_effect = [[MagicMock()], []]
-        fs = FaceSwapper(source=Source(path=source_image))
+        fs = FaceSwapper(source=Source(path=source_image), params=_params())
         fs.setup()
         src2 = tmp_path / "s2.png"
         cv2.imwrite(str(src2), np.zeros((8, 8, 3), dtype=np.uint8))
@@ -186,10 +221,7 @@ class TestModelDispatch:
     ):
         # A non-insightface model (ghost) must route through GenericOnnxSwapper,
         # NOT _load_inswapper — and prepare_source must run after source detect.
-        from sinner2.pipeline.processors.face_swapper import (
-            FaceSwapperParams,
-            SwapperModel,
-        )
+        from sinner2.pipeline.processors.face_swapper import SwapperModel
 
         events: list[str] = []
 
@@ -214,7 +246,7 @@ class TestModelDispatch:
 
         fs = FaceSwapper(
             source=Source(path=source_image),
-            params=FaceSwapperParams(
+            params=_params(
                 model=SwapperModel.GHOST_2_256, rotation_compensation=False
             ),
         )
@@ -235,7 +267,7 @@ class TestModelDispatch:
             [t1, t2],                 # process: target faces (all published)
         ]
         sink = MagicMock()
-        fs = FaceSwapper(source=Source(path=source_image), detection_sink=sink)
+        fs = FaceSwapper(source=Source(path=source_image), params=_params(), detection_sink=sink)
         fs.setup()
         fs.process(_blank())  # 10x10 blank
         sink.publish.assert_called_once()
@@ -258,7 +290,7 @@ class TestModelDispatch:
         sink.wants_crops.return_value = True
         fs = FaceSwapper(
             source=Source(path=source_image),
-            params=FaceSwapperParams(rotation_compensation=False),
+            params=_params(rotation_compensation=False),
             detection_sink=sink,
         )
         fs.setup()
@@ -282,7 +314,7 @@ class TestModelDispatch:
         sink.wants_crops.return_value = False
         fs = FaceSwapper(
             source=Source(path=source_image),
-            params=FaceSwapperParams(rotation_compensation=False),
+            params=_params(rotation_compensation=False),
             detection_sink=sink,
         )
         fs.setup()
@@ -319,7 +351,7 @@ class TestModelDispatch:
         stub_insightface_app.get.side_effect = [[MagicMock(name="src")], [face]]
         fs = FaceSwapper(
             source=Source(path=source_image),
-            params=FaceSwapperParams(occlusion_mask=True, rotation_compensation=False),
+            params=_params(occlusion_mask=True, rotation_compensation=False),
         )
         fs.setup()
         fs.process(_blank())
@@ -334,7 +366,7 @@ class TestModelDispatch:
     ):
         fs = FaceSwapper(
             source=Source(path=source_image),
-            params=FaceSwapperParams(occlusion_mask=False),
+            params=_params(occlusion_mask=False),
         )
         fs.setup()
         assert fs._masker is None  # noqa: SLF001 — not built when off
@@ -360,7 +392,7 @@ class TestModelDispatch:
         stub_insightface_app.get.side_effect = [[MagicMock(name="src")], [tilted]]
         fs = FaceSwapper(
             source=Source(path=source_image),
-            params=FaceSwapperParams(
+            params=_params(
                 rotation_compensation=True, rotation_threshold_deg=15
             ),
         )
@@ -390,7 +422,7 @@ class TestModelDispatch:
         stub_insightface_app.get.side_effect = [[MagicMock(name="src")], [upright]]
         fs = FaceSwapper(
             source=Source(path=source_image),
-            params=FaceSwapperParams(
+            params=_params(
                 rotation_compensation=True, rotation_threshold_deg=15
             ),
         )
@@ -412,7 +444,7 @@ class TestModelDispatch:
         ]
         sink = MagicMock()
         sink.publish.side_effect = RuntimeError("overlay exploded")
-        fs = FaceSwapper(source=Source(path=source_image), detection_sink=sink)
+        fs = FaceSwapper(source=Source(path=source_image), params=_params(), detection_sink=sink)
         fs.setup()
         fs.process(_blank())  # must not raise despite the sink failing
         assert stub_inswapper.get.call_count == 1
@@ -430,7 +462,7 @@ class TestModelDispatch:
         ]
         fs = FaceSwapper(
             source=Source(path=source_image),
-            params=FaceSwapperParams(many_faces=False),
+            params=_params(many_faces=False),
         )
         fs.setup()
         fs.process(_blank())
@@ -456,7 +488,7 @@ class TestModelDispatch:
         ]
         fs = FaceSwapper(
             source=Source(path=source_image),
-            params=FaceSwapperParams(target_sex=TargetSex.FEMALE),
+            params=_params(target_sex=TargetSex.FEMALE),
         )
         fs.setup()
         fs.process(_blank())
@@ -479,7 +511,7 @@ class TestModelDispatch:
         ]
         fs = FaceSwapper(
             source=Source(path=source_image),
-            params=FaceSwapperParams(target_sex=TargetSex.BOTH),
+            params=_params(target_sex=TargetSex.BOTH),
         )
         fs.setup()
         fs.process(_blank())
@@ -501,7 +533,7 @@ class TestModelDispatch:
         ]
         fs = FaceSwapper(
             source=Source(path=source_image),
-            params=FaceSwapperParams(target_sex=TargetSex.AS_SOURCE),
+            params=_params(target_sex=TargetSex.AS_SOURCE),
         )
         fs.setup()
         fs.process(_blank())
@@ -524,7 +556,7 @@ class TestModelDispatch:
         ]
         fs = FaceSwapper(
             source=Source(path=source_image),
-            params=FaceSwapperParams(target_sex=TargetSex.MALE),
+            params=_params(target_sex=TargetSex.MALE),
         )
         fs.setup()
         fs.process(_blank())
@@ -562,7 +594,7 @@ class TestFaceMatchesHelper:
         stub_insightface_app: MagicMock,
         stub_inswapper: MagicMock,
     ):
-        fs = FaceSwapper(source=Source(path=source_image))
+        fs = FaceSwapper(source=Source(path=source_image), params=_params())
         fs.setup()
         fs.release()
         with pytest.raises(RuntimeError):
@@ -625,7 +657,7 @@ class TestReleaseRaceContract:
         stub_insightface_app.get.side_effect = [[src], [f1, f2]]
         fs = FaceSwapper(
             source=Source(path=source_image),
-            params=FaceSwapperParams(
+            params=_params(
                 rotation_compensation=False, occlusion_mask=False, many_faces=True
             ),
         )
@@ -654,7 +686,7 @@ class TestReleaseFreesMasker:
         # The torch occlusion masker holds CUDA memory; FaceSwapper.release()
         # must release it (not just drop the ref) so its VRAM is freed on a
         # chain rebuild — same as it does for the swap backend.
-        fs = FaceSwapper(source=Source(path=source_image))
+        fs = FaceSwapper(source=Source(path=source_image), params=_params())
         fs.setup()
         masker = MagicMock()
         fs._masker = masker  # noqa: SLF001  simulate occlusion enabled

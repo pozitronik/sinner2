@@ -357,6 +357,7 @@ class BatchDriver:
                 detection_size=task.swapper_detection_size,
                 detector=DetectorModel(task.swapper_detector),
                 many_faces=task.swapper_many_faces,
+                fast_paste=task.swapper_fast_paste,
                 target_sex=TargetSex(task.swapper_target_sex),
                 rotation_compensation=task.swapper_rotation_compensation,
                 rotation_threshold_deg=task.swapper_rotation_threshold_deg,

@@ -1434,6 +1434,7 @@ class SinnerMainWindow(QMainWindow):
             swapper_detection_size=self._settings.swapper_detection_size,
             swapper_detector=self._settings.swapper_detector,
             swapper_many_faces=self._settings.swapper_many_faces,
+            swapper_fast_paste=self._settings.swapper_fast_paste,
             swapper_target_sex=self._settings.swapper_target_sex,
             swapper_rotation_compensation=self._settings.swapper_rotation_compensation,
             swapper_rotation_threshold_deg=self._settings.swapper_rotation_threshold_deg,

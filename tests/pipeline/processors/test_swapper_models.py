@@ -12,6 +12,7 @@ import pytest
 
 from sinner2.pipeline.face_geometry import paste_back
 from sinner2.pipeline.processors.swapper_models import (
+    FastPasteSwapper,
     GenericOnnxSwapper,
     SwapperModel,
     _box_mask,
@@ -173,3 +174,70 @@ class TestGenericGet:
         backend._session = _IdentitySession()  # noqa: SLF001
         backend.release()
         assert evicted == ["uniface_256.onnx"]  # no converter companion
+
+
+class _StubInswapper:
+    """Real INSwapper surface: paste_back=False → (aligned crop, matrix);
+    paste_back=True → the (legacy) internally-pasted frame."""
+
+    def __init__(self, crop_size: int = 8) -> None:
+        self.calls: list[bool] = []
+        self._crop = np.full((crop_size, crop_size, 3), 200, np.uint8)
+        # Identity warp translated to (1, 2): the crop lands at that offset.
+        self._matrix = np.array([[1.0, 0.0, -1.0], [0.0, 1.0, -2.0]], np.float32)
+
+    def get(self, img, target_face, source_face=None, paste_back=True):
+        self.calls.append(paste_back)
+        if paste_back:
+            return np.full_like(img, 7)  # marker: the legacy internal paste
+        return self._crop, self._matrix
+
+
+class TestFastPasteSwapper:
+    def test_paste_true_blends_crop_via_roi_paste(self):
+        inner = _StubInswapper()
+        fp = FastPasteSwapper(inner)
+        frame = np.zeros((20, 20, 3), np.uint8)
+        out = fp.get(frame, target_face=object(), source_face=object())
+        # The inner model is asked for the crop ONLY — its internal paste
+        # (the 113ms/frame full-frame blend) must never run.
+        assert inner.calls == [False]
+        assert out.shape == frame.shape
+        # Crop center blended in at the matrix offset; far corner untouched.
+        assert out[6, 5, 0] > 150
+        assert out[19, 19].tolist() == [0, 0, 0]
+
+    def test_paste_false_passes_through_crop_and_matrix(self):
+        inner = _StubInswapper()
+        fp = FastPasteSwapper(inner)
+        crop, matrix = fp.get(
+            np.zeros((20, 20, 3), np.uint8), object(), object(), paste_back=False
+        )
+        assert inner.calls == [False]
+        assert crop.shape == (8, 8, 3)
+        assert matrix.shape == (2, 3)
+
+    def test_mask_built_once_per_crop_size(self):
+        inner = _StubInswapper()
+        fp = FastPasteSwapper(inner)
+        frame = np.zeros((20, 20, 3), np.uint8)
+        fp.get(frame, object(), object())
+        first = fp._mask  # noqa: SLF001
+        fp.get(frame, object(), object())
+        assert fp._mask is first  # noqa: SLF001 — cached, not rebuilt
+
+    def test_blend_matches_shared_roi_paste(self):
+        # The adapter's output must be exactly paste_back(...) with the box
+        # mask — same blend the 256px swappers use (one consistent look).
+        inner = _StubInswapper()
+        fp = FastPasteSwapper(inner)
+        frame = np.random.default_rng(7).integers(
+            0, 255, (20, 20, 3), dtype=np.uint8
+        )
+        out = fp.get(frame.copy(), object(), object())
+        crop, matrix = inner._crop, inner._matrix  # noqa: SLF001
+        expected = paste_back(
+            frame.copy(), crop, matrix, _box_mask(8),
+            border_replicate=True, clip_mask=True,
+        )
+        assert np.array_equal(out, expected)

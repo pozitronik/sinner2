@@ -202,6 +202,41 @@ def _box_mask(size: int, blur: float = 0.3) -> np.ndarray:
     return mask
 
 
+class FastPasteSwapper:
+    """Wraps an insightface swap backend (INSwapper family — inswapper /
+    reswapper) to replace its INTERNAL paste with the shared ROI feather paste.
+
+    insightface's ``get(paste_back=True)`` composites with full-frame float
+    blends + a per-pixel ``fake_diff`` mask + a full-res GaussianBlur — measured
+    at ~113ms of a ~157ms swap frame at FullHD (77%; scripts/swapper_bench.py).
+    This adapter asks the model for the aligned crop only and blends it back
+    through paste_back's ROI path with facefusion's box mask — the exact blend
+    the 256px swappers (ghost/simswap/uniface) already use — for ~2.7x less
+    per-frame cost. Same ``.get()`` surface, so the plain and rotation call
+    sites don't branch. Thread-safe like the wrapped model (the lazy mask init
+    race is benign: _box_mask is deterministic).
+    """
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+        self._mask: np.ndarray | None = None  # sized lazily from the first crop
+
+    def get(
+        self, img: Frame, target_face: Any, source_face: Any = None,
+        paste_back: bool = True,
+    ) -> Any:
+        if not paste_back:
+            return self._inner.get(img, target_face, source_face, paste_back=False)
+        crop, matrix = self._inner.get(img, target_face, source_face, paste_back=False)
+        mask = self._mask
+        if mask is None or mask.shape[0] != crop.shape[0]:
+            mask = _box_mask(crop.shape[0])
+            self._mask = mask
+        return _paste_back(
+            img, crop, matrix, mask, border_replicate=True, clip_mask=True
+        )
+
+
 class GenericOnnxSwapper:
     """facefusion-style ONNX swap backend for ghost / simswap / uniface.
 

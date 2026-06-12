@@ -30,6 +30,7 @@ from sinner2.pipeline.processors.rotation_compensation import (
     swap_with_uprighting,
 )
 from sinner2.pipeline.processors.swapper_models import (
+    FastPasteSwapper,
     GenericOnnxSwapper,
     SwapperModel,
     get_spec,
@@ -67,6 +68,13 @@ class FaceSwapperParams(SinnerBaseModel):
     )
     many_faces: bool = Field(
         default=True, description="Swap all detected faces (otherwise first only)"
+    )
+    fast_paste: bool = Field(
+        default=True,
+        description="Blend the swap back with the fast ROI feather paste "
+        "(~2.7x faster per frame) instead of insightface's full-frame "
+        "diff-based blend. inswapper/reswapper only — the 256px swappers "
+        "always blend this way. Output-affecting.",
     )
     target_sex: TargetSex = Field(
         default=TargetSex.BOTH,
@@ -221,6 +229,10 @@ class FaceSwapper:
         backend: Any
         if spec.insightface:
             backend = _load_inswapper(get_model_path(spec.model_file), providers)
+            if self._params.fast_paste:
+                # Replace insightface's internal full-frame diff-blend (~77% of
+                # a FullHD swap frame) with the shared ROI feather paste.
+                backend = FastPasteSwapper(backend)
         else:
             backend = GenericOnnxSwapper(spec, providers)
             backend.setup()
