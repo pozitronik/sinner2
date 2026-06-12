@@ -363,24 +363,32 @@ class QProcessorControls(QWidget):
         # all-unchecked column that lies about what ORT will use.
         # apply_restored_settings overrides this when there's a persisted list.
         default_active = set(DEFAULT_ONNX_PROVIDERS)
+        # Single source for per-provider tooltips: read here at construction
+        # AND by mark_providers_failed when clearing a mark — otherwise the
+        # clear path overwrote the TRT-specific text with generic copy on
+        # every launch (and the two generic variants drifted apart).
+        _GENERIC_PROVIDER_TIP = (
+            "ONNX execution provider. Multiple may be checked; ORT\n"
+            "tries them in the order shown. You can't run on no provider\n"
+            "— unchecking everything forces CPU back on (the floor).\n"
+            "Applies immediately — rebuilds the session (chain reloads)."
+        )
+        self._provider_tooltips: dict[str, str] = {
+            prov: (
+                "TensorRT: compiles a GPU-specific engine for the swapper +\n"
+                "detector — typically 2–3× faster than plain CUDA. The FIRST\n"
+                "run after enabling builds the engine (tens of seconds,\n"
+                "one-time) and caches it to disk; later runs load it fast.\n"
+                "Needs the TensorRT runtime (the installer offers it); falls\n"
+                "back to CUDA if it's missing."
+                if prov == "TensorrtExecutionProvider"
+                else _GENERIC_PROVIDER_TIP
+            )
+            for prov in available
+        }
         for prov in available:
             cb = QCheckBox(prov)
-            if prov == "TensorrtExecutionProvider":
-                cb.setToolTip(
-                    "TensorRT: compiles a GPU-specific engine for the swapper +\n"
-                    "detector — typically 2–3× faster than plain CUDA. The FIRST\n"
-                    "run after enabling builds the engine (tens of seconds,\n"
-                    "one-time) and caches it to disk; later runs load it fast.\n"
-                    "Needs the TensorRT runtime (the installer offers it); falls\n"
-                    "back to CUDA if it's missing."
-                )
-            else:
-                cb.setToolTip(
-                    "ONNX execution provider. Multiple may be checked; ORT\n"
-                    "tries them in the order shown. You can't run on no provider\n"
-                    "— unchecking everything forces CPU back on (the floor).\n"
-                    "Applies immediately — rebuilds the session (chain reloads)."
-                )
+            cb.setToolTip(self._provider_tooltips[prov])
             cb.setChecked(prov in default_active)
             cb.toggled.connect(self._on_provider_toggled)
             providers_layout.addWidget(cb)
@@ -1350,13 +1358,9 @@ class QProcessorControls(QWidget):
                 )
             else:
                 cb.setStyleSheet("")
-                cb.setToolTip(
-                    "ONNX execution provider. Multiple may be checked; ORT\n"
-                    "tries them in the order shown. Uncheck everything to use\n"
-                    "NO provider — ORT then falls back to its CPU last-resort\n"
-                    "(slow, no GPU). Applies immediately — rebuilds the session\n"
-                    "(chain reloads)."
-                )
+                # Restore the construction-time tooltip (TRT keeps its
+                # specific text) instead of overwriting with generic copy.
+                cb.setToolTip(self._provider_tooltips.get(name, ""))
 
     def cache_mode(self) -> CacheMode:
         return _CACHE_MODES[self._cache_mode_combo.currentText()]

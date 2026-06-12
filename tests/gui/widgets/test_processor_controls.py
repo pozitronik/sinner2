@@ -817,6 +817,18 @@ class TestFaceDetectorGroup:
         combo.setCurrentIndex(combo.findData("x4plus"))  # torch
         assert widget._upscaler_device.isEnabled()  # noqa: SLF001
 
+    def test_provider_tooltips_survive_failed_mark_cycle(self, widget):
+        # mark_providers_failed's else branch used to overwrite EVERY
+        # non-failed checkbox's tooltip with generic text — clobbering the
+        # TensorRT-specific tooltip on every launch (audit rank 42). Clearing
+        # the marks must restore the construction-time tooltips verbatim.
+        cbs = widget._provider_checkboxes  # noqa: SLF001
+        original = {n: cb.toolTip() for n, cb in cbs.items()}
+        widget.mark_providers_failed(set(cbs))  # everything failed → red text
+        widget.mark_providers_failed(set())     # cleared
+        for n, cb in cbs.items():
+            assert cb.toolTip() == original[n], n
+
     def test_enabling_comparison_checks_overlay(self, widget):
         # The widget-level link: checking comparison checks the overlay box too.
         assert widget._overlay_enabled.isChecked() is False  # noqa: SLF001
