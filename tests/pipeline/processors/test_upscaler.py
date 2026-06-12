@@ -133,6 +133,33 @@ class TestOnnxUpscale:
         tiled = _onnx_upscale(s, frame, scale=2, tile=8, in_name="input", out_name="output")
         assert np.array_equal(whole, tiled)
 
+    def test_finalize_is_byte_identical_to_naive_expression(self):
+        # The fused band-wise finalizer must reproduce the original five-pass
+        # expression exactly — including out-of-range values (models can
+        # over/undershoot [0,1]) and round-half-even ties. Odd height + a
+        # tiny band size exercise the banding seams.
+        import cv2
+
+        from sinner2.pipeline.processors.upscaler import _finalize_bgr
+
+        rng = np.random.default_rng(9)
+        chw = rng.uniform(-0.2, 1.2, (3, 37, 23)).astype(np.float32)
+        chw[0, 0, 0] = 0.5 / 255.0 * 255.0  # exact .5 tie in 0..255 space
+        naive = cv2.cvtColor(
+            (np.clip(chw, 0.0, 1.0).transpose(1, 2, 0) * 255.0)
+            .round().astype(np.uint8),
+            cv2.COLOR_RGB2BGR,
+        )
+        assert np.array_equal(_finalize_bgr(chw), naive)
+
+    def test_finalize_does_not_mutate_input(self):
+        from sinner2.pipeline.processors.upscaler import _finalize_bgr
+
+        chw = np.random.default_rng(10).uniform(0, 1, (3, 8, 8)).astype(np.float32)
+        original = chw.copy()
+        _finalize_bgr(chw)
+        assert np.array_equal(chw, original)
+
 
 class _AlignRequiredNet:
     """Like SwinIR: errors unless H,W are a multiple of `align` (its window)."""

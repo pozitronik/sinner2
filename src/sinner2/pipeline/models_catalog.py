@@ -115,7 +115,7 @@ MODEL_CATALOG: dict[str, ModelInfo] = {
         "Transformer super-resolution x4 (sharp, slow — batch).", 64),
     "real_hatgan_x4.onnx": _e(
         "real_hatgan_x4.onnx", "HAT x4", _C.UPSCALER,
-        "HAT super-resolution x4 (high detail, slow — batch).", 153),
+        "HAT super-resolution x4 — ~24s/frame at FullHD; stills only.", 153),
     "ultra_sharp_x4.onnx": _e(
         "ultra_sharp_x4.onnx", "4x-UltraSharp", _C.UPSCALER,
         "Community ESRGAN-arch super-resolution x4.", 64),

@@ -129,7 +129,7 @@ _UPSCALER_MODELS: list[tuple[str, str]] = [
     (UpscalerModel.X4PLUS.value, "Real-ESRGAN x4plus (higher quality, heavy)"),
     (UpscalerModel.X2PLUS.value, "Real-ESRGAN x2plus"),
     (UpscalerModel.SWINIR_M.value, "SwinIR x4 (transformer, sharp, slow)"),
-    (UpscalerModel.HAT_X4.value, "HAT x4 (ONNX, high detail)"),
+    (UpscalerModel.HAT_X4.value, "HAT x4 (ONNX, very slow — stills only)"),
     (UpscalerModel.ULTRASHARP_X4.value, "4x-UltraSharp (ONNX)"),
     (UpscalerModel.SPAN_X4.value, "SPAN x4 (ONNX, fast)"),
 ]

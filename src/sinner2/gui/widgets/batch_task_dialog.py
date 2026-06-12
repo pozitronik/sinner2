@@ -396,7 +396,7 @@ class QBatchTaskDialog(QDialog):
             ("x4plus", "Real-ESRGAN x4plus (higher quality)"),
             ("x2plus", "Real-ESRGAN x2plus"),
             ("swinir-m", "SwinIR x4 (sharp, slow)"),
-            ("hat-x4", "HAT x4 (ONNX)"),
+            ("hat-x4", "HAT x4 (ONNX, very slow — stills only)"),
             ("ultrasharp-x4", "4x-UltraSharp (ONNX)"),
             ("span-x4", "SPAN x4 (ONNX, fast)"),
         ):

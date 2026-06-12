@@ -270,6 +270,35 @@ def _onnx_fixed_tile(
     return out
 
 
+def _finalize_bgr(chw: np.ndarray) -> Frame:
+    """Fused CHW float RGB [0,1] → HWC BGR uint8, processed in row bands.
+
+    The naive expression (clip → transpose → *255 → round → astype + cvtColor)
+    makes five full passes over the upscaled float frame — ~3GB of memory
+    traffic for a FullHD x4 output (400MB float32), which measured LARGER than
+    the SPAN model's own inference (scripts/upscaler_bench.py: post 502ms vs
+    forward 285ms). Band-wise processing keeps each band's intermediates
+    cache-resident (one DRAM read of the float frame, one write of the uint8
+    result), and assigning channels in reverse order folds the RGB→BGR swap
+    in, dropping the separate cvtColor pass.
+
+    Byte-identical to the naive expression: same mul → clip → round-half-even
+    per pixel (clip before or after the multiply is equivalent for the 0..255
+    bounds), and np.rint produces exact integer-valued floats, so the uint8
+    cast cannot truncate differently."""
+    _, h, w = chw.shape
+    arr = np.empty((h, w, 3), np.uint8)
+    band = max(1, (1 << 22) // max(1, w * 12))  # ~4MB float band per channel set
+    for y0 in range(0, h, band):
+        y1 = min(y0 + band, h)
+        b = chw[:, y0:y1, :] * 255.0
+        np.clip(b, 0.0, 255.0, out=b)
+        np.rint(b, out=b)
+        for c in range(3):
+            arr[y0:y1, :, 2 - c] = b[c]
+    return arr
+
+
 def _onnx_upscale(
     session: Any, bgr: Frame, *, scale: int, tile: int, in_name: str, out_name: str,
     fixed_size: int | None = None,
@@ -286,8 +315,7 @@ def _onnx_upscale(
         out = _onnx_tiled(session, chw, scale, tile, in_name, out_name)
     else:
         out = _onnx_run(session, chw, in_name, out_name)
-    arr = (np.clip(out[0], 0.0, 1.0).transpose(1, 2, 0) * 255.0).round().astype(np.uint8)
-    return cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+    return _finalize_bgr(out[0])
 
 
 class Upscaler:
