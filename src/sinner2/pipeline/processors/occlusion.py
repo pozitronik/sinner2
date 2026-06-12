@@ -154,7 +154,13 @@ def apply_occlusion(
 ) -> Frame:
     """Keep only the facial-region pixels from `swapped`; the rest reverts to
     `before` (the pre-swap frame) — so occluders stay original. Best-effort:
-    returns `swapped` unchanged on any error."""
+    returns `swapped` unchanged on any error.
+
+    The mask warp + float blend run only inside the bounding box of the warped
+    aligned square (+2px interpolation bleed) — outside it the warped alpha is
+    identically 0, so the result is `before` there by definition, and the full-
+    frame float blend this replaces was ~60-80ms of CPU per face at FullHD
+    (the same pattern paste_back fixed; see scripts/enhancer_bench.py)."""
     try:
         m = _align_matrix(face.kps)
         aligned = cv2.warpAffine(before, m, (_ALIGN_SIZE, _ALIGN_SIZE))
@@ -162,10 +168,29 @@ def apply_occlusion(
         mask = cv2.GaussianBlur(mask, (0, 0), sigmaX=_FEATHER_SIGMA)
         m_inv = cv2.invertAffineTransform(m)
         h, w = before.shape[:2]
-        alpha = cv2.warpAffine(mask, m_inv, (w, h))[..., None]
-        blended = (
-            swapped.astype(np.float32) * alpha + before.astype(np.float32) * (1.0 - alpha)
-        )
-        return blended.astype(np.uint8)
+        corners = np.array(
+            [[0, 0], [_ALIGN_SIZE, 0], [_ALIGN_SIZE, _ALIGN_SIZE], [0, _ALIGN_SIZE]],
+            np.float32,
+        ).reshape(1, 4, 2)
+        warped = cv2.transform(corners, m_inv)[0]
+        x0 = max(int(np.floor(float(warped[:, 0].min()))) - 2, 0)
+        y0 = max(int(np.floor(float(warped[:, 1].min()))) - 2, 0)
+        x1 = min(int(np.ceil(float(warped[:, 0].max()))) + 2, w)
+        y1 = min(int(np.ceil(float(warped[:, 1].max()))) + 2, h)
+        if x0 >= x1 or y0 >= y1:
+            return before.copy()  # aligned square fully off-frame → all reverts
+        m_roi = m_inv.copy()
+        m_roi[0, 2] -= x0
+        m_roi[1, 2] -= y0
+        alpha = cv2.warpAffine(mask, m_roi, (x1 - x0, y1 - y0))[..., None]
+        # Outside the warped square alpha is 0 → the blend yields `before`
+        # everywhere outside the ROI, so start from a copy of `before`.
+        out = before.copy()
+        roi_sw = swapped[y0:y1, x0:x1].astype(np.float32)
+        roi_bf = out[y0:y1, x0:x1].astype(np.float32)
+        out[y0:y1, x0:x1] = (
+            roi_sw * alpha + roi_bf * (1.0 - alpha)
+        ).astype(np.uint8)
+        return out
     except Exception:
         return swapped
