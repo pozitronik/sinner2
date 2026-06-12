@@ -22,8 +22,8 @@ from sinner2.pipeline.processors.face_swapper_types import (
 )
 from sinner2.pipeline.processors.occlusion import (
     FaceParser,
-    OcclusionMasker,
     apply_occlusion,
+    build_parser_masker,
 )
 from sinner2.pipeline.processors.rotation_compensation import (
     compute_roll,
@@ -204,9 +204,10 @@ class FaceSwapper:
         self._analyser: FaceAnalyser | None = None
         self._swapper: Any = None
         self._source_face: Any = None
-        # Occlusion masker (torch BiSeNet) — built only when enabled. Not
-        # thread-safe, so the shared swapper serializes its calls.
-        self._masker: OcclusionMasker | None = None
+        # Occlusion masker — built only when enabled. Torch parsers are NOT
+        # thread-safe (serialized via _mask_lock); the ONNX parsers run on a
+        # shared thread-safe session and skip the lock (see process()).
+        self._masker: Any = None
         self._mask_lock = threading.Lock()
 
     def setup(self) -> None:
@@ -249,7 +250,11 @@ class FaceSwapper:
             backend.prepare_source(source_img, self._source_face)
         self._swapper = backend
         if self._params.occlusion_mask:
-            self._masker = OcclusionMasker(parser=self._params.occlusion_parser)
+            # ONNX parsers share the swapper's EP profile; torch parsers
+            # resolve their own device ("auto" → CUDA when available).
+            self._masker = build_parser_masker(
+                self._params.occlusion_parser, providers=providers
+            )
             self._masker.setup()
 
     def set_source(self, source: Source) -> None:
@@ -316,9 +321,14 @@ class FaceSwapper:
             result = self._swap_one(before, face, swapper, source_face, analyser)
             if self._params.occlusion_mask and masker is not None:
                 # Revert non-facial pixels (hair/glasses/boundary) to the
-                # pre-swap frame. Torch parser → serialize across workers.
-                with self._mask_lock:
+                # pre-swap frame. Torch parsers aren't thread-safe → serialize
+                # across workers; the ONNX parsers (shared ORT session) run
+                # lock-free so N workers can mask in parallel.
+                if getattr(masker, "thread_safe", False):
                     result = apply_occlusion(before, result, face, masker)
+                else:
+                    with self._mask_lock:
+                        result = apply_occlusion(before, result, face, masker)
             swapped_faces.append(face)
             if not self._params.many_faces:
                 break

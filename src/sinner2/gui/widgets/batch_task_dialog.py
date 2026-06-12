@@ -224,7 +224,12 @@ class QBatchTaskDialog(QDialog):
         )
         swap_form.addRow("Occlusion mask:", self._occlusion_mask)
         self._occlusion_parser = QComboBox()
-        for value, label in (("bisenet", "BiSeNet (sharper)"), ("parsenet", "ParseNet (GFPGAN default)")):
+        for value, label in (
+            ("bisenet", "BiSeNet (torch, sharper)"),
+            ("parsenet", "ParseNet (torch, GFPGAN default)"),
+            ("bisenet_onnx_34", "BiSeNet-34 (ONNX, parallel workers)"),
+            ("bisenet_onnx_18", "BiSeNet-18 (ONNX, parallel + faster)"),
+        ):
             self._occlusion_parser.addItem(label, value)
             if value == task.swapper_occlusion_parser:
                 self._occlusion_parser.setCurrentIndex(

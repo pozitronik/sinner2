@@ -129,8 +129,10 @@ _UPSCALER_MODELS: list[tuple[str, str]] = [
 ]
 
 _OCCLUSION_PARSERS: list[tuple[str, str]] = [
-    (FaceParser.BISENET.value, "BiSeNet (sharper)"),
-    (FaceParser.PARSENET.value, "ParseNet (GFPGAN default)"),
+    (FaceParser.BISENET.value, "BiSeNet (torch, sharper)"),
+    (FaceParser.PARSENET.value, "ParseNet (torch, GFPGAN default)"),
+    (FaceParser.BISENET_ONNX_34.value, "BiSeNet-34 (ONNX, parallel workers)"),
+    (FaceParser.BISENET_ONNX_18.value, "BiSeNet-18 (ONNX, parallel + faster)"),
 ]
 
 

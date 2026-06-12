@@ -129,6 +129,12 @@ MODEL_CATALOG: dict[str, ModelInfo] = {
     "parsing_parsenet.pth": _e(
         "parsing_parsenet.pth", "ParseNet parser", _C.MASK_PARSER,
         "Face parser for occlusion masking (lighter/faster).", 81),
+    "bisenet_resnet_34.onnx": _e(
+        "bisenet_resnet_34.onnx", "BiSeNet-34 (ONNX)", _C.MASK_PARSER,
+        "Face parser as ONNX — workers mask in parallel (no lock).", 89),
+    "bisenet_resnet_18.onnx": _e(
+        "bisenet_resnet_18.onnx", "BiSeNet-18 (ONNX)", _C.MASK_PARSER,
+        "Lighter ONNX face parser — parallel masking, faster.", 50),
 }
 
 

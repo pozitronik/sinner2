@@ -70,6 +70,17 @@ MODEL_SOURCES: dict[str, str] = {
         "https://github.com/xinntao/facexlib/releases/download/v0.2.2/"
         "parsing_parsenet.pth"
     ),
+    # BiSeNet face parsers as ONNX (facefusion exports) — same 19-class map as
+    # the facexlib .pth parsers but on a shared thread-safe ORT session, so
+    # occlusion masking doesn't serialize the worker pool. Lazy on selection.
+    "bisenet_resnet_34.onnx": (
+        "https://github.com/facefusion/facefusion-assets/releases/download/"
+        "models-3.0.0/bisenet_resnet_34.onnx"
+    ),
+    "bisenet_resnet_18.onnx": (
+        "https://github.com/facefusion/facefusion-assets/releases/download/"
+        "models-3.1.0/bisenet_resnet_18.onnx"
+    ),
     # CodeFormer face-restorer (ONNX, facefusion-assets). The `w` fidelity is a
     # scalar model input. ~377 MB.
     "codeformer.onnx": (

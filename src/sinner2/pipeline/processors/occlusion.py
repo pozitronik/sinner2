@@ -29,10 +29,15 @@ from sinner2.types import Frame
 
 
 class FaceParser(str, Enum):
-    """Which facexlib face-parser drives occlusion masking."""
+    """Which face-parser drives occlusion masking. The first two are torch
+    (facexlib) models — NOT thread-safe, so the swapper serializes workers on a
+    lock around them. The ONNX pair are facefusion's exports running on a
+    shared thread-safe ORT session: no lock, workers parse in parallel."""
 
-    BISENET = "bisenet"    # accurate boundaries, heavier
-    PARSENET = "parsenet"  # lighter/faster (GFPGAN's default parser)
+    BISENET = "bisenet"    # torch; accurate boundaries, heavier
+    PARSENET = "parsenet"  # torch; lighter/faster (GFPGAN's default parser)
+    BISENET_ONNX_34 = "bisenet_onnx_34"  # ONNX resnet-34; thread-safe
+    BISENET_ONNX_18 = "bisenet_onnx_18"  # ONNX resnet-18; thread-safe, lighter
 
 
 @dataclass(frozen=True)
@@ -54,9 +59,20 @@ _PARSER_SPECS: dict[FaceParser, _ParserSpec] = {
 }
 
 
+# ONNX parser model files (facefusion exports), keyed separately from the
+# torch _PARSER_SPECS — they have their own normalization, handled inline in
+# OnnxParserMasker (contract verified against facefusion's face_masker.py).
+_ONNX_PARSER_FILES: dict[FaceParser, str] = {
+    FaceParser.BISENET_ONNX_34: "bisenet_resnet_34.onnx",
+    FaceParser.BISENET_ONNX_18: "bisenet_resnet_18.onnx",
+}
+
+
 def parser_model_file(parser: FaceParser) -> str:
     """The weights filename for a parser (so the GUI can confirm + download it
     before enabling occlusion)."""
+    if parser in _ONNX_PARSER_FILES:
+        return _ONNX_PARSER_FILES[parser]
     return _PARSER_SPECS[parser].filename
 
 
@@ -86,7 +102,9 @@ def _align_matrix(kps: np.ndarray) -> np.ndarray:
 
 class OcclusionMasker:
     """facexlib face-parse → a facial-region mask. torch model (not thread-safe;
-    the swapper serializes calls)."""
+    the swapper serializes calls on a lock)."""
+
+    thread_safe = False
 
     def __init__(
         self, parser: FaceParser = FaceParser.BISENET, device: str = "auto"
@@ -147,6 +165,73 @@ class OcclusionMasker:
             out = self._model(t)[0]
         classes = out.argmax(dim=1).squeeze().cpu().numpy()
         return np.isin(classes, list(_FACE_CLASSES)).astype(np.float32)
+
+
+class OnnxParserMasker:
+    """facefusion's BiSeNet ONNX face parsers → the same facial-region mask as
+    the torch parsers, on a SHARED thread-safe ORT session — the swapper skips
+    its serialization lock for this masker, so N workers parse in parallel.
+
+    Contract (verified against facefusion face_masker.py): 512×512 input, BGR
+    flipped to RGB, /255 then ImageNet mean/std, NCHW; output logits over the
+    face-parsing.PyTorch 19-class map (same ids as the torch parsers, so
+    _FACE_CLASSES is shared)."""
+
+    thread_safe = True
+
+    _MEAN = np.array([0.485, 0.456, 0.406], np.float32)
+    _STD = np.array([0.229, 0.224, 0.225], np.float32)
+
+    def __init__(self, model_file: str, providers: list[str] | None = None) -> None:
+        from sinner2.config.execution import DEFAULT_ONNX_PROVIDERS
+
+        self._model_file = model_file
+        self._providers = (
+            list(providers) if providers else list(DEFAULT_ONNX_PROVIDERS)
+        )
+        self._session: Any = None
+        self._in_name = "input"
+        self._out_name = "output"
+
+    def setup(self) -> None:
+        from sinner2.pipeline.model_cache import get_onnx_session
+
+        self._session = get_onnx_session(self._model_file, providers=self._providers)
+        self._in_name = self._session.get_inputs()[0].name
+        self._out_name = self._session.get_outputs()[0].name
+
+    def face_mask(self, aligned_bgr: Frame) -> np.ndarray:
+        """512×512 float mask (1 = facial region) for an aligned BGR crop."""
+        if self._session is None:
+            raise RuntimeError("OnnxParserMasker.face_mask called before setup()")
+        rgb = aligned_bgr[:, :, ::-1].astype(np.float32) / 255.0
+        chw = np.ascontiguousarray(
+            ((rgb - self._MEAN) / self._STD).transpose(2, 0, 1)[None], np.float32
+        )
+        out = self._session.run([self._out_name], {self._in_name: chw})[0]
+        if out.ndim == 4:
+            out = out[0]
+        classes = out.argmax(0)
+        return np.isin(classes, list(_FACE_CLASSES)).astype(np.float32)
+
+    def release(self) -> None:
+        from sinner2.pipeline.model_cache import release_onnx_session
+
+        self._session = None
+        release_onnx_session(self._model_file, self._providers)
+
+
+def build_parser_masker(
+    parser: FaceParser,
+    device: str = "auto",
+    providers: list[str] | None = None,
+) -> Any:
+    """The right masker for a parser choice: torch facexlib for bisenet /
+    parsenet (per-instance, lock-serialized by the swapper), shared-session
+    ONNX for the facefusion exports (thread-safe, no lock)."""
+    if parser in _ONNX_PARSER_FILES:
+        return OnnxParserMasker(_ONNX_PARSER_FILES[parser], providers=providers)
+    return OcclusionMasker(parser=parser, device=device)
 
 
 def apply_occlusion(

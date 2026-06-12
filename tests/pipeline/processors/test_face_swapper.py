@@ -330,16 +330,15 @@ class TestModelDispatch:
         monkeypatch: pytest.MonkeyPatch,
     ):
         class _StubMasker:
-            def __init__(self, *a, **k):
-                pass
-
             def setup(self):
                 pass
 
             def face_mask(self, _a):
                 return None
 
-        monkeypatch.setattr(face_swapper, "OcclusionMasker", _StubMasker)
+        monkeypatch.setattr(
+            face_swapper, "build_parser_masker", lambda *a, **k: _StubMasker()
+        )
         called: list = []
         monkeypatch.setattr(
             face_swapper, "apply_occlusion",
