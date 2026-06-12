@@ -54,27 +54,6 @@ def _buffalo_root_and_pack(models_dir: Any) -> tuple[Any, Any]:
     return models_dir, models_dir / "models" / _FACE_MODEL_NAME
 
 
-def _migrate_legacy_buffalo_pack(models_dir: Any, pack_dir: Any) -> None:
-    """Move a previously double-nested pack (``<models_dir>/models/buffalo_l``)
-    to the clean ``pack_dir`` so the path fix doesn't trigger a ~300MB
-    re-download. Best-effort: a failure just falls through to a fresh download."""
-    legacy = models_dir / "models" / _FACE_MODEL_NAME
-    if pack_dir.is_dir() or not legacy.is_dir() or legacy.resolve() == pack_dir.resolve():
-        return
-    import shutil
-
-    try:
-        pack_dir.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(legacy), str(pack_dir))
-        # Drop the now-empty intermediate "models" dir if nothing else uses it.
-        try:
-            legacy.parent.rmdir()
-        except OSError:
-            pass
-    except OSError:
-        pass
-
-
 _shared_app: Any = None
 _shared_lock = threading.RLock()
 
@@ -131,7 +110,6 @@ def _get_shared_face_analysis(
             # "models" we keep the dir itself as root (nested, but still inside
             # the chosen folder — the parent could place it outside).
             root, pack_dir = _buffalo_root_and_pack(get_models_dir())
-            _migrate_legacy_buffalo_pack(get_models_dir(), pack_dir)
             # First run downloads the pack (~300MB) from inside insightface with
             # no progress hook. Flag start/end so the GUI can show a busy
             # indicator; the empty message in `finally` clears it on success or

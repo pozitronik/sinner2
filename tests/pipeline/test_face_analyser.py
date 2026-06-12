@@ -92,29 +92,6 @@ class TestBuffaloPackLocation:
         assert root == models
         assert pack == Path("/data/sinnermodels/models/buffalo_l")
 
-    def test_migrates_legacy_double_nested_pack(self, tmp_path):
-        models = tmp_path / "models"
-        legacy = models / "models" / "buffalo_l"
-        legacy.mkdir(parents=True)
-        (legacy / "det.onnx").write_bytes(b"x")
-        clean = models / "buffalo_l"
-        face_analyser._migrate_legacy_buffalo_pack(models, clean)  # noqa: SLF001
-        assert clean.is_dir()
-        assert (clean / "det.onnx").is_file()
-        assert not legacy.exists()  # moved, and empty intermediate removed
-
-    def test_migration_noop_when_clean_present(self, tmp_path):
-        models = tmp_path / "models"
-        clean = models / "buffalo_l"
-        clean.mkdir(parents=True)
-        (clean / "real.onnx").write_bytes(b"keep")
-        legacy = models / "models" / "buffalo_l"
-        legacy.mkdir(parents=True)
-        (legacy / "stale.onnx").write_bytes(b"old")
-        face_analyser._migrate_legacy_buffalo_pack(models, clean)  # noqa: SLF001
-        assert (clean / "real.onnx").read_bytes() == b"keep"  # not clobbered
-        assert legacy.is_dir()  # left as-is
-
 
 @pytest.fixture
 def stub_insightface(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
