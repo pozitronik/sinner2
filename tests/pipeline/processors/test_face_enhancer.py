@@ -331,7 +331,7 @@ class TestCodeFormerBackend:
             def setup(self):
                 pass
 
-            def enhance(self, img):
+            def enhance(self, img, faces=None):
                 return img
 
         monkeypatch.setattr(face_enhancer, "CodeFormerBackend", _StubBackend)
@@ -379,7 +379,7 @@ class TestCodeFormerBackend:
             def setup(self):
                 pass
 
-            def enhance(self, img):
+            def enhance(self, img, faces=None):
                 return img
 
             def release(self):
@@ -397,6 +397,61 @@ class TestCodeFormerBackend:
         assert fe._codeformer is None  # noqa: SLF001
 
 
+class TestChainContextConsume:
+    def test_ctx_faces_forwarded_to_bfr_backend(
+        self, models_dir, stub_face_detection, monkeypatch
+    ):
+        from sinner2.pipeline.processor import ChainContext
+
+        captured: dict = {}
+
+        class _Spy:
+            def __init__(self, *a, **k):
+                pass
+
+            def setup(self):
+                pass
+
+            def enhance(self, img, faces=None):
+                captured["faces"] = faces
+                return img
+
+        monkeypatch.setattr(face_enhancer, "PlainBfrBackend", _Spy)
+        fe = FaceEnhancer(params=FaceEnhancerParams(
+            model=EnhancerModel.GPEN_512, rotation_compensation=False,
+        ))
+        fe.setup()
+        ctx = ChainContext()
+        upstream = [object()]
+        ctx.faces = upstream
+        fe.process(_blank(), ctx)
+        assert captured["faces"] is upstream
+
+    def test_no_ctx_means_backend_self_detects(
+        self, models_dir, stub_face_detection, monkeypatch
+    ):
+        captured: dict = {"faces": "unset"}
+
+        class _Spy:
+            def __init__(self, *a, **k):
+                pass
+
+            def setup(self):
+                pass
+
+            def enhance(self, img, faces=None):
+                captured["faces"] = faces
+                return img
+
+        monkeypatch.setattr(face_enhancer, "PlainBfrBackend", _Spy)
+        fe = FaceEnhancer(params=FaceEnhancerParams(
+            model=EnhancerModel.GPEN_512, rotation_compensation=False,
+        ))
+        fe.setup()
+        fe.process(_blank())
+        assert captured["faces"] is None  # backend falls back to its analyser
+
+
 class TestPlainBfrBackends:
     """GPEN-512 and RestoreFormer++ route through the shared PlainBfrBackend."""
 
@@ -411,7 +466,7 @@ class TestPlainBfrBackends:
         def setup(self):
             pass
 
-        def enhance(self, img):
+        def enhance(self, img, faces=None):
             return img
 
         def release(self):
@@ -472,7 +527,7 @@ class TestRotationSkippedForOnnxRestorers:
         def setup(self):
             pass
 
-        def enhance(self, img):
+        def enhance(self, img, faces=None):
             return img
 
     def test_codeformer_skips_uprighting(

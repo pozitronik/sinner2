@@ -1,6 +1,29 @@
-from typing import Protocol, runtime_checkable
+from dataclasses import dataclass, field
+from typing import Any, Protocol, runtime_checkable
 
 from sinner2.types import Frame
+
+
+@dataclass
+class ChainContext:
+    """Per-frame state shared DOWN the chain (one instance per frame pass).
+
+    ``faces``: the swapper's pre-filter detections for this frame. Downstream
+    consumers (the ONNX restorer backends) align with these instead of running
+    their own detection — one GPU detection pass per frame instead of two, and
+    swap + enhance agree on the same geometry (the swap pastes onto these very
+    keypoints, so they remain valid on the post-swap frame). ``None`` means no
+    upstream detection ran (enhancer-only chain, batch stage, direct call) →
+    consumers self-detect as before. An EMPTY list is a real result ("this
+    frame has no faces") and is trusted, not re-detected.
+
+    Executors construct one context per frame and pass it only to processors
+    whose class sets ``accepts_context = True`` (their ``process`` takes an
+    optional second argument); everything else keeps the plain one-argument
+    ``process(frame)`` contract below.
+    """
+
+    faces: list[Any] | None = field(default=None)
 
 
 @runtime_checkable

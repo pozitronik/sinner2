@@ -126,6 +126,10 @@ def _load_restorer(path: Path, upscale: int, device: Any, fp16: bool = False) ->
 class FaceEnhancer:
     name = "FaceEnhancer"
     thread_safe = False  # GFPGAN mutates torch state — each worker needs its own
+    # Consumes upstream detections from the ChainContext (the swapper's) so the
+    # ONNX backends align with them instead of re-detecting. The torch GFPGAN
+    # path ignores the context — facexlib detects internally.
+    accepts_context = True
 
     def __init__(
         self,
@@ -208,7 +212,7 @@ class FaceEnhancer:
 
         return torch.autocast("cuda", dtype=torch.float16)
 
-    def process(self, frame: Frame) -> Frame:
+    def process(self, frame: Frame, ctx: Any = None) -> Frame:
         # Local snapshots — release() can null these concurrently; holding a
         # local ref keeps the active backend alive for this call.
         restorer = self._restorer
@@ -216,12 +220,18 @@ class FaceEnhancer:
         bfr = self._bfr
         if restorer is None and codeformer is None and bfr is None:
             raise RuntimeError("FaceEnhancer.process called before setup()")
+        # Upstream detections (the swapper's) — the ONNX backends align with
+        # them instead of re-detecting. Only for the FULL frame; the rotation
+        # pass below enhances uprighted CROPS, whose geometry differs.
+        shared_faces = ctx.faces if ctx is not None else None
 
-        def enhance_image(img: Frame, only_center: bool) -> Frame:
+        def enhance_image(
+            img: Frame, only_center: bool, faces: list | None = None
+        ) -> Frame:
             if codeformer is not None:
-                return codeformer.enhance(img)  # ONNX session is thread-safe
+                return codeformer.enhance(img, faces=faces)  # shared ONNX session
             if bfr is not None:
-                return bfr.enhance(img)  # ONNX session is thread-safe
+                return bfr.enhance(img, faces=faces)  # shared ONNX session
             with self._enhance_lock, self._gfpgan_autocast():
                 _, _, out = restorer.enhance(
                     img,
@@ -231,7 +241,9 @@ class FaceEnhancer:
                 )
             return out if out is not None else img
 
-        result = enhance_image(frame, self._params.only_center_face)
+        result = enhance_image(
+            frame, self._params.only_center_face, faces=shared_faces
+        )
         # Only GFPGAN needs the uprighting pass. The ONNX restorers (CodeFormer /
         # GPEN / RestoreFormer) already remove in-plane roll via their per-face
         # estimate_norm alignment, so re-enhancing an uprighted crop is wasted

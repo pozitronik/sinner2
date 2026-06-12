@@ -67,7 +67,12 @@ class PerWorkerProcessor:
         # actually use.
         pass
 
-    def process(self, frame: Frame) -> Frame:
+    # Always accepts a ChainContext; forwards it only to wrapped instances
+    # that declare accepts_context themselves (e.g. FaceEnhancer — its ONNX
+    # backends reuse the swapper's detections; the Upscaler doesn't care).
+    accepts_context = True
+
+    def process(self, frame: Frame, ctx: Any = None) -> Frame:
         inst: Processor | None = getattr(self._local, "instance", None)
         if inst is None:
             inst = self._factory()
@@ -75,6 +80,8 @@ class PerWorkerProcessor:
             self._local.instance = inst
             with self._lock:
                 self._instances.append(inst)
+        if ctx is not None and getattr(inst, "accepts_context", False):
+            return inst.process(frame, ctx)  # type: ignore[call-arg]
         return inst.process(frame)
 
     def release_thread_local(self) -> None:

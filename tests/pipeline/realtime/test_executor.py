@@ -2053,3 +2053,76 @@ class TestPublicAccessors:
         pool = MagicMock()
         ex._reader_pool = pool  # noqa: SLF001
         assert ex.reader_pool is pool
+
+
+class TestApplyChainContext:
+    """_apply_chain feeds ONE ChainContext per frame to context-aware
+    processors (detect-once-share-faces); plain processors keep the
+    one-argument call."""
+
+    def _executor_shell(self):
+        from collections import deque
+
+        from sinner2.pipeline.realtime.executor import RealtimeExecutor
+
+        ex = object.__new__(RealtimeExecutor)  # bypass the heavy __init__
+        ex._timings_lock = threading.Lock()
+        ex._processor_timings = deque()
+        return ex
+
+    def test_context_flows_between_context_aware_processors(self):
+        class _Producer:
+            name = "producer"
+            thread_safe = True
+            accepts_context = True
+
+            def process(self, frame, ctx=None):
+                ctx.faces = ["FACE"]
+                return frame
+
+        class _Plain:
+            name = "plain"
+            thread_safe = True
+
+            def process(self, frame):
+                return frame
+
+        class _Consumer:
+            name = "consumer"
+            thread_safe = True
+            accepts_context = True
+
+            def __init__(self):
+                self.seen = "unset"
+
+            def process(self, frame, ctx=None):
+                self.seen = ctx.faces
+                return frame
+
+        ex = self._executor_shell()
+        consumer = _Consumer()
+        frame = np.zeros((4, 4, 3), np.uint8)
+        ex._apply_chain(frame, (_Producer(), _Plain(), consumer))
+        assert consumer.seen == ["FACE"]
+
+    def test_fresh_context_per_frame(self):
+        class _Consumer:
+            name = "consumer"
+            thread_safe = True
+            accepts_context = True
+
+            def __init__(self):
+                self.seen: list = []
+
+            def process(self, frame, ctx=None):
+                self.seen.append(ctx.faces)
+                ctx.faces = ["stale"]
+                return frame
+
+        ex = self._executor_shell()
+        consumer = _Consumer()
+        frame = np.zeros((4, 4, 3), np.uint8)
+        ex._apply_chain(frame, (consumer,))
+        ex._apply_chain(frame, (consumer,))
+        # The second frame's context starts clean — nothing leaks across frames.
+        assert consumer.seen == [None, None]

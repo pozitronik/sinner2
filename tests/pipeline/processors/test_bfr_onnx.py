@@ -120,6 +120,39 @@ def test_enhance_aligns_at_configured_size():
     assert captured["shape"] == (1, 3, 1024, 1024)
 
 
+def test_enhance_uses_upstream_faces_and_skips_detection():
+    # ChainContext path: faces handed down from the swapper are aligned with
+    # directly — the backend must NOT run its own detection.
+    backend = PlainBfrBackend("gpen_bfr_512.onnx")
+    backend._session = _IdentitySession()  # noqa: SLF001
+    detect_calls: list[int] = []
+    backend._analyser = SimpleNamespace(  # noqa: SLF001
+        analyse=lambda _img: detect_calls.append(1) or []
+    )
+    face = SimpleNamespace(
+        kps=np.array(
+            [[40, 45], [60, 45], [50, 55], [42, 62], [58, 62]], np.float32
+        )
+    )
+    out = backend.enhance(np.full((100, 100, 3), 80, np.uint8), faces=[face])
+    assert detect_calls == []  # upstream list trusted, no re-detection
+    assert out.shape == (100, 100, 3)
+
+
+def test_enhance_trusts_empty_upstream_list():
+    # [] is a real "no faces on this frame" result — no detection, no restore.
+    backend = PlainBfrBackend("gpen_bfr_512.onnx")
+    backend._session = _IdentitySession()  # noqa: SLF001
+    detect_calls: list[int] = []
+    backend._analyser = SimpleNamespace(  # noqa: SLF001
+        analyse=lambda _img: detect_calls.append(1) or []
+    )
+    img = np.full((100, 100, 3), 80, np.uint8)
+    out = backend.enhance(img, faces=[])
+    assert detect_calls == []
+    assert out is img  # untouched
+
+
 def test_enhance_restores_each_detected_face():
     backend = PlainBfrBackend("gpen_bfr_512.onnx")
     backend._session = _IdentitySession()  # noqa: SLF001

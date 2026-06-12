@@ -1,6 +1,6 @@
 import numpy as np
 
-from sinner2.pipeline.processor import Processor
+from sinner2.pipeline.processor import ChainContext, Processor
 from sinner2.types import Frame
 
 
@@ -36,3 +36,18 @@ class TestProcessorProtocol:
         for p in [a, b]:
             frame = p.process(frame)
         assert frame.shape == (10, 10, 3)
+
+
+class TestChainContext:
+    def test_defaults_to_no_faces(self):
+        # None = "no upstream detection ran" → consumers self-detect; an
+        # empty LIST is a real no-faces result and must stay distinguishable.
+        ctx = ChainContext()
+        assert ctx.faces is None
+        ctx.faces = []
+        assert ctx.faces == []
+
+    def test_plain_processors_do_not_accept_context(self):
+        # accepts_context is opt-in — absent means the executor calls the
+        # one-argument process(frame).
+        assert getattr(_Compliant(), "accepts_context", False) is False

@@ -196,6 +196,10 @@ def _load_inswapper(path: Path, providers: list[str]) -> Any:
 class FaceSwapper:
     name = "FaceSwapper"
     thread_safe = True  # one ORT session, called concurrently by N workers
+    # Publishes this frame's detections into the ChainContext so downstream
+    # processors (the enhancer's ONNX backends) reuse them instead of
+    # re-detecting — see ChainContext.faces for the contract.
+    accepts_context = True
 
     def __init__(
         self,
@@ -301,7 +305,7 @@ class FaceSwapper:
         self._source = source
         self._source_face = new_face  # atomic swap — read via process()'s snapshot
 
-    def process(self, frame: Frame) -> Frame:
+    def process(self, frame: Frame, ctx: Any = None) -> Frame:
         # Snapshot the backend handles into locals — release() (from a live
         # set_chain/reconfigure) can null self._* concurrently, and the
         # executor's _wait_for_inflight is bounded (5s), so a long in-flight
@@ -315,6 +319,11 @@ class FaceSwapper:
         if analyser is None or swapper is None or source_face is None:
             raise RuntimeError("FaceSwapper.process called before setup()")
         faces = analyser.analyse(frame)
+        if ctx is not None:
+            # Publish the PRE-filter list: the enhancer restores every detected
+            # face today (not just swapped ones), so downstream consumers see
+            # exactly what a re-detection would have given them.
+            ctx.faces = list(faces)
         # Publish every detected face (before the sex filter) so the debug
         # overlay shows exactly what the detector saw — including faces that
         # won't be swapped. Best-effort; the overlay must never affect the swap.

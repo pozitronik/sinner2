@@ -27,6 +27,24 @@ def test_restore_aligned_shape_and_dtype():
     assert out.dtype == np.uint8
 
 
+def test_enhance_uses_upstream_faces_and_skips_detection():
+    # ChainContext path: upstream faces are trusted; no self-detection.
+    backend = CodeFormerBackend(fidelity=0.5)
+    backend._session = _IdentitySession()  # noqa: SLF001
+    detect_calls: list[int] = []
+    backend._analyser = SimpleNamespace(  # noqa: SLF001
+        analyse=lambda _img: detect_calls.append(1) or []
+    )
+    face = SimpleNamespace(
+        kps=np.array(
+            [[40, 45], [60, 45], [50, 55], [42, 62], [58, 62]], np.float32
+        )
+    )
+    out = backend.enhance(np.full((100, 100, 3), 80, np.uint8), faces=[face])
+    assert detect_calls == []
+    assert out.shape == (100, 100, 3)
+
+
 def test_setup_builds_detection_only_analyser(monkeypatch):
     # The backend only aligns by keypoints, so its analyser must skip the four
     # aux models buffalo_l's .get() runs per face (detection_only=True).

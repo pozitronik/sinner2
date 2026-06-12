@@ -71,6 +71,50 @@ class TestThreadSafety:
         assert FaceSwapper.thread_safe is True
 
 
+class TestChainContextPublish:
+    def test_publishes_prefilter_faces_to_context(
+        self, source_image, models_dir, stub_insightface_app, stub_inswapper
+    ):
+        # The swapper publishes its PRE-filter detections (the enhancer
+        # restores every detected face, including ones the sex filter skips
+        # for swapping), so downstream consumers see exactly what their own
+        # re-detection would have produced.
+        from unittest.mock import MagicMock
+
+        from sinner2.pipeline.processor import ChainContext
+
+        f_male = MagicMock(name="male")
+        f_male.sex = "M"
+        f_male.bbox = np.array([0, 0, 4, 4], float)
+        f_female = MagicMock(name="female")
+        f_female.sex = "F"
+        f_female.bbox = np.array([5, 5, 9, 9], float)
+        stub_insightface_app.get.side_effect = [
+            [MagicMock(name="src")], [f_male, f_female],
+        ]
+        fs = FaceSwapper(
+            source=Source(path=source_image),
+            params=_params(rotation_compensation=False, target_sex="F"),
+        )
+        fs.setup()
+        ctx = ChainContext()
+        fs.process(_blank(), ctx)
+        assert ctx.faces == [f_male, f_female]  # pre-filter, both published
+
+    def test_no_context_is_fine(
+        self, source_image, models_dir, stub_insightface_app, stub_inswapper
+    ):
+        from unittest.mock import MagicMock
+
+        stub_insightface_app.get.side_effect = [
+            [MagicMock(name="src")], [],
+        ]
+        fs = FaceSwapper(source=Source(path=source_image), params=_params())
+        fs.setup()
+        out = fs.process(_blank())  # plain one-arg call still works
+        assert out.shape == _blank().shape
+
+
 class TestFastPasteWiring:
     """fast_paste (default ON) wraps the insightface backend in the FastPaste
     adapter at setup(); OFF keeps insightface's raw backend (original blend)."""

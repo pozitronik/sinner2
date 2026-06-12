@@ -29,7 +29,7 @@ from sinner2.pipeline.messages import (
 )
 from sinner2.pipeline.cache_mode import CacheMode
 from sinner2.pipeline.playback_mode import PlaybackMode
-from sinner2.pipeline.processor import Processor
+from sinner2.pipeline.processor import ChainContext, Processor
 from sinner2.pipeline.realtime.work_item import WorkItem
 from sinner2.pipeline.skip_strategy import FrameSkipStrategy
 from sinner2.types import Frame, FrameIndex
@@ -1116,9 +1116,17 @@ class RealtimeExecutor:
         # measurement excludes the chain-iteration overhead and the
         # buffer.put (those aren't processor work); strict measurement
         # of the .process() call only.
+        #
+        # One ChainContext per frame: the swapper publishes its detections,
+        # downstream context-aware processors (enhancer ONNX backends) reuse
+        # them instead of re-detecting — one detection pass per frame.
+        ctx = ChainContext()
         for p in chain:
             t0 = time.perf_counter_ns()
-            frame = p.process(frame)
+            if getattr(p, "accepts_context", False):
+                frame = p.process(frame, ctx)  # type: ignore[call-arg]
+            else:
+                frame = p.process(frame)
             elapsed_ns = time.perf_counter_ns() - t0
             with self._timings_lock:
                 self._processor_timings.append((time.monotonic(), p.name, elapsed_ns))

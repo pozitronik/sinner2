@@ -35,7 +35,7 @@ from queue import Empty, Full, Queue
 from typing import Protocol, runtime_checkable
 
 from sinner2.pipeline.live.sink import FrameSink
-from sinner2.pipeline.processor import Processor
+from sinner2.pipeline.processor import ChainContext, Processor
 from sinner2.types import Frame
 
 MAX_LIVE_WORKERS = 16
@@ -323,8 +323,14 @@ class LiveLoop:
                 with self._inflight_cv:
                     self._inflight_by_gen[gen] = self._inflight_by_gen.get(gen, 0) + 1
                 try:
+                    # One ChainContext per frame: detect-once-share-faces,
+                    # mirroring RealtimeExecutor._apply_chain.
+                    ctx = ChainContext()
                     for processor in chain:
-                        out = processor.process(out)
+                        if getattr(processor, "accepts_context", False):
+                            out = processor.process(out, ctx)  # type: ignore[call-arg]
+                        else:
+                            out = processor.process(out)
                 except Exception as exc:  # noqa: BLE001 — show raw, don't freeze
                     self.errors += 1
                     if self.errors <= 3:  # log the first few, then stay quiet

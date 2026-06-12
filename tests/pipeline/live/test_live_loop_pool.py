@@ -384,6 +384,51 @@ def test_set_source_survives_chain_hot_swap():
         loop.stop()
 
 
+def test_chain_context_shares_faces_between_processors():
+    """Detect-once: a context-aware producer's faces reach the context-aware
+    consumer within the same frame pass (one ChainContext per work item)."""
+    class _Producer:
+        name = "producer"
+        accepts_context = True
+
+        def setup(self):
+            pass
+
+        def release(self):
+            pass
+
+        def process(self, frame, ctx=None):
+            ctx.faces = ["X"]
+            return frame
+
+    class _Consumer:
+        name = "consumer"
+        accepts_context = True
+
+        def __init__(self):
+            self.seen: list = []  # appended from worker threads
+
+        def setup(self):
+            pass
+
+        def release(self):
+            pass
+
+        def process(self, frame, ctx=None):
+            self.seen.append(ctx.faces if ctx is not None else "no-ctx")
+            return frame
+
+    consumer = _Consumer()
+    loop = LiveLoop(_CountingSource(), [_Producer(), consumer], [_SpySink()],
+                    workers=2, fps=1000)
+    loop.start()
+    try:
+        assert _wait_until(lambda: len(consumer.seen) >= 3)
+    finally:
+        loop.stop()
+    assert all(faces == ["X"] for faces in consumer.seen)
+
+
 def test_set_source_skips_processors_without_setter():
     loop = LiveLoop(_CountingSource(), [_SpyProcessor("noop")], [_SpySink()],
                     workers=1, fps=1000)

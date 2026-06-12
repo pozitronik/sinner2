@@ -92,16 +92,22 @@ class PlainBfrBackend:
         # models buffalo_l's .get() runs per face (≈half the detect cost).
         self._analyser = FaceAnalyser(providers=self._providers, detection_only=True)
 
-    def enhance(self, img: Frame) -> Frame:
+    def enhance(self, img: Frame, faces: list | None = None) -> Frame:
         """Restore every detected face in `img`. Best-effort per face — a
-        failure leaves that face untouched rather than breaking the frame."""
+        failure leaves that face untouched rather than breaking the frame.
+
+        ``faces``: upstream detections (the swapper's, via ChainContext) to
+        align with instead of re-detecting — only ``.kps`` is read, so both
+        insightface faces and FaceLite work. None → self-detect; an empty
+        list is trusted (no faces on this frame)."""
         if self._session is None or self._analyser is None:
             raise RuntimeError("PlainBfrBackend.enhance called before setup()")
         result = img
         from insightface.utils import face_align
 
         size = self._align_size
-        for face in self._analyser.analyse(img):
+        detected = faces if faces is not None else self._analyser.analyse(img)
+        for face in detected:
             try:
                 m = face_align.estimate_norm(np.asarray(face.kps, np.float32), size)
                 aligned = cv2.warpAffine(result, m, (size, size))

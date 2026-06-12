@@ -63,6 +63,52 @@ def _recording_factory():
     return factory, built
 
 
+class TestContextForwarding:
+    """The wrapper always accepts a ChainContext but forwards it only to
+    wrapped instances that declare accepts_context themselves."""
+
+    def test_forwards_ctx_to_context_aware_instance(self):
+        from sinner2.pipeline.processor import ChainContext
+
+        class _CtxAware:
+            name = "aware"
+            thread_safe = False
+            accepts_context = True
+
+            def __init__(self):
+                self.seen = "unset"
+
+            def setup(self):
+                pass
+
+            def process(self, frame, ctx=None):
+                self.seen = ctx
+                return frame
+
+            def release(self):
+                pass
+
+        made: list = []
+
+        def factory():
+            made.append(_CtxAware())
+            return made[-1]
+
+        pw = PerWorkerProcessor(factory=factory, name="aware")
+        assert pw.accepts_context is True
+        ctx = ChainContext()
+        pw.process(np.zeros((4, 4, 3), np.uint8), ctx)
+        assert made[0].seen is ctx
+
+    def test_plain_instance_called_without_ctx(self):
+        from sinner2.pipeline.processor import ChainContext
+
+        # _Stub.process takes only (frame) — forwarding ctx would TypeError.
+        pw = PerWorkerProcessor(factory=_Stub, name="plain")
+        out = pw.process(np.zeros((4, 4, 3), np.uint8), ChainContext())
+        assert out.shape == (4, 4, 3)
+
+
 class TestPerWorkerProcessor:
     def test_is_thread_safe_and_keeps_name(self):
         w = PerWorkerProcessor(factory=_Stub, name="FaceEnhancer")
