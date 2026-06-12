@@ -39,6 +39,11 @@ class UpscalerModel(str, Enum):
     HAT_X4 = "hat-x4"             # HAT (ONNX) — high detail
     ULTRASHARP_X4 = "ultrasharp-x4"  # 4x-UltraSharp (ONNX) — community favourite
     SPAN_X4 = "span-x4"           # SPAN (ONNX) — tiny + fast
+    # facefusion's upstream-validated fp16 Real-ESRGAN exports (fp32 I/O,
+    # fp16 weights) — pure-conv SR tolerates half precision, unlike the GAN
+    # restorers our own conversion attempt corrupted (scripts/fp16_bench.py).
+    REAL_ESRGAN_X4_FP16 = "real-esrgan-x4-fp16"
+    REAL_ESRGAN_X2_FP16 = "real-esrgan-x2-fp16"
 
 
 @dataclass(frozen=True)
@@ -99,6 +104,12 @@ _MODEL_SPECS: dict[UpscalerModel, _ModelSpec] = {
     UpscalerModel.HAT_X4: _ModelSpec("real_hatgan_x4.onnx", 4, "onnx"),
     UpscalerModel.ULTRASHARP_X4: _ModelSpec("ultra_sharp_x4.onnx", 4, "onnx"),
     UpscalerModel.SPAN_X4: _ModelSpec("span_kendata_x4.onnx", 4, "onnx"),
+    UpscalerModel.REAL_ESRGAN_X4_FP16: _ModelSpec(
+        "real_esrgan_x4_fp16.onnx", 4, "onnx"
+    ),
+    UpscalerModel.REAL_ESRGAN_X2_FP16: _ModelSpec(
+        "real_esrgan_x2_fp16.onnx", 2, "onnx"
+    ),
 }
 
 

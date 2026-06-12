@@ -132,6 +132,8 @@ _UPSCALER_MODELS: list[tuple[str, str]] = [
     (UpscalerModel.HAT_X4.value, "HAT x4 (ONNX, very slow — stills only)"),
     (UpscalerModel.ULTRASHARP_X4.value, "4x-UltraSharp (ONNX)"),
     (UpscalerModel.SPAN_X4.value, "SPAN x4 (ONNX, fast)"),
+    (UpscalerModel.REAL_ESRGAN_X4_FP16.value, "Real-ESRGAN x4 fp16 (ONNX, fast)"),
+    (UpscalerModel.REAL_ESRGAN_X2_FP16.value, "Real-ESRGAN x2 fp16 (ONNX, fast)"),
 ]
 
 _OCCLUSION_PARSERS: list[tuple[str, str]] = [

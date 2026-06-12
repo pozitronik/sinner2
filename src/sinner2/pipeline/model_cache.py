@@ -57,6 +57,18 @@ MODEL_SOURCES: dict[str, str] = {
         "https://github.com/facefusion/facefusion-assets/releases/download/"
         "models-3.0.0/span_kendata_x4.onnx"
     ),
+    # facefusion's pre-built fp16 Real-ESRGAN exports — fp32 I/O (same /255 RGB
+    # NCHW contract as the other ONNX upscalers), fp16 weights → ~half the
+    # inference cost. Upstream-validated; our own fp16 conversion is refuted
+    # (see scripts/fp16_bench.py).
+    "real_esrgan_x4_fp16.onnx": (
+        "https://github.com/facefusion/facefusion-assets/releases/download/"
+        "models-3.0.0/real_esrgan_x4_fp16.onnx"
+    ),
+    "real_esrgan_x2_fp16.onnx": (
+        "https://github.com/facefusion/facefusion-assets/releases/download/"
+        "models-3.0.0/real_esrgan_x2_fp16.onnx"
+    ),
     # BiSeNet face-parser for occlusion-aware masking. URL taken verbatim from
     # facexlib's parsing/__init__.py (the bisenet weight is on the v0.2.0 tag —
     # NOT v0.2.2, which hosts the parsenet variant).

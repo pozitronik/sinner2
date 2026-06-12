@@ -97,6 +97,17 @@ class TestModelRegistry:
             assert model in _MODEL_SPECS
             assert model_filename(model)  # non-empty
 
+    def test_fp16_exports_are_onnx_with_right_scales(self):
+        # facefusion's upstream-validated fp16 exports: fp32 I/O contract
+        # (same as every other ONNX upscaler), fp16 weights inside.
+        assert _MODEL_SPECS[UpscalerModel.REAL_ESRGAN_X4_FP16].runtime == "onnx"
+        assert _MODEL_SPECS[UpscalerModel.REAL_ESRGAN_X4_FP16].scale == 4
+        assert _MODEL_SPECS[UpscalerModel.REAL_ESRGAN_X2_FP16].scale == 2
+        assert (
+            _MODEL_SPECS[UpscalerModel.REAL_ESRGAN_X4_FP16].filename
+            == "real_esrgan_x4_fp16.onnx"
+        )
+
     def test_runtimes_split_torch_vs_onnx(self):
         assert _MODEL_SPECS[UpscalerModel.X4PLUS].runtime == "torch"
         assert _MODEL_SPECS[UpscalerModel.SWINIR_M].runtime == "torch"

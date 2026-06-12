@@ -122,6 +122,12 @@ MODEL_CATALOG: dict[str, ModelInfo] = {
     "span_kendata_x4.onnx": _e(
         "span_kendata_x4.onnx", "SPAN x4", _C.UPSCALER,
         "SPAN super-resolution x4 (tiny + fast).", 2),
+    "real_esrgan_x4_fp16.onnx": _e(
+        "real_esrgan_x4_fp16.onnx", "Real-ESRGAN x4 fp16", _C.UPSCALER,
+        "Upstream fp16 export — ~half the inference cost of x4plus.", 34),
+    "real_esrgan_x2_fp16.onnx": _e(
+        "real_esrgan_x2_fp16.onnx", "Real-ESRGAN x2 fp16", _C.UPSCALER,
+        "Upstream fp16 export — ~half the inference cost of x2plus.", 34),
     # ---- Mask parsers (occlusion-aware masking) ----
     "parsing_bisenet.pth": _e(
         "parsing_bisenet.pth", "BiSeNet parser", _C.MASK_PARSER,
