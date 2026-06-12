@@ -714,94 +714,99 @@ class TestBuildStages:
         assert len(list(task.output_path.glob("*.jpg"))) == 3
 
 
-class TestChainConfigCacheKey:
-    """The stage-dir token folds in a CUMULATIVE chain-config signature so an
-    edited task can't resume onto frames rendered with the OLD config (P1)."""
+class TestStageCacheKeying:
+    """Stage dirs are keyed by stage position/name + size + task IDENTITY
+    (source/target) — deliberately NOT by stage params. A settings edit must
+    resume IN PLACE (frames already rendered are kept; only remaining frames
+    use the new config — the user chose continuation over output purity).
+    Identity and size changes still re-render."""
 
-    def _stages(self, sigs):
-        return [
-            StageSpec(f"stage{i}", lambda: None, True, 1, config_sig=s)
-            for i, s in enumerate(sigs)
-        ]
+    def _stages(self, names=("stagea", "stageb")):
+        return [StageSpec(n, lambda: None, True, 1) for n in names]
 
-    def test_build_stages_sets_config_sig_from_params(self, tmp_path):
-        from unittest.mock import MagicMock
-
+    def test_settings_edit_keeps_stage_dirs(self, tmp_path):
+        # Two configs of the SAME task (e.g. enhancer model switched mid-run)
+        # must map to the SAME dirs — that's what lets the stage continue
+        # instead of restarting from frame 0 in a fresh dir.
+        cache = tmp_path / "c"
         t1 = BatchTask(
-            source_path=tmp_path / "s.png",
-            target_path=tmp_path / "t.mp4",
-            swapper_detection_interval=1,
+            source_path=tmp_path / "s.png", target_path=tmp_path / "t.mp4",
+            enhancer_model="gfpgan",
         )
         t2 = BatchTask(
-            source_path=tmp_path / "s.png",
-            target_path=tmp_path / "t.mp4",
-            swapper_detection_interval=5,
+            source_path=tmp_path / "s.png", target_path=tmp_path / "t.mp4",
+            enhancer_model="gfpgan_onnx",
         )
-        s1 = BatchDriver._build_stages(MagicMock(), t1)  # noqa: SLF001
-        s2 = BatchDriver._build_stages(MagicMock(), t2)  # noqa: SLF001
-        assert s1[0].config_sig  # non-empty for a real stage
-        assert s1[0].config_sig != s2[0].config_sig  # output-affecting param flows in
-
-    def test_cumulative_invalidation(self, tmp_path):
-        task = BatchTask(
-            source_path=tmp_path / "s.png", target_path=tmp_path / "t.mp4"
-        )
-        cache = tmp_path / "c"
-        base = BatchDriver._stage_cache_dirs(  # noqa: SLF001
-            cache, "640x480", task, self._stages(["A", "B"])
-        )
-        # Upstream (stage 0) change invalidates stage 0 AND downstream.
-        d_s0 = BatchDriver._stage_cache_dirs(  # noqa: SLF001
-            cache, "640x480", task, self._stages(["A2", "B"])
-        )
-        assert d_s0[0] != base[0]
-        assert d_s0[1] != base[1]
-        # Changing only the LAST stage leaves the upstream dir reusable.
-        d_s1 = BatchDriver._stage_cache_dirs(  # noqa: SLF001
-            cache, "640x480", task, self._stages(["A", "B2"])
-        )
-        assert d_s1[0] == base[0]
-        assert d_s1[1] != base[1]
+        stages = self._stages()
+        d1 = BatchDriver._stage_cache_dirs(cache, "640x480", t1, stages)  # noqa: SLF001
+        d2 = BatchDriver._stage_cache_dirs(cache, "640x480", t2, stages)  # noqa: SLF001
+        assert d1 == d2
 
     def test_source_change_invalidates_all_stages(self, tmp_path):
         cache = tmp_path / "c"
         t1 = BatchTask(source_path=tmp_path / "a.png", target_path=tmp_path / "t.mp4")
         t2 = BatchTask(source_path=tmp_path / "b.png", target_path=tmp_path / "t.mp4")
-        stages = self._stages(["A", "B"])
+        stages = self._stages()
         d1 = BatchDriver._stage_cache_dirs(cache, "640x480", t1, stages)  # noqa: SLF001
         d2 = BatchDriver._stage_cache_dirs(cache, "640x480", t2, stages)  # noqa: SLF001
         assert d1[0] != d2[0]
         assert d1[1] != d2[1]
 
-    def test_chain_fingerprint_changes_with_config_or_size(self, tmp_path):
+    def test_target_change_invalidates_all_stages(self, tmp_path):
+        cache = tmp_path / "c"
+        t1 = BatchTask(source_path=tmp_path / "s.png", target_path=tmp_path / "a.mp4")
+        t2 = BatchTask(source_path=tmp_path / "s.png", target_path=tmp_path / "b.mp4")
+        stages = self._stages()
+        d1 = BatchDriver._stage_cache_dirs(cache, "640x480", t1, stages)  # noqa: SLF001
+        d2 = BatchDriver._stage_cache_dirs(cache, "640x480", t2, stages)  # noqa: SLF001
+        assert d1[0] != d2[0]
+        assert d1[1] != d2[1]
+
+    def test_stage_position_and_name_distinguish_dirs(self, tmp_path):
+        # Enabling/disabling processors shifts stage layout; position+name in
+        # the dir name keeps a stage from ever reading another stage's frames.
         task = BatchTask(
             source_path=tmp_path / "s.png", target_path=tmp_path / "t.mp4"
         )
-        fp1 = BatchDriver._chain_fingerprint(  # noqa: SLF001
-            task, "640x480", self._stages(["A", "B"])
+        dirs = BatchDriver._stage_cache_dirs(  # noqa: SLF001
+            tmp_path / "c", "640x480", task, self._stages(("faceswapper", "upscaler"))
         )
-        fp_cfg = BatchDriver._chain_fingerprint(  # noqa: SLF001
-            task, "640x480", self._stages(["A", "C"])
+        assert "stage0-faceswapper" in dirs[0].name
+        assert "stage1-upscaler" in dirs[1].name
+
+    def test_chain_fingerprint_tracks_identity_not_config(self, tmp_path):
+        t1 = BatchTask(
+            source_path=tmp_path / "s.png", target_path=tmp_path / "t.mp4",
+            enhancer_model="gfpgan",
         )
-        fp_size = BatchDriver._chain_fingerprint(  # noqa: SLF001
-            task, "320x240", self._stages(["A", "B"])
+        t_cfg = BatchTask(
+            source_path=tmp_path / "s.png", target_path=tmp_path / "t.mp4",
+            enhancer_model="gfpgan_onnx",
         )
-        assert fp1 != fp_cfg  # a stage config change
-        assert fp1 != fp_size  # a size/scale change
+        t_src = BatchTask(
+            source_path=tmp_path / "other.png", target_path=tmp_path / "t.mp4",
+        )
+        fp1 = BatchDriver._chain_fingerprint(t1, "640x480")  # noqa: SLF001
+        # A settings edit keeps the fingerprint → resume markers stay valid.
+        assert BatchDriver._chain_fingerprint(t_cfg, "640x480") == fp1  # noqa: SLF001
+        # Identity / size changes reset it → markers re-derived from scratch.
+        assert BatchDriver._chain_fingerprint(t_src, "640x480") != fp1  # noqa: SLF001
+        assert BatchDriver._chain_fingerprint(t1, "320x240") != fp1  # noqa: SLF001
 
 
 class TestAutoResumeStaleFingerprint:
-    def test_auto_resume_with_changed_config_re_renders(
+    def test_auto_resume_with_changed_identity_re_renders(
         self, driver, stub_stages, tmp_path
     ):
-        # AUTO task whose persisted markers (completed_stages=1) belong to an OLD
-        # config (stale fingerprint). On resume the token changed, so the trusted
-        # stage-0 marker must be invalidated and the task re-rendered — not
-        # trusted into reading an empty new-token dir and failing "frames missing".
+        # AUTO task whose persisted markers (completed_stages=1) belong to a
+        # DIFFERENT identity (stale fingerprint — e.g. the source was swapped).
+        # On resume the token changed, so the trusted stage-0 marker must be
+        # invalidated and the task re-rendered — not trusted into reading an
+        # empty new-token dir and failing "frames missing".
         task = _make_task(tmp_path, image_target=False, enhancer_enabled=True)
         task.cleanup_mode = BatchCleanupMode.AUTO
         task.completed_stages = 1
-        task.cache_fingerprint = "stale-from-old-config"
+        task.cache_fingerprint = "stale-from-old-identity"
         status = driver.run(task)
         assert status is BatchTaskStatus.COMPLETED, task.error_message
         assert len(list(task.output_path.glob("*.jpg"))) == 3

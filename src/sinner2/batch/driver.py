@@ -101,7 +101,6 @@ class StageSpec:
     factory: Callable[[], Processor]
     thread_safe: bool
     workers: int
-    config_sig: str = ""  # output-affecting params (json), for cumulative cache keying
 
 
 class _IdentityProcessor:
@@ -208,13 +207,14 @@ class BatchDriver:
         size_token = f"{reader.width}x{reader.height}"
         task_cache = self._cache_root / task.id
         stage_dirs = self._stage_cache_dirs(task_cache, size_token, task, stages)
-        current_fp = self._chain_fingerprint(task, size_token, stages)
+        current_fp = self._chain_fingerprint(task, size_token)
         if task.cache_fingerprint and task.cache_fingerprint != current_fp:
-            # Config / scale changed since the cached run: the persisted resume
-            # markers point at frames rendered with the OLD config under a now-
-            # stale token. Reset so the task re-renders from scratch instead of
-            # trusting them — esp. the AUTO trusted-skip path, which would
+            # Source / target / scale changed since the cached run: the persisted
+            # resume markers point at frames rendered for a DIFFERENT render under
+            # a now-stale token. Reset so the task re-renders from scratch instead
+            # of trusting them — esp. the AUTO trusted-skip path, which would
             # otherwise read an empty new-token dir and hard-fail "frames missing".
+            # (Mere settings edits keep the fingerprint and resume in place.)
             task.completed_stages = 0
             task.last_completed_frame = -1
             task.total_frames = -1
@@ -375,7 +375,6 @@ class BatchDriver:
                 ),
                 thread_safe=FaceSwapper.thread_safe,
                 workers=task.swapper_execution.workers,
-                config_sig=swapper_params.model_dump_json(),
             ))
         if task.enhancer_enabled:
             enhancer_params = FaceEnhancerParams(
@@ -401,7 +400,6 @@ class BatchDriver:
                 ),
                 thread_safe=FaceEnhancer.thread_safe,
                 workers=task.enhancer_execution.workers,
-                config_sig=enhancer_params.model_dump_json(),
             ))
         if task.upscaler_enabled:
             upscaler_params = UpscalerParams(
@@ -417,7 +415,6 @@ class BatchDriver:
                 ),
                 thread_safe=Upscaler.thread_safe,
                 workers=task.upscaler_execution.workers,
-                config_sig=upscaler_params.model_dump_json(),
             ))
         if not stages:
             stages.append(StageSpec(
@@ -435,30 +432,32 @@ class BatchDriver:
         task: BatchTask,
         stages: list[StageSpec],
     ) -> list[Path]:
-        """Per-stage cache dirs, keyed by output size AND a CUMULATIVE chain
-        signature: source/target plus each stage's output-affecting params, in
-        order. Changing an upstream stage's config invalidates it and every
-        downstream stage (whose input changed); changing only the last stage
-        re-renders just that stage. Without this an edited task could resume onto
-        frames rendered with the OLD config and silently mix them into output."""
-        dirs: list[Path] = []
-        chain_sig = f"{task.source_path}|{task.target_path}"
-        for i, spec in enumerate(stages):
-            chain_sig = f"{chain_sig}|{spec.config_sig}"
-            digest = hashlib.sha1(chain_sig.encode()).hexdigest()[:10]
-            dirs.append(task_cache / f"stage{i}-{spec.name}@{size_token}-{digest}")
-        return dirs
+        """Per-stage cache dirs, keyed by stage position/name, output size, and
+        the task's IDENTITY (source + target) — deliberately NOT by stage
+        params. Editing a task's settings mid-run therefore resumes IN PLACE:
+        frames already on disk are kept and only the remaining frames render
+        with the new config (the user chose continuation over output purity —
+        a settings tweak must not throw away hours of finished frames). The
+        explicit refresh action remains the way to re-render everything under
+        new settings. Identity and size still re-render: a different source or
+        target is a different render (not a tweak), and mixed frame sizes
+        would break the encode (the size token covers processing-scale)."""
+        digest = hashlib.sha1(
+            f"{task.source_path}|{task.target_path}".encode()
+        ).hexdigest()[:10]
+        return [
+            task_cache / f"stage{i}-{spec.name}@{size_token}-{digest}"
+            for i, spec in enumerate(stages)
+        ]
 
     @staticmethod
-    def _chain_fingerprint(
-        task: BatchTask, size_token: str, stages: list[StageSpec]
-    ) -> str:
+    def _chain_fingerprint(task: BatchTask, size_token: str) -> str:
         """Stable hash of everything the stage-dir token depends on (source /
-        target / output size / every stage's output-affecting params). Persisted
-        on the task so a resume whose config changed since the cached run can
-        reset the stale resume markers instead of trusting them."""
+        target / output size — NOT stage params, which resume in place; see
+        _stage_cache_dirs). Persisted on the task so a resume whose identity
+        changed since the cached run resets the stale resume markers instead
+        of trusting them."""
         parts = [str(task.source_path), str(task.target_path), size_token]
-        parts += [spec.config_sig for spec in stages]
         return hashlib.sha1("|".join(parts).encode()).hexdigest()[:12]
 
     # ---- Helpers ----
