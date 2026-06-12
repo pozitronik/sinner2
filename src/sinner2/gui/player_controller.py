@@ -73,6 +73,7 @@ class PlayerController(QObject):
     cacheStorageStatsChanged = Signal()  # fired on session start/teardown/clear so the cache panel can refresh
     targetNativeSizeChanged = Signal(object)  # (width, height) on session start, None on teardown
     sessionSwitching = Signal(bool)  # True while an async source/target swap is draining+rebuilding
+    progressMessage = Signal(str)  # non-error executor status (loading/applying/downloading); "" = idle
 
     def __init__(
         self,
@@ -702,6 +703,11 @@ class PlayerController(QObject):
             ("worker error", "executor.start", "session setup", "chain setup")
         ):
             self.errorOccurred.emit(text)
+            return
+        # Non-error status (loading models… / Applying settings… / Downloading
+        # … / "") drives the busy caption + status bar. Error states already
+        # surface via errorOccurred above, so they don't double up here.
+        self.progressMessage.emit(text)
 
     def _teardown_session(self) -> None:
         for bridge in self._bridges:

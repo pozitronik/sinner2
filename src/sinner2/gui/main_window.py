@@ -69,6 +69,7 @@ from sinner2.gui.session_facade import SessionFacade
 from sinner2.gui.widgets.batch_task_dialog import QBatchTaskDialog
 from sinner2.gui.widgets.batch_view import QBatchView
 from sinner2.gui.widgets.models_view import QModelsView
+from sinner2.gui.widgets.busy_caption import QBusyCaption
 from sinner2.gui.widgets.face_detection_overlay import QFaceDetectionOverlay
 from sinner2.gui.widgets.frame_display import QFrameDisplayWidget
 from sinner2.gui.widgets.fullscreen_control_bar import FullscreenControlBar
@@ -254,6 +255,14 @@ class SinnerMainWindow(QMainWindow):
         self._last_displayed_frame: Frame | None = None
         self._face_overlay = QFaceDetectionOverlay(parent=self._display)
         self._display.set_face_overlay(self._face_overlay)
+        # Subtitle-style "something's happening" caption over the preview, plus
+        # the two flags it aggregates (an async source/target swap, and the
+        # executor's non-error progress text). Both can be active; the caption
+        # shows the progress text if any, else the swap notice.
+        self._busy_caption = QBusyCaption(parent=self._display)
+        self._display.set_busy_caption(self._busy_caption)
+        self._busy_switching = False
+        self._busy_progress = ""
         # Auto-hiding playback bar for fullscreen. A child of the display so
         # it floats over the frame; it takes custody of the transport row
         # while fullscreen is active and reveals when the cursor nears the
@@ -373,6 +382,7 @@ class SinnerMainWindow(QMainWindow):
         self._controller.bufferMetricsChanged.connect(self._update_metrics_label)
         self._controller.strategyModeChanged.connect(self._update_strategy_mode_label)
         self._controller.sessionSwitching.connect(self._on_session_switching)
+        self._controller.progressMessage.connect(self._on_progress_message)
 
         # Live-camera engine: webcam -> chain -> MJPEG sink. Its preview frames
         # drive the same display; activation + transport are owned by the facade.
@@ -950,8 +960,26 @@ class SinnerMainWindow(QMainWindow):
         else:
             self._refresh_transport_enabled()
         self._processors.setEnabled(not switching)
-        if switching:
-            self._status_bar.show_message("Switching session…")
+        self._busy_switching = switching
+        self._refresh_busy()
+
+    def _on_progress_message(self, text: str) -> None:
+        """Executor's non-error progress (loading models… / Applying settings… /
+        Downloading face-analysis models… / ""). Drives the same caption +
+        status bar as the swap notice."""
+        self._busy_progress = text.strip()
+        self._refresh_busy()
+
+    def _refresh_busy(self) -> None:
+        """Show the busy caption + status-bar notice for whichever operation is
+        active (the executor's progress text wins over the swap notice; both
+        clear to a brief 'ready')."""
+        message = self._busy_progress or (
+            "Switching session…" if self._busy_switching else ""
+        )
+        self._busy_caption.show_message(message)
+        if message:
+            self._status_bar.show_message(message)
         else:
             self._status_bar.show_message("ready", 2000)
 
