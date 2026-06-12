@@ -821,6 +821,13 @@ class SinnerMainWindow(QMainWindow):
         # chain hot-swap + video-backend / reader-pool / processing-scale
         # rebuilds to the file engine).
         self._session.apply_settings(snap)
+        # Keep the overlay's detection probe on the SAME providers/size: a
+        # providers change resets the shared face analysis, and a probe stuck
+        # on its construction-time list could rebuild it on the stale EPs.
+        self._detection_probe.configure(
+            list(snap.swapper_providers),
+            snap.swapper_params.detection_size,
+        )
         # Swapper-provider / enhancer-device rebuilds are folded into
         # apply_settings above; just refresh the status-bar EP label
         # and the failed-provider highlight afterwards.

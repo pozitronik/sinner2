@@ -68,6 +68,38 @@ class TestFaceDetectionSink:
         assert sink.latest_crops() is None
 
 
+class TestConfigure:
+    """A live providers / detection-size change must re-point the probe —
+    its cached analyser was built on construction-time providers, and after a
+    providers change resets the SHARED face analysis, a stale-list probe
+    could rebuild the shared detector on the old EPs (audit rank 25)."""
+
+    def test_provider_change_drops_cached_analyser(self):
+        probe = FaceDetectionProbe(providers=["CUDAExecutionProvider"])
+        probe._analyser = object()  # noqa: SLF001 — pretend it was built
+        probe.configure(["CPUExecutionProvider"], 640)
+        assert probe._analyser is None  # noqa: SLF001 — rebuilt on next detect
+        assert probe._providers == ["CPUExecutionProvider"]  # noqa: SLF001
+
+    def test_detection_size_change_drops_cached_analyser(self):
+        probe = FaceDetectionProbe(
+            providers=["CUDAExecutionProvider"], detection_size=640
+        )
+        probe._analyser = object()  # noqa: SLF001
+        probe.configure(["CUDAExecutionProvider"], 728)
+        assert probe._analyser is None  # noqa: SLF001
+        assert probe._detection_size == 728  # noqa: SLF001
+
+    def test_unchanged_config_keeps_analyser(self):
+        probe = FaceDetectionProbe(
+            providers=["CUDAExecutionProvider"], detection_size=640
+        )
+        marker = object()
+        probe._analyser = marker  # noqa: SLF001
+        probe.configure(["CUDAExecutionProvider"], 640)
+        assert probe._analyser is marker  # noqa: SLF001 — no needless rebuild
+
+
 def test_emits_detections_from_detect_fn(qtbot):
     face = SimpleNamespace(
         bbox=np.array([0.0, 0.0, 10.0, 10.0]),

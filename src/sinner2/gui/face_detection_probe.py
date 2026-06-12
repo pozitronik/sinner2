@@ -99,6 +99,26 @@ class FaceDetectionProbe(QObject):
         self._providers = list(providers) if providers else None
         self._detection_size = detection_size
         self._analyser: Any = None
+        # configure() is called from the GUI thread while _detect runs on the
+        # probe's own thread — guard the providers/size/analyser trio.
+        self._config_lock = threading.Lock()
+
+    def configure(
+        self, providers: list[str] | None, detection_size: int
+    ) -> None:
+        """Re-point detection at a new EP list / detection size (a live
+        settings change). Drops the cached analyser so the next probe rebuilds
+        on the new config — otherwise a providers change that resets the
+        SHARED face analysis could see this probe rebuild it on the STALE
+        construction-time providers. No-op when nothing changed (the analyser
+        is expensive to rebuild)."""
+        new = list(providers) if providers else None
+        with self._config_lock:
+            if new == self._providers and detection_size == self._detection_size:
+                return
+            self._providers = new
+            self._detection_size = detection_size
+            self._analyser = None
 
     @Slot(object, int, int)
     def analyze(self, frame: Frame, width: int, height: int) -> None:
@@ -116,10 +136,21 @@ class FaceDetectionProbe(QObject):
     def _detect(self, frame: Frame) -> list:
         if self._detect_fn is not None:
             return self._detect_fn(frame)
-        if self._analyser is None:
+        with self._config_lock:
+            analyser = self._analyser
+            providers = list(self._providers) if self._providers else None
+            size = self._detection_size
+        if analyser is None:
             from sinner2.pipeline.face_analyser import FaceAnalyser
 
-            self._analyser = FaceAnalyser(
-                providers=self._providers, detection_size=self._detection_size
-            )
-        return self._analyser.analyse_uncached(frame)
+            analyser = FaceAnalyser(providers=providers, detection_size=size)
+            with self._config_lock:
+                # Cache only if the config didn't change mid-build; a racing
+                # configure() wins and the next detect rebuilds on its config.
+                if (
+                    (list(self._providers) if self._providers else None)
+                    == providers
+                    and self._detection_size == size
+                ):
+                    self._analyser = analyser
+        return analyser.analyse_uncached(frame)
