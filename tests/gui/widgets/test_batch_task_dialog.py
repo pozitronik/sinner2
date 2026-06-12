@@ -85,6 +85,25 @@ class TestDependentRows:
         assert not dlg._enhancer_device.isEnabled()  # noqa: SLF001
 
 
+class TestDebouncedTargetProbe:
+    def test_keystrokes_do_not_probe_synchronously(self, qtbot, tmp_path):
+        # The native-size probe opens the media file (VideoCapture) on the GUI
+        # thread; firing it per textChanged keystroke stalled the dialog
+        # (audit rank 36). Typing must only arm the debounce timer; the probe
+        # runs once when it fires.
+        dlg = QBatchTaskDialog.from_task(_task(tmp_path))
+        qtbot.addWidget(dlg)
+        probes: list[int] = []
+        dlg._probe_native_size = lambda: probes.append(1)  # noqa: SLF001
+        for ch in str(tmp_path / "video.mp4"):
+            dlg._target_edit.insert(ch)  # noqa: SLF001 — per-keystroke textChanged
+        assert probes == []  # nothing probed during typing
+        assert dlg._probe_timer.isActive()  # noqa: SLF001 — debounce armed
+        dlg._probe_timer.stop()  # noqa: SLF001 — fire deterministically
+        dlg._probe_timer.timeout.emit()  # noqa: SLF001
+        assert len(probes) == 1
+
+
 class TestPrefill:
     def test_dialog_fields_match_task(self, qtbot, tmp_path):
         t = _task(

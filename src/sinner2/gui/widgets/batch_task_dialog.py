@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -554,8 +554,17 @@ class QBatchTaskDialog(QDialog):
         self._format_combo.currentIndexChanged.connect(
             self._refresh_default_output
         )
-        # Re-probe the scale readout's dimensions whenever the target changes.
-        self._target_edit.textChanged.connect(self._refresh_scale_dims)
+        # Re-probe the scale readout's dimensions when the target changes —
+        # DEBOUNCED: the probe opens the media file synchronously (VideoCapture
+        # for videos), and textChanged fires per keystroke, so probing directly
+        # stalled the GUI thread on every character of a pasted/typed path.
+        # A single-shot timer restarted on each change probes only after
+        # typing settles.
+        self._probe_timer = QTimer(self)
+        self._probe_timer.setSingleShot(True)
+        self._probe_timer.setInterval(300)
+        self._probe_timer.timeout.connect(self._refresh_scale_dims)
+        self._target_edit.textChanged.connect(self._probe_timer.start)
         self._refresh_scale_dims()  # initial probe for the task's target
         self._update_enhancer_rows()  # gray out the inactive model's knob
         self._update_occlusion_rows()  # occlusion subknobs follow the checkbox
