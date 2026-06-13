@@ -212,6 +212,10 @@ class RealtimeExecutor:
         self.current_frame: ObservableValue[FrameIndex] = ObservableValue(0)
         self.is_playing: ObservableValue[bool] = ObservableValue(False)
         self.processing_fps: ObservableValue[float] = ObservableValue(0.0)
+        # Distinct frames actually shown per second (rate of on_frame calls).
+        # Differs from processing_fps under a frame-skip strategy: processing
+        # is throughput, display is what the eye sees.
+        self.display_fps: ObservableValue[float] = ObservableValue(0.0)
         self.metrics: ObservableValue[BufferMetrics] = ObservableValue(buffer.metrics())
         self.status: ObservableValue[str] = ObservableValue("")
         # Strategy's current mode label, surfaced to the status bar so
@@ -220,6 +224,10 @@ class RealtimeExecutor:
         # Updated after each dispatcher decide() call; equality
         # suppression in ObservableValue means no-op updates are free.
         self.strategy_mode: ObservableValue[str] = ObservableValue(strategy.current_mode())
+        # Cumulative count of frames the strategy intentionally skipped (never
+        # submitted for processing) to stay synced with wall-clock. Surfaced so
+        # the user can see how many frames were dropped under load this session.
+        self.frames_skipped: ObservableValue[int] = ObservableValue(0)
 
         self._on_frame: Callable[[Frame, FrameIndex], None] | None = None
 
@@ -236,6 +244,12 @@ class RealtimeExecutor:
         self._last_completion_time: float | None = None
         self._last_fps = 0.0
         self._last_metrics_pub = 0.0  # throttle metrics publication to ~UI rate
+        # Timestamps of distinct frames shown (playback thread only — no lock).
+        # Trimmed + published as display_fps each tick, alongside processing_fps.
+        self._display_times: deque[float] = deque()
+        # Cumulative strategy-skip counter (incremented in the dispatcher under
+        # _state_lock; published from the playback tick).
+        self._skipped = 0
         # Per-processor timing: append (timestamp, processor_name, ns)
         # per process() call inside _apply_chain. Readers (overlay) get
         # a time-windowed dict via processor_timings(). bounded deque
@@ -933,6 +947,10 @@ class RealtimeExecutor:
                 self.strategy_mode.set(mode)
                 return
             frame_index = decision.next_frame
+            # The strategy jumped past one or more frames to stay synced — count
+            # the gap as skipped (only on a real forward skip, not a seek/rewind).
+            if frame_index > self._last_submitted + 1:
+                self._skipped += frame_index - self._last_submitted - 1
             last_frame = self._reader_pool.frame_count - 1
             # End-of-playback is when the DISPLAY (wall-clock playhead) has
             # reached the last frame AND that frame is actually rendered — NOT
@@ -1194,6 +1212,18 @@ class RealtimeExecutor:
                 cap = self._last_fps if self._last_fps > 0 else _FPS_DECAY_CAP
                 fps = min(decayed, cap)
         self.processing_fps.set(fps)
+        # Display rate: distinct frames actually shown per second over the same
+        # window. Single-threaded (playback loop), so no lock. Naturally decays
+        # to 0 when playback stops and no new frames arrive — unlike processing,
+        # there's no "slow but alive" estimate to hold.
+        while self._display_times and self._display_times[0] < cutoff:
+            self._display_times.popleft()
+        disp = 0.0
+        if len(self._display_times) >= 2:
+            dspan = self._display_times[-1] - self._display_times[0]
+            if dspan > 0:
+                disp = (len(self._display_times) - 1) / dspan
+        self.display_fps.set(disp)
 
     # ---- Playback ----
 
@@ -1256,6 +1286,9 @@ class RealtimeExecutor:
                 # fallback path when the worker is behind.
                 self._on_frame(frame, shown_index)
                 self._last_shown_frame_index = shown_index
+                # A distinct frame reached the display — record it for the
+                # display_fps rate (playback thread only, so no lock needed).
+                self._display_times.append(time.monotonic())
             except Exception as e:
                 self.status.set(f"on_frame callback error: {e}")
         self.current_frame.set(index)
@@ -1265,6 +1298,7 @@ class RealtimeExecutor:
         if now - self._last_metrics_pub >= _METRICS_PUBLISH_INTERVAL_S:
             self._last_metrics_pub = now
             self.metrics.set(self._buffer.metrics())
+            self.frames_skipped.set(self._skipped)
         self._refresh_fps()
 
     def _compute_playback_sleep(self) -> float | None:

@@ -102,6 +102,20 @@ def _factory(*processors):
     return lambda: list(processors)
 
 
+def _install_rate_state(ex) -> None:
+    """Give a bypass-init (object.__new__) executor the display-fps + skip-count
+    state the playback tick / fps refresh publish (added with the status-bar
+    rate panels). Tests that drive _do_playback_tick / _refresh_fps directly
+    need these set since they skip __init__."""
+    from collections import deque
+    from unittest.mock import MagicMock
+
+    ex._display_times = deque()  # noqa: SLF001
+    ex._skipped = 0  # noqa: SLF001
+    ex.display_fps = MagicMock()
+    ex.frames_skipped = MagicMock()
+
+
 class _MultiFrameReader:
     """In-memory TargetReader for an N-frame synthetic stream."""
 
@@ -1726,6 +1740,7 @@ class TestPlaybackFallbackNoBackwardStutter:
         buf.latest_index_at_or_below.return_value = fallback_index
         buf.get.return_value = np.zeros((2, 2, 3), dtype=np.uint8)
         ex._buffer = buf  # noqa: SLF001
+        _install_rate_state(ex)
         ex._do_playback_tick()  # noqa: SLF001
         return shown, ex._last_shown_frame_index  # noqa: SLF001
 
@@ -1761,6 +1776,7 @@ class TestProcessingFpsStallDecay:
         ex._last_completion_time = last_completion_time  # noqa: SLF001
         ex._last_fps = last_fps  # noqa: SLF001
         ex.processing_fps = MagicMock()
+        _install_rate_state(ex)
         ex._refresh_fps()  # noqa: SLF001
         (val,), _ = ex.processing_fps.set.call_args
         return val
@@ -1927,6 +1943,7 @@ class TestPlaybackFallbackIndex:
         ex.current_frame = self._Obs()
         ex.metrics = self._Obs()
         ex.status = self._Obs()
+        _install_rate_state(ex)
         seen: list = []
         ex._on_frame = lambda _f, i: seen.append(i)  # noqa: SLF001
         ex._do_playback_tick()  # noqa: SLF001
@@ -1977,6 +1994,7 @@ class TestMetricsPublishThrottle:
         ex.current_frame = self._Obs()
         ex.metrics = self._Obs()
         ex.status = self._Obs()
+        _install_rate_state(ex)
 
         clock[0] = 1.0
         ex._do_playback_tick()  # noqa: SLF001 — publishes
@@ -2126,3 +2144,34 @@ class TestApplyChainContext:
         ex._apply_chain(frame, (consumer,))
         # The second frame's context starts clean — nothing leaks across frames.
         assert consumer.seen == [None, None]
+
+
+class TestDisplayFps:
+    """display_fps = distinct frames actually shown per second, computed over
+    the same window as processing_fps but from on_frame timestamps."""
+
+    def _display_rate(self, *, display_times):
+        from collections import deque
+        from unittest.mock import MagicMock
+
+        ex = object.__new__(RealtimeExecutor)
+        ex._fps_lock = threading.RLock()  # noqa: SLF001
+        ex._completion_times = deque()  # noqa: SLF001
+        ex._last_completion_time = None  # noqa: SLF001
+        ex._last_fps = 0.0  # noqa: SLF001
+        ex.processing_fps = MagicMock()
+        ex.display_fps = MagicMock()
+        ex._display_times = deque(display_times)  # noqa: SLF001
+        ex._refresh_fps()  # noqa: SLF001
+        (val,), _ = ex.display_fps.set.call_args
+        return val
+
+    def test_windowed_rate_over_shown_frames(self):
+        now = time.monotonic()
+        # 5 frames shown across 0.4s → (5-1)/0.4 = 10 fps.
+        times = [now - 0.4, now - 0.3, now - 0.2, now - 0.1, now]
+        assert 9.0 < self._display_rate(display_times=times) < 11.0
+
+    def test_zero_with_fewer_than_two_frames(self):
+        assert self._display_rate(display_times=[time.monotonic()]) == 0.0
+        assert self._display_rate(display_times=[]) == 0.0

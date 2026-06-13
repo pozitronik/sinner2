@@ -59,6 +59,35 @@ class TestTransportControls:
         assert widget._label.text() == "42 / 99"  # noqa: SLF001
         assert widget._slider.value() == 42  # noqa: SLF001
 
+
+class TestTimeReadout:
+    def test_frames_only_without_fps(self, widget):
+        widget.set_frame_count(100)
+        widget.set_current_frame(42)
+        assert widget._label.text() == "42 / 99"  # noqa: SLF001 — no fps → frames only
+
+    def test_time_prefix_added_with_fps(self, widget):
+        widget.set_frame_count(2700)
+        widget.set_fps(30.0)
+        widget.set_current_frame(360)
+        text = widget._label.text()  # noqa: SLF001
+        assert "0:12" in text  # 360 / 30 = 12s
+        assert "360 / 2699" in text  # frame position preserved
+
+    def test_set_fps_zero_reverts_to_frames_only(self, widget):
+        widget.set_frame_count(2700)
+        widget.set_fps(30.0)
+        widget.set_current_frame(360)
+        widget.set_fps(0.0)
+        assert widget._label.text() == "360 / 2699"  # noqa: SLF001
+
+    def test_fmt_time_minutes_and_hours(self):
+        from sinner2.gui.widgets.transport_controls import QTransportControls
+
+        assert QTransportControls._fmt_time(12) == "0:12"  # noqa: SLF001
+        assert QTransportControls._fmt_time(90) == "1:30"  # noqa: SLF001
+        assert QTransportControls._fmt_time(3725) == "1:02:05"  # noqa: SLF001
+
     def test_set_is_playing_changes_button_label(self, widget):
         widget.set_is_playing(True)
         assert widget._play_button.text() == "Pause"  # noqa: SLF001

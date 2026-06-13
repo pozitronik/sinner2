@@ -335,25 +335,50 @@ class SinnerMainWindow(QMainWindow):
 
         self._status_bar.show_message("ready")
         # Right-side indicator panels (each a discrete cell — icon + value,
-        # divider, fixed min-width, hidden while empty). Order = cache · fps ·
-        # buffer · strategy · execution-providers.
+        # divider, fixed min-width, hidden while empty). Order: cache · resolution
+        # · processing-fps · display-fps · workers · buffer · drops · strategy · EP.
         self._cache_panel = self._status_bar.add_panel(
             "🗄",
             "Persistent processed-frame cache directory for this session "
             "(survives between runs; keyed by source+target+chain config)",
             min_width=56,
         )
+        self._resolution_panel = self._status_bar.add_panel(
+            "📐",
+            "Target resolution: native size @ source frame rate, and the\n"
+            "processed size when downscaled (processing scale < 100%).",
+            min_width=120,
+        )
         self._fps_panel = self._status_bar.add_panel(
             "⏱",
-            "Real cross-worker throughput — frames completed per wall-clock "
+            "Processing throughput — frames the pipeline COMPLETES per wall-clock "
             "second across all workers (3-second rolling window).",
             min_width=64,
+        )
+        self._display_fps_panel = self._status_bar.add_panel(
+            "🖥",
+            "Effective display rate — distinct frames actually SHOWN per second.\n"
+            "Lags processing fps when the sync strategy skips frames to keep up.",
+            min_width=64,
+        )
+        self._workers_panel = self._status_bar.add_panel(
+            "👷",
+            "Realtime worker threads in effect for this session (after clamping "
+            "the configured count to the CPU / per-processor limits).",
+            min_width=40,
         )
         self._metrics_panel = self._status_bar.add_panel(
             "▦",
             "cache: hit-ratio / memory used. "
-            "writes: outstanding/cap, total dropped (cap-hit skips), p50/p95 ms latency.",
-            min_width=180,
+            "writes: outstanding/cap, p50/p95 ms latency.",
+            min_width=170,
+        )
+        self._drops_panel = self._status_bar.add_panel(
+            "⊘",
+            "Frames lost under load. 'skip' = frames the sync strategy never\n"
+            "processed (dropped to stay synced with wall-clock); 'drop' =\n"
+            "processed frames the write buffer discarded (disk couldn't keep up).",
+            min_width=64,
         )
         self._strategy_panel = self._status_bar.add_panel(
             "⏭",
@@ -370,6 +395,10 @@ class SinnerMainWindow(QMainWindow):
             "everything (system falls back to defaults so inference still works).",
             min_width=96,
         )
+        # Session-scoped indicator state (composed from several signals).
+        self._native_size: tuple[int, int] | None = None
+        self._frames_skipped = 0
+        self._write_dropped = 0
 
         self._controller = PlayerController(self._display, self._transport, parent=self)
         # Wire the swapper's pre-swap detections to the overlay sink (set before
@@ -377,6 +406,8 @@ class SinnerMainWindow(QMainWindow):
         self._controller.set_detection_sink(self._detection_sink)
         self._controller.errorOccurred.connect(self._show_error)
         self._controller.processingFpsChanged.connect(self._update_fps_label)
+        self._controller.displayFpsChanged.connect(self._update_display_fps_label)
+        self._controller.framesSkippedChanged.connect(self._on_frames_skipped)
         self._controller.sessionScratchDirChanged.connect(self._update_scratch_label)
         # Also drives the TensorRT compile dialog on session START (the launch
         # case: TRT persisted + no cached engine → build runs at first load, with
@@ -385,6 +416,9 @@ class SinnerMainWindow(QMainWindow):
         self._controller.targetNativeSizeChanged.connect(
             self._processors.set_target_native_size
         )
+        # Second slot: the resolution panel needs the native size too, and the
+        # None emit on teardown clears the session-scoped indicator panels.
+        self._controller.targetNativeSizeChanged.connect(self._on_native_size_changed)
         self._controller.bufferMetricsChanged.connect(self._update_metrics_label)
         self._controller.strategyModeChanged.connect(self._update_strategy_mode_label)
         self._controller.sessionSwitching.connect(self._on_session_switching)
@@ -570,10 +604,67 @@ class SinnerMainWindow(QMainWindow):
         if self._session.active_kind() is SessionKind.CAMERA:
             self._fps_panel.set_value(f"{fps:.1f} fps")
 
+    def _update_display_fps_label(self, fps: float) -> None:
+        # File-session only (the live MJPEG path has no separate display rate);
+        # ignored while the camera is active so a late emit can't show a stale
+        # value over the live reading.
+        if self._session.active_kind() is not SessionKind.CAMERA:
+            self._display_fps_panel.set_value(f"{fps:.1f} fps")
+
     def _update_scratch_label(self, scratch_dir: object) -> None:
         # The cell shows just the session cache-key dir name (the full path is
         # long and cluttered the bar); the panel tooltip explains what it is.
         self._cache_panel.set_value(Path(str(scratch_dir)).name if scratch_dir else "")
+
+    def _on_native_size_changed(self, size: object) -> None:
+        # (w, h) on session start, None on teardown. Drives the resolution panel
+        # and clears the session-scoped cells when the session ends.
+        self._native_size = size if size else None  # type: ignore[assignment]
+        self._refresh_session_indicators()
+        if not size:
+            self._display_fps_panel.set_value("")
+            self._frames_skipped = 0
+            self._write_dropped = 0
+            self._update_drops_panel()
+
+    def _refresh_session_indicators(self) -> None:
+        # Resolution + worker count read live state, so each hides itself when no
+        # session is active. Called on session start/teardown (native-size signal)
+        # and on a config change (processing scale / worker count may move).
+        self._update_resolution_panel()
+        active = self._controller.executor() is not None
+        self._workers_panel.set_value(
+            str(self._controller.applied_worker_count()) if active else ""
+        )
+
+    def _update_resolution_panel(self) -> None:
+        size = self._native_size
+        if not size:
+            self._resolution_panel.set_value("")
+            return
+        w, h = int(size[0]), int(size[1])
+        text = f"{w}×{h}"
+        fps = self._controller.target_fps()
+        if fps > 0:
+            text += f" @{fps:.0f}"
+        scale = self._processors.processing_scale()
+        if scale and scale < 1.0:
+            text += f" → {round(w * scale)}×{round(h * scale)}"
+        self._resolution_panel.set_value(text)
+
+    def _on_frames_skipped(self, count: object) -> None:
+        self._frames_skipped = count if isinstance(count, int) else 0
+        self._update_drops_panel()
+
+    def _update_drops_panel(self) -> None:
+        # 'skip' = strategy skips (never processed); 'drop' = write-buffer drops.
+        # Cell hides when both are zero.
+        parts = []
+        if self._frames_skipped:
+            parts.append(f"{self._frames_skipped} skip")
+        if self._write_dropped:
+            parts.append(f"{self._write_dropped} drop")
+        self._drops_panel.set_value(" · ".join(parts))
 
     # ---- Cache management slots ----
 
@@ -827,13 +918,14 @@ class SinnerMainWindow(QMainWindow):
         wq_drop = getattr(metrics, "write_dropped", 0)
         wl_p50 = getattr(metrics, "write_latency_p50_ms", 0.0)
         wl_p95 = getattr(metrics, "write_latency_p95_ms", 0.0)
-        text = (
+        self._metrics_panel.set_value(
             f"{ratio * 100:.0f}% · {mem_mb:.0f}MB · "
             f"q{wq_out}/{wq_max} · {wl_p50:.0f}/{wl_p95:.0f}ms"
         )
-        if wq_drop:
-            text += f" · {wq_drop} drop"
-        self._metrics_panel.set_value(text)
+        # Write-buffer drops live in the dedicated drops panel (combined with
+        # strategy skips), not crammed into the buffer cell.
+        self._write_dropped = int(wq_drop)
+        self._update_drops_panel()
 
     def _on_processor_config_changed(self) -> None:
         if self._batch_active:
@@ -868,6 +960,9 @@ class SinnerMainWindow(QMainWindow):
         # apply_settings above; just refresh the status-bar EP label
         # and the failed-provider highlight afterwards.
         self._refresh_providers_label()
+        # Processing scale / worker count may have changed → refresh the
+        # resolution + workers cells.
+        self._refresh_session_indicators()
         # A TensorRT-enable triggers a one-time engine compile on the executor
         # (blocks the dispatcher ~25s). Show a modal "compiling" dialog until it
         # finishes rather than leaving a frozen preview + a (prematurely) red

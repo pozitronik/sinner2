@@ -67,6 +67,8 @@ class PlayerController(QObject):
 
     errorOccurred = Signal(str)
     processingFpsChanged = Signal(object)  # carries float; declared `object` to match the bridge
+    displayFpsChanged = Signal(object)  # carries float — effective shown-frame rate
+    framesSkippedChanged = Signal(object)  # carries int — cumulative strategy skips this session
     sessionScratchDirChanged = Signal(object)  # Path | None — emitted on session start/end
     bufferMetricsChanged = Signal(object)  # carries BufferMetrics; routes to status bar
     strategyModeChanged = Signal(object)  # carries str; routes to status bar mode label
@@ -239,6 +241,7 @@ class PlayerController(QObject):
         self._session_cache_dir = bundle.cache_dir
         self._target_fps = bundle.target_fps
         self._transport.set_frame_count(bundle.frame_count)
+        self._transport.set_fps(bundle.target_fps)
         self.sessionScratchDirChanged.emit(bundle.cache_dir)
         self.cacheStorageStatsChanged.emit()
         # Native source size for the scale readout ("50% [960x540]").
@@ -360,6 +363,7 @@ class PlayerController(QObject):
         self._session_cache_dir = bundle.cache_dir
         self._target_fps = bundle.target_fps
         self._transport.set_frame_count(bundle.frame_count)
+        self._transport.set_fps(bundle.target_fps)
         # set_frame_count resets the slider to 0. Restore the position we seeked
         # back to, so a target change while PAUSED doesn't show 0 until the user
         # hits play (the continuous current_frame stream that would otherwise
@@ -683,17 +687,23 @@ class PlayerController(QObject):
         status_bridge.valueChanged.connect(self._on_status)
         fps_bridge = ObservableValueBridge(executor.processing_fps, self)
         fps_bridge.valueChanged.connect(self.processingFpsChanged)
+        display_fps_bridge = ObservableValueBridge(executor.display_fps, self)
+        display_fps_bridge.valueChanged.connect(self.displayFpsChanged)
         metrics_bridge = ObservableValueBridge(executor.metrics, self)
         metrics_bridge.valueChanged.connect(self.bufferMetricsChanged)
         mode_bridge = ObservableValueBridge(executor.strategy_mode, self)
         mode_bridge.valueChanged.connect(self.strategyModeChanged)
+        skipped_bridge = ObservableValueBridge(executor.frames_skipped, self)
+        skipped_bridge.valueChanged.connect(self.framesSkippedChanged)
         self._bridges = [
             current_bridge,
             playing_bridge,
             status_bridge,
             fps_bridge,
+            display_fps_bridge,
             metrics_bridge,
             mode_bridge,
+            skipped_bridge,
         ]
 
     def _on_status(self, message: object) -> None:
@@ -896,6 +906,16 @@ class PlayerController(QObject):
             return
         self._processing_scale = clamped
         self._rebuild_current_session_async()
+
+    def target_fps(self) -> float:
+        """The active target's native frame rate (0.0 when no session) — used
+        for the status-bar resolution panel and the transport's time readout."""
+        return self._target_fps
+
+    def applied_worker_count(self) -> int:
+        """The realtime worker count actually in effect (after clamping) for the
+        current session — surfaced in the status bar."""
+        return self._applied_worker_count
 
     def swapper_providers(self) -> tuple[str, ...]:
         return self._swapper_providers

@@ -33,6 +33,9 @@ class QTransportControls(QWidget):
         super().__init__(parent)
         self._is_playing = False
         self._frame_count = 0
+        # Target fps for the time readout; 0 → no timeline fps known, so the
+        # label shows frames only (e.g. a camera, or before a session loads).
+        self._fps = 0.0
         # While the user is dragging the slider, we ignore programmatic
         # set_current_frame updates from the playback observable. Otherwise
         # the 30 Hz playback tick yanks the slider back to the play head
@@ -58,7 +61,7 @@ class QTransportControls(QWidget):
         self._pending_seek: int | None = None
 
         self._label = QLabel("0 / 0")
-        self._label.setMinimumWidth(80)
+        self._label.setMinimumWidth(150)
 
         # "Add to batch": capture the current source + target + settings as a
         # batch task. Sits at the FAR LEFT of the row. The whole transport is
@@ -106,6 +109,12 @@ class QTransportControls(QWidget):
         self._slider.blockSignals(False)
         self._update_label(0)
 
+    def set_fps(self, fps: float) -> None:
+        """Target frame rate for the time readout. 0 leaves the label showing
+        frames only (no timeline fps, e.g. a camera or before a session)."""
+        self._fps = max(0.0, float(fps))
+        self._update_label(self._slider.value())
+
     @Slot(int)
     def set_current_frame(self, frame: int) -> None:
         if self._user_dragging:
@@ -150,7 +159,25 @@ class QTransportControls(QWidget):
         self.seekRequested.emit(self._slider.value())
 
     def _update_label(self, frame: int) -> None:
-        self._label.setText(f"{frame} / {max(0, self._frame_count - 1)}")
+        last = max(0, self._frame_count - 1)
+        if self._fps > 0:
+            # Time prefix when the timeline fps is known; frames stay as the
+            # precise position. "0:12 / 1:30   360 / 2699".
+            self._label.setText(
+                f"{self._fmt_time(frame / self._fps)} / "
+                f"{self._fmt_time(last / self._fps)}   {frame} / {last}"
+            )
+        else:
+            self._label.setText(f"{frame} / {last}")
+
+    @staticmethod
+    def _fmt_time(seconds: float) -> str:
+        total = int(seconds)
+        h, rem = divmod(total, 3600)
+        m, s = divmod(rem, 60)
+        if h:
+            return f"{h}:{m:02d}:{s:02d}"
+        return f"{m}:{s:02d}"
 
     # ---- Audio control state ----
 

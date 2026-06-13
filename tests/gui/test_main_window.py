@@ -1245,6 +1245,7 @@ class TestDeferredModelConfirm:
         win._detection_probe = MagicMock()  # noqa: SLF001
         win._confirm_optional_models = MagicMock()  # noqa: SLF001
         win._refresh_providers_label = MagicMock()  # noqa: SLF001
+        win._refresh_session_indicators = MagicMock()  # noqa: SLF001
         win._wait_for_tensorrt_build = MagicMock(return_value=False)  # noqa: SLF001
         win._schedule_provider_highlight_refresh = MagicMock()  # noqa: SLF001
         snap = win._processors.snapshot.return_value  # noqa: SLF001
@@ -1336,3 +1337,103 @@ class TestCacheStatsAsync:
         qtbot.waitUntil(lambda: win._cache_stats_cb.called, timeout=2000)  # noqa: SLF001
         payload = win._cache_stats_cb.call_args[0][0]  # noqa: SLF001
         assert payload[0] == 6 and payload[1] == 0  # noqa: SLF001 — gen bumped, 0 entries
+
+
+class TestStatusBarInfoPanels:
+    """Resolution / display-fps / workers / drops panels composed from the new
+    controller signals + accessors."""
+
+    def _win(self):
+        from unittest.mock import MagicMock
+
+        from sinner2.gui import main_window as mw
+
+        win = mw.SinnerMainWindow.__new__(mw.SinnerMainWindow)
+        win._session = MagicMock()  # noqa: SLF001
+        win._controller = MagicMock()  # noqa: SLF001
+        win._processors = MagicMock()  # noqa: SLF001
+        win._resolution_panel = MagicMock()  # noqa: SLF001
+        win._workers_panel = MagicMock()  # noqa: SLF001
+        win._display_fps_panel = MagicMock()  # noqa: SLF001
+        win._drops_panel = MagicMock()  # noqa: SLF001
+        win._native_size = None  # noqa: SLF001
+        win._frames_skipped = 0  # noqa: SLF001
+        win._write_dropped = 0  # noqa: SLF001
+        return win
+
+    def test_resolution_native_and_source_fps(self):
+        win = self._win()
+        win._native_size = (1920, 1080)  # noqa: SLF001
+        win._controller.target_fps.return_value = 30.0  # noqa: SLF001
+        win._processors.processing_scale.return_value = 1.0  # noqa: SLF001
+        win._update_resolution_panel()  # noqa: SLF001
+        win._resolution_panel.set_value.assert_called_with("1920×1080 @30")  # noqa: SLF001
+
+    def test_resolution_shows_downscaled_size(self):
+        win = self._win()
+        win._native_size = (1920, 1080)  # noqa: SLF001
+        win._controller.target_fps.return_value = 30.0  # noqa: SLF001
+        win._processors.processing_scale.return_value = 0.5  # noqa: SLF001
+        win._update_resolution_panel()  # noqa: SLF001
+        win._resolution_panel.set_value.assert_called_with(  # noqa: SLF001
+            "1920×1080 @30 → 960×540"
+        )
+
+    def test_resolution_hidden_without_size(self):
+        win = self._win()
+        win._update_resolution_panel()  # noqa: SLF001
+        win._resolution_panel.set_value.assert_called_with("")  # noqa: SLF001
+
+    def test_workers_shown_only_with_active_session(self):
+        win = self._win()
+        win._native_size = None  # noqa: SLF001 — resolution hides, we test workers
+        win._controller.executor.return_value = object()  # noqa: SLF001
+        win._controller.applied_worker_count.return_value = 4  # noqa: SLF001
+        win._refresh_session_indicators()  # noqa: SLF001
+        win._workers_panel.set_value.assert_called_with("4")  # noqa: SLF001
+
+    def test_workers_hidden_without_session(self):
+        win = self._win()
+        win._controller.executor.return_value = None  # noqa: SLF001
+        win._refresh_session_indicators()  # noqa: SLF001
+        win._workers_panel.set_value.assert_called_with("")  # noqa: SLF001
+
+    def test_drops_combines_skip_and_drop(self):
+        win = self._win()
+        win._frames_skipped = 12  # noqa: SLF001
+        win._write_dropped = 3  # noqa: SLF001
+        win._update_drops_panel()  # noqa: SLF001
+        win._drops_panel.set_value.assert_called_with("12 skip · 3 drop")  # noqa: SLF001
+
+    def test_drops_hidden_when_none(self):
+        win = self._win()
+        win._update_drops_panel()  # noqa: SLF001
+        win._drops_panel.set_value.assert_called_with("")  # noqa: SLF001
+
+    def test_frames_skipped_signal_updates_drops(self):
+        win = self._win()
+        win._on_frames_skipped(7)  # noqa: SLF001
+        win._drops_panel.set_value.assert_called_with("7 skip")  # noqa: SLF001
+
+    def test_native_size_none_clears_session_cells(self):
+        from unittest.mock import MagicMock
+
+        win = self._win()
+        win._frames_skipped = 5  # noqa: SLF001
+        win._write_dropped = 2  # noqa: SLF001
+        win._refresh_session_indicators = MagicMock()  # noqa: SLF001
+        win._on_native_size_changed(None)  # noqa: SLF001
+        win._display_fps_panel.set_value.assert_called_with("")  # noqa: SLF001
+        assert win._frames_skipped == 0  # noqa: SLF001
+        assert win._write_dropped == 0  # noqa: SLF001
+
+    def test_display_fps_gated_to_non_camera(self):
+        from sinner2.gui.session_capabilities import SessionKind
+
+        win = self._win()
+        win._session.active_kind.return_value = SessionKind.CAMERA  # noqa: SLF001
+        win._update_display_fps_label(30.0)  # noqa: SLF001
+        win._display_fps_panel.set_value.assert_not_called()  # noqa: SLF001
+        win._session.active_kind.return_value = SessionKind.FILE  # noqa: SLF001
+        win._update_display_fps_label(30.0)  # noqa: SLF001
+        win._display_fps_panel.set_value.assert_called_with("30.0 fps")  # noqa: SLF001
