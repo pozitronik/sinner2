@@ -9,6 +9,23 @@ import pytest  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
+def isolate_cache_root(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Point every GUI test's frame cache at a throwaway tmp dir.
+
+    `default_cache_root()` otherwise resolves to the real ``<repo>/temp``, so a
+    window built without an explicit cache root would (a) write session cache
+    INTO the working tree and (b) ``stat``-walk the whole thing on the GUI
+    thread on every teardown (``_teardown_session`` → ``cacheStorageStatsChanged``
+    → ``_refresh_cache_stats``). On a populated temp (86k+ files) that walk never
+    finishes within the test timeout — the suite hangs. Reading happens via the
+    env var inside ``default_cache_root()`` at construction time, so setting it
+    here (autouse, before the ``window`` fixture) isolates each test."""
+    monkeypatch.setenv("SINNER2_CACHE_DIR", str(tmp_path_factory.mktemp("cache")))
+
+
+@pytest.fixture(autouse=True)
 def stub_insightface_model(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     """Never load the REAL insightface model in GUI tests.
 
