@@ -867,6 +867,12 @@ class SinnerMainWindow(QMainWindow):
         EP loaded but no nvinfer, etc.). Pulled here instead of
         emitted by the controller so the styling is purely a view
         concern."""
+        # This runs at every point the provider TRUTH is (re)known — including
+        # the async-rebuild poll completions — so refresh the status-bar EP cell
+        # here too. The synchronous refresh in _on_processor_config_changed sees
+        # the OLD session's recorded providers (set_chain rebuilds on a worker
+        # thread); without this the cell would stay stale after an EP change.
+        self._refresh_providers_label()
         requested = set(self._processors.swapper_providers())
         actual = set(self._controller.effective_onnx_providers())
         # Empty `requested` = user unchecked everything → we use

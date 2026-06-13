@@ -800,6 +800,20 @@ class TestProviderHighlightDeferred:
         window._schedule_provider_highlight_refresh()  # noqa: SLF001
         assert marked == [set()]  # immediate, no deferral
 
+    def test_highlight_refreshes_ep_status_panel(self, window, monkeypatch):
+        # Regression: the EP status-bar cell stayed stale after a provider change
+        # because only the checkbox highlight got the post-async-rebuild refresh.
+        # _highlight_failed_providers runs at every "truth known" point, so it
+        # must also update the EP cell to the effective providers.
+        monkeypatch.setattr(window._processors, "swapper_providers",  # noqa: SLF001
+                            lambda: ["CUDAExecutionProvider"])
+        monkeypatch.setattr(window._controller, "effective_onnx_providers",  # noqa: SLF001
+                            lambda: ("CUDAExecutionProvider", "CPUExecutionProvider"))
+        monkeypatch.setattr(window._processors, "mark_providers_failed",  # noqa: SLF001
+                            lambda s: None)
+        window._highlight_failed_providers()  # noqa: SLF001
+        assert window._providers_panel.value() == "CUDA, CPU"  # noqa: SLF001
+
 
 class TestKeyboardTransportIsAudioAware:
     """Spacebar / arrows / Home / End must route through the controller's
