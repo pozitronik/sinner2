@@ -79,6 +79,7 @@ class Settings(SinnerBaseModel):
     side_panel_visible: bool | None = None
     metrics_overlay_visible: bool | None = None
     face_overlay_visible: bool | None = None  # face-detection debug overlay
+    status_panels_hidden: list[str] | None = None  # status-bar panel keys the user hid
     face_comparison_visible: bool | None = None  # orig/swapped comparison thumbs
     # Rotation compensation (swapper, experimental)
     swapper_rotation_compensation: bool | None = None

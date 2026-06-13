@@ -1437,3 +1437,50 @@ class TestStatusBarInfoPanels:
         win._session.active_kind.return_value = SessionKind.FILE  # noqa: SLF001
         win._update_display_fps_label(30.0)  # noqa: SLF001
         win._display_fps_panel.set_value.assert_called_with("30.0 fps")  # noqa: SLF001
+
+
+class TestStatusPanelMenuPersistence:
+    """Right-click panel-visibility menu: choices persist to settings and are
+    re-applied to the panels on the next launch."""
+
+    def test_status_panels_restored_from_settings(self, qtbot, tmp_path, monkeypatch):
+        import json
+
+        from sinner2.gui.main_window import SinnerMainWindow
+
+        settings_path = tmp_path / "settings.json"
+        settings_path.write_text(
+            json.dumps({"status_panels_hidden": ["fps", "drops"]}), encoding="utf-8"
+        )
+        monkeypatch.setenv("SINNER2_SETTINGS_PATH", str(settings_path))
+        w = SinnerMainWindow()
+        qtbot.addWidget(w)
+        assert not w._fps_panel.user_visible()  # noqa: SLF001 — hidden per settings
+        assert not w._drops_panel.user_visible()  # noqa: SLF001
+        assert w._cache_panel.user_visible()  # noqa: SLF001 — not listed → visible
+
+    def test_toggle_persists_hidden_keys(self):
+        from unittest.mock import MagicMock
+
+        from sinner2.gui import main_window as mw
+
+        win = mw.SinnerMainWindow.__new__(mw.SinnerMainWindow)
+        win._status_bar = MagicMock()  # noqa: SLF001
+        win._status_bar.hidden_panel_keys.return_value = ["fps", "drops"]  # noqa: SLF001
+        win._update_settings = MagicMock()  # noqa: SLF001
+        win._on_panel_visibility_changed("fps", False)  # noqa: SLF001
+        win._update_settings.assert_called_once_with(  # noqa: SLF001
+            status_panels_hidden=["fps", "drops"]
+        )
+
+    def test_toggle_with_nothing_hidden_persists_none(self):
+        from unittest.mock import MagicMock
+
+        from sinner2.gui import main_window as mw
+
+        win = mw.SinnerMainWindow.__new__(mw.SinnerMainWindow)
+        win._status_bar = MagicMock()  # noqa: SLF001
+        win._status_bar.hidden_panel_keys.return_value = []  # noqa: SLF001
+        win._update_settings = MagicMock()  # noqa: SLF001
+        win._on_panel_visibility_changed("fps", True)  # noqa: SLF001
+        win._update_settings.assert_called_once_with(status_panels_hidden=None)  # noqa: SLF001

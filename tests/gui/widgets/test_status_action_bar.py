@@ -91,3 +91,49 @@ class TestStatusPanels:
         panel = bar.add_panel(tooltip="plain")
         panel.set_value("hello")
         assert panel._value.text() == "hello"  # noqa: SLF001 — no icon prefix
+
+
+class TestPanelVisibilityMenu:
+    def test_only_keyed_panels_are_registered(self, bar):
+        bar.add_panel("⏱", "tip", key="fps", label="FPS")
+        bar.add_panel("▦", "tip")  # no key → not menu-toggleable
+        assert [p.key() for p in bar._panels] == ["fps"]  # noqa: SLF001
+
+    def test_user_hidden_panel_stays_hidden_with_value(self, bar, qtbot):
+        panel = bar.add_panel("⏱", "tip", key="fps", label="FPS")
+        bar.show()
+        qtbot.waitExposed(bar)
+        panel.set_value("30 fps")
+        assert panel.isVisible()
+        bar.set_panel_user_visible("fps", False)
+        assert not panel.isVisible()  # hidden despite a live value
+        assert panel.value() == "30 fps"  # value retained while hidden
+        bar.set_panel_user_visible("fps", True)
+        assert panel.isVisible()
+
+    def test_user_visible_panel_still_hidden_without_value(self, bar, qtbot):
+        panel = bar.add_panel("⏱", "tip", key="fps", label="FPS")
+        bar.show()
+        qtbot.waitExposed(bar)
+        bar.set_panel_user_visible("fps", True)
+        assert not panel.isVisible()  # no value → still hidden
+
+    def test_hidden_panel_keys_reflects_toggles(self, bar):
+        bar.add_panel("a", key="a", label="A")
+        bar.add_panel("b", key="b", label="B")
+        assert bar.hidden_panel_keys() == []
+        bar.set_panel_user_visible("a", False)
+        assert bar.hidden_panel_keys() == ["a"]
+
+    def test_toggle_panel_applies_and_emits(self, bar, qtbot):
+        panel = bar.add_panel("⏱", "tip", key="fps", label="FPS")
+        panel.set_value("x")
+        with qtbot.waitSignal(bar.panelVisibilityChanged) as blocker:
+            bar._toggle_panel(panel, False)  # noqa: SLF001
+        assert blocker.args == ["fps", False]
+        assert panel.user_visible() is False
+
+    def test_set_panel_user_visible_unknown_key_is_noop(self, bar):
+        bar.add_panel("⏱", key="fps", label="FPS")
+        bar.set_panel_user_visible("nope", False)  # must not raise
+        assert bar.hidden_panel_keys() == []

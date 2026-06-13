@@ -342,36 +342,48 @@ class SinnerMainWindow(QMainWindow):
             "Persistent processed-frame cache directory for this session "
             "(survives between runs; keyed by source+target+chain config)",
             min_width=56,
+            key="cache",
+            label="Cache directory",
         )
         self._resolution_panel = self._status_bar.add_panel(
             "📐",
             "Target resolution: native size @ source frame rate, and the\n"
             "processed size when downscaled (processing scale < 100%).",
             min_width=120,
+            key="resolution",
+            label="Resolution",
         )
         self._fps_panel = self._status_bar.add_panel(
             "⏱",
             "Processing throughput — frames the pipeline COMPLETES per wall-clock "
             "second across all workers (3-second rolling window).",
             min_width=64,
+            key="fps",
+            label="Processing FPS",
         )
         self._display_fps_panel = self._status_bar.add_panel(
             "🖥",
             "Effective display rate — distinct frames actually SHOWN per second.\n"
             "Lags processing fps when the sync strategy skips frames to keep up.",
             min_width=64,
+            key="display_fps",
+            label="Display FPS",
         )
         self._workers_panel = self._status_bar.add_panel(
             "👷",
             "Realtime worker threads in effect for this session (after clamping "
             "the configured count to the CPU / per-processor limits).",
             min_width=40,
+            key="workers",
+            label="Workers",
         )
         self._metrics_panel = self._status_bar.add_panel(
             "▦",
             "cache: hit-ratio / memory used. "
             "writes: outstanding/cap, p50/p95 ms latency.",
             min_width=170,
+            key="buffer",
+            label="Buffer metrics",
         )
         self._drops_panel = self._status_bar.add_panel(
             "⊘",
@@ -379,6 +391,8 @@ class SinnerMainWindow(QMainWindow):
             "processed (dropped to stay synced with wall-clock); 'drop' =\n"
             "processed frames the write buffer discarded (disk couldn't keep up).",
             min_width=64,
+            key="drops",
+            label="Dropped frames",
         )
         self._strategy_panel = self._status_bar.add_panel(
             "⏭",
@@ -387,6 +401,8 @@ class SinnerMainWindow(QMainWindow):
             "because processing can't keep up — display will trail the\n"
             "timeline but throughput stays at the pipeline's max rate.",
             min_width=72,
+            key="strategy",
+            label="Strategy mode",
         )
         self._providers_panel = self._status_bar.add_panel(
             "⚡",
@@ -394,6 +410,15 @@ class SinnerMainWindow(QMainWindow):
             "Differs from the checkbox column when the user has unchecked\n"
             "everything (system falls back to defaults so inference still works).",
             min_width=96,
+            key="providers",
+            label="Execution providers",
+        )
+        # Restore which panels the user hid via the right-click menu, then keep
+        # the choice persisted on every toggle.
+        for key in self._settings.status_panels_hidden or []:
+            self._status_bar.set_panel_user_visible(key, False)
+        self._status_bar.panelVisibilityChanged.connect(
+            self._on_panel_visibility_changed
         )
         # Session-scoped indicator state (composed from several signals).
         self._native_size: tuple[int, int] | None = None
@@ -665,6 +690,12 @@ class SinnerMainWindow(QMainWindow):
         if self._write_dropped:
             parts.append(f"{self._write_dropped} drop")
         self._drops_panel.set_value(" · ".join(parts))
+
+    def _on_panel_visibility_changed(self, _key: str, _visible: bool) -> None:
+        # Persist the full hidden set on every toggle (None when nothing hidden,
+        # so a fresh install / cleared list defaults all panels visible).
+        hidden = self._status_bar.hidden_panel_keys()
+        self._update_settings(status_panels_hidden=hidden or None)
 
     # ---- Cache management slots ----
 

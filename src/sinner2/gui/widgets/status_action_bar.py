@@ -17,11 +17,13 @@ The buttons are public attributes so the main window wires their signals to its
 toggle handlers and reflects state (checked) on them; the message API mirrors
 QStatusBar.showMessage(text, timeout).
 """
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, Signal
+from PySide6.QtGui import QContextMenuEvent
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMenu,
     QToolButton,
     QWidget,
 )
@@ -39,9 +41,11 @@ def _divider() -> QFrame:
 class _StatusPanel(QWidget):
     """One indicator cell: ``[divider │ icon value]``.
 
-    Hidden (its left divider included) while the value is empty, so the bar
-    never shows blank cells. A min-width keeps a changing value (e.g. the FPS
-    number) from shifting neighbouring cells left and right.
+    Visibility is two-level: a cell shows only when it has a value AND the user
+    hasn't hidden it via the bar's context menu. So an empty cell never shows a
+    blank box, and a cell the user switched off stays off even with live data.
+    A min-width keeps a changing value (e.g. the FPS number) from shifting
+    neighbouring cells left and right.
     """
 
     def __init__(
@@ -49,11 +53,16 @@ class _StatusPanel(QWidget):
         icon: str = "",
         tooltip: str = "",
         min_width: int = 0,
+        key: str = "",
+        label: str = "",
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._icon = icon
         self._text = ""
+        self._key = key
+        self._label = label or key
+        self._user_visible = True
         layout = QHBoxLayout(self)
         # A little vertical inset on the divider; no horizontal margin so the
         # bar's own spacing controls the gap between cells.
@@ -74,16 +83,38 @@ class _StatusPanel(QWidget):
             self._value.setText(f"{self._icon} {self._text}")
         else:
             self._value.setText(self._text)
-        self.setVisible(bool(self._text))
+        self._apply_visibility()
+
+    def set_user_visible(self, visible: bool) -> None:
+        """Show/hide per the context-menu toggle (independent of the value)."""
+        self._user_visible = bool(visible)
+        self._apply_visibility()
+
+    def _apply_visibility(self) -> None:
+        self.setVisible(self._user_visible and bool(self._text))
 
     def value(self) -> str:
         """The current value text (without the icon prefix); "" when hidden."""
         return self._text
 
+    def key(self) -> str:
+        return self._key
+
+    def label(self) -> str:
+        return self._label
+
+    def user_visible(self) -> bool:
+        return self._user_visible
+
 
 class QStatusActionBar(QWidget):
+    # Emitted (panel key, now-visible) when the user toggles a panel via the
+    # right-click menu, so the main window can persist the choice.
+    panelVisibilityChanged = Signal(str, bool)
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._panels: list[_StatusPanel] = []
         # Toggles reflect on/off state; actions just fire. Tooltips carry the
         # keyboard shortcut so the buttons double as shortcut discovery.
         self.on_top_button = self._toggle("📌", "Keep window on top (F12)")
@@ -150,19 +181,60 @@ class QStatusActionBar(QWidget):
     # ---- Indicator panels (right) ----
 
     def add_panel(
-        self, icon: str = "", tooltip: str = "", min_width: int = 0
+        self,
+        icon: str = "",
+        tooltip: str = "",
+        min_width: int = 0,
+        key: str = "",
+        label: str = "",
     ) -> _StatusPanel:
         """Append a persistent indicator cell on the right and return it.
 
         Call ``panel.set_value(text)`` to update it; an empty value hides the
         whole cell (its divider too). Cells appear in call order, each divided
         from its neighbour — the first one's divider separates the panels from
-        the stretchy message."""
-        panel = _StatusPanel(icon, tooltip, min_width)
+        the stretchy message. ``key``/``label`` register the cell in the
+        right-click "panels" menu so the user can show/hide it."""
+        panel = _StatusPanel(icon, tooltip, min_width, key=key, label=label)
         self._layout.addWidget(panel)
+        if key:
+            self._panels.append(panel)
         return panel
+
+    def set_panel_user_visible(self, key: str, visible: bool) -> None:
+        """Apply a persisted show/hide choice without emitting (restore path)."""
+        for panel in self._panels:
+            if panel.key() == key:
+                panel.set_user_visible(visible)
+                return
+
+    def hidden_panel_keys(self) -> list[str]:
+        """Keys of panels the user has switched off — for persistence."""
+        return [p.key() for p in self._panels if not p.user_visible()]
 
     def add_permanent_widget(self, widget: QWidget) -> None:
         """Append a raw persistent widget on the right (mirrors
         QStatusBar.addPermanentWidget). Prefer ``add_panel`` for indicators."""
         self._layout.addWidget(widget)
+
+    # ---- Panel-visibility context menu ----
+
+    def contextMenuEvent(self, event: QContextMenuEvent) -> None:
+        """Right-click anywhere on the bar → a menu of checkable panel toggles."""
+        if not self._panels:
+            return
+        menu = QMenu(self)
+        menu.addSection("Status bar panels")
+        for panel in self._panels:
+            action = menu.addAction(panel.label())
+            action.setCheckable(True)
+            action.setChecked(panel.user_visible())
+            # default-arg binds the loop variable; triggered passes the new state.
+            action.triggered.connect(
+                lambda checked, p=panel: self._toggle_panel(p, checked)
+            )
+        menu.exec(event.globalPos())
+
+    def _toggle_panel(self, panel: _StatusPanel, visible: bool) -> None:
+        panel.set_user_visible(visible)
+        self.panelVisibilityChanged.emit(panel.key(), visible)
