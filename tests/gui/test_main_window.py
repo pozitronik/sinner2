@@ -944,6 +944,7 @@ class TestLiveMode:
         win._controller = MagicMock()  # noqa: SLF001
         win._session = MagicMock()  # noqa: SLF001
         win._batch_active = False  # noqa: SLF001
+        win._models_confirmed = True  # noqa: SLF001 — deferred confirm already done
         win._update_settings = MagicMock()  # noqa: SLF001 — persist no-op
         return win
 
@@ -1129,6 +1130,7 @@ class TestDeferredInitialSession:
         win._restoring_paths = False  # noqa: SLF001
         win._pending_initial_target = None  # noqa: SLF001
         win._initial_session_started = False  # noqa: SLF001
+        win._models_confirmed = True  # noqa: SLF001 — deferred confirm already done
         win._refresh_transport_enabled = MagicMock()  # noqa: SLF001
         win._highlight_failed_providers = MagicMock()  # noqa: SLF001
         return win
@@ -1222,3 +1224,115 @@ class TestFullscreenTransportRehome:
         window._exit_fullscreen()  # noqa: SLF001
         splitter_idx = layout.indexOf(window._top_splitter)  # noqa: SLF001
         assert layout.indexOf(window._transport) == splitter_idx + 1  # noqa: SLF001
+
+
+class TestDeferredModelConfirm:
+    """Settings restore must NOT pop the blocking model-download confirm (headless
+    that hangs window construction; for a user it's a startup nag). The prompt is
+    deferred to the first session build — "keep selection, prompt on first use"."""
+
+    def _win(self):
+        from unittest.mock import MagicMock
+
+        from sinner2.gui import main_window as mw
+
+        win = mw.SinnerMainWindow.__new__(mw.SinnerMainWindow)
+        win._batch_active = False  # noqa: SLF001
+        win._restoring_settings = False  # noqa: SLF001
+        win._models_confirmed = False  # noqa: SLF001
+        win._processors = MagicMock()  # noqa: SLF001
+        win._session = MagicMock()  # noqa: SLF001
+        win._detection_probe = MagicMock()  # noqa: SLF001
+        win._confirm_optional_models = MagicMock()  # noqa: SLF001
+        win._refresh_providers_label = MagicMock()  # noqa: SLF001
+        win._wait_for_tensorrt_build = MagicMock(return_value=False)  # noqa: SLF001
+        win._schedule_provider_highlight_refresh = MagicMock()  # noqa: SLF001
+        snap = win._processors.snapshot.return_value  # noqa: SLF001
+        snap.swapper_providers = []
+        snap.swapper_params.detection_size = 640
+        return win
+
+    def test_restore_skips_confirm_but_still_applies(self):
+        win = self._win()
+        win._restoring_settings = True  # noqa: SLF001
+        win._on_processor_config_changed()  # noqa: SLF001
+        win._confirm_optional_models.assert_not_called()  # noqa: SLF001
+        win._session.apply_settings.assert_called_once()  # noqa: SLF001 — config seeded
+        assert win._models_confirmed is False  # noqa: SLF001 — not yet confirmed
+
+    def test_user_change_runs_confirm(self):
+        win = self._win()
+        win._on_processor_config_changed()  # noqa: SLF001
+        win._confirm_optional_models.assert_called_once()  # noqa: SLF001
+        assert win._models_confirmed is True  # noqa: SLF001
+
+    def test_deferred_confirm_runs_once_then_gated(self):
+        win = self._win()
+        win._ensure_models_confirmed_before_build()  # noqa: SLF001
+        win._confirm_optional_models.assert_called_once()  # noqa: SLF001
+        assert win._models_confirmed is True  # noqa: SLF001
+        win._ensure_models_confirmed_before_build()  # noqa: SLF001 — gated
+        win._confirm_optional_models.assert_called_once()  # noqa: SLF001
+
+    def test_deferred_confirm_noop_when_already_confirmed(self):
+        win = self._win()
+        win._models_confirmed = True  # noqa: SLF001
+        win._ensure_models_confirmed_before_build()  # noqa: SLF001
+        win._confirm_optional_models.assert_not_called()  # noqa: SLF001
+
+
+class TestCacheStatsAsync:
+    """The cache size/count is a stat-walk of every cache dir — run off the GUI
+    thread (queued result), skipped during close, and a stale walk dropped by gen."""
+
+    def _win(self):
+        from unittest.mock import MagicMock
+
+        from sinner2.gui import main_window as mw
+
+        win = mw.SinnerMainWindow.__new__(mw.SinnerMainWindow)
+        win._closing = False  # noqa: SLF001
+        win._cache_stats_gen = 5  # noqa: SLF001
+        win._processors = MagicMock()  # noqa: SLF001
+        win._controller = MagicMock()  # noqa: SLF001
+        win._cache_stats_cb = MagicMock()  # noqa: SLF001
+        return win
+
+    def test_apply_sets_label_for_current_gen(self):
+        win = self._win()
+        win._apply_cache_stats((5, 3, 2 * 1024**3, 50 * 1024**3))  # noqa: SLF001
+        text = win._processors.set_cache_stats_text.call_args[0][0]  # noqa: SLF001
+        assert "3 entries" in text
+
+    def test_apply_ignores_superseded_gen(self):
+        win = self._win()
+        win._apply_cache_stats((4, 9, 0, 0))  # noqa: SLF001 — gen 4 < current 5
+        win._processors.set_cache_stats_text.assert_not_called()  # noqa: SLF001
+
+    def test_apply_skipped_when_closing(self):
+        win = self._win()
+        win._closing = True  # noqa: SLF001
+        win._apply_cache_stats((5, 3, 0, 0))  # noqa: SLF001
+        win._processors.set_cache_stats_text.assert_not_called()  # noqa: SLF001
+
+    def test_refresh_skipped_when_closing_does_no_walk(self):
+        win = self._win()
+        win._closing = True  # noqa: SLF001
+        win._refresh_cache_stats()  # noqa: SLF001
+        win._processors.set_invalidate_enabled.assert_not_called()  # noqa: SLF001
+        win._controller.cache_manager.assert_not_called()  # noqa: SLF001 — no walk
+
+    def test_refresh_walks_off_thread_and_reports(self, qtbot):
+        from unittest.mock import MagicMock
+
+        win = self._win()
+        win._controller.executor.return_value = None  # noqa: SLF001
+        mgr = MagicMock()
+        mgr.list_entries.return_value = []
+        mgr.free_disk_bytes.return_value = 1024
+        win._controller.cache_manager.return_value = mgr  # noqa: SLF001
+        win._refresh_cache_stats()  # noqa: SLF001 — returns immediately (dispatches a thread)
+        win._processors.set_invalidate_enabled.assert_called_once()  # noqa: SLF001
+        qtbot.waitUntil(lambda: win._cache_stats_cb.called, timeout=2000)  # noqa: SLF001
+        payload = win._cache_stats_cb.call_args[0][0]  # noqa: SLF001
+        assert payload[0] == 6 and payload[1] == 0  # noqa: SLF001 — gen bumped, 0 entries

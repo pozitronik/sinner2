@@ -1,4 +1,5 @@
 import logging
+import threading
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QElapsedTimer, Qt, QThread, QTimer, Signal
@@ -51,6 +52,7 @@ from sinner2.pipeline.processors.swapper_models import (
     model_files as swapper_model_files,
 )
 from sinner2.pipeline.processors.upscaler import model_filename
+from sinner2.gui.bridges.thread_safe_callback import ThreadSafeCallback
 from sinner2.gui.cache_controller import default_cache_root
 from sinner2.gui.confirm import (
     SuppressionStore,
@@ -481,6 +483,22 @@ class SinnerMainWindow(QMainWindow):
         self._side_panel.targets_library().sortChanged.connect(
             self._persist_targets_sort
         )
+        # Cache stats (entry count + total size) are a stat-walk of every cache
+        # dir — seconds on a large cache. Compute them OFF the GUI thread and
+        # apply via a queued callback so session start / teardown / close never
+        # freeze the UI; a generation counter drops a slow walk superseded by a
+        # newer trigger, and `_closing` skips the walk entirely during shutdown.
+        self._closing = False
+        self._cache_stats_gen = 0
+        self._cache_stats_cb = ThreadSafeCallback(self)
+        self._cache_stats_cb.fired.connect(self._apply_cache_stats)
+        # The restore below applies saved processor settings; its configChanged
+        # must NOT pop a blocking model-download confirm (headless that hangs,
+        # for a user it's a startup nag). `_restoring_settings` suppresses the
+        # prompt during restore and `_models_confirmed` gates the one deferred
+        # confirm that runs before the first session build.
+        self._restoring_settings = False
+        self._models_confirmed = False
         # Apply persisted processor settings before the first session starts —
         # apply_restored_settings emits configChanged once at the end, which
         # both seeds the controller and persists the (now equal) values back.
@@ -537,6 +555,7 @@ class SinnerMainWindow(QMainWindow):
         if self._restoring_paths:
             self._pending_initial_target = target_path
             return
+        self._ensure_models_confirmed_before_build()
         self._session.set_target(FileTarget(target_path))
 
     def _update_fps_label(self, fps: float) -> None:
@@ -566,18 +585,46 @@ class SinnerMainWindow(QMainWindow):
         self._processors.set_cache_size_cap_bytes(cap_bytes)
 
     def _refresh_cache_stats(self) -> None:
-        manager = self._controller.cache_manager()
-        entries = manager.list_entries()
-        total = sum(e.size_bytes for e in entries)
-        free = manager.free_disk_bytes()
-        if free == 0:
-            free_text = "free: ?"
-        else:
-            free_text = f"free: {_fmt_size(free)}"
-        text = f"{len(entries)} entries · {_fmt_size(total)} · {free_text}"
-        self._processors.set_cache_stats_text(text)
+        # Skip during shutdown — closeEvent tears the session down (firing
+        # cacheStorageStatsChanged), and walking a large cache root on the GUI
+        # thread would freeze the close.
+        if self._closing:
+            return
+        # The invalidate button reflects live GUI state (cheap) — keep it here.
         self._processors.set_invalidate_enabled(
             self._controller.executor() is not None
+        )
+        # The size/count walk runs off the GUI thread; a generation counter lets
+        # _apply_cache_stats drop a slow result that a newer refresh superseded.
+        manager = self._controller.cache_manager()
+        self._cache_stats_gen += 1
+        gen = self._cache_stats_gen
+
+        def _walk() -> None:
+            try:
+                entries = manager.list_entries()
+                payload = (
+                    gen,
+                    len(entries),
+                    sum(e.size_bytes for e in entries),
+                    manager.free_disk_bytes(),
+                )
+            except Exception:  # noqa: BLE001 — a cache read must never crash the worker
+                return
+            if not self._closing:
+                self._cache_stats_cb(payload)
+
+        threading.Thread(target=_walk, name="cache-stats", daemon=True).start()
+
+    def _apply_cache_stats(self, payload: object) -> None:
+        # Runs on the GUI thread (queued from the walk worker). Ignore a result
+        # superseded by a newer refresh, or one arriving during close.
+        gen, count, total, free = payload  # type: ignore[misc]
+        if self._closing or gen != self._cache_stats_gen:
+            return
+        free_text = "free: ?" if free == 0 else f"free: {_fmt_size(free)}"
+        self._processors.set_cache_stats_text(
+            f"{count} entries · {_fmt_size(total)} · {free_text}"
         )
 
     def _on_browse_cache_root(self) -> None:
@@ -787,9 +834,54 @@ class SinnerMainWindow(QMainWindow):
         if self._batch_active:
             return  # editing is locked while a batch renders
 
-        # If the upscaler / occlusion mask was just enabled and its weights
-        # aren't present, ask to download them (never silently). Decline →
-        # revert the toggle so the chain isn't rebuilt with a missing model.
+        # Confirm/download any optional weight the new config needs (declining
+        # reverts the control to a present default). Skipped during settings
+        # restore — window construction must never block on a modal dialog, so
+        # the prompt is deferred to the first session build (see
+        # _ensure_models_confirmed_before_build); the saved selection is kept.
+        if not self._restoring_settings:
+            self._confirm_optional_models()
+            self._models_confirmed = True
+
+        # The guard above has settled the widget state; capture
+        # it once as a snapshot and route all consumers through that single value
+        # object instead of re-reading each field by hand (which used to drift).
+        snap = self._processors.snapshot()
+        # Route the whole settings bundle to the active session (the facade
+        # hot-applies to the camera chain when one is active, else applies the
+        # chain hot-swap + video-backend / reader-pool / processing-scale
+        # rebuilds to the file engine).
+        self._session.apply_settings(snap)
+        # Keep the overlay's detection probe on the SAME providers/size: a
+        # providers change resets the shared face analysis, and a probe stuck
+        # on its construction-time list could rebuild it on the stale EPs.
+        self._detection_probe.configure(
+            list(snap.swapper_providers),
+            snap.swapper_params.detection_size,
+        )
+        # Swapper-provider / enhancer-device rebuilds are folded into
+        # apply_settings above; just refresh the status-bar EP label
+        # and the failed-provider highlight afterwards.
+        self._refresh_providers_label()
+        # A TensorRT-enable triggers a one-time engine compile on the executor
+        # (blocks the dispatcher ~25s). Show a modal "compiling" dialog until it
+        # finishes rather than leaving a frozen preview + a (prematurely) red
+        # provider checkbox; the highlight is refreshed when the wait ends.
+        # Otherwise defer the highlight until the async rebuild records the real
+        # providers (set_chain is async), so re-checking a provider doesn't flash
+        # a spurious red against the previous session's provider list.
+        if not self._wait_for_tensorrt_build():
+            self._schedule_provider_highlight_refresh()
+
+    def _confirm_optional_models(self) -> None:
+        """Confirm + download (or revert) every OPTIONAL weight the current
+        processor config selects. Each guard reverts the offending control to a
+        present default on decline so the chain never builds against a missing
+        model. Modal — only call from a GUI-thread, user-initiated path (NOT
+        during settings restore; the deferred first-build confirm calls it)."""
+        # If the upscaler / occlusion mask is enabled and its weights aren't
+        # present, ask to download them (never silently). Decline → revert the
+        # toggle so the chain isn't rebuilt with a missing model.
         if self._processors.upscaler_enabled() and not self._ensure_upscaler_model():
             self._processors.set_upscaler_checked(False)
         # A non-default swap model needs its weights (and, for ghost/simswap,
@@ -836,35 +928,16 @@ class SinnerMainWindow(QMainWindow):
             if onnx_file is not None and not ensure_models(self, [onnx_file]):
                 self._processors.set_enhancer_model(EnhancerModel.GFPGAN.value)
 
-        # Every download/revert guard above has settled the widget state; capture
-        # it once as a snapshot and route all consumers through that single value
-        # object instead of re-reading each field by hand (which used to drift).
-        snap = self._processors.snapshot()
-        # Route the whole settings bundle to the active session (the facade
-        # hot-applies to the camera chain when one is active, else applies the
-        # chain hot-swap + video-backend / reader-pool / processing-scale
-        # rebuilds to the file engine).
-        self._session.apply_settings(snap)
-        # Keep the overlay's detection probe on the SAME providers/size: a
-        # providers change resets the shared face analysis, and a probe stuck
-        # on its construction-time list could rebuild it on the stale EPs.
-        self._detection_probe.configure(
-            list(snap.swapper_providers),
-            snap.swapper_params.detection_size,
-        )
-        # Swapper-provider / enhancer-device rebuilds are folded into
-        # apply_settings above; just refresh the status-bar EP label
-        # and the failed-provider highlight afterwards.
-        self._refresh_providers_label()
-        # A TensorRT-enable triggers a one-time engine compile on the executor
-        # (blocks the dispatcher ~25s). Show a modal "compiling" dialog until it
-        # finishes rather than leaving a frozen preview + a (prematurely) red
-        # provider checkbox; the highlight is refreshed when the wait ends.
-        # Otherwise defer the highlight until the async rebuild records the real
-        # providers (set_chain is async), so re-checking a provider doesn't flash
-        # a spurious red against the previous session's provider list.
-        if not self._wait_for_tensorrt_build():
-            self._schedule_provider_highlight_refresh()
+    def _ensure_models_confirmed_before_build(self) -> None:
+        """Run the model-download confirm deferred from settings restore, once,
+        right before the first session build ("keep selection, prompt on first
+        use"). A decline reverts to a present default and the revert re-applies
+        via configChanged. No-op after the first user config change already
+        confirmed the models."""
+        if self._models_confirmed:
+            return
+        self._models_confirmed = True
+        self._confirm_optional_models()
 
     _TRT_PROVIDER = "TensorrtExecutionProvider"
 
@@ -1410,6 +1483,7 @@ class SinnerMainWindow(QMainWindow):
             self._status_bar.show_message("Load a source face first", 4000)
             return
         self._persist_camera_config()
+        self._ensure_models_confirmed_before_build()
         self._session.set_target(CameraConfig(
             device=self._live_view.device(),
             width=self._live_view.width(),
@@ -1467,6 +1541,10 @@ class SinnerMainWindow(QMainWindow):
             self._model_load_dialog = None
 
     def closeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        # Mark closing FIRST so the session teardown below (which fires
+        # cacheStorageStatsChanged) doesn't kick off a cache-stat walk on the
+        # way out — _refresh_cache_stats / _apply_cache_stats both early-return.
+        self._closing = True
         self._persist_geometry_to_settings()
         from sinner2.pipeline import face_analyser
         face_analyser.set_load_notifier(None)  # drop the bound-signal reference
@@ -1499,51 +1577,59 @@ class SinnerMainWindow(QMainWindow):
         super().closeEvent(event)
 
     def _restore_processor_settings(self) -> None:
-        self._processors.apply_restored_settings(
-            realtime_workers=self._settings.realtime_workers,
-            strategy_name=self._settings.strategy_name,
-            enhancer_enabled=self._settings.enhancer_enabled,
-            swapper_enabled=self._settings.swapper_enabled,
-            swapper_model=self._settings.swapper_model,
-            swapper_detection_interval=self._settings.swapper_detection_interval,
-            swapper_detection_size=self._settings.swapper_detection_size,
-            swapper_detector=self._settings.swapper_detector,
-            swapper_many_faces=self._settings.swapper_many_faces,
-            swapper_fast_paste=self._settings.swapper_fast_paste,
-            swapper_landmark_refine=self._settings.swapper_landmark_refine,
-            swapper_target_sex=self._settings.swapper_target_sex,
-            swapper_rotation_compensation=self._settings.swapper_rotation_compensation,
-            swapper_rotation_threshold_deg=self._settings.swapper_rotation_threshold_deg,
-            swapper_rotation_redetect=self._settings.swapper_rotation_redetect,
-            swapper_rotation_angle_source=self._settings.swapper_rotation_angle_source,
-            swapper_occlusion_mask=self._settings.swapper_occlusion_mask,
-            swapper_occlusion_mode=self._settings.swapper_occlusion_mode,
-            swapper_occlusion_parser=self._settings.swapper_occlusion_parser,
-            swapper_occluder_model=self._settings.swapper_occluder_model,
-            enhancer_model=self._settings.enhancer_model,
-            enhancer_upscale=self._settings.enhancer_upscale,
-            enhancer_only_center_face=self._settings.enhancer_only_center_face,
-            enhancer_codeformer_fidelity=self._settings.enhancer_codeformer_fidelity,
-            enhancer_fp16=self._settings.enhancer_fp16,
-            playback_mode=self._settings.playback_mode,
-            cache_mode=self._settings.cache_mode,
-            image_format=self._settings.image_format,
-            image_quality=self._settings.image_quality,
-            memory_cache_mb=self._settings.memory_cache_mb,
-            write_workers=self._settings.write_workers,
-            write_queue_size=self._settings.write_queue_size,
-            video_backend=self._settings.video_backend,
-            reader_pool_size=self._settings.reader_pool_size,
-            processing_scale=self._settings.processing_scale,
-            synced_max_lag_frames=self._settings.synced_max_lag_frames,
-            swapper_providers=self._settings.swapper_providers,
-            enhancer_device=self._settings.enhancer_device,
-            upscaler_enabled=self._settings.upscaler_enabled,
-            upscaler_model=self._settings.upscaler_model,
-            upscaler_tile=self._settings.upscaler_tile,
-            upscaler_fp16=self._settings.upscaler_fp16,
-            upscaler_device=self._settings.upscaler_device,
-        )
+        # apply_restored_settings emits configChanged synchronously at the end;
+        # the flag makes its handler skip the blocking model-download confirm
+        # (deferred to the first session build — see
+        # _ensure_models_confirmed_before_build). Keeps the saved selection.
+        self._restoring_settings = True
+        try:
+            self._processors.apply_restored_settings(
+                realtime_workers=self._settings.realtime_workers,
+                strategy_name=self._settings.strategy_name,
+                enhancer_enabled=self._settings.enhancer_enabled,
+                swapper_enabled=self._settings.swapper_enabled,
+                swapper_model=self._settings.swapper_model,
+                swapper_detection_interval=self._settings.swapper_detection_interval,
+                swapper_detection_size=self._settings.swapper_detection_size,
+                swapper_detector=self._settings.swapper_detector,
+                swapper_many_faces=self._settings.swapper_many_faces,
+                swapper_fast_paste=self._settings.swapper_fast_paste,
+                swapper_landmark_refine=self._settings.swapper_landmark_refine,
+                swapper_target_sex=self._settings.swapper_target_sex,
+                swapper_rotation_compensation=self._settings.swapper_rotation_compensation,
+                swapper_rotation_threshold_deg=self._settings.swapper_rotation_threshold_deg,
+                swapper_rotation_redetect=self._settings.swapper_rotation_redetect,
+                swapper_rotation_angle_source=self._settings.swapper_rotation_angle_source,
+                swapper_occlusion_mask=self._settings.swapper_occlusion_mask,
+                swapper_occlusion_mode=self._settings.swapper_occlusion_mode,
+                swapper_occlusion_parser=self._settings.swapper_occlusion_parser,
+                swapper_occluder_model=self._settings.swapper_occluder_model,
+                enhancer_model=self._settings.enhancer_model,
+                enhancer_upscale=self._settings.enhancer_upscale,
+                enhancer_only_center_face=self._settings.enhancer_only_center_face,
+                enhancer_codeformer_fidelity=self._settings.enhancer_codeformer_fidelity,
+                enhancer_fp16=self._settings.enhancer_fp16,
+                playback_mode=self._settings.playback_mode,
+                cache_mode=self._settings.cache_mode,
+                image_format=self._settings.image_format,
+                image_quality=self._settings.image_quality,
+                memory_cache_mb=self._settings.memory_cache_mb,
+                write_workers=self._settings.write_workers,
+                write_queue_size=self._settings.write_queue_size,
+                video_backend=self._settings.video_backend,
+                reader_pool_size=self._settings.reader_pool_size,
+                processing_scale=self._settings.processing_scale,
+                synced_max_lag_frames=self._settings.synced_max_lag_frames,
+                swapper_providers=self._settings.swapper_providers,
+                enhancer_device=self._settings.enhancer_device,
+                upscaler_enabled=self._settings.upscaler_enabled,
+                upscaler_model=self._settings.upscaler_model,
+                upscaler_tile=self._settings.upscaler_tile,
+                upscaler_fp16=self._settings.upscaler_fp16,
+                upscaler_device=self._settings.upscaler_device,
+            )
+        finally:
+            self._restoring_settings = False
 
     def _persist_processor_settings(self) -> None:
         # One capture, one flat map — the same to_settings_kwargs() the widget's
@@ -1630,6 +1716,7 @@ class SinnerMainWindow(QMainWindow):
         self._pending_initial_target = None
         if target is None:
             return
+        self._ensure_models_confirmed_before_build()
         self._session.set_target(FileTarget(target))
         # The build records what ORT actually loaded and may flip capabilities —
         # re-run the same chrome refresh the constructor did right after restore.
