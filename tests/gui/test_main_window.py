@@ -1001,7 +1001,7 @@ class TestCapabilityChromeAndFps:
         win._session = MagicMock()  # noqa: SLF001
         win._transport = MagicMock()  # noqa: SLF001
         win._processors = MagicMock()  # noqa: SLF001
-        win._fps_label = MagicMock()  # noqa: SLF001
+        win._fps_panel = MagicMock()  # noqa: SLF001
         win._batch_active = False  # noqa: SLF001
         return win
 
@@ -1036,10 +1036,10 @@ class TestCapabilityChromeAndFps:
         win = self._win()
         win._session.active_kind.return_value = SessionKind.FILE  # noqa: SLF001
         win._update_live_fps_label(12.3)  # noqa: SLF001
-        win._fps_label.setText.assert_not_called()  # noqa: SLF001
+        win._fps_panel.set_value.assert_not_called()  # noqa: SLF001
         win._session.active_kind.return_value = SessionKind.CAMERA  # noqa: SLF001
         win._update_live_fps_label(12.3)  # noqa: SLF001
-        win._fps_label.setText.assert_called_with("12.3 fps")  # noqa: SLF001
+        win._fps_panel.set_value.assert_called_with("12.3 fps")  # noqa: SLF001
 
     def test_file_fps_label_ignored_for_camera(self):
         from sinner2.gui.session_capabilities import SessionKind
@@ -1047,7 +1047,7 @@ class TestCapabilityChromeAndFps:
         win = self._win()
         win._session.active_kind.return_value = SessionKind.CAMERA  # noqa: SLF001
         win._update_fps_label(30.0)  # noqa: SLF001
-        win._fps_label.setText.assert_not_called()  # noqa: SLF001
+        win._fps_panel.set_value.assert_not_called()  # noqa: SLF001
 
 
 class TestPathIsFileHelper:

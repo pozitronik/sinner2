@@ -1,20 +1,84 @@
-"""Bottom status bar with view/window action buttons.
+"""Bottom status bar: view/window action buttons (left), a status message
+(middle), and persistent indicator PANELS (right).
 
-Replaces QMainWindow's QStatusBar. QStatusBar hides its left-side widgets
-whenever a temporary message is showing, which would blink the action buttons
-off exactly when the user is acting (rotate, save, errors…). This custom bar
-keeps the buttons, a status message, and the persistent indicators in one
-QHBoxLayout where nothing hides anything else:
+Replaces QMainWindow's QStatusBar, which hides its left widgets whenever a
+temporary message shows — that would blink the action buttons off exactly when
+the user acts (rotate, save, errors…). Here nothing hides anything else:
 
-    [📌][📊][🔄][⛶][◧][💾]   status message …            <indicators>
-     └ action buttons (left)   └ stretchy message          └ permanent (right)
+    [📌][📊][🔄][⛶][◧][💾] │ status message …   🗄 cache │ ⏱ fps │ ▦ buffer │ ⚡ EP
+     └ action buttons (left) │ └ stretchy message  └──── indicator panels (right) ────┘
 
-The buttons are exposed as public attributes so the main window wires their
-signals to its toggle handlers and reflects state (checked) on them; the
-message API mirrors QStatusBar.showMessage(text, timeout).
+Each indicator is a `_StatusPanel` cell — a thin left divider, an icon prefix
+and a value — with a min-width so changing numbers don't shift the layout and
+auto-hide while empty (no blank cells). This is the Delphi-VCL "status panels"
+idea, flattened to dividers instead of sunken bevels.
+
+The buttons are public attributes so the main window wires their signals to its
+toggle handlers and reflects state (checked) on them; the message API mirrors
+QStatusBar.showMessage(text, timeout).
 """
 from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QToolButton, QWidget
+from PySide6.QtWidgets import (
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QToolButton,
+    QWidget,
+)
+
+
+def _divider() -> QFrame:
+    """A thin flat vertical 1px separator between bar sections."""
+    line = QFrame()
+    line.setFrameShape(QFrame.Shape.VLine)
+    line.setFrameShadow(QFrame.Shadow.Plain)
+    line.setLineWidth(1)
+    return line
+
+
+class _StatusPanel(QWidget):
+    """One indicator cell: ``[divider │ icon value]``.
+
+    Hidden (its left divider included) while the value is empty, so the bar
+    never shows blank cells. A min-width keeps a changing value (e.g. the FPS
+    number) from shifting neighbouring cells left and right.
+    """
+
+    def __init__(
+        self,
+        icon: str = "",
+        tooltip: str = "",
+        min_width: int = 0,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._icon = icon
+        self._text = ""
+        layout = QHBoxLayout(self)
+        # A little vertical inset on the divider; no horizontal margin so the
+        # bar's own spacing controls the gap between cells.
+        layout.setContentsMargins(0, 2, 0, 2)
+        layout.setSpacing(6)
+        layout.addWidget(_divider())
+        self._value = QLabel()
+        if min_width > 0:
+            self._value.setMinimumWidth(min_width)
+        layout.addWidget(self._value)
+        if tooltip:
+            self.setToolTip(tooltip)
+        self.set_value("")
+
+    def set_value(self, text: str) -> None:
+        self._text = text or ""
+        if self._text and self._icon:
+            self._value.setText(f"{self._icon} {self._text}")
+        else:
+            self._value.setText(self._text)
+        self.setVisible(bool(self._text))
+
+    def value(self) -> str:
+        """The current value text (without the icon prefix); "" when hidden."""
+        return self._text
 
 
 class QStatusActionBar(QWidget):
@@ -43,7 +107,9 @@ class QStatusActionBar(QWidget):
             self.save_button,
         ):
             layout.addWidget(button)
-        # Stretchy message pushes anything added later (the indicators) right.
+        # Divider sets the action-button group apart from the message.
+        layout.addWidget(_divider())
+        # Stretchy message pushes the indicator panels to the right edge.
         layout.addWidget(self._message, stretch=1)
         self._layout = layout
 
@@ -81,7 +147,22 @@ class QStatusActionBar(QWidget):
     def current_message(self) -> str:
         return self._message.text()
 
+    # ---- Indicator panels (right) ----
+
+    def add_panel(
+        self, icon: str = "", tooltip: str = "", min_width: int = 0
+    ) -> _StatusPanel:
+        """Append a persistent indicator cell on the right and return it.
+
+        Call ``panel.set_value(text)`` to update it; an empty value hides the
+        whole cell (its divider too). Cells appear in call order, each divided
+        from its neighbour — the first one's divider separates the panels from
+        the stretchy message."""
+        panel = _StatusPanel(icon, tooltip, min_width)
+        self._layout.addWidget(panel)
+        return panel
+
     def add_permanent_widget(self, widget: QWidget) -> None:
-        """Append a persistent indicator on the right (after the stretchy
-        message label). Mirrors QStatusBar.addPermanentWidget."""
+        """Append a raw persistent widget on the right (mirrors
+        QStatusBar.addPermanentWidget). Prefer ``add_panel`` for indicators."""
         self._layout.addWidget(widget)

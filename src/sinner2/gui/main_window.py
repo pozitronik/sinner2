@@ -6,7 +6,6 @@ from PySide6.QtCore import QByteArray, QElapsedTimer, Qt, QThread, QTimer, Signa
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
     QFileDialog,
-    QLabel,
     QMainWindow,
     QMessageBox,
     QProgressDialog,
@@ -335,39 +334,42 @@ class SinnerMainWindow(QMainWindow):
         self._status_bar.save_button.clicked.connect(self._save_current_frame)
 
         self._status_bar.show_message("ready")
-        self._scratch_label = QLabel("cache: —")
-        self._scratch_label.setToolTip(
+        # Right-side indicator panels (each a discrete cell — icon + value,
+        # divider, fixed min-width, hidden while empty). Order = cache · fps ·
+        # buffer · strategy · execution-providers.
+        self._cache_panel = self._status_bar.add_panel(
+            "🗄",
             "Persistent processed-frame cache directory for this session "
-            "(survives between runs; keyed by source+target+chain config)"
+            "(survives between runs; keyed by source+target+chain config)",
+            min_width=56,
         )
-        self._status_bar.add_permanent_widget(self._scratch_label)
-        self._fps_label = QLabel("--- fps")
-        self._fps_label.setToolTip(
+        self._fps_panel = self._status_bar.add_panel(
+            "⏱",
             "Real cross-worker throughput — frames completed per wall-clock "
-            "second across all workers (3-second rolling window)."
+            "second across all workers (3-second rolling window).",
+            min_width=64,
         )
-        self._status_bar.add_permanent_widget(self._fps_label)
-        self._metrics_label = QLabel("")
-        self._metrics_label.setToolTip(
+        self._metrics_panel = self._status_bar.add_panel(
+            "▦",
             "cache: hit-ratio / memory used. "
-            "writes: outstanding/cap, total dropped (cap-hit skips), p50/p95 ms latency."
+            "writes: outstanding/cap, total dropped (cap-hit skips), p50/p95 ms latency.",
+            min_width=180,
         )
-        self._status_bar.add_permanent_widget(self._metrics_label)
-        self._strategy_mode_label = QLabel("")
-        self._strategy_mode_label.setToolTip(
+        self._strategy_panel = self._status_bar.add_panel(
+            "⏭",
             "Current frame-skip strategy mode. 'synced (lagging)' means\n"
             "SyncedStrategy has fallen back to sequential submission\n"
             "because processing can't keep up — display will trail the\n"
-            "timeline but throughput stays at the pipeline's max rate."
+            "timeline but throughput stays at the pipeline's max rate.",
+            min_width=72,
         )
-        self._status_bar.add_permanent_widget(self._strategy_mode_label)
-        self._providers_label = QLabel("")
-        self._providers_label.setToolTip(
+        self._providers_panel = self._status_bar.add_panel(
+            "⚡",
             "ONNX execution providers currently in use, in ORT's try-order.\n"
             "Differs from the checkbox column when the user has unchecked\n"
-            "everything (system falls back to defaults so inference still works)."
+            "everything (system falls back to defaults so inference still works).",
+            min_width=96,
         )
-        self._status_bar.add_permanent_widget(self._providers_label)
 
         self._controller = PlayerController(self._display, self._transport, parent=self)
         # Wire the swapper's pre-swap detections to the overlay sink (set before
@@ -562,14 +564,16 @@ class SinnerMainWindow(QMainWindow):
         # File-session throughput; ignored while the camera is the active target
         # so a late paused-executor emission can't overwrite the live reading.
         if self._session.active_kind() is not SessionKind.CAMERA:
-            self._fps_label.setText(f"{fps:.1f} fps")
+            self._fps_panel.set_value(f"{fps:.1f} fps")
 
     def _update_live_fps_label(self, fps: float) -> None:
         if self._session.active_kind() is SessionKind.CAMERA:
-            self._fps_label.setText(f"{fps:.1f} fps")
+            self._fps_panel.set_value(f"{fps:.1f} fps")
 
     def _update_scratch_label(self, scratch_dir: object) -> None:
-        self._scratch_label.setText(f"cache: {scratch_dir}" if scratch_dir else "cache: —")
+        # The cell shows just the session cache-key dir name (the full path is
+        # long and cluttered the bar); the panel tooltip explains what it is.
+        self._cache_panel.set_value(Path(str(scratch_dir)).name if scratch_dir else "")
 
     # ---- Cache management slots ----
 
@@ -724,16 +728,15 @@ class SinnerMainWindow(QMainWindow):
         self._processors.set_file_only_visible(not is_camera)
 
     def _update_strategy_mode_label(self, mode: object) -> None:
-        text = str(mode) if mode else ""
-        self._strategy_mode_label.setText(f"strategy: {text}" if text else "")
+        self._strategy_panel.set_value(str(mode) if mode else "")
 
     def _refresh_providers_label(self) -> None:
-        # Trim the trailing "ExecutionProvider" suffix so the label
+        # Trim the trailing "ExecutionProvider" suffix so the value
         # stays short — "CUDAExecutionProvider, CPUExecutionProvider"
         # is too noisy in the status bar.
         providers = self._controller.effective_onnx_providers()
         short = [p.removesuffix("ExecutionProvider") or p for p in providers]
-        self._providers_label.setText(f"EP: {', '.join(short)}" if short else "")
+        self._providers_panel.set_value(", ".join(short) if short else "")
 
     def _highlight_failed_providers(self) -> None:
         """Mark requested-but-not-loaded providers red on the widget
@@ -815,8 +818,8 @@ class SinnerMainWindow(QMainWindow):
         timer.start()
 
     def _update_metrics_label(self, metrics: object) -> None:
-        # `metrics` is BufferMetrics. Compact one-liner: cache hit% / memory MB,
-        # write queue depth, total drops, write latency p50/p95.
+        # `metrics` is BufferMetrics. Compact cell: hit% · memory · write-queue
+        # depth · p50/p95 latency; the drop count appended only when nonzero.
         ratio = getattr(metrics, "cache_hit_ratio", 0.0)
         mem_mb = getattr(metrics, "memory_used_bytes", 0) / 1024 / 1024
         wq_out = getattr(metrics, "write_outstanding", 0)
@@ -824,11 +827,13 @@ class SinnerMainWindow(QMainWindow):
         wq_drop = getattr(metrics, "write_dropped", 0)
         wl_p50 = getattr(metrics, "write_latency_p50_ms", 0.0)
         wl_p95 = getattr(metrics, "write_latency_p95_ms", 0.0)
-        self._metrics_label.setText(
-            f"cache {ratio * 100:.0f}% / {mem_mb:.0f}M  "
-            f"writes {wq_out}/{wq_max} drops {wq_drop} "
-            f"p50/p95 {wl_p50:.0f}/{wl_p95:.0f}ms"
+        text = (
+            f"{ratio * 100:.0f}% · {mem_mb:.0f}MB · "
+            f"q{wq_out}/{wq_max} · {wl_p50:.0f}/{wl_p95:.0f}ms"
         )
+        if wq_drop:
+            text += f" · {wq_drop} drop"
+        self._metrics_panel.set_value(text)
 
     def _on_processor_config_changed(self) -> None:
         if self._batch_active:
