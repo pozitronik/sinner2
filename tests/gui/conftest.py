@@ -26,6 +26,26 @@ def isolate_cache_root(
 
 
 @pytest.fixture(autouse=True)
+def stub_ensure_models(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never pop the blocking "Download models?" confirm during a window build.
+
+    `_on_processor_config_changed` (fired from the window's `_restore_processor_
+    settings`) calls `ensure_models` for any OPTIONAL weight the restored config
+    selects (onnx enhancer, alt detector, landmarker, occluder). When that weight
+    is absent — which is exactly CI's state, models dir empty — `ensure_models`
+    shows a modal `confirm()` dialog and blocks forever: headless there is no one
+    to click it, so `SinnerMainWindow()` never returns and the suite hangs in the
+    `window` fixture (this was the CI "stuck at 16%"). On a dev box the weights
+    exist, so `ensure_models` returns True silently — stub it to do the same so
+    tests match that path regardless of what's on disk. Patches the symbol
+    main_window imported, NOT `model_download.ensure_models`, so
+    `test_model_download.py`'s direct tests of the real function are untouched."""
+    from sinner2.gui import main_window
+
+    monkeypatch.setattr(main_window, "ensure_models", lambda *a, **k: True)
+
+
+@pytest.fixture(autouse=True)
 def stub_insightface_model(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     """Never load the REAL insightface model in GUI tests.
 
