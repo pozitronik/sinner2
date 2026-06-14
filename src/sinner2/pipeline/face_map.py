@@ -48,6 +48,16 @@ def normalize(vec: Embedding) -> tuple[float, ...]:
     return tuple(x / norm for x in arr)
 
 
+def _bbox4(
+    raw: Sequence[float] | None,
+) -> tuple[float, float, float, float] | None:
+    """Coerce a stored bbox list to a 4-tuple (or None)."""
+    if raw is None:
+        return None
+    b = [float(x) for x in raw]
+    return (b[0], b[1], b[2], b[3])
+
+
 def cosine(a: Embedding, b: Embedding) -> float:
     """Cosine similarity of two embeddings. Assumes both normalized (a plain dot
     product); returns -1.0 for empty / mismatched-length inputs."""
@@ -59,13 +69,20 @@ def cosine(a: Embedding, b: Embedding) -> float:
 @dataclass(frozen=True)
 class Identity:
     """One discovered person: a normalized embedding centroid + the source
-    assigned to them (None until the user maps it)."""
+    assigned to them (None until the user maps it).
+
+    ``ref_frame`` / ``ref_bbox`` point at this person's clearest occurrence (the
+    highest-scoring detection found during analysis) so the UI can extract a
+    representative thumbnail from the target on demand — kept out of the catalog
+    as pixels, so the persisted JSON stays small."""
 
     id: str
     centroid: tuple[float, ...]
     source_path: str | None = None
     occurrences: int = 1
     label: str | None = None
+    ref_frame: int | None = None
+    ref_bbox: tuple[float, float, float, float] | None = None
 
     @staticmethod
     def new(
@@ -185,6 +202,21 @@ class FaceMap:
         ]
         return replace(self, identities=tuple(idents))
 
+    def with_reference(
+        self,
+        identity_id: str,
+        ref_frame: int,
+        ref_bbox: tuple[float, float, float, float],
+    ) -> "FaceMap":
+        """Record an identity's representative occurrence (set by the analysis
+        pass for thumbnail extraction)."""
+        idents = [
+            replace(i, ref_frame=ref_frame, ref_bbox=ref_bbox)
+            if i.id == identity_id else i
+            for i in self.identities
+        ]
+        return replace(self, identities=tuple(idents))
+
     def with_threshold(self, threshold: float) -> "FaceMap":
         return replace(self, threshold=threshold)
 
@@ -195,9 +227,11 @@ class FaceMap:
 
     # ---- Clustering (analysis pass) ----
 
-    def observe(self, embedding: Embedding) -> "FaceMap":
+    def observe_with_id(self, embedding: Embedding) -> tuple["FaceMap", str]:
         """Online clustering: fold ``embedding`` into the nearest identity above
-        threshold, or start a new identity. Returns the updated map."""
+        threshold, or start a new one. Returns the updated map AND the id of the
+        identity it joined (the analysis pass uses the id to track each person's
+        representative occurrence without re-matching)."""
         ne = normalize(embedding)
         best_i = -1
         best_sim = self.threshold
@@ -206,10 +240,17 @@ class FaceMap:
             if sim >= best_sim:
                 best_i, best_sim = i, sim
         if best_i < 0:
-            return self.with_identity(Identity.new(embedding))
+            new_ident = Identity.new(embedding)
+            return self.with_identity(new_ident), new_ident.id
         idents = list(self.identities)
-        idents[best_i] = idents[best_i].observed(embedding)
-        return replace(self, identities=tuple(idents))
+        joined = idents[best_i].observed(embedding)
+        idents[best_i] = joined
+        return replace(self, identities=tuple(idents)), joined.id
+
+    def observe(self, embedding: Embedding) -> "FaceMap":
+        """Online clustering returning just the updated map (see
+        ``observe_with_id``)."""
+        return self.observe_with_id(embedding)[0]
 
     # ---- Serialization (JSON-friendly dict for sidecar + BatchTask) ----
 
@@ -226,6 +267,8 @@ class FaceMap:
                     "source_path": i.source_path,
                     "occurrences": i.occurrences,
                     "label": i.label,
+                    "ref_frame": i.ref_frame,
+                    "ref_bbox": list(i.ref_bbox) if i.ref_bbox is not None else None,
                 }
                 for i in self.identities
             ],
@@ -240,6 +283,8 @@ class FaceMap:
                 source_path=d.get("source_path"),
                 occurrences=int(d.get("occurrences", 1)),
                 label=d.get("label"),
+                ref_frame=d.get("ref_frame"),
+                ref_bbox=_bbox4(d.get("ref_bbox")),
             )
             for d in data.get("identities", [])
         )

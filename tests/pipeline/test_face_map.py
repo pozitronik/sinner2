@@ -186,6 +186,31 @@ class TestClustering:
         counts = sorted(i.occurrences for i in m.identities)
         assert counts == [6, 6]
 
+    def test_observe_with_id_returns_joined_identity(self):
+        m, id1 = FaceMap.empty().observe_with_id(_unit(1, 0, 0))
+        m, id2 = m.observe_with_id(_unit(0.95, 0.05, 0))  # same person
+        assert id1 == id2  # joined the existing identity
+        m, id3 = m.observe_with_id(_unit(0, 1, 0))  # new person
+        assert id3 != id1
+
+
+class TestReference:
+    def test_with_reference_sets_occurrence(self):
+        m = FaceMap(identities=(Identity("a", _unit(1, 0)),))
+        m2 = m.with_reference("a", 42, (1.0, 2.0, 3.0, 4.0))
+        assert m2.identities[0].ref_frame == 42
+        assert m2.identities[0].ref_bbox == (1.0, 2.0, 3.0, 4.0)
+
+    def test_reference_round_trips(self):
+        m = FaceMap(
+            identities=(
+                Identity("a", _unit(1, 0), ref_frame=7, ref_bbox=(0.0, 1.0, 2.0, 3.0)),
+            )
+        )
+        restored = FaceMap.from_dict(m.to_dict())
+        assert restored.identities[0].ref_frame == 7
+        assert restored.identities[0].ref_bbox == (0.0, 1.0, 2.0, 3.0)
+
 
 class TestSerialization:
     def test_round_trips(self):
