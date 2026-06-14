@@ -1,0 +1,214 @@
+"""Tests for the FaceMap identity catalog (face-mapping domain)."""
+from __future__ import annotations
+
+import math
+
+from sinner2.pipeline.face_map import (
+    FaceMap,
+    Identity,
+    IdentityMode,
+    UnmatchedPolicy,
+    cosine,
+    normalize,
+)
+
+
+def _unit(*vals: float) -> tuple[float, ...]:
+    return normalize(vals)
+
+
+class TestHelpers:
+    def test_normalize_unit_length(self):
+        v = normalize([3.0, 4.0])
+        assert math.isclose(math.hypot(*v), 1.0)
+        assert math.isclose(v[0], 0.6) and math.isclose(v[1], 0.8)
+
+    def test_normalize_zero_vector_passes_through(self):
+        assert normalize([0.0, 0.0]) == (0.0, 0.0)
+
+    def test_cosine_identical_is_one(self):
+        a = _unit(1.0, 2.0, 3.0)
+        assert math.isclose(cosine(a, a), 1.0)
+
+    def test_cosine_orthogonal_is_zero(self):
+        assert math.isclose(cosine(_unit(1, 0), _unit(0, 1)), 0.0, abs_tol=1e-9)
+
+    def test_cosine_mismatched_length(self):
+        assert cosine([1.0], [1.0, 2.0]) == -1.0
+        assert cosine([], []) == -1.0
+
+
+class TestIdentity:
+    def test_new_normalizes_centroid(self):
+        ident = Identity.new([3.0, 4.0])
+        assert math.isclose(math.hypot(*ident.centroid), 1.0)
+        assert ident.source_path is None
+        assert ident.occurrences == 1
+
+    def test_observed_moves_centroid_and_counts(self):
+        ident = Identity.new([1.0, 0.0])
+        moved = ident.observed([0.0, 1.0])
+        assert moved.occurrences == 2
+        # Halfway between the two unit axes → ~45°, still unit length.
+        assert math.isclose(math.hypot(*moved.centroid), 1.0)
+        assert moved.centroid[0] > 0 and moved.centroid[1] > 0
+
+    def test_observed_pulls_toward_repeated_observation(self):
+        ident = Identity.new([1.0, 0.0])
+        # Many observations of the SAME vector keep the centroid put.
+        for _ in range(5):
+            ident = ident.observed([1.0, 0.0])
+        assert math.isclose(ident.centroid[0], 1.0, abs_tol=1e-6)
+
+
+class TestMatching:
+    def _map(self) -> FaceMap:
+        # Two well-separated identities (orthogonal in 3-space).
+        a = Identity("a", _unit(1, 0, 0), source_path="/src/alice.png")
+        b = Identity("b", _unit(0, 1, 0), source_path="/src/bob.png")
+        return FaceMap(identities=(a, b), threshold=0.5)
+
+    def test_best_match_picks_nearest(self):
+        m = self._map()
+        assert m.best_match(_unit(0.9, 0.1, 0.0)).id == "a"
+        assert m.best_match(_unit(0.1, 0.9, 0.0)).id == "b"
+
+    def test_best_match_below_threshold_is_none(self):
+        m = self._map()
+        # Equidistant-ish from both, similarity ~0.7/sqrt2 ≈ 0.5 each but the
+        # orthogonal third axis pushes it below — a clear stranger.
+        assert m.best_match(_unit(0, 0, 1)) is None
+
+    def test_source_for_matched_identity(self):
+        m = self._map()
+        assert m.source_for(_unit(0.95, 0.05, 0)) == "/src/alice.png"
+
+    def test_source_for_matched_but_unassigned_is_none(self):
+        a = Identity("a", _unit(1, 0, 0), source_path=None)  # tracked, no source
+        m = FaceMap(identities=(a,), threshold=0.5)
+        assert m.source_for(_unit(1, 0, 0)) is None
+
+    def test_unmatched_skip(self):
+        m = self._map()  # default policy SKIP
+        assert m.source_for(_unit(0, 0, 1)) is None
+
+    def test_unmatched_default(self):
+        m = self._map().with_unmatched(
+            UnmatchedPolicy.DEFAULT, default_source="/src/extra.png"
+        )
+        assert m.source_for(_unit(0, 0, 1)) == "/src/extra.png"
+
+    def test_unmatched_first(self):
+        m = FaceMap(
+            identities=self._map().identities,
+            threshold=0.5,
+            unmatched=UnmatchedPolicy.FIRST,
+        )
+        assert m.source_for(_unit(0, 0, 1)) == "/src/alice.png"
+
+
+class TestActivation:
+    def test_empty_is_inactive(self):
+        assert FaceMap.empty().is_empty()
+        assert not FaceMap.empty().is_active()
+
+    def test_identities_without_sources_is_inactive(self):
+        m = FaceMap(identities=(Identity("a", _unit(1, 0)),))
+        assert not m.is_empty()
+        assert not m.is_active()  # tracked but nothing assigned → no routing change
+
+    def test_assigned_source_activates(self):
+        m = FaceMap(identities=(Identity("a", _unit(1, 0), source_path="/s.png"),))
+        assert m.is_active()
+
+    def test_default_policy_with_source_activates(self):
+        m = FaceMap(unmatched=UnmatchedPolicy.DEFAULT, default_source="/d.png")
+        assert m.is_active()
+
+
+class TestEdits:
+    def test_assign_source(self):
+        m = FaceMap(identities=(Identity("a", _unit(1, 0)),))
+        m2 = m.assign_source("a", "/src/x.png")
+        assert m2.identities[0].source_path == "/src/x.png"
+        assert m.identities[0].source_path is None  # original untouched
+
+    def test_without_identity(self):
+        m = FaceMap(identities=(Identity("a", _unit(1, 0)), Identity("b", _unit(0, 1))))
+        assert [i.id for i in m.without_identity("a").identities] == ["b"]
+
+    def test_assigned_sources_distinct_in_order(self):
+        m = FaceMap(
+            identities=(
+                Identity("a", _unit(1, 0), source_path="/x.png"),
+                Identity("b", _unit(0, 1), source_path="/x.png"),  # dup
+                Identity("c", _unit(0, 0, 1), source_path="/y.png"),
+            ),
+            unmatched=UnmatchedPolicy.DEFAULT,
+            default_source="/z.png",
+        )
+        assert m.assigned_sources() == ["/x.png", "/y.png", "/z.png"]
+
+    def test_index_of(self):
+        m = FaceMap(identities=(Identity("a", _unit(1, 0)),))
+        assert m.index_of("a") == 0
+        assert m.index_of("nope") is None
+
+
+class TestClustering:
+    def test_observe_starts_first_identity(self):
+        m = FaceMap.empty().observe(_unit(1, 0, 0))
+        assert len(m.identities) == 1
+        assert m.identities[0].occurrences == 1
+
+    def test_observe_merges_similar(self):
+        m = FaceMap.empty().observe(_unit(1, 0, 0)).observe(_unit(0.95, 0.05, 0))
+        assert len(m.identities) == 1
+        assert m.identities[0].occurrences == 2
+
+    def test_observe_splits_dissimilar(self):
+        m = (
+            FaceMap.empty()
+            .observe(_unit(1, 0, 0))
+            .observe(_unit(0, 1, 0))
+            .observe(_unit(0, 0, 1))
+        )
+        assert len(m.identities) == 3
+
+    def test_clusters_a_noisy_stream_into_two_people(self):
+        m = FaceMap.empty()
+        # Alternating two people with small jitter on each axis.
+        for k in range(6):
+            jitter = 0.03 * (k % 2)
+            m = m.observe(_unit(1.0, jitter, 0.0))
+            m = m.observe(_unit(0.0, 1.0, jitter))
+        assert len(m.identities) == 2
+        counts = sorted(i.occurrences for i in m.identities)
+        assert counts == [6, 6]
+
+
+class TestSerialization:
+    def test_round_trips(self):
+        m = FaceMap(
+            identities=(
+                Identity("a", _unit(1, 0, 0), source_path="/src/alice.png", occurrences=12, label="Alice"),
+                Identity("b", _unit(0, 1, 0)),
+            ),
+            threshold=0.55,
+            unmatched=UnmatchedPolicy.DEFAULT,
+            default_source="/src/extra.png",
+            mode=IdentityMode.EMBEDDING,
+        )
+        restored = FaceMap.from_dict(m.to_dict())
+        assert restored.threshold == 0.55
+        assert restored.unmatched is UnmatchedPolicy.DEFAULT
+        assert restored.default_source == "/src/extra.png"
+        assert len(restored.identities) == 2
+        assert restored.identities[0].label == "Alice"
+        assert restored.identities[0].occurrences == 12
+        # Centroid survives (within float round-trip).
+        for got, exp in zip(restored.identities[0].centroid, m.identities[0].centroid):
+            assert math.isclose(got, exp)
+
+    def test_from_empty_dict_is_safe(self):
+        assert FaceMap.from_dict({}).is_empty()
