@@ -419,6 +419,66 @@ class TestCleanupMode:
         assert dlg.to_task().cleanup_mode is BatchCleanupMode.AUTO
 
 
+class TestDefaultsMode:
+    """DEFAULTS mode reuses the whole config form but swaps the per-task
+    Paths group for the two queue-wide folders and leaves source/target
+    untouched on writeback."""
+
+    def test_paths_group_shows_queue_wide_folders(self, qtbot, tmp_path):
+        dlg = QBatchTaskDialog(
+            _task(tmp_path),
+            defaults_mode=True,
+            store_path="/my/store",
+            global_output_path="/my/out",
+        )
+        qtbot.addWidget(dlg)
+        # Per-task path edits don't exist in defaults mode; the queue-wide
+        # folder edits do, pre-filled from the constructor.
+        assert not hasattr(dlg, "_source_edit")
+        assert not hasattr(dlg, "_output_edit")
+        assert dlg.store_path() == "/my/store"
+        assert dlg.global_output_path() == "/my/out"
+
+    def test_title_reflects_defaults_mode(self, qtbot, tmp_path):
+        dlg = QBatchTaskDialog(_task(tmp_path), defaults_mode=True)
+        qtbot.addWidget(dlg)
+        assert "default" in dlg.windowTitle().lower()
+
+    def test_to_task_edits_config_but_leaves_paths(self, qtbot, tmp_path):
+        # Template carries sentinel paths; editing config must not invent a
+        # source/target/output for it.
+        tmpl = _task(tmp_path, source_path=Path("."), target_path=Path("."))
+        dlg = QBatchTaskDialog(tmpl, defaults_mode=True)
+        qtbot.addWidget(dlg)
+        dlg._swapper_workers.setValue(7)  # noqa: SLF001
+        dlg._swapper_box.setChecked(False)  # noqa: SLF001
+        edited = dlg.to_task()
+        assert edited.swapper_execution.workers == 7
+        assert edited.swapper_enabled is False
+        # Paths untouched — still the template's sentinels.
+        assert edited.source_path == Path(".")
+        assert edited.target_path == Path(".")
+        assert edited.output_path is None
+
+    def test_scale_label_is_percent_only(self, qtbot, tmp_path):
+        # No per-task target to probe → the readout shows the bare percent.
+        tmpl = _task(tmp_path, processing_scale=0.5)
+        dlg = QBatchTaskDialog(tmpl, defaults_mode=True)
+        qtbot.addWidget(dlg)
+        assert dlg._scale_label.text() == "50%"  # noqa: SLF001
+
+    def test_empty_store_and_output_paths_strip_to_blank(self, qtbot, tmp_path):
+        dlg = QBatchTaskDialog(
+            _task(tmp_path),
+            defaults_mode=True,
+            store_path="  ",
+            global_output_path="",
+        )
+        qtbot.addWidget(dlg)
+        assert dlg.store_path() == ""
+        assert dlg.global_output_path() == ""
+
+
 class TestSwapperToggle:
     def test_prefills_swapper_enabled(self, qtbot, tmp_path):
         t = _task(tmp_path, swapper_enabled=False)

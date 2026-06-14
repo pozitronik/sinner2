@@ -7,6 +7,7 @@ import pytest
 
 from sinner2.batch.queue import BatchQueue
 from sinner2.batch.task import (
+    BatchOutputFormat,
     BatchTask,
     BatchTaskStatus,
 )
@@ -48,6 +49,12 @@ def _task(tmp_path: Path, **overrides) -> BatchTask:
     }
     kwargs.update(overrides)
     return BatchTask(**kwargs)
+
+
+class TestSettingsButton:
+    def test_settings_button_emits_request(self, view, qtbot):
+        with qtbot.waitSignal(view.settingsRequested, timeout=1000):
+            view._settings_btn.click()  # noqa: SLF001
 
 
 class TestInitialPopulate:
@@ -174,7 +181,8 @@ class TestQueueSignalUpdates:
     def test_progress_text_derives_step_for_reloaded_task(
         self, view, tmp_path, store
     ):
-        # Paused mid stage-2 of 2 (stage 0 done, 5/10 of stage 1): step 50%.
+        # 3 stages now (swapper + enhancer + combine). Paused mid-enhancer
+        # (stage 0 done, 5/10 of stage 1): step 2-of-3 at 50%.
         t = _task(
             tmp_path,
             enhancer_enabled=True,
@@ -186,7 +194,7 @@ class TestQueueSignalUpdates:
         store.save(t)
         view.reload_from_store()
         text = view._model.item(0, _COL_PROGRESS).text()  # noqa: SLF001
-        assert "[2/2]" in text
+        assert "[2/3]" in text
         assert "50%" in text
         assert "faceenhancer" in text
 
@@ -370,30 +378,45 @@ class TestStepTracker:
 
 
 class TestStageNames:
-    """_stage_names must mirror BatchDriver._build_stages exactly, including the
-    upscaler stage (it was omitted, so reloaded upscaler tasks showed the wrong
-    stage count/label)."""
+    """_stage_names must mirror BatchDriver's progress stages exactly: the
+    processor stages (incl. upscaler, once omitted) plus the trailing
+    combine/encode step (so reloaded tasks show the same stage count/labels the
+    live signal would)."""
 
     def test_includes_upscaler_stage(self, tmp_path):
         names = _stage_names(_task(
             tmp_path, swapper_enabled=True, enhancer_enabled=False,
-            upscaler_enabled=True,
+            upscaler_enabled=True, output_format=BatchOutputFormat.VIDEO,
         ))
-        assert names == ["faceswapper", "upscaler"]
+        assert names == ["faceswapper", "upscaler", "encode"]
 
     def test_full_order_matches_driver(self, tmp_path):
         names = _stage_names(_task(
             tmp_path, swapper_enabled=True, enhancer_enabled=True,
-            upscaler_enabled=True,
+            upscaler_enabled=True, output_format=BatchOutputFormat.VIDEO,
         ))
-        assert names == ["faceswapper", "faceenhancer", "upscaler"]
+        assert names == ["faceswapper", "faceenhancer", "upscaler", "encode"]
 
     def test_upscaler_only_is_not_passthrough(self, tmp_path):
         names = _stage_names(_task(
             tmp_path, swapper_enabled=False, enhancer_enabled=False,
-            upscaler_enabled=True,
+            upscaler_enabled=True, output_format=BatchOutputFormat.VIDEO,
         ))
-        assert names == ["upscaler"]
+        assert names == ["upscaler", "encode"]
+
+    def test_frames_output_combine_step_is_copy(self, tmp_path):
+        names = _stage_names(_task(
+            tmp_path, swapper_enabled=True, enhancer_enabled=False,
+            output_format=BatchOutputFormat.FRAMES,
+        ))
+        assert names == ["faceswapper", "copy"]
+
+    def test_both_disabled_is_passthrough_then_combine(self, tmp_path):
+        names = _stage_names(_task(
+            tmp_path, swapper_enabled=False, enhancer_enabled=False,
+            upscaler_enabled=False, output_format=BatchOutputFormat.VIDEO,
+        ))
+        assert names == ["passthrough", "encode"]
 
 
 class TestStepTrackerReuse:

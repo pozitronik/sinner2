@@ -38,6 +38,7 @@ from sinner2.pipeline.processors.face_enhancer import (
 from sinner2.pipeline.processors.face_swapper import FaceSwapperParams
 from sinner2.pipeline.processors.upscaler import UpscalerParams
 from sinner2.pipeline.realtime.executor import RealtimeExecutor
+from sinner2.pipeline.sections import SectionSet
 from sinner2.pipeline.skip_strategy import (
     BestEffortStrategy,
     FrameSkipStrategy,
@@ -98,6 +99,11 @@ class PlayerController(QObject):
         self._current_source_path: Path | None = None
 
         self._current_source: Source | None = None
+        # Timeline section selection (empty = whole timeline). Pushed to the
+        # executor; persists across a source/target hot-swap (the executor keeps
+        # it through reconfigure) until the main window clears it on a target
+        # change. The controller holds it as the authority for re-application.
+        self._sections: SectionSet = SectionSet.empty()
         self._swapper_params = FaceSwapperParams()
         self._enhancer_params = FaceEnhancerParams()
         self._enhancer_enabled = True
@@ -695,6 +701,10 @@ class PlayerController(QObject):
         mode_bridge.valueChanged.connect(self.strategyModeChanged)
         skipped_bridge = ObservableValueBridge(executor.frames_skipped, self)
         skipped_bridge.valueChanged.connect(self.framesSkippedChanged)
+        # Playhead-jumped: the executor fast-forwarded over a section gap. Re-seek
+        # the audio backend to the new frame so A/V stays together across the cut.
+        jump_bridge = ObservableValueBridge(executor.playhead_jumped, self)
+        jump_bridge.valueChanged.connect(self._on_playhead_jumped)
         self._bridges = [
             current_bridge,
             playing_bridge,
@@ -704,7 +714,14 @@ class PlayerController(QObject):
             metrics_bridge,
             mode_bridge,
             skipped_bridge,
+            jump_bridge,
         ]
+
+    def _on_playhead_jumped(self, frame: object) -> None:
+        """A section gap-skip moved the playhead; follow with the audio so the
+        sound resumes from the new section start, not the silent gap."""
+        if isinstance(frame, int) and frame >= 0 and self._target_fps > 0:
+            self._audio.seek_if_loaded(frame / self._target_fps)
 
     def _on_status(self, message: object) -> None:
         text = str(message)
@@ -789,6 +806,17 @@ class PlayerController(QObject):
             self._on_pause()
         else:
             self._on_play()
+
+    def set_sections(self, sections: SectionSet) -> None:
+        """Restrict live playback to the given timeline sections (empty = whole
+        timeline). Held as the controller's authority and pushed to the live
+        executor, which keeps it across a source/target hot-swap."""
+        self._sections = sections
+        if self._executor is not None:
+            self._executor.set_sections(sections)
+
+    def sections(self) -> SectionSet:
+        return self._sections
 
     def seek_to(self, frame: int) -> None:
         """Audio-aware seek. The arrow / Home / End shortcuts route through here

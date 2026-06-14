@@ -106,6 +106,31 @@ class ReaderStageInput:
         self._reader.release()
 
 
+class PlanReaderStageInput:
+    """First-stage input over a SELECTION: maps an output position ``p`` to the
+    original source frame ``plan[p]`` (an ascending list of included indices).
+    The output is renumbered contiguous (0..len(plan)-1) so a multi-range trim
+    encodes into one continuous clip. With no selection ``plan`` is the full
+    range and this behaves exactly like ReaderStageInput.
+
+    Reads stay ascending in the source (plan is sorted), so a video reader
+    decodes sequentially — gaps just skip forward, no random-seek thrash."""
+
+    def __init__(self, reader: TargetReader, plan: list[int]) -> None:
+        self._reader = reader
+        self._plan = plan
+
+    @property
+    def frame_count(self) -> int:
+        return len(self._plan)
+
+    def read(self, index: FrameIndex) -> Frame | None:
+        return self._reader.read(self._plan[index])
+
+    def close(self) -> None:
+        self._reader.release()
+
+
 class FramesDirInput:
     """Later-stage input: reads the previous stage's output frames from a
     directory of zero-padded image files."""

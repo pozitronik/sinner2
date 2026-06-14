@@ -92,6 +92,15 @@ def _wait_signal(qtbot, signal, timeout: float = 5.0):
     return blocker.signal_triggered
 
 
+class TestGlobalOutputDir:
+    def test_set_global_output_dir_updates_value(self, queue, tmp_path):
+        out = tmp_path / "global_out"
+        queue.set_global_output_dir(out)
+        assert queue._global_output_dir == out  # noqa: SLF001
+        queue.set_global_output_dir(None)
+        assert queue._global_output_dir is None  # noqa: SLF001
+
+
 class TestSingleTask:
     def test_runs_to_completion(
         self, qtbot, queue, store, stub_chain, tmp_path

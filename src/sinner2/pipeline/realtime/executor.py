@@ -23,6 +23,7 @@ from sinner2.pipeline.messages import (
     SetChainMsg,
     SetParamsMsg,
     SetPlaybackModeMsg,
+    SetSectionsMsg,
     SetSkipStrategyMsg,
     SetWorkerCountMsg,
     StopMsg,
@@ -31,6 +32,7 @@ from sinner2.pipeline.cache_mode import CacheMode
 from sinner2.pipeline.playback_mode import PlaybackMode
 from sinner2.pipeline.processor import ChainContext, Processor
 from sinner2.pipeline.realtime.work_item import WorkItem
+from sinner2.pipeline.sections import SectionSet
 from sinner2.pipeline.skip_strategy import FrameSkipStrategy
 from sinner2.types import Frame, FrameIndex
 
@@ -165,6 +167,13 @@ class RealtimeExecutor:
         self._state: _State = _State.STOPPED
         self._last_submitted: FrameIndex = -1
         self._last_completed: FrameIndex = -1
+        # Timeline section selection. Empty = no restriction (whole timeline).
+        # When non-empty, playback plays ONLY the selected frames: the
+        # dispatcher fast-forwards the playhead over the excluded gaps and stops
+        # at the last selected frame. Seeking stays unrestricted (you must be
+        # able to land anywhere to mark boundaries). Mutated only on the
+        # dispatcher thread (via SetSectionsMsg) and read there.
+        self._sections: SectionSet = SectionSet.empty()
 
         # Wakes the playback thread early on any state change (play, pause,
         # seek, mode change, stop). When the executor is paused/idle the
@@ -228,6 +237,10 @@ class RealtimeExecutor:
         # submitted for processing) to stay synced with wall-clock. Surfaced so
         # the user can see how many frames were dropped under load this session.
         self.frames_skipped: ObservableValue[int] = ObservableValue(0)
+        # Frame the playhead was fast-forwarded TO when it crossed a section gap
+        # (-1 = none yet). The controller subscribes so it can re-seek the audio
+        # backend to the new position, keeping A/V together across the skip.
+        self.playhead_jumped: ObservableValue[FrameIndex] = ObservableValue(-1)
 
         self._on_frame: Callable[[Frame, FrameIndex], None] | None = None
 
@@ -468,6 +481,11 @@ class RealtimeExecutor:
     def set_playback_mode(self, mode: PlaybackMode) -> None:
         self._command_queue.put(SetPlaybackModeMsg(mode=mode))
 
+    def set_sections(self, sections: SectionSet) -> None:
+        """Restrict playback to the given timeline sections (empty = whole
+        timeline). Takes effect on the next dispatcher tick."""
+        self._command_queue.put(SetSectionsMsg(sections=sections))
+
     def set_cache_mode(self, mode: CacheMode) -> None:
         """Hot-swap the buffer's cache mode. Cheap — just toggles which
         I/O paths the buffer takes; no rebuild required."""
@@ -608,6 +626,8 @@ class RealtimeExecutor:
                 self._handle_set_worker_count(n)
             case SetPlaybackModeMsg(mode=mode):
                 self._handle_set_playback_mode(mode)
+            case SetSectionsMsg(sections=sections):
+                self._handle_set_sections(sections)
             case ReconfigureMsg():
                 self._handle_reconfigure(msg)
             case SetParamsMsg():
@@ -877,6 +897,13 @@ class RealtimeExecutor:
         # tick rather than after the old interval expires.
         self._playback_wake.set()
 
+    def _handle_set_sections(self, sections: SectionSet) -> None:
+        with self._state_lock:
+            self._sections = sections
+        # Wake so a playhead currently inside a now-excluded gap is fast-
+        # forwarded onto the next section on the very next dispatcher tick.
+        self._playback_wake.set()
+
     def _handle_set_worker_count(self, n: int) -> None:
         """Scale the worker pool to size n. Runs on the dispatcher thread.
 
@@ -925,6 +952,27 @@ class RealtimeExecutor:
         the whole pipeline to 1 fps on slow sources.
         """
         with self._state_lock:
+            # Section trim: when a selection is active, the playhead plays ONLY
+            # the selected frames. If wall-clock has carried it into an excluded
+            # gap, fast-forward onto the next section (the gap frames are never
+            # submitted or shown); if it ran past the last section, stop — the
+            # "end of selection" mirrors the normal end-of-target.
+            if not self._sections.is_empty():
+                cur = self._timeline.current_frame()
+                if not self._sections.contains(cur):
+                    nxt = self._sections.next_included_frame(cur)
+                    if nxt is None:
+                        self._timeline.pause()
+                        self._state = _State.PAUSED
+                        self.is_playing.set(False)
+                        self.status.set("end of selection")
+                        self.strategy_mode.set(self._strategy.current_mode())
+                        return
+                    self._timeline.seek(nxt)
+                    self._last_submitted = nxt - 1
+                    self._last_shown_frame_index = None
+                    # Tell the controller so it re-seeks audio to the new spot.
+                    self.playhead_jumped.set(nxt)
             metrics = self._buffer.metrics()
             decision = self._strategy.decide(
                 last_submitted=self._last_submitted,
@@ -947,11 +995,12 @@ class RealtimeExecutor:
                 self.strategy_mode.set(mode)
                 return
             frame_index = decision.next_frame
-            # The strategy jumped past one or more frames to stay synced — count
-            # the gap as skipped (only on a real forward skip, not a seek/rewind).
-            if frame_index > self._last_submitted + 1:
-                self._skipped += frame_index - self._last_submitted - 1
             last_frame = self._reader_pool.frame_count - 1
+            # The selection caps the end: play stops at the last selected frame.
+            if not self._sections.is_empty():
+                sec_last = self._sections.last_frame()
+                if sec_last is not None:
+                    last_frame = min(last_frame, sec_last)
             # End-of-playback is when the DISPLAY (wall-clock playhead) has
             # reached the last frame AND that frame is actually rendered — NOT
             # when submission runs off the end. A faster-than-target pipeline
@@ -964,6 +1013,9 @@ class RealtimeExecutor:
             # last_completed stays below last_frame forever and the dispatcher
             # won't resubmit it (idle branch below). End anyway once nothing is
             # left in flight, so playback can't hang one frame short of the end.
+            # Checked BEFORE the gap-clamp so reaching the last selected frame
+            # (whose next decision lands in the trailing gap) ends rather than
+            # idling forever.
             reached_end = self._timeline.current_frame() >= last_frame
             last_done = self._last_completed >= last_frame
             stuck_at_end = (
@@ -975,9 +1027,34 @@ class RealtimeExecutor:
                 self._timeline.pause()
                 self._state = _State.PAUSED
                 self.is_playing.set(False)
-                self.status.set("end of target")
+                self.status.set(
+                    "end of selection"
+                    if not self._sections.is_empty()
+                    else "end of target"
+                )
                 self.strategy_mode.set(mode)
                 return
+            # Clamp a gap-landing decision onto the next selected frame so the
+            # strategy's catch-up (which keys off last_completed) can't submit an
+            # excluded frame. None → nothing left to submit in any section.
+            if not self._sections.is_empty() and not self._sections.contains(frame_index):
+                mapped = self._sections.next_included_frame(frame_index)
+                if mapped is None:
+                    self.strategy_mode.set(mode)
+                    return
+                frame_index = mapped
+            # The strategy jumped past one or more frames to stay synced — count
+            # the gap as skipped (only on a real forward skip, not a seek/rewind).
+            # With sections, count only the SELECTED frames in the jump so an
+            # excluded gap doesn't inflate the dropped-frame tally.
+            if frame_index > self._last_submitted + 1:
+                self._skipped += (
+                    self._sections.count_included_between(
+                        self._last_submitted, frame_index
+                    )
+                    if not self._sections.is_empty()
+                    else frame_index - self._last_submitted - 1
+                )
             if frame_index > last_frame:
                 # decide wants a frame past the end (everything up to last_frame
                 # is already submitted). Nothing new to do this tick — idle and

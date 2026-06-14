@@ -76,9 +76,24 @@ class QBatchTaskDialog(QDialog):
         task: BatchTask,
         parent: QWidget | None = None,
         global_output_dir: Path | None = None,
+        *,
+        defaults_mode: bool = False,
+        store_path: str = "",
+        global_output_path: str = "",
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Edit batch task")
+        # Two faces of one form. PER-TASK mode (default) edits a concrete
+        # task's source/target/output. DEFAULTS mode edits the Batch Defaults
+        # TEMPLATE — the same chain/execution/output controls, but the Paths
+        # group swaps the per-task source/target/output for the two queue-wide
+        # folders (task store + global output). Reusing the whole form means
+        # the defaults editor can never drift from the per-task editor.
+        self._defaults_mode = defaults_mode
+        self.setWindowTitle(
+            "Batch settings — defaults for new tasks"
+            if defaults_mode
+            else "Edit batch task"
+        )
         # Default auto-size came up too narrow to read full file paths.
         self.setMinimumWidth(600)
         self._task = task
@@ -89,30 +104,62 @@ class QBatchTaskDialog(QDialog):
         self._auto_output = ""
 
         # ---- Paths group ----
-        paths_box = QGroupBox("Paths")
-        paths_form = QFormLayout(paths_box)
-        self._source_edit, source_row = self._path_picker(
-            initial=str(task.source_path),
-            caption="Select source",
-            file_filter="Images (*.png *.jpg *.jpeg *.bmp *.tiff *.webp);;All files (*)",
-        )
-        paths_form.addRow("Source:", source_row)
-        self._target_edit, target_row = self._path_picker(
-            initial=str(task.target_path),
-            caption="Select target",
-            file_filter=(
-                "Media (*.png *.jpg *.jpeg *.mp4 *.avi *.mov *.mkv *.webm);;"
-                "All files (*)"
-            ),
-        )
-        paths_form.addRow("Target:", target_row)
-        self._output_edit, output_row = self._path_picker(
-            initial=str(task.output_path) if task.output_path else "",
-            caption="Output (leave empty for default)",
-            file_filter="Output file (*)",
-            save_mode=True,
-        )
-        paths_form.addRow("Output:", output_row)
+        # PER-TASK: source / target / output for this one task. DEFAULTS: the
+        # two queue-wide folders that aren't per-task at all (where queued
+        # tasks are stored + where finished outputs land).
+        if defaults_mode:
+            paths_box = QGroupBox("Batch paths")
+            paths_form = QFormLayout(paths_box)
+            self._store_edit, store_row = self._path_picker(
+                initial=store_path,
+                caption="Select task store folder",
+                file_filter="",
+                dir_mode=True,
+            )
+            self._store_edit.setToolTip(
+                "Folder holding the queued-task files. Empty = the default "
+                "(<cache>/../batch). Takes effect after a restart."
+            )
+            paths_form.addRow("Task store folder:", store_row)
+            restart_note = QLabel("Store folder change applies after restart.")
+            restart_note.setEnabled(False)  # muted hint styling
+            paths_form.addRow("", restart_note)
+            self._global_out_edit, global_out_row = self._path_picker(
+                initial=global_output_path,
+                caption="Select global output folder",
+                file_filter="",
+                dir_mode=True,
+            )
+            self._global_out_edit.setToolTip(
+                "Folder all finished outputs land in. Empty = next to each "
+                "task's target. Applies immediately to new and existing tasks."
+            )
+            paths_form.addRow("Global output folder:", global_out_row)
+        else:
+            paths_box = QGroupBox("Paths")
+            paths_form = QFormLayout(paths_box)
+            self._source_edit, source_row = self._path_picker(
+                initial=str(task.source_path),
+                caption="Select source",
+                file_filter="Images (*.png *.jpg *.jpeg *.bmp *.tiff *.webp);;All files (*)",
+            )
+            paths_form.addRow("Source:", source_row)
+            self._target_edit, target_row = self._path_picker(
+                initial=str(task.target_path),
+                caption="Select target",
+                file_filter=(
+                    "Media (*.png *.jpg *.jpeg *.mp4 *.avi *.mov *.mkv *.webm);;"
+                    "All files (*)"
+                ),
+            )
+            paths_form.addRow("Target:", target_row)
+            self._output_edit, output_row = self._path_picker(
+                initial=str(task.output_path) if task.output_path else "",
+                caption="Output (leave empty for default)",
+                file_filter="Output file (*)",
+                save_mode=True,
+            )
+            paths_form.addRow("Output:", output_row)
         self._format_combo = QComboBox()
         self._format_combo.addItem("Video (mp4)", BatchOutputFormat.VIDEO.value)
         self._format_combo.addItem("Frames (directory)", BatchOutputFormat.FRAMES.value)
@@ -553,34 +600,41 @@ class QBatchTaskDialog(QDialog):
             desired_h = content.sizeHint().height() + button_box.sizeHint().height() + 24
             self.resize(640, min(desired_h, int(avail_h * 0.9)))
 
-        # ---- Output default ----
-        # With no explicit override, show the auto-derived path (so the
-        # user can see exactly where output lands) and keep it synced to
-        # source/target/format edits until they type their own path.
-        self._auto_output = str(self._resolve_default_output())
-        if task.output_path is None:
-            self._output_edit.setText(self._auto_output)
-        self._output_edit.setToolTip(
-            "Auto-generated from the source + target names. Edit to use a "
-            "custom path; clear it to restore the automatic name."
-        )
-        self._source_edit.textChanged.connect(self._refresh_default_output)
-        self._target_edit.textChanged.connect(self._refresh_default_output)
-        self._format_combo.currentIndexChanged.connect(
-            self._refresh_default_output
-        )
-        # Re-probe the scale readout's dimensions when the target changes —
-        # DEBOUNCED: the probe opens the media file synchronously (VideoCapture
-        # for videos), and textChanged fires per keystroke, so probing directly
-        # stalled the GUI thread on every character of a pasted/typed path.
-        # A single-shot timer restarted on each change probes only after
-        # typing settles.
-        self._probe_timer = QTimer(self)
-        self._probe_timer.setSingleShot(True)
-        self._probe_timer.setInterval(300)
-        self._probe_timer.timeout.connect(self._refresh_scale_dims)
-        self._target_edit.textChanged.connect(self._probe_timer.start)
-        self._refresh_scale_dims()  # initial probe for the task's target
+        # ---- Output default (per-task only) ----
+        # DEFAULTS mode has no per-task source/target to derive an output path
+        # from (and no target to probe for the scale readout's dimensions), so
+        # the auto-output sync + target probe are wired only for a real task.
+        if not defaults_mode:
+            # With no explicit override, show the auto-derived path (so the
+            # user can see exactly where output lands) and keep it synced to
+            # source/target/format edits until they type their own path.
+            self._auto_output = str(self._resolve_default_output())
+            if task.output_path is None:
+                self._output_edit.setText(self._auto_output)
+            self._output_edit.setToolTip(
+                "Auto-generated from the source + target names. Edit to use a "
+                "custom path; clear it to restore the automatic name."
+            )
+            self._source_edit.textChanged.connect(self._refresh_default_output)
+            self._target_edit.textChanged.connect(self._refresh_default_output)
+            self._format_combo.currentIndexChanged.connect(
+                self._refresh_default_output
+            )
+            # Re-probe the scale readout's dimensions when the target changes —
+            # DEBOUNCED: the probe opens the media file synchronously
+            # (VideoCapture for videos), and textChanged fires per keystroke, so
+            # probing directly stalled the GUI thread on every character of a
+            # pasted/typed path. A single-shot timer restarted on each change
+            # probes only after typing settles.
+            self._probe_timer = QTimer(self)
+            self._probe_timer.setSingleShot(True)
+            self._probe_timer.setInterval(300)
+            self._probe_timer.timeout.connect(self._refresh_scale_dims)
+            self._target_edit.textChanged.connect(self._probe_timer.start)
+            self._refresh_scale_dims()  # initial probe for the task's target
+        else:
+            # No target to probe → the scale readout shows the bare percent.
+            self._update_scale_label()
         self._update_enhancer_rows()  # gray out the inactive model's knob
         self._update_occlusion_rows()  # occlusion subknobs follow the checkbox
         self._update_rotation_rows()  # rotation knobs follow the toggle
@@ -641,76 +695,91 @@ class QBatchTaskDialog(QDialog):
     def to_task(self) -> BatchTask:
         """Return a new BatchTask with edits applied. Preserves the
         original task's id + runtime state (status, last_completed_frame,
-        timing). Runtime state isn't editable here."""
-        # Untouched auto value (or empty) → keep output_path None so it stays
-        # auto-derived (and follows source/target renames + global-output-dir
-        # changes); a genuine edit is stored verbatim.
-        output_str = self._output_edit.text().strip()
-        output_path: Path | None
-        if not output_str or output_str == self._auto_output:
-            output_path = None
-        else:
-            output_path = Path(output_str)
+        timing). Runtime state isn't editable here.
+
+        In DEFAULTS mode the source/target/output keys are left untouched (the
+        template keeps its sentinel paths) — only the chain/execution/output
+        config is edited there; the queue-wide folders come from
+        store_path()/global_output_path() instead."""
         format_value = self._format_combo.currentData()
-        return self._task.model_copy(
-            update={
-                "source_path": Path(self._source_edit.text()),
-                "target_path": Path(self._target_edit.text()),
-                "output_path": output_path,
-                "output_format": BatchOutputFormat(format_value),
-                "swapper_enabled": self._swapper_box.isChecked(),
-                "swapper_model": self._swapper_model.currentData(),
-                "swapper_detection_interval": self._detection_interval.value(),
-                "swapper_detection_size": self._detection_size.value(),
-                "swapper_detector": self._detector.currentData(),
-                "swapper_many_faces": self._many_faces.isChecked(),
-                "swapper_fast_paste": self._fast_paste.isChecked(),
-                "swapper_landmark_refine": self._landmark_refine.isChecked(),
-                "swapper_target_sex": self._target_sex.currentData(),
-                "swapper_rotation_compensation": self._rotation_enabled.isChecked(),
-                "swapper_rotation_threshold_deg": self._rotation_threshold.value(),
-                "swapper_rotation_redetect": self._rotation_redetect.isChecked(),
-                "swapper_rotation_angle_source": self._rotation_source.currentData(),
-                "swapper_occlusion_mask": self._occlusion_mask.isChecked(),
-                "swapper_occlusion_mode": self._occlusion_mode.currentData(),
-                "swapper_occlusion_parser": self._occlusion_parser.currentData(),
-                "swapper_occluder_model": self._occluder_model.currentData(),
-                "enhancer_enabled": self._enhancer_box.isChecked(),
-                "enhancer_model": self._enhancer_model.currentData(),
-                "enhancer_upscale": self._upscale.value(),
-                "enhancer_only_center_face": self._only_center_face.isChecked(),
-                "enhancer_codeformer_fidelity": self._enhancer_fidelity.value(),
-                "enhancer_fp16": self._enhancer_fp16.isChecked(),
-                "swapper_execution": self._task.swapper_execution.model_copy(
-                    update={
-                        "workers": self._swapper_workers.value(),
-                        "providers": self._selected_providers(),
-                    }
-                ),
-                "enhancer_execution": self._task.enhancer_execution.model_copy(
-                    update={
-                        "workers": self._enhancer_workers.value(),
-                        "device": self._enhancer_device.currentData(),
-                    }
-                ),
-                "upscaler_enabled": self._upscaler_box.isChecked(),
-                "upscaler_model": self._upscaler_model.currentData(),
-                "upscaler_tile": self._upscaler_tile.value(),
-                "upscaler_fp16": self._upscaler_fp16.isChecked(),
-                "upscaler_execution": self._task.upscaler_execution.model_copy(
-                    update={"device": self._upscaler_device.currentData()}
-                ),
-                "video_backend": VideoBackend(self._video_backend.currentData()),
-                "reader_pool_size": self._reader_pool_size.value(),
-                "processing_scale": self._scale_slider.value() / 100.0,
-                "cleanup_mode": BatchCleanupMode(
-                    self._cleanup_combo.currentData()
-                ),
-                "continue_on_error": self._continue_on_error.isChecked(),
-                "image_format": ImageFormat(self._image_format.currentData()),
-                "image_quality": self._image_quality.value(),
-            }
-        )
+        update: dict[str, object] = {
+            "output_format": BatchOutputFormat(format_value),
+            "swapper_enabled": self._swapper_box.isChecked(),
+            "swapper_model": self._swapper_model.currentData(),
+            "swapper_detection_interval": self._detection_interval.value(),
+            "swapper_detection_size": self._detection_size.value(),
+            "swapper_detector": self._detector.currentData(),
+            "swapper_many_faces": self._many_faces.isChecked(),
+            "swapper_fast_paste": self._fast_paste.isChecked(),
+            "swapper_landmark_refine": self._landmark_refine.isChecked(),
+            "swapper_target_sex": self._target_sex.currentData(),
+            "swapper_rotation_compensation": self._rotation_enabled.isChecked(),
+            "swapper_rotation_threshold_deg": self._rotation_threshold.value(),
+            "swapper_rotation_redetect": self._rotation_redetect.isChecked(),
+            "swapper_rotation_angle_source": self._rotation_source.currentData(),
+            "swapper_occlusion_mask": self._occlusion_mask.isChecked(),
+            "swapper_occlusion_mode": self._occlusion_mode.currentData(),
+            "swapper_occlusion_parser": self._occlusion_parser.currentData(),
+            "swapper_occluder_model": self._occluder_model.currentData(),
+            "enhancer_enabled": self._enhancer_box.isChecked(),
+            "enhancer_model": self._enhancer_model.currentData(),
+            "enhancer_upscale": self._upscale.value(),
+            "enhancer_only_center_face": self._only_center_face.isChecked(),
+            "enhancer_codeformer_fidelity": self._enhancer_fidelity.value(),
+            "enhancer_fp16": self._enhancer_fp16.isChecked(),
+            "swapper_execution": self._task.swapper_execution.model_copy(
+                update={
+                    "workers": self._swapper_workers.value(),
+                    "providers": self._selected_providers(),
+                }
+            ),
+            "enhancer_execution": self._task.enhancer_execution.model_copy(
+                update={
+                    "workers": self._enhancer_workers.value(),
+                    "device": self._enhancer_device.currentData(),
+                }
+            ),
+            "upscaler_enabled": self._upscaler_box.isChecked(),
+            "upscaler_model": self._upscaler_model.currentData(),
+            "upscaler_tile": self._upscaler_tile.value(),
+            "upscaler_fp16": self._upscaler_fp16.isChecked(),
+            "upscaler_execution": self._task.upscaler_execution.model_copy(
+                update={"device": self._upscaler_device.currentData()}
+            ),
+            "video_backend": VideoBackend(self._video_backend.currentData()),
+            "reader_pool_size": self._reader_pool_size.value(),
+            "processing_scale": self._scale_slider.value() / 100.0,
+            "cleanup_mode": BatchCleanupMode(
+                self._cleanup_combo.currentData()
+            ),
+            "continue_on_error": self._continue_on_error.isChecked(),
+            "image_format": ImageFormat(self._image_format.currentData()),
+            "image_quality": self._image_quality.value(),
+        }
+        if not self._defaults_mode:
+            # Untouched auto value (or empty) → keep output_path None so it
+            # stays auto-derived (and follows source/target renames +
+            # global-output-dir changes); a genuine edit is stored verbatim.
+            output_str = self._output_edit.text().strip()
+            update["source_path"] = Path(self._source_edit.text())
+            update["target_path"] = Path(self._target_edit.text())
+            update["output_path"] = (
+                None
+                if (not output_str or output_str == self._auto_output)
+                else Path(output_str)
+            )
+        return self._task.model_copy(update=update)
+
+    # ---- Defaults-mode accessors (queue-wide paths) ----
+
+    def store_path(self) -> str:
+        """The edited task-store folder (DEFAULTS mode). "" = use the default."""
+        return self._store_edit.text().strip()
+
+    def global_output_path(self) -> str:
+        """The edited global-output folder (DEFAULTS mode). "" = next to each
+        task's target."""
+        return self._global_out_edit.text().strip()
 
     # ---- helpers ----
 
@@ -788,15 +857,22 @@ class QBatchTaskDialog(QDialog):
         caption: str,
         file_filter: str,
         save_mode: bool = False,
+        dir_mode: bool = False,
     ) -> tuple[QLineEdit, QWidget]:
         """Build a (line-edit + browse-button) row. Returns the line
-        edit and the composite container widget."""
+        edit and the composite container widget. ``dir_mode`` browses for a
+        folder (the queue-wide batch paths); ``save_mode`` for a save target;
+        otherwise an existing file."""
         edit = QLineEdit(initial)
         btn = QPushButton("…")
         btn.setFixedWidth(28)
 
         def browse() -> None:
-            if save_mode:
+            if dir_mode:
+                path = QFileDialog.getExistingDirectory(
+                    self, caption, edit.text()
+                )
+            elif save_mode:
                 path, _ = QFileDialog.getSaveFileName(
                     self, caption, edit.text(), file_filter
                 )

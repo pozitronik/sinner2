@@ -35,7 +35,12 @@ from PySide6.QtWidgets import (
 
 from sinner2.batch.queue import BatchQueue
 from sinner2.gui.confirm import confirm
-from sinner2.batch.task import BatchTask, BatchTaskStatus, resolve_output_path
+from sinner2.batch.task import (
+    BatchOutputFormat,
+    BatchTask,
+    BatchTaskStatus,
+    resolve_output_path,
+)
 from sinner2.batch.task_store import BatchTaskStore
 
 
@@ -118,9 +123,11 @@ def _format_progress(
 
 
 def _stage_names(task: BatchTask) -> list[str]:
-    """Ordered stage names for a task, mirroring BatchDriver._build_stages so
-    a reloaded (non-running) task shows the same stage labels the live signal
-    would. Both processors off → a single passthrough re-encode stage."""
+    """Ordered stage names for a task, mirroring BatchDriver's progress stages
+    so a reloaded (non-running) task shows the same stage labels the live
+    signal would. Both processors off → a single passthrough re-encode stage.
+    The final combine/encode step (package_output) is always the last stage —
+    "encode" for video output, "copy" for a frames directory."""
     names: list[str] = []
     if task.swapper_enabled:
         names.append("faceswapper")
@@ -130,6 +137,9 @@ def _stage_names(task: BatchTask) -> list[str]:
         names.append("upscaler")
     if not names:
         names.append("passthrough")
+    names.append(
+        "encode" if task.output_format is BatchOutputFormat.VIDEO else "copy"
+    )
     return names
 
 _COL_PROGRESS = 0
@@ -149,6 +159,7 @@ class QBatchView(QWidget):
     """
 
     editRequested = Signal(str)  # task_id
+    settingsRequested = Signal()  # open the Batch settings (defaults) dialog
 
     def __init__(
         self,
@@ -187,6 +198,15 @@ class QBatchView(QWidget):
             "Re-read the store from disk (handles external edits)."
         )
         self._refresh_btn.clicked.connect(self.reload_from_store)
+        # Queue-wide defaults + paths. Lives at the far right, set apart from
+        # the run controls — it configures NEW tasks, not the running queue.
+        self._settings_btn = QToolButton()
+        self._settings_btn.setText("Settings…")
+        self._settings_btn.setToolTip(
+            "Edit the defaults every new task is created with, plus the "
+            "task-store and global-output folders."
+        )
+        self._settings_btn.clicked.connect(self.settingsRequested.emit)
 
         toolbar = QHBoxLayout()
         toolbar.addWidget(self._start_btn)
@@ -194,6 +214,7 @@ class QBatchView(QWidget):
         toolbar.addWidget(self._stop_btn)
         toolbar.addWidget(self._refresh_btn)
         toolbar.addStretch(1)
+        toolbar.addWidget(self._settings_btn)
 
         # Table.
         self._model = QStandardItemModel(0, len(_COLUMN_HEADERS), self)

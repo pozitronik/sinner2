@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from sinner2.pipeline.buffer.buffer import FrameBuffer
     from sinner2.pipeline.buffer.timeline import Timeline
     from sinner2.pipeline.processor import Processor
+    from sinner2.pipeline.sections import SectionSet
     from sinner2.pipeline.skip_strategy import FrameSkipStrategy
 
 
@@ -78,6 +79,16 @@ class SetPlaybackModeMsg:
 
 
 @dataclass(frozen=True)
+class SetSectionsMsg:
+    """Restrict playback to a set of timeline sections (an inclusive frame-range
+    selection). Empty = no restriction. When non-empty, the dispatcher fast-
+    forwards the playhead over the gaps so only the selected frames play, and
+    stops at the end of the last section."""
+
+    sections: "SectionSet"
+
+
+@dataclass(frozen=True)
 class RerenderMsg:
     """Re-render from the current playhead forward: drop cached frames at and
     after the current frame so they reprocess through the (possibly newly
@@ -132,6 +143,7 @@ type Message = (
     | SetSkipStrategyMsg
     | SetWorkerCountMsg
     | SetPlaybackModeMsg
+    | SetSectionsMsg
     | RerenderMsg
     | ReconfigureMsg
 )

@@ -16,6 +16,7 @@ from sinner2.io.reader_pool import ReaderPool
 from sinner2.pipeline.buffer.timeline import Timeline
 from sinner2.pipeline.playback_mode import PlaybackMode
 from sinner2.pipeline.realtime.executor import RealtimeExecutor
+from sinner2.pipeline.sections import SectionSet
 from sinner2.pipeline.skip_strategy import BestEffortStrategy, SyncedStrategy
 from sinner2.types import Frame
 
@@ -2175,3 +2176,147 @@ class TestDisplayFps:
     def test_zero_with_fewer_than_two_frames(self):
         assert self._display_rate(display_times=[time.monotonic()]) == 0.0
         assert self._display_rate(display_times=[]) == 0.0
+
+
+class TestSectionPlayback:
+    """Section-limited playback: the dispatcher plays ONLY the selected frames,
+    fast-forwarding the playhead over excluded gaps and stopping at the last
+    selected frame. Drives _try_submit_next_frame on a bypass-init executor."""
+
+    def _executor(self, sections, *, timeline, last_submitted=-1,
+                  last_completed=-1, next_frame, frame_count=300):
+        from queue import Queue
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        from sinner2.pipeline.realtime.executor import _State
+
+        ex = object.__new__(RealtimeExecutor)
+        ex._state_lock = threading.RLock()  # noqa: SLF001
+        ex._work_queue = Queue()  # noqa: SLF001
+        ex._playback_wake = threading.Event()  # noqa: SLF001
+        ex._state = _State.PLAYING  # noqa: SLF001
+        ex._sections = sections  # noqa: SLF001
+        ex._timeline = timeline  # noqa: SLF001
+        ex._buffer = MagicMock()  # noqa: SLF001
+        ex._reader_pool = MagicMock()  # noqa: SLF001
+        ex._reader_pool.frame_count = frame_count  # noqa: SLF001
+        ex._reader_pool.recent_read_latency_ms.return_value = 1.0  # noqa: SLF001
+        ex._last_submitted = last_submitted  # noqa: SLF001
+        ex._last_completed = last_completed  # noqa: SLF001
+        ex._skipped = 0  # noqa: SLF001
+        ex._generation = 0  # noqa: SLF001
+        ex._last_shown_frame_index = None  # noqa: SLF001
+        ex._inflight_count = 0  # noqa: SLF001
+        ex._strategy = MagicMock()  # noqa: SLF001
+        ex._strategy.current_mode.return_value = "seq"  # noqa: SLF001
+        ex._strategy.decide.return_value = SimpleNamespace(  # noqa: SLF001
+            next_frame=next_frame
+        )
+        ex.strategy_mode = MagicMock()
+        ex.is_playing = MagicMock()
+        ex.status = MagicMock()
+        ex.playhead_jumped = MagicMock()
+        return ex
+
+    def test_gap_skip_fast_forwards_playhead_to_next_section(self):
+        sections = SectionSet.of([(50, 120), (180, 240)])
+        tl = Timeline(fps=30.0)
+        tl.set_max_frame(299)
+        tl.seek(150)  # in the gap
+        ex = self._executor(sections, timeline=tl, last_submitted=120, next_frame=180)
+        ex._try_submit_next_frame()  # noqa: SLF001
+        # Playhead jumped onto the next section start; audio-resync signalled.
+        assert tl.current_frame() == 180
+        ex.playhead_jumped.set.assert_called_once_with(180)  # noqa: SLF001
+        # And that frame was submitted for processing.
+        ex._reader_pool.read_async.assert_called_once_with(180)  # noqa: SLF001
+        assert ex._last_submitted == 180  # noqa: SLF001
+
+    def test_clamps_strategy_decision_onto_next_section(self):
+        # In-section playhead, but the strategy's catch-up picks a gap frame;
+        # it must be clamped onto the next selected frame, not submitted as-is.
+        sections = SectionSet.of([(50, 120), (180, 240)])
+        tl = Timeline(fps=30.0)
+        tl.set_max_frame(299)
+        tl.seek(118)  # in section 0
+        ex = self._executor(sections, timeline=tl, last_submitted=117, next_frame=150)
+        ex._try_submit_next_frame()  # noqa: SLF001
+        ex._reader_pool.read_async.assert_called_once_with(180)  # noqa: SLF001
+
+    def test_stops_at_end_of_selection(self):
+        sections = SectionSet.of([(50, 120), (180, 240)])
+        tl = Timeline(fps=30.0)
+        tl.set_max_frame(299)
+        tl.seek(241)  # past the last section
+        ex = self._executor(sections, timeline=tl, last_submitted=240, next_frame=242)
+        from sinner2.pipeline.realtime.executor import _State
+
+        ex._try_submit_next_frame()  # noqa: SLF001
+        assert ex._state is _State.PAUSED  # noqa: SLF001
+        ex.is_playing.set.assert_called_with(False)  # noqa: SLF001
+        ex.status.set.assert_called_with("end of selection")  # noqa: SLF001
+        ex._reader_pool.read_async.assert_not_called()  # noqa: SLF001
+
+    def test_last_section_end_caps_playback(self):
+        # Reaching the last selected frame ends playback even though the media
+        # has more frames after it.
+        sections = SectionSet.of([(50, 120), (180, 240)])
+        tl = Timeline(fps=30.0)
+        tl.set_max_frame(299)
+        tl.seek(240)  # at the last selected frame
+        ex = self._executor(
+            sections, timeline=tl, last_submitted=240, last_completed=240,
+            next_frame=241,
+        )
+        from sinner2.pipeline.realtime.executor import _State
+
+        ex._try_submit_next_frame()  # noqa: SLF001
+        assert ex._state is _State.PAUSED  # noqa: SLF001
+        ex._reader_pool.read_async.assert_not_called()  # noqa: SLF001
+
+    def test_skip_count_excludes_gap_frames(self):
+        # A forward skip spanning a gap counts only the SELECTED frames jumped,
+        # not the excluded ones.
+        sections = SectionSet.of([(50, 120), (180, 240)])
+        tl = Timeline(fps=30.0)
+        tl.set_max_frame(299)
+        tl.seek(190)  # in section 1
+        ex = self._executor(sections, timeline=tl, last_submitted=100, next_frame=200)
+        ex._try_submit_next_frame()  # noqa: SLF001
+        # 101..120 (20) + 180..199 (20) = 40 selected frames skipped (not 99).
+        assert ex._skipped == 40  # noqa: SLF001
+
+    def test_no_sections_is_unrestricted(self):
+        # Empty SectionSet → today's behavior: no gap-skip, no jump signal.
+        tl = Timeline(fps=30.0)
+        tl.set_max_frame(299)
+        tl.seek(60)
+        ex = self._executor(
+            SectionSet.empty(), timeline=tl, last_submitted=59, next_frame=60,
+        )
+        ex._try_submit_next_frame()  # noqa: SLF001
+        ex._reader_pool.read_async.assert_called_once_with(60)  # noqa: SLF001
+        ex.playhead_jumped.set.assert_not_called()  # noqa: SLF001
+
+
+class TestSetSections:
+    def test_command_posts_message(self):
+        from queue import Queue
+
+        from sinner2.pipeline.messages import SetSectionsMsg
+
+        ex = object.__new__(RealtimeExecutor)
+        ex._command_queue = Queue()  # noqa: SLF001
+        ex.set_sections(SectionSet.of([(1, 5)]))
+        msg = ex._command_queue.get_nowait()  # noqa: SLF001
+        assert isinstance(msg, SetSectionsMsg)
+        assert msg.sections == SectionSet.of([(1, 5)])
+
+    def test_handler_stores_sections(self):
+        ex = object.__new__(RealtimeExecutor)
+        ex._state_lock = threading.RLock()  # noqa: SLF001
+        ex._playback_wake = threading.Event()  # noqa: SLF001
+        ex._handle_set_sections(SectionSet.of([(2, 8)]))  # noqa: SLF001
+        assert ex._sections == SectionSet.of([(2, 8)])  # noqa: SLF001
+        assert ex._playback_wake.is_set()  # noqa: SLF001

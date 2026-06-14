@@ -2,16 +2,18 @@
 
 `QProcessorControls.snapshot()` captures one; `apply_snapshot()` writes one back.
 This is the single value object the formerly-divergent param surfaces converge on
-— the controller's `apply_session_config`, settings persistence, and batch-task
-construction each read from it (adapters added as those consumers are migrated),
-replacing the hand-maintained 14-/39-parameter signatures and the thrice-
+— the controller's `apply_session_config` and settings persistence each read from
+it, replacing the hand-maintained 14-/39-parameter signatures and the thrice-
 duplicated param capture in the main window. One object, one source of truth, so
 the surfaces can no longer drift out of lockstep and silently drop a setting.
+
+(Batch no longer reads from here — it's decoupled from the live preview and mints
+each task from its own Batch Defaults template; see sinner2.batch.defaults.)
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from sinner2.io.video_backend import VideoBackend
 from sinner2.pipeline.cache_mode import CacheMode
@@ -25,12 +27,6 @@ from sinner2.pipeline.skip_strategy import (
     FrameSkipStrategy,
     SyncedStrategy,
 )
-
-if TYPE_CHECKING:
-    from pathlib import Path
-
-    from sinner2.batch.task import BatchCleanupMode, BatchOutputFormat, BatchTask
-    from sinner2.config.execution import OnnxExecution, TorchExecution
 
 
 @dataclass(frozen=True)
@@ -164,67 +160,4 @@ class ProcessorParamsSnapshot:
             upscaler_tile=up.tile,
             upscaler_fp16=up.fp16,
             upscaler_device=self.upscaler_device,
-        )
-
-    def to_batch_task(
-        self,
-        *,
-        source_path: Path,
-        target_path: Path,
-        output_format: BatchOutputFormat,
-        cleanup_mode: BatchCleanupMode,
-        swapper_execution: OnnxExecution,
-        enhancer_execution: TorchExecution,
-        upscaler_execution: TorchExecution,
-    ) -> BatchTask:
-        """Build a BatchTask from this snapshot plus the batch-only inputs the
-        caller supplies — the source/target, output format + cleanup mode, and
-        the per-processor execution profiles (batch worker defaults + the
-        captured providers/devices live in those, deliberately NOT in the shared
-        snapshot, since batch throughput tuning ≠ realtime latency tuning)."""
-        from sinner2.batch.task import BatchTask
-
-        sp = self.swapper_params
-        ep = self.enhancer_params
-        up = self.upscaler_params
-        return BatchTask(
-            source_path=source_path,
-            target_path=target_path,
-            output_format=output_format,
-            cleanup_mode=cleanup_mode,
-            swapper_enabled=self.swapper_enabled,
-            swapper_model=sp.model.value,
-            swapper_detection_interval=sp.detection_interval,
-            swapper_detection_size=sp.detection_size,
-            swapper_detector=sp.detector.value,
-            swapper_many_faces=sp.many_faces,
-            swapper_fast_paste=sp.fast_paste,
-            swapper_landmark_refine=sp.landmark_refine,
-            swapper_target_sex=sp.target_sex.value,
-            swapper_rotation_compensation=sp.rotation_compensation,
-            swapper_rotation_threshold_deg=sp.rotation_threshold_deg,
-            swapper_rotation_redetect=sp.rotation_redetect,
-            swapper_rotation_angle_source=sp.rotation_angle_source.value,
-            swapper_occlusion_mask=sp.occlusion_mask,
-            swapper_occlusion_mode=sp.occlusion_mode.value,
-            swapper_occlusion_parser=sp.occlusion_parser.value,
-            swapper_occluder_model=sp.occluder_model.value,
-            enhancer_enabled=self.enhancer_enabled,
-            enhancer_model=ep.model.value,
-            enhancer_upscale=ep.upscale,
-            enhancer_only_center_face=ep.only_center_face,
-            enhancer_codeformer_fidelity=ep.codeformer_fidelity,
-            enhancer_fp16=ep.fp16,
-            upscaler_enabled=self.upscaler_enabled,
-            upscaler_model=up.model.value,
-            upscaler_tile=up.tile,
-            upscaler_fp16=up.fp16,
-            swapper_execution=swapper_execution,
-            enhancer_execution=enhancer_execution,
-            upscaler_execution=upscaler_execution,
-            video_backend=self.video_backend,
-            reader_pool_size=self.reader_pool_size,
-            processing_scale=self.processing_scale,
-            image_format=self.image_format,
-            image_quality=self.image_quality,
         )

@@ -119,8 +119,9 @@ class Settings(SinnerBaseModel):
     display_rotation: int | None = None  # 0 / 90 / 180 / 270
     batch_store_path: str | None = None  # default <install>/batch
     batch_global_output_path: str | None = None  # default: next to target
-    batch_default_format: str | None = None  # "video" / "frames"
-    batch_default_cleanup: str | None = None  # "keep" / "auto" / "drop_at_end"
+    # Per-task default config (format/cleanup/chain/execution/…) is no longer
+    # stored here — it lives in the Batch Defaults template (batch_defaults.json,
+    # see sinner2.batch.defaults), which "Add to batch" mints every new task from.
     # Per-dialog "don't ask me again" map: dialog_id -> remembered yes/no answer.
     # A present key means the confirmation is suppressed and its stored answer
     # reused. None = nothing suppressed yet.

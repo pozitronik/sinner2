@@ -1,16 +1,92 @@
-from PySide6.QtCore import Qt, QTimer, Signal, Slot
+from PySide6.QtCore import QRectF, Qt, QTimer, Signal, Slot
+from PySide6.QtGui import QColor, QPainter, QPaintEvent
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
     QSlider,
+    QStyle,
+    QStyleOptionSlider,
     QToolButton,
     QWidget,
 )
 
 from sinner2.gui.session_capabilities import SessionCapabilities, SessionKind
+from sinner2.pipeline.sections import SectionSet
 
 _SEEK_DEBOUNCE_MS = 100
+
+# Section band colours: a calm green for ordinary sections, an amber for the
+# selected one (the one [ / ] edit) and the pending in-point marker.
+_SECTION_COLOR = QColor(70, 160, 90, 170)
+_SECTION_SELECTED_COLOR = QColor(240, 180, 60, 220)
+_PENDING_COLOR = QColor(240, 180, 60)
+
+
+class _SectionSlider(QSlider):
+    """Scrub slider that paints the selected timeline sections as bands over its
+    groove, plus a marker for a half-finished (in-point set, no out-point yet)
+    section. Pure view: the section STATE lives on QTransportControls, which
+    pushes it here via set_overlay()."""
+
+    def __init__(self, orientation: Qt.Orientation, parent: QWidget | None = None) -> None:
+        super().__init__(orientation, parent)
+        self._ranges: list[tuple[int, int]] = []
+        self._selected: int | None = None
+        self._pending: int | None = None
+
+    def set_overlay(
+        self,
+        ranges: list[tuple[int, int]],
+        selected: int | None,
+        pending: int | None,
+    ) -> None:
+        self._ranges = ranges
+        self._selected = selected
+        self._pending = pending
+        self.update()
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        super().paintEvent(event)
+        if self.maximum() <= self.minimum():
+            return  # no usable range to map frames onto
+        if not self._ranges and self._pending is None:
+            return
+        opt = QStyleOptionSlider()
+        self.initStyleOption(opt)
+        groove = self.style().subControlRect(
+            QStyle.ComplexControl.CC_Slider, opt,
+            QStyle.SubControl.SC_SliderGroove, self,
+        )
+        handle = self.style().subControlRect(
+            QStyle.ComplexControl.CC_Slider, opt,
+            QStyle.SubControl.SC_SliderHandle, self,
+        )
+        span = groove.width() - handle.width()
+        x0 = groove.x() + handle.width() / 2.0
+
+        def px(frame: int) -> float:
+            return x0 + QStyle.sliderPositionFromValue(
+                self.minimum(), self.maximum(), frame, span
+            )
+
+        painter = QPainter(self)
+        band_h = 6
+        band_top = groove.center().y() - band_h // 2 + 1
+        for i, (start, end) in enumerate(self._ranges):
+            xa, xb = px(start), px(end)
+            color = (
+                _SECTION_SELECTED_COLOR if i == self._selected else _SECTION_COLOR
+            )
+            painter.fillRect(
+                QRectF(xa, band_top, max(2.0, xb - xa), band_h), color
+            )
+        if self._pending is not None:
+            xp = px(self._pending)
+            painter.fillRect(
+                QRectF(xp - 1.0, groove.y(), 2.0, groove.height()), _PENDING_COLOR
+            )
+        painter.end()
 
 
 class QTransportControls(QWidget):
@@ -28,6 +104,7 @@ class QTransportControls(QWidget):
     seekRequested = Signal(int)
     volumeChanged = Signal(int)  # 0-100
     addToBatchRequested = Signal()
+    sectionsChanged = Signal(object)  # emits the new SectionSet
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -42,10 +119,18 @@ class QTransportControls(QWidget):
         # mid-drag and the user can't scrub.
         self._user_dragging = False
 
+        # Section selection state. The SectionSet is the committed set of
+        # included ranges; _pending_in is a started-but-not-closed in-point;
+        # _selected_index is the band [ / ] currently edit (None = none, so [
+        # starts a new section instead of nudging one).
+        self._sections = SectionSet.empty()
+        self._pending_in: int | None = None
+        self._selected_index: int | None = None
+
         self._play_button = QPushButton("Play")
         self._play_button.clicked.connect(self._on_play_clicked)
 
-        self._slider = QSlider(Qt.Orientation.Horizontal)
+        self._slider = _SectionSlider(Qt.Orientation.Horizontal)
         self._slider.setMinimum(0)
         self._slider.setMaximum(0)
         self._slider.sliderPressed.connect(self._on_slider_pressed)
@@ -141,6 +226,9 @@ class QTransportControls(QWidget):
     def _on_slider_moved(self, value: int) -> None:
         # Update label live so user sees the target frame while dragging.
         self._update_label(value)
+        # Highlight the band the playhead is over so the user can see which
+        # section [ / ] will edit before releasing.
+        self._update_selection_to(value)
         # Coalesce rapid drag updates — the debounce restarts on each tick.
         self._pending_seek = value
         self._seek_debounce.start()
@@ -156,7 +244,108 @@ class QTransportControls(QWidget):
         self._seek_debounce.stop()
         self._pending_seek = None
         self._user_dragging = False
+        # Clicking/landing on a band selects it (so [ / ] nudge that band);
+        # landing in a gap clears the selection (so [ starts a new section).
+        self._update_selection_to(self._slider.value())
         self.seekRequested.emit(self._slider.value())
+
+    # ---- Section selection ([ / ] editing) ----
+
+    def sections(self) -> SectionSet:
+        return self._sections
+
+    def selected_index(self) -> int | None:
+        return self._selected_index
+
+    def pending_in(self) -> int | None:
+        return self._pending_in
+
+    def set_sections(self, sections: SectionSet) -> None:
+        """Reflect an externally-set selection (restore / clear) WITHOUT emitting
+        — clears any in-progress in-point and selection."""
+        self._sections = sections
+        self._pending_in = None
+        self._selected_index = None
+        self._refresh_section_overlay()
+
+    def mark_in(self, frame: int) -> None:
+        """`[` — set a section's START to ``frame``. With a band selected, nudge
+        that band's start (1-frame precise); otherwise begin a new section by
+        marking the in-point (closed later by `]`)."""
+        if self._selected_index is not None and self._selected_index < len(
+            self._sections.ranges
+        ):
+            _, end = self._sections.ranges[self._selected_index]
+            self._sections = self._sections.with_range_replaced(
+                self._selected_index, frame, end
+            )
+            self._reselect_at(frame)
+            self._refresh_section_overlay()
+            self._emit_sections()
+        else:
+            self._pending_in = frame
+            self._refresh_section_overlay()
+
+    def mark_out(self, frame: int) -> None:
+        """`]` — set a section's END to ``frame``. With a band selected, nudge
+        that band's end; otherwise commit the pending in-point → a new section.
+        No-op when neither a band nor an in-point is active."""
+        if self._selected_index is not None and self._selected_index < len(
+            self._sections.ranges
+        ):
+            start, _ = self._sections.ranges[self._selected_index]
+            self._sections = self._sections.with_range_replaced(
+                self._selected_index, start, frame
+            )
+            self._reselect_at(frame)
+            self._refresh_section_overlay()
+            self._emit_sections()
+        elif self._pending_in is not None:
+            self._sections = self._sections.with_added(self._pending_in, frame)
+            self._pending_in = None
+            # Cleared, NOT selected: the next [ starts a fresh section rather
+            # than nudging the one just committed.
+            self._selected_index = None
+            self._refresh_section_overlay()
+            self._emit_sections()
+
+    def delete_selected(self) -> None:
+        """Remove the selected band (Delete). No-op when nothing is selected."""
+        if self._selected_index is None:
+            return
+        self._sections = self._sections.without_index(self._selected_index)
+        self._selected_index = None
+        self._refresh_section_overlay()
+        self._emit_sections()
+
+    def clear_sections(self) -> None:
+        """Drop all sections (back to whole-timeline playback)."""
+        if self._sections.is_empty() and self._pending_in is None:
+            return
+        self._sections = SectionSet.empty()
+        self._pending_in = None
+        self._selected_index = None
+        self._refresh_section_overlay()
+        self._emit_sections()
+
+    def _reselect_at(self, frame: int) -> None:
+        """Re-resolve the selection by frame after an edit re-normalized the
+        ranges (a nudge can merge bands, shifting indices)."""
+        self._selected_index = self._sections.index_at(frame)
+
+    def _update_selection_to(self, frame: int) -> None:
+        idx = self._sections.index_at(frame)
+        if idx != self._selected_index:
+            self._selected_index = idx
+            self._refresh_section_overlay()
+
+    def _refresh_section_overlay(self) -> None:
+        self._slider.set_overlay(
+            list(self._sections.ranges), self._selected_index, self._pending_in
+        )
+
+    def _emit_sections(self) -> None:
+        self.sectionsChanged.emit(self._sections)
 
     def _update_label(self, frame: int) -> None:
         last = max(0, self._frame_count - 1)

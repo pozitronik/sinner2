@@ -465,6 +465,90 @@ class TestSeekAndQueueShortcuts:
         assert len(window._batch_store.list()) == before + 1  # noqa: SLF001
 
 
+class TestSectionShortcuts:
+    @staticmethod
+    def _press(window, key):
+        from PySide6.QtCore import QEvent, Qt
+        from PySide6.QtGui import QKeyEvent
+
+        window.keyPressEvent(
+            QKeyEvent(QEvent.Type.KeyPress, key, Qt.KeyboardModifier.NoModifier)
+        )
+
+    def _stub_executor(self, window, monkeypatch, *, frame):
+        from unittest.mock import MagicMock
+
+        ex = MagicMock()
+        ex.frame_count.return_value = 300
+        ex.current_frame.get.return_value = frame
+        monkeypatch.setattr(window._controller, "executor", lambda: ex)  # noqa: SLF001
+        monkeypatch.setattr(window._controller, "_executor", ex)  # noqa: SLF001
+        return ex
+
+    def test_bracket_keys_create_section(self, window, monkeypatch):
+        from PySide6.QtCore import Qt
+        from sinner2.pipeline.sections import SectionSet
+
+        ex = self._stub_executor(window, monkeypatch, frame=50)
+        self._press(window, Qt.Key.Key_BracketLeft)   # in at 50
+        ex.current_frame.get.return_value = 120
+        self._press(window, Qt.Key.Key_BracketRight)  # out at 120 → commit
+        assert window._transport.sections() == SectionSet.of([(50, 120)])  # noqa: SLF001
+        # Pushed to the executor for live trimming.
+        ex.set_sections.assert_called_with(SectionSet.of([(50, 120)]))  # noqa: SLF001
+
+    def test_delete_key_removes_selected_section(self, window, monkeypatch):
+        from PySide6.QtCore import Qt
+
+        ex = self._stub_executor(window, monkeypatch, frame=50)
+        self._press(window, Qt.Key.Key_BracketLeft)
+        ex.current_frame.get.return_value = 120
+        self._press(window, Qt.Key.Key_BracketRight)
+        # Select the band, then delete it.
+        window._transport._update_selection_to(60)  # noqa: SLF001
+        self._press(window, Qt.Key.Key_Delete)
+        assert window._transport.sections().is_empty()  # noqa: SLF001
+
+    def test_reset_sections_clears_transport_and_executor(self, window, monkeypatch):
+        from sinner2.pipeline.sections import SectionSet
+
+        ex = self._stub_executor(window, monkeypatch, frame=0)
+        window._transport.set_sections(SectionSet.of([(10, 20)]))  # noqa: SLF001
+        window._reset_sections()  # noqa: SLF001
+        assert window._transport.sections().is_empty()  # noqa: SLF001
+        ex.set_sections.assert_called_with(SectionSet.empty())  # noqa: SLF001
+
+    def test_add_to_batch_carries_sections(self, window, tmp_path, monkeypatch):
+        from sinner2.pipeline.sections import SectionSet
+
+        monkeypatch.setattr(
+            window._controller, "set_source_and_target", lambda *a, **k: None  # noqa: SLF001
+        )
+        src = tmp_path / "s.png"
+        src.write_bytes(b"x")
+        tgt = tmp_path / "t.mp4"
+        tgt.write_bytes(b"x")
+        window._pickers.set_source(src)  # noqa: SLF001
+        window._pickers.set_target(tgt)  # noqa: SLF001
+        window._transport.set_sections(SectionSet.of([(30, 90), (150, 200)]))  # noqa: SLF001
+        window._on_add_to_batch()  # noqa: SLF001
+        task = window._batch_store.list()[0]  # noqa: SLF001
+        assert task.sections == [[30, 90], [150, 200]]
+
+    def test_add_to_batch_no_sections_leaves_none(self, window, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            window._controller, "set_source_and_target", lambda *a, **k: None  # noqa: SLF001
+        )
+        src = tmp_path / "s.png"
+        src.write_bytes(b"x")
+        tgt = tmp_path / "t.mp4"
+        tgt.write_bytes(b"x")
+        window._pickers.set_source(src)  # noqa: SLF001
+        window._pickers.set_target(tgt)  # noqa: SLF001
+        window._on_add_to_batch()  # noqa: SLF001
+        assert window._batch_store.list()[0].sections is None  # noqa: SLF001
+
+
 class TestRotationShortcut:
     def test_r_key_cycles_rotation(self, window):
         from PySide6.QtCore import Qt
@@ -537,6 +621,108 @@ class TestBatchIntegration:
         assert tasks[0].target_path == tgt
         # Row also landed in the view.
         assert window._batch_view._model.rowCount() == 1  # noqa: SLF001
+
+    def test_add_to_batch_uses_defaults_template_not_preview(
+        self, window, tmp_path, monkeypatch
+    ):
+        # Batch is decoupled from the live preview: a new task carries the
+        # Batch Defaults template's config + ONLY the picker source/target.
+        monkeypatch.setattr(
+            window._controller,  # noqa: SLF001
+            "set_source_and_target",
+            lambda *a, **k: None,
+        )
+        window._batch_defaults = window._batch_defaults.model_copy(  # noqa: SLF001
+            update={
+                "swapper_model": "uniface_256",
+                "processing_scale": 0.5,
+                "enhancer_enabled": False,
+            }
+        )
+        src = tmp_path / "src.png"
+        src.write_bytes(b"x")
+        tgt = tmp_path / "tgt.mp4"
+        tgt.write_bytes(b"x")
+        window._pickers.set_source(src)  # noqa: SLF001
+        window._pickers.set_target(tgt)  # noqa: SLF001
+        window._on_add_to_batch()  # noqa: SLF001
+        tasks = window._batch_store.list()  # noqa: SLF001
+        assert len(tasks) == 1
+        t = tasks[0]
+        assert t.source_path == src and t.target_path == tgt
+        # Config came from the defaults template, not the preview.
+        assert t.swapper_model == "uniface_256"
+        assert t.processing_scale == 0.5
+        assert t.enhancer_enabled is False
+        assert t.status.value == "pending"
+
+    def test_batch_settings_persists_defaults_and_paths(
+        self, window, monkeypatch
+    ):
+        from sinner2.batch import defaults as batch_defaults
+        from sinner2.gui import main_window as mw
+
+        class _FakeSettingsDialog:
+            class DialogCode:
+                Accepted = 1
+                Rejected = 0
+
+            def __init__(
+                self, template, parent=None, *, defaults_mode,
+                store_path, global_output_path,
+            ):
+                assert defaults_mode is True
+                self._template = template
+
+            def exec(self):
+                return self.DialogCode.Accepted
+
+            def to_task(self):
+                return self._template.model_copy(
+                    update={"swapper_model": "ghost_2_256"}
+                )
+
+            def store_path(self):
+                return "/new/store"
+
+            def global_output_path(self):
+                return "/new/out"
+
+        monkeypatch.setattr(mw, "QBatchTaskDialog", _FakeSettingsDialog)
+        window._on_batch_settings()  # noqa: SLF001
+        # Template updated in memory + persisted to disk.
+        assert window._batch_defaults.swapper_model == "ghost_2_256"  # noqa: SLF001
+        reloaded = batch_defaults.load_defaults(
+            window._batch_defaults_path  # noqa: SLF001
+        )
+        assert reloaded.swapper_model == "ghost_2_256"
+        # Queue-wide paths persisted into settings + applied to the queue.
+        assert window._settings.batch_store_path == "/new/store"  # noqa: SLF001
+        assert window._settings.batch_global_output_path == "/new/out"  # noqa: SLF001
+        assert window._batch_queue._global_output_dir == Path("/new/out")  # noqa: SLF001
+
+    def test_batch_settings_rejected_changes_nothing(self, window, monkeypatch):
+        from sinner2.gui import main_window as mw
+
+        before_model = window._batch_defaults.swapper_model  # noqa: SLF001
+
+        class _RejectDialog:
+            class DialogCode:
+                Accepted = 1
+                Rejected = 0
+
+            def __init__(self, *a, **k):
+                pass
+
+            def exec(self):
+                return self.DialogCode.Rejected
+
+            def to_task(self):  # pragma: no cover - must not be called
+                raise AssertionError("to_task on a rejected dialog")
+
+        monkeypatch.setattr(mw, "QBatchTaskDialog", _RejectDialog)
+        window._on_batch_settings()  # noqa: SLF001
+        assert window._batch_defaults.swapper_model == before_model  # noqa: SLF001
 
     def test_batch_running_locks_editing_surface(self, window, monkeypatch):
         # DaVinci-style: a running batch locks transport + pickers + settings
@@ -1147,6 +1333,9 @@ class TestDeferredInitialSession:
         win._models_confirmed = True  # noqa: SLF001 — deferred confirm already done
         win._refresh_transport_enabled = MagicMock()  # noqa: SLF001
         win._highlight_failed_providers = MagicMock()  # noqa: SLF001
+        # A target change clears the section selection (transport + executor).
+        win._transport = MagicMock()  # noqa: SLF001
+        win._controller = MagicMock()  # noqa: SLF001
         return win
 
     def test_target_change_during_restore_defers_build(self):

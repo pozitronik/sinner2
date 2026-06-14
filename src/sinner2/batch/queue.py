@@ -114,6 +114,13 @@ class BatchQueue(QObject):
     def current_task_id(self) -> str | None:
         return self._current_task_id
 
+    def set_global_output_dir(self, path: Path | None) -> None:
+        """Update the folder all task outputs land in (None = next to each
+        target). A fresh BatchDriver is built per run from this value, so the
+        change takes effect on the next task started — it can't disturb a run
+        already in flight."""
+        self._global_output_dir = path
+
     # ---- Queue controls ----
 
     def start(self) -> None:

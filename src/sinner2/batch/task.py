@@ -110,6 +110,12 @@ class BatchTask(SinnerBaseModel):
     target_path: Path
     output_path: Path | None = None
     output_format: BatchOutputFormat = BatchOutputFormat.VIDEO
+    # Timeline section selection: inclusive [start, end] frame ranges to include
+    # in the output. None / empty = the whole video. When set, only the selected
+    # frames are processed and the output is them concatenated (a multi-range
+    # trim), with the audio cut to match. Stored as plain pairs so the on-disk
+    # task round-trips without depending on the SectionSet value object.
+    sections: list[list[int]] | None = None
 
     # ---- Chain config (output-affecting) ----
     swapper_enabled: bool = True

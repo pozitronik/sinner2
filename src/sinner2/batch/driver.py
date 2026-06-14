@@ -35,7 +35,7 @@ from pathlib import Path
 
 from sinner2.batch.stage import (
     FramesDirInput,
-    ReaderStageInput,
+    PlanReaderStageInput,
     StageInput,
     StageStatus,
     frame_ok,
@@ -57,6 +57,7 @@ from sinner2.io.video_backend import VideoBackend, build_video_target_reader
 from sinner2.io.video_encoder import FfmpegMissingError, encode_frames_to_mp4
 from sinner2.pipeline.detectors import DetectorModel
 from sinner2.pipeline.image_writer import build_image_writer
+from sinner2.pipeline.sections import SectionSet
 from sinner2.pipeline.processor import Processor
 from sinner2.pipeline.processors.face_enhancer import (
     EnhancerModel,
@@ -224,23 +225,37 @@ class BatchDriver:
             task.total_frames = -1
         task.cache_fingerprint = current_fp
         try:
-            total = reader.frame_count
             fps = reader.fps
+            # Section selection → a frame PLAN: the ordered original indices to
+            # process, renumbered contiguous (0..len-1) in the output so a
+            # multi-range trim encodes into one continuous clip. Empty selection
+            # → the full range, identical to the un-trimmed path.
+            sections = (
+                SectionSet.of(task.sections) if task.sections else SectionSet.empty()
+            )
+            plan = sections.frame_plan(reader.frame_count)
+            # `total` is the OUTPUT length (len of the plan), the role the
+            # container frame_count plays for an un-trimmed task.
+            total = len(plan)
             # Prefer the real decoded length persisted from a prior run. The
             # container's nb_frames over-counts for VFR sources; stage 0 corrects
             # it to the true length at EOF (below), but on RESUME stage 0 is
             # skipped, so without this stages 1+ look for frames that never
-            # existed and fail "frames missing". 0 < persisted <= container
+            # existed and fail "frames missing". 0 < persisted <= plan-length
             # guards a stale or absent value (total_frames defaults to -1).
             if 0 < task.total_frames <= total:
                 total = task.total_frames
             task.total_frames = total
             stage_count = len(stages)
+            # The final combine/encode step (package_output) is reported as one
+            # extra progress stage so the bar doesn't freeze at the last
+            # processor stage's 100% while a long video muxes.
+            progress_stage_count = stage_count + 1
 
             for i, spec in enumerate(stages):
                 name = spec.name
                 stage_cb = self._stage_progress(
-                    progress_callback, i, stage_count, name, total
+                    progress_callback, i, progress_stage_count, name, total
                 )
                 trusted = (
                     task.cleanup_mode is BatchCleanupMode.AUTO
@@ -253,7 +268,7 @@ class BatchDriver:
                         stage_cb(total)
                 else:
                     stage_input: StageInput = (
-                        ReaderStageInput(reader)
+                        PlanReaderStageInput(reader, plan)
                         if i == 0
                         else FramesDirInput(stage_dirs[i - 1], ext, total)
                     )
@@ -323,9 +338,21 @@ class BatchDriver:
                 )
                 return task.status
 
-            # All stages complete → package the last stage's frames, then
-            # clean up per the cleanup mode (Keep leaves everything).
-            self._package_output(task, stage_dirs[-1], fps, ext)
+            # All stages complete → package the last stage's frames as the
+            # final combine/encode step, reported as the extra progress stage
+            # (index == stage_count), then clean up per the cleanup mode.
+            combine_name = (
+                "encode"
+                if task.output_format is BatchOutputFormat.VIDEO
+                else "copy"
+            )
+            combine_cb = self._stage_progress(
+                progress_callback, stage_count, progress_stage_count,
+                combine_name, total,
+            )
+            self._package_output(task, stage_dirs[-1], fps, ext, combine_cb)
+            if combine_cb is not None:
+                combine_cb(total)  # land the combine step at 100%
             task.status = BatchTaskStatus.COMPLETED
             task.last_completed_frame = total - 1
             self._cleanup_stage_dirs(task, stage_dirs)
@@ -449,9 +476,11 @@ class BatchDriver:
         explicit refresh action remains the way to re-render everything under
         new settings. Identity and size still re-render: a different source or
         target is a different render (not a tweak), and mixed frame sizes
-        would break the encode (the size token covers processing-scale)."""
+        would break the encode (the size token covers processing-scale). The
+        section selection is part of the key too — it changes WHICH frames map
+        to each output position, so a different selection must re-render."""
         digest = hashlib.sha1(
-            f"{task.source_path}|{task.target_path}".encode()
+            f"{task.source_path}|{task.target_path}|{task.sections}".encode()
         ).hexdigest()[:10]
         return [
             task_cache / f"stage{i}-{spec.name}@{size_token}-{digest}"
@@ -465,7 +494,10 @@ class BatchDriver:
         _stage_cache_dirs). Persisted on the task so a resume whose identity
         changed since the cached run resets the stale resume markers instead
         of trusting them."""
-        parts = [str(task.source_path), str(task.target_path), size_token]
+        parts = [
+            str(task.source_path), str(task.target_path), size_token,
+            str(task.sections),
+        ]
         return hashlib.sha1("|".join(parts).encode()).hexdigest()[:12]
 
     # ---- Helpers ----
@@ -542,9 +574,20 @@ class BatchDriver:
         frames_dir: Path,
         fps: float,
         ext: str,
+        on_progress: Callable[[int], None] | None = None,
     ) -> None:
         output = resolve_output_path(task, self._global_output_dir)
         if task.output_format is BatchOutputFormat.VIDEO:
+            # Section trim → cut the audio to the SAME ranges so it stays in sync
+            # with the (concatenated) selected frames. Each section [s, e] is the
+            # audio time range [s/fps, (e+1)/fps]. None when un-trimmed (the full
+            # audio is stream-copied).
+            audio_segments = None
+            if task.sections:
+                audio_segments = [
+                    (s / fps, (e + 1) / fps)
+                    for s, e in SectionSet.of(task.sections).ranges
+                ]
             try:
                 encode_frames_to_mp4(
                     frames_dir,
@@ -552,6 +595,8 @@ class BatchDriver:
                     fps=fps,
                     frame_ext=ext,
                     audio_source=task.target_path,
+                    audio_segments=audio_segments,
+                    progress_callback=on_progress,
                 )
             except FfmpegMissingError as exc:
                 # Fallback: ship the frames as a directory next to where the
@@ -559,13 +604,21 @@ class BatchDriver:
                 task.error_message = (
                     f"ffmpeg missing — fell back to frames mode: {exc}"
                 )
-                self._copy_frames(frames_dir, output.with_suffix(""))
+                self._copy_frames(frames_dir, output.with_suffix(""), on_progress)
         else:
-            self._copy_frames(frames_dir, output)
+            self._copy_frames(frames_dir, output, on_progress)
 
     @staticmethod
-    def _copy_frames(frames_dir: Path, output_dir: Path) -> None:
+    def _copy_frames(
+        frames_dir: Path,
+        output_dir: Path,
+        on_progress: Callable[[int], None] | None = None,
+    ) -> None:
         output_dir.mkdir(parents=True, exist_ok=True)
-        for src in frames_dir.glob("*"):
+        copied = 0
+        for src in sorted(frames_dir.glob("*")):
             if src.is_file():
                 shutil.copy2(src, output_dir / src.name)
+                copied += 1
+                if on_progress is not None:
+                    on_progress(copied)

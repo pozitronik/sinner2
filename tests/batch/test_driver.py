@@ -523,28 +523,44 @@ class TestProgressCallback:
     def test_progress_reports_overall_frame_units(
         self, driver, stub_stages, tmp_path
     ):
-        # Two stages × 3 frames = 6 overall units; final event hits 6/6 and
-        # the overall count is monotonic and bounded.
+        # Two processor stages + the combine step × 3 frames = 9 overall units;
+        # final event hits 9/9 and the overall count is monotonic and bounded.
         task = _make_task(tmp_path, image_target=False, enhancer_enabled=True)
         events = []
         driver.run(task, progress_callback=events.append)
         assert events
         last = events[-1]
-        assert last.stage_count == 2
-        assert last.overall_total == 6
-        assert last.overall_completed == 6
+        assert last.stage_count == 3  # swapper + enhancer + combine
+        assert last.overall_total == 9
+        assert last.overall_completed == 9
         overall = [e.overall_completed for e in events]
         assert overall == sorted(overall)
-        assert all(0 <= c <= 6 for c in overall)
+        assert all(0 <= c <= 9 for c in overall)
+
+    def test_combine_step_is_reported_as_final_stage(
+        self, driver, stub_stages, tmp_path
+    ):
+        # The combine/encode step surfaces as a distinct trailing stage so the
+        # bar doesn't freeze at the last processor stage while packaging runs.
+        task = _make_task(tmp_path, image_target=False)  # 1 processor stage
+        events = []
+        driver.run(task, progress_callback=events.append)
+        names = {e.stage_name for e in events}
+        assert "copy" in names  # FRAMES output → combine step is a copy
+        last = events[-1]
+        assert last.stage_index == 1  # combine is the stage after the processor
+        assert last.stage_name == "copy"
 
     def test_single_stage_overall(self, driver, stub_stages, tmp_path):
         task = _make_task(tmp_path, image_target=False)  # 1 stage, 3 frames
         events = []
         driver.run(task, progress_callback=events.append)
         last = events[-1]
-        assert last.stage_index == 0
-        assert last.overall_total == 3
-        assert last.overall_completed == 3
+        # 1 processor stage + the combine step = 2 stages; the last event is
+        # the combine step at 3/3 → overall 6/6.
+        assert last.stage_index == 1
+        assert last.overall_total == 6
+        assert last.overall_completed == 6
 
 
 class TestCleanupModes:
@@ -810,3 +826,68 @@ class TestAutoResumeStaleFingerprint:
         status = driver.run(task)
         assert status is BatchTaskStatus.COMPLETED, task.error_message
         assert len(list(task.output_path.glob("*.jpg"))) == 3
+
+
+class TestSectionSelection:
+    """A section selection processes ONLY the selected frames and renumbers them
+    contiguous in the output (a multi-range trim)."""
+
+    def _read_means(self, out_dir: Path) -> list[float]:
+        import cv2
+
+        means = []
+        for p in sorted(out_dir.glob("*")):
+            img = cv2.imread(str(p))
+            means.append(float(np.mean(img)))
+        return means
+
+    def test_processes_only_selected_frames(self, driver, stub_stages, tmp_path):
+        # 6-frame video; frame i is a uniform i*20 image. Select [1,2] and [4,5].
+        video = _make_video(tmp_path / "clip.mp4", 6)
+        out = tmp_path / "trimmed"
+        task = BatchTask(
+            source_path=_make_image(tmp_path / "src.png"),
+            target_path=video,
+            output_path=out,
+            output_format=BatchOutputFormat.FRAMES,
+            image_format=ImageFormat.JPEG,
+            image_quality=95,
+            sections=[[1, 2], [4, 5]],
+        )
+        status = driver.run(task)
+        assert status is BatchTaskStatus.COMPLETED
+        # Plan = [1,2,4,5] → 4 output frames, renumbered 0..3.
+        assert task.total_frames == 4
+        means = self._read_means(out)
+        assert len(means) == 4
+        # Output frame 0 is source frame 1 (~20), not the EXCLUDED frame 0 (~0).
+        assert means[0] > 8
+        # Ascending across the selection (frame 5 ~100 is the brightest).
+        assert means[-1] > means[0]
+
+    def test_no_sections_processes_all_frames(self, driver, stub_stages, tmp_path):
+        video = _make_video(tmp_path / "clip.mp4", 6)
+        out = tmp_path / "full"
+        task = BatchTask(
+            source_path=_make_image(tmp_path / "src.png"),
+            target_path=video,
+            output_path=out,
+            output_format=BatchOutputFormat.FRAMES,
+            image_format=ImageFormat.JPEG,
+            image_quality=95,
+        )
+        driver.run(task)
+        assert task.total_frames == 6
+        assert len(list(out.glob("*"))) == 6
+
+    def test_changing_sections_changes_fingerprint(self, tmp_path):
+        base = dict(
+            source_path=tmp_path / "s.png",
+            target_path=tmp_path / "t.mp4",
+        )
+        a = BatchTask(**base, sections=[[1, 2]])
+        b = BatchTask(**base, sections=[[3, 4]])
+        c = BatchTask(**base)  # no sections
+        fp = BatchDriver._chain_fingerprint  # noqa: SLF001
+        assert fp(a, "16x16") != fp(b, "16x16")
+        assert fp(a, "16x16") != fp(c, "16x16")

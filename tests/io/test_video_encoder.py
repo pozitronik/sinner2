@@ -205,6 +205,202 @@ class TestVideoRoundtrip:
         assert "audio" not in result.stdout.split()
 
 
+class TestProgressCallback:
+    """The combine/encode step reports frame-count progress (parsed from
+    ffmpeg's -progress stream) so the batch bar doesn't freeze while a long
+    video muxes. These mock Popen so they run without ffmpeg on PATH."""
+
+    def _fake_popen(self, lines, returncode=0, stderr_text="", captured=None):
+        import io
+
+        class _FakePopen:
+            def __init__(self, cmd, **_kw):
+                if captured is not None:
+                    captured["cmd"] = cmd
+                self.stdout = iter(lines)
+                self.stderr = io.StringIO(stderr_text)
+                self.returncode = None
+
+            def wait(self):
+                self.returncode = returncode
+                return returncode
+
+        return _FakePopen
+
+    def test_callback_receives_parsed_frame_counts(self, tmp_path, monkeypatch):
+        import subprocess
+
+        monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/" + name)
+        lines = [
+            "frame=1\n", "fps=0.0\n", "progress=continue\n",
+            "frame=3\n", "frame=5\n", "progress=end\n",
+        ]
+        monkeypatch.setattr(subprocess, "Popen", self._fake_popen(lines))
+        got: list[int] = []
+        encode_frames_to_mp4(
+            tmp_path / "frames", tmp_path / "out.mp4", fps=10.0,
+            progress_callback=got.append,
+        )
+        assert got == [1, 3, 5]
+
+    def test_progress_flags_added_only_with_callback(self, tmp_path, monkeypatch):
+        import subprocess
+
+        monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/" + name)
+        captured: dict = {}
+        monkeypatch.setattr(
+            subprocess, "Popen",
+            self._fake_popen(["progress=end\n"], captured=captured),
+        )
+        encode_frames_to_mp4(
+            tmp_path / "frames", tmp_path / "out.mp4", fps=10.0,
+            progress_callback=lambda _n: None,
+        )
+        cmd = captured["cmd"]
+        assert "-progress" in cmd and "pipe:1" in cmd and "-nostats" in cmd
+        assert cmd[-1] == str(tmp_path / "out.mp4")  # output stays last
+
+    def test_nonzero_exit_raises_with_stderr(self, tmp_path, monkeypatch):
+        import subprocess
+
+        monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/" + name)
+        monkeypatch.setattr(
+            subprocess, "Popen",
+            self._fake_popen(["frame=1\n"], returncode=1, stderr_text="boom"),
+        )
+        with pytest.raises(subprocess.CalledProcessError) as exc:
+            encode_frames_to_mp4(
+                tmp_path / "frames", tmp_path / "out.mp4", fps=10.0,
+                progress_callback=lambda _n: None,
+            )
+        assert "boom" in (exc.value.stderr or "")
+
+
+@pytest.mark.skipif(not _HAS_FFMPEG, reason="ffmpeg/ffprobe not on PATH")
+class TestRealProgress:
+    def test_real_encode_reports_progress(self, tmp_path):
+        frame_dir = tmp_path / "frames"
+        frame_dir.mkdir()
+        _make_frames(frame_dir, n=10)
+        got: list[int] = []
+        encode_frames_to_mp4(
+            frame_dir, tmp_path / "out.mp4", fps=10.0,
+            progress_callback=got.append,
+        )
+        assert (tmp_path / "out.mp4").is_file()
+        # ffmpeg streamed at least one frame count, monotonic up toward 10.
+        assert got
+        assert got == sorted(got)
+        assert max(got) >= 1
+
+
+class TestCutAudioCommand:
+    """A section trim cuts + concatenates the audio (atrim/concat → AAC) so it
+    stays in sync with the selected frames, instead of stream-copying it whole."""
+
+    def test_audio_segments_build_filter_concat(self, tmp_path, monkeypatch):
+        import subprocess
+        from sinner2.io import video_encoder
+
+        captured: dict = {}
+
+        class _R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        def fake_run(cmd, **_kw):
+            captured["cmd"] = cmd
+            return _R()
+
+        monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/" + name)
+        monkeypatch.setattr(video_encoder, "probe_has_audio", lambda _p: True)
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        encode_frames_to_mp4(
+            tmp_path / "frames", tmp_path / "out.mp4", fps=10.0,
+            audio_source=tmp_path / "a.mp4",
+            audio_segments=[(1.0, 3.0), (5.0, 6.0)],
+        )
+        cmd = captured["cmd"]
+        joined = " ".join(cmd)
+        assert "-filter_complex" in cmd
+        assert "atrim=start=1.000000:end=3.000000" in joined
+        assert "atrim=start=5.000000:end=6.000000" in joined
+        assert "concat=n=2:v=0:a=1" in joined
+        assert "aac" in cmd          # re-encoded (atrim can't stream-copy)
+        assert "copy" not in cmd     # so NOT a stream copy
+        assert "-vf" not in cmd      # scale moved into the filter graph
+
+    def test_no_segments_keeps_stream_copy(self, tmp_path, monkeypatch):
+        import subprocess
+        from sinner2.io import video_encoder
+
+        captured: dict = {}
+
+        class _R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        def fake_run(cmd, **_kw):
+            captured["cmd"] = cmd
+            return _R()
+
+        monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/" + name)
+        monkeypatch.setattr(video_encoder, "probe_has_audio", lambda _p: True)
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        encode_frames_to_mp4(
+            tmp_path / "frames", tmp_path / "out.mp4", fps=10.0,
+            audio_source=tmp_path / "a.mp4",
+        )
+        cmd = captured["cmd"]
+        assert "copy" in cmd
+        assert "-filter_complex" not in cmd
+
+
+@pytest.mark.skipif(not _HAS_FFMPEG, reason="ffmpeg/ffprobe not on PATH")
+class TestRealCutAudio:
+    def test_cut_audio_matches_selection_duration(self, tmp_path):
+        import subprocess
+
+        # 10s of silent audio; the selection keeps 2s of it (1..2 + 5..6).
+        audio = tmp_path / "audio.wav"
+        subprocess.run(
+            [
+                _FFMPEG, "-y", "-f", "lavfi",
+                "-i", "anullsrc=channel_layout=mono:sample_rate=22050",
+                "-t", "10", str(audio),
+            ],
+            check=True, capture_output=True,
+        )
+        frame_dir = tmp_path / "frames"
+        frame_dir.mkdir()
+        _make_frames(frame_dir, n=20)  # 2s of video at fps 10
+        out = tmp_path / "trim.mp4"
+        encode_frames_to_mp4(
+            frame_dir, out, fps=10.0, audio_source=audio,
+            audio_segments=[(1.0, 2.0), (5.0, 6.0)],
+        )
+        assert out.is_file()
+        # Output has audio, and its duration ~2s (the kept selection), not 10s.
+        types = subprocess.run(
+            [
+                _FFPROBE, "-v", "error", "-show_entries", "stream=codec_type",
+                "-of", "csv=p=0", str(out),
+            ],
+            capture_output=True, text=True, check=True,
+        ).stdout.split()
+        assert "audio" in types
+        dur = float(subprocess.run(
+            [
+                _FFPROBE, "-v", "error", "-show_entries", "format=duration",
+                "-of", "csv=p=0", str(out),
+            ],
+            capture_output=True, text=True, check=True,
+        ).stdout.strip())
+        assert 1.6 < dur < 2.6  # ~2s, not the full 10s
+
+
 class TestEvenDimensions:
     def test_cmd_forces_even_dimensions(self, tmp_path, monkeypatch):
         # libx264/yuv420p requires even W/H; odd-dimension sources (phone/screen

@@ -148,3 +148,123 @@ class TestAddToBatch:
     def test_click_emits_request(self, widget, qtbot):
         with qtbot.waitSignal(widget.addToBatchRequested, timeout=1000):
             widget._add_to_batch.click()  # noqa: SLF001
+
+
+class TestSectionEditing:
+    """[ / ] section state machine: mark in/out → commit, select-and-nudge,
+    delete, clear, and the sectionsChanged signal."""
+
+    def test_mark_in_sets_pending_without_committing(self, widget):
+        widget.mark_in(50)
+        assert widget.pending_in() == 50
+        assert widget.sections().is_empty()
+
+    def test_mark_in_out_commits_a_section(self, widget, qtbot):
+        widget.mark_in(50)
+        with qtbot.waitSignal(widget.sectionsChanged) as blocker:
+            widget.mark_out(120)
+        from sinner2.pipeline.sections import SectionSet
+
+        assert blocker.args[0] == SectionSet.of([(50, 120)])
+        assert widget.sections().ranges == ((50, 120),)
+        # Pending cleared; selection NOT set (so next [ starts a new section).
+        assert widget.pending_in() is None
+        assert widget.selected_index() is None
+
+    def test_multiple_sections(self, widget):
+        widget.mark_in(50)
+        widget.mark_out(120)
+        widget.mark_in(180)
+        widget.mark_out(240)
+        assert widget.sections().ranges == ((50, 120), (180, 240))
+
+    def test_remark_in_moves_pending(self, widget):
+        widget.mark_in(50)
+        widget.mark_in(60)  # no selection → just moves the in-point
+        assert widget.pending_in() == 60
+        widget.mark_out(120)
+        assert widget.sections().ranges == ((60, 120),)
+
+    def test_mark_out_without_in_is_noop(self, widget):
+        widget.mark_out(120)
+        assert widget.sections().is_empty()
+
+    def test_select_then_mark_in_nudges_start(self, widget):
+        widget.mark_in(50)
+        widget.mark_out(120)
+        widget.mark_in(180)
+        widget.mark_out(240)
+        # Select section 1 (the [180,240] band) by landing the playhead in it.
+        widget._update_selection_to(200)  # noqa: SLF001
+        assert widget.selected_index() == 1
+        widget.mark_in(175)  # nudge its start 180 → 175
+        assert widget.sections().ranges == ((50, 120), (175, 240))
+
+    def test_select_then_mark_out_nudges_end(self, widget):
+        widget.mark_in(50)
+        widget.mark_out(120)
+        widget._update_selection_to(80)  # select section 0
+        widget.mark_out(110)  # nudge end 120 → 110
+        assert widget.sections().ranges == ((50, 110),)
+
+    def test_delete_selected(self, widget, qtbot):
+        widget.mark_in(50)
+        widget.mark_out(120)
+        widget.mark_in(180)
+        widget.mark_out(240)
+        widget._update_selection_to(60)  # select section 0
+        with qtbot.waitSignal(widget.sectionsChanged):
+            widget.delete_selected()
+        assert widget.sections().ranges == ((180, 240),)
+        assert widget.selected_index() is None
+
+    def test_delete_without_selection_is_noop(self, widget):
+        widget.mark_in(50)
+        widget.mark_out(120)
+        widget.delete_selected()  # nothing selected
+        assert widget.sections().ranges == ((50, 120),)
+
+    def test_clear_sections(self, widget, qtbot):
+        widget.mark_in(50)
+        widget.mark_out(120)
+        with qtbot.waitSignal(widget.sectionsChanged) as blocker:
+            widget.clear_sections()
+        assert widget.sections().is_empty()
+        assert blocker.args[0].is_empty()
+
+    def test_set_sections_does_not_emit(self, widget):
+        from sinner2.pipeline.sections import SectionSet
+
+        fired = []
+        widget.sectionsChanged.connect(lambda s: fired.append(s))
+        widget.set_sections(SectionSet.of([(10, 20)]))
+        assert widget.sections().ranges == ((10, 20),)
+        assert fired == []  # restore path is silent
+        assert widget.pending_in() is None
+
+    def test_nudge_can_merge_bands(self, widget):
+        widget.mark_in(50)
+        widget.mark_out(120)
+        widget.mark_in(180)
+        widget.mark_out(240)
+        widget._update_selection_to(200)  # select section 1
+        widget.mark_in(100)  # pull its start into section 0 → they merge
+        assert widget.sections().ranges == ((50, 240),)
+        # Selection re-resolved onto the merged band.
+        assert widget.selected_index() == 0
+
+
+class TestSectionPainting:
+    def test_overlay_pushed_to_slider(self, widget):
+        widget.mark_in(50)
+        widget.mark_out(120)
+        # The slider received the band for painting.
+        assert widget._slider._ranges == [(50, 120)]  # noqa: SLF001
+
+    def test_paints_without_crash(self, widget, qtbot):
+        widget.set_frame_count(300)
+        widget.mark_in(50)
+        widget.mark_out(120)
+        widget.show()
+        qtbot.waitExposed(widget)
+        widget._slider.repaint()  # noqa: SLF001 — exercises paintEvent

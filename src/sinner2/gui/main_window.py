@@ -14,23 +14,17 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sinner2.batch import defaults as batch_defaults
 from sinner2.batch.queue import BatchQueue
-from sinner2.batch.task import (
-    DEFAULT_ENHANCER_WORKERS,
-    DEFAULT_SWAPPER_WORKERS,
-    DEFAULT_UPSCALER_WORKERS,
-    BatchCleanupMode,
-    BatchOutputFormat,
-    BatchProgress,
-)
+from sinner2.batch.task import BatchProgress
 from sinner2.batch.task_store import BatchTaskStore
 from sinner2.config import media_extensions
 from sinner2.config import settings as user_settings
-from sinner2.config.execution import OnnxExecution, TorchExecution
 from sinner2.gui.face_detection_probe import FaceDetectionProbe, FaceDetectionSink
 from sinner2.gui.icon import app_icon
 from sinner2.gui.model_download import ensure_models
 from sinner2.pipeline.detectors import DETECTOR_MODEL_FILES, DetectorModel
+from sinner2.pipeline.sections import SectionSet
 from sinner2.pipeline.processors.face_enhancer import (
     EnhancerModel,
     enhancer_onnx_model_file,
@@ -214,6 +208,13 @@ class SinnerMainWindow(QMainWindow):
             self._settings.batch_store_path or default_cache_root().parent / "batch"
         )
         self._batch_store = BatchTaskStore(batch_store_root)
+        # Batch Defaults template — the source of EVERY field of a new task
+        # except its source/target. Batch is decoupled from the live preview:
+        # "Add to batch" no longer inherits the preview's chain/scale/etc.
+        self._batch_defaults_path = batch_defaults.batch_defaults_path()
+        self._batch_defaults = batch_defaults.load_defaults(
+            self._batch_defaults_path
+        )
         self._batch_queue = BatchQueue(
             store=self._batch_store,
             cache_root=default_cache_root() / "batch_cache",
@@ -224,6 +225,7 @@ class SinnerMainWindow(QMainWindow):
             queue=self._batch_queue,
             global_output_dir_resolver=self._global_output_dir,
         )
+        self._batch_view.settingsRequested.connect(self._on_batch_settings)
         self._models_view = QModelsView()
         # Per-panel zoom: fall back to the legacy shared value, then 128.
         _legacy_dim = self._settings.library_display_dim or 128
@@ -476,6 +478,9 @@ class SinnerMainWindow(QMainWindow):
         self._transport.playRequested.connect(self._session.play)
         self._transport.pauseRequested.connect(self._session.pause)
         self._transport.seekRequested.connect(self._session.seek_to)
+        # Timeline section selection ([ / ] in/out) → restrict live playback +
+        # carry into the next "Add to batch".
+        self._transport.sectionsChanged.connect(self._on_sections_changed)
 
         self._pickers.sourceChanged.connect(self._on_source_changed)
         self._pickers.targetChanged.connect(self._on_target_changed)
@@ -616,8 +621,23 @@ class SinnerMainWindow(QMainWindow):
         if self._restoring_paths:
             self._pending_initial_target = target_path
             return
+        # A new target is a new timeline — drop any section selection from the
+        # previous video so it can't apply to (or trim) the new one.
+        self._reset_sections()
         self._ensure_models_confirmed_before_build()
         self._session.set_target(FileTarget(target_path))
+
+    def _on_sections_changed(self, sections: SectionSet) -> None:
+        """Transport [ / ] edit → restrict live playback to the selection. The
+        selection is also captured into the next 'Add to batch'."""
+        self._controller.set_sections(sections)
+
+    def _reset_sections(self) -> None:
+        """Clear the section selection on the timeline AND the executor (used on
+        a target change). set_sections on the transport is silent, so push the
+        empty set to the controller explicitly."""
+        self._transport.set_sections(SectionSet.empty())
+        self._controller.set_sections(SectionSet.empty())
 
     def _update_fps_label(self, fps: float) -> None:
         # File-session throughput; ignored while the camera is the active target
@@ -1257,6 +1277,18 @@ class SinnerMainWindow(QMainWindow):
             return
         if key == Qt.Key.Key_End:
             self._session.seek_to(max(0, executor.frame_count() - 1))
+            return
+        # Section selection: [ sets a section's start at the playhead, ] its
+        # end; Delete removes the selected band. The transport owns the state
+        # machine (new in-point vs nudge-selected) and emits sectionsChanged.
+        if key == Qt.Key.Key_BracketLeft:
+            self._transport.mark_in(executor.current_frame.get())
+            return
+        if key == Qt.Key.Key_BracketRight:
+            self._transport.mark_out(executor.current_frame.get())
+            return
+        if key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
+            self._transport.delete_selected()
             return
         super().keyPressEvent(event)
 
@@ -1902,60 +1934,64 @@ class SinnerMainWindow(QMainWindow):
         return None
 
     def _on_add_to_batch(self) -> None:
-        """Snapshot the currently-loaded source + target + processor
-        settings into a new BatchTask, persist it, and append it to
-        the Batch tab. No-op if source or target is unset."""
+        """Mint a new BatchTask from the Batch Defaults template — carrying
+        over ONLY the currently-loaded source + target — persist it, and
+        append it to the Batch tab. No-op if source or target is unset.
+
+        Batch is deliberately decoupled from the live preview: every other
+        field (chain look, execution profiles, processing scale, output
+        policy) comes from the editable defaults, not from the preview's
+        tuning. Each task is still individually editable afterwards."""
         source = self._pickers.source_path()
         target = self._pickers.target_path()
         if source is None or target is None:
             return
-        default_format_value = (
-            self._settings.batch_default_format or BatchOutputFormat.VIDEO.value
-        )
-        try:
-            default_format = BatchOutputFormat(default_format_value)
-        except ValueError:
-            default_format = BatchOutputFormat.VIDEO
-        default_cleanup_value = (
-            self._settings.batch_default_cleanup or BatchCleanupMode.KEEP.value
-        )
-        try:
-            default_cleanup = BatchCleanupMode(default_cleanup_value)
-        except ValueError:
-            default_cleanup = BatchCleanupMode.KEEP
-        # Capture the processor surface once; the batch task is built from it.
-        snap = self._processors.snapshot()
-        # Per-processor execution profiles. Carry the captured ONNX providers into
-        # the swapper profile (CPU vs GPU is a meaningful choice); workers default
-        # to the batch throughput defaults rather than the realtime pool size
-        # (live latency tuning ≠ batch throughput tuning). These execution objects
-        # are batch-only, so they're built here rather than in the shared snapshot.
-        providers = snap.swapper_providers
-        swapper_execution = (
-            OnnxExecution(workers=DEFAULT_SWAPPER_WORKERS, providers=list(providers))
-            if providers
-            else OnnxExecution(workers=DEFAULT_SWAPPER_WORKERS)
-        )
-        enhancer_execution = TorchExecution(
-            workers=DEFAULT_ENHANCER_WORKERS, device=snap.enhancer_device,
-        )
-        upscaler_execution = TorchExecution(
-            workers=DEFAULT_UPSCALER_WORKERS, device=snap.upscaler_device,
-        )
-        task = snap.to_batch_task(
-            source_path=source,
-            target_path=target,
-            output_format=default_format,
-            cleanup_mode=default_cleanup,
-            swapper_execution=swapper_execution,
-            enhancer_execution=enhancer_execution,
-            upscaler_execution=upscaler_execution,
-        )
+        task = batch_defaults.mint_task(self._batch_defaults, source, target)
+        # Carry the live timeline selection (like source/target, it's specific to
+        # THIS target — not part of the reusable defaults template). Empty → the
+        # whole video, which is BatchTask's own default.
+        sections = self._transport.sections()
+        if not sections.is_empty():
+            task = task.model_copy(update={"sections": sections.to_pairs()})
         self._batch_store.save(task)
         self._batch_view.append_task(task)
         self._status_bar.show_message(
             f"Added to batch: {source.name} → {target.name}", 3000
         )
+
+    def _on_batch_settings(self) -> None:
+        """Edit the Batch Defaults template + the queue-wide paths (task store
+        + global output), then persist them. The store-path change applies on
+        the next launch (the store is built at startup); the global-output
+        change applies immediately to the queue and the displayed output names."""
+        dlg = QBatchTaskDialog(
+            self._batch_defaults,
+            parent=self,
+            defaults_mode=True,
+            store_path=self._settings.batch_store_path or "",
+            global_output_path=self._settings.batch_global_output_path or "",
+        )
+        if dlg.exec() != dlg.DialogCode.Accepted:
+            return
+        self._batch_defaults = dlg.to_task()
+        batch_defaults.save_defaults(self._batch_defaults_path, self._batch_defaults)
+        old_store = self._settings.batch_store_path or ""
+        new_store = dlg.store_path() or None
+        new_global = dlg.global_output_path() or None
+        self._update_settings(
+            batch_store_path=new_store,
+            batch_global_output_path=new_global,
+        )
+        # Global output feeds the queue's driver (built per run) and the Batch
+        # tab's resolved output column — apply both live.
+        self._batch_queue.set_global_output_dir(self._global_output_dir())
+        self._batch_view.reload_from_store()
+        if (new_store or "") != old_store:
+            self._status_bar.show_message(
+                "Task store folder change takes effect after restart.", 5000
+            )
+        else:
+            self._status_bar.show_message("Batch settings saved.", 3000)
 
     def _set_editing_locked(self, locked: bool) -> None:
         """Lock/unlock the whole live-editing surface (transport, pickers,
