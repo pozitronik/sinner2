@@ -509,14 +509,68 @@ class TestSectionShortcuts:
         self._press(window, Qt.Key.Key_Delete)
         assert window._transport.sections().is_empty()  # noqa: SLF001
 
-    def test_reset_sections_clears_transport_and_executor(self, window, monkeypatch):
+    def test_restore_sections_for_unknown_target_clears(self, window, monkeypatch):
         from sinner2.pipeline.sections import SectionSet
 
         ex = self._stub_executor(window, monkeypatch, frame=0)
         window._transport.set_sections(SectionSet.of([(10, 20)]))  # noqa: SLF001
-        window._reset_sections()  # noqa: SLF001
+        window._restore_sections_for_target(Path("never_seen.mp4"))  # noqa: SLF001
         assert window._transport.sections().is_empty()  # noqa: SLF001
         ex.set_sections.assert_called_with(SectionSet.empty())  # noqa: SLF001
+
+    def test_sections_persist_and_restore_per_target(self, window, monkeypatch):
+        from sinner2.pipeline.sections import SectionSet
+
+        self._stub_executor(window, monkeypatch, frame=0)
+        tgt = Path("clip.mp4")
+        monkeypatch.setattr(window._pickers, "target_path", lambda: tgt)  # noqa: SLF001
+        # An edit persists under the target...
+        window._on_sections_changed(SectionSet.of([(30, 90)]))  # noqa: SLF001
+        assert window._settings.sections_by_target == {  # noqa: SLF001
+            "clip.mp4": [[30, 90]]
+        }
+        # ...and reloading that target restores it.
+        window._transport.set_sections(SectionSet.empty())  # noqa: SLF001
+        window._restore_sections_for_target(tgt)  # noqa: SLF001
+        assert window._transport.sections() == SectionSet.of([(30, 90)])  # noqa: SLF001
+
+    def test_clearing_sections_forgets_target_entry(self, window, monkeypatch):
+        from sinner2.pipeline.sections import SectionSet
+
+        self._stub_executor(window, monkeypatch, frame=0)
+        tgt = Path("clip.mp4")
+        monkeypatch.setattr(window._pickers, "target_path", lambda: tgt)  # noqa: SLF001
+        window._on_sections_changed(SectionSet.of([(30, 90)]))  # noqa: SLF001
+        window._on_sections_changed(SectionSet.empty())  # noqa: SLF001 — cleared
+        assert window._settings.sections_by_target is None  # noqa: SLF001
+
+    def test_ctrl_arrow_steps_100_frames(self, window, monkeypatch):
+        from PySide6.QtCore import QEvent, Qt
+        from PySide6.QtGui import QKeyEvent
+
+        ex = self._stub_executor(window, monkeypatch, frame=500)
+        ex.frame_count.return_value = 2000  # room to step forward
+        seeks = []
+        monkeypatch.setattr(window._session, "seek_to", seeks.append)  # noqa: SLF001
+        window.keyPressEvent(QKeyEvent(
+            QEvent.Type.KeyPress, Qt.Key.Key_Right,
+            Qt.KeyboardModifier.ControlModifier,
+        ))
+        assert seeks == [600]  # 500 + 100
+
+    def test_shift_arrow_steps_10_frames(self, window, monkeypatch):
+        from PySide6.QtCore import QEvent, Qt
+        from PySide6.QtGui import QKeyEvent
+
+        ex = self._stub_executor(window, monkeypatch, frame=500)
+        ex.frame_count.return_value = 2000
+        seeks = []
+        monkeypatch.setattr(window._session, "seek_to", seeks.append)  # noqa: SLF001
+        window.keyPressEvent(QKeyEvent(
+            QEvent.Type.KeyPress, Qt.Key.Key_Left,
+            Qt.KeyboardModifier.ShiftModifier,
+        ))
+        assert seeks == [490]  # 500 - 10
 
     def test_add_to_batch_carries_sections(self, window, tmp_path, monkeypatch):
         from sinner2.pipeline.sections import SectionSet
@@ -1333,9 +1387,12 @@ class TestDeferredInitialSession:
         win._models_confirmed = True  # noqa: SLF001 — deferred confirm already done
         win._refresh_transport_enabled = MagicMock()  # noqa: SLF001
         win._highlight_failed_providers = MagicMock()  # noqa: SLF001
-        # A target change clears the section selection (transport + executor).
+        # A target change restores that target's remembered sections (transport
+        # + executor); with no saved entry it clears them.
         win._transport = MagicMock()  # noqa: SLF001
         win._controller = MagicMock()  # noqa: SLF001
+        win._settings = MagicMock()  # noqa: SLF001
+        win._settings.sections_by_target = None  # noqa: SLF001
         return win
 
     def test_target_change_during_restore_defers_build(self):

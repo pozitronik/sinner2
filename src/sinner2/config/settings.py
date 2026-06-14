@@ -119,6 +119,9 @@ class Settings(SinnerBaseModel):
     display_rotation: int | None = None  # 0 / 90 / 180 / 270
     batch_store_path: str | None = None  # default <install>/batch
     batch_global_output_path: str | None = None  # default: next to target
+    # Timeline section selection remembered per target path (str → [[s, e], ...]).
+    # Restored when that target is reloaded; absent = whole timeline.
+    sections_by_target: dict[str, list[list[int]]] | None = None
     # Per-task default config (format/cleanup/chain/execution/…) is no longer
     # stored here — it lives in the Batch Defaults template (batch_defaults.json,
     # see sinner2.batch.defaults), which "Add to batch" mints every new task from.

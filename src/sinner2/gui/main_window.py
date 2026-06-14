@@ -621,23 +621,40 @@ class SinnerMainWindow(QMainWindow):
         if self._restoring_paths:
             self._pending_initial_target = target_path
             return
-        # A new target is a new timeline — drop any section selection from the
-        # previous video so it can't apply to (or trim) the new one.
-        self._reset_sections()
+        # A new target is a new timeline — load that target's remembered
+        # selection (or clear, if none), so the old video's regions can't apply
+        # to the new one.
+        self._restore_sections_for_target(target_path)
         self._ensure_models_confirmed_before_build()
         self._session.set_target(FileTarget(target_path))
 
     def _on_sections_changed(self, sections: SectionSet) -> None:
-        """Transport [ / ] edit → restrict live playback to the selection. The
-        selection is also captured into the next 'Add to batch'."""
+        """Transport [ / ] edit → restrict live playback to the selection,
+        remember it for this target, and capture it into the next 'Add to
+        batch'."""
         self._controller.set_sections(sections)
+        target = self._pickers.target_path()
+        if target is not None:
+            self._persist_sections(target, sections)
 
-    def _reset_sections(self) -> None:
-        """Clear the section selection on the timeline AND the executor (used on
-        a target change). set_sections on the transport is silent, so push the
-        empty set to the controller explicitly."""
-        self._transport.set_sections(SectionSet.empty())
-        self._controller.set_sections(SectionSet.empty())
+    def _persist_sections(self, target: Path, sections: SectionSet) -> None:
+        """Remember (or forget) the selection for ``target`` in settings."""
+        existing = dict(self._settings.sections_by_target or {})
+        key = str(target)
+        if sections.is_empty():
+            existing.pop(key, None)
+        else:
+            existing[key] = sections.to_pairs()
+        self._update_settings(sections_by_target=existing or None)
+
+    def _restore_sections_for_target(self, target: Path) -> None:
+        """Apply the selection remembered for ``target`` (empty if none) to the
+        timeline AND the executor. set_sections on the transport is silent, so
+        push to the controller explicitly."""
+        saved = (self._settings.sections_by_target or {}).get(str(target))
+        sections = SectionSet.of(saved) if saved else SectionSet.empty()
+        self._transport.set_sections(sections)
+        self._controller.set_sections(sections)
 
     def _update_fps_label(self, fps: float) -> None:
         # File-session throughput; ignored while the camera is the active target
@@ -1252,6 +1269,14 @@ class SinnerMainWindow(QMainWindow):
             # eat the dialog-cancel keypress in normal use.
             self._status_bar.fullscreen_button.toggle()
             return
+        if (
+            key == Qt.Key.Key_Escape
+            and self._transport.pending_in() is not None
+        ):
+            # A half-marked section ([ pressed, no ] yet) → cancel it. Only
+            # consumed when there IS a pending mark, so normal Escape still works.
+            self._transport.cancel_pending()
+            return
         if not self._session.is_active():
             super().keyPressEvent(event)
             return
@@ -1266,11 +1291,22 @@ class SinnerMainWindow(QMainWindow):
         if not self._session.capabilities().seekable or executor is None:
             super().keyPressEvent(event)
             return
-        if key == Qt.Key.Key_Left:
-            self._session.seek_to(max(0, executor.current_frame.get() - 1))
-            return
-        if key == Qt.Key.Key_Right:
-            self._session.seek_to(executor.current_frame.get() + 1)
+        if key in (Qt.Key.Key_Left, Qt.Key.Key_Right):
+            # Frame stepping with precision modifiers: Ctrl = 100, Shift = 10,
+            # plain = 1. Lets the user land exactly on a boundary before [ / ].
+            mods = event.modifiers()
+            if mods & Qt.KeyboardModifier.ControlModifier:
+                step = 100
+            elif mods & Qt.KeyboardModifier.ShiftModifier:
+                step = 10
+            else:
+                step = 1
+            current = executor.current_frame.get()
+            target = (
+                current - step if key == Qt.Key.Key_Left else current + step
+            )
+            # Floor at 0; the timeline clamps the upper bound to the last frame.
+            self._session.seek_to(max(0, target))
             return
         if key == Qt.Key.Key_Home:
             self._session.seek_to(0)
@@ -1885,6 +1921,9 @@ class SinnerMainWindow(QMainWindow):
         self._pending_initial_target = None
         if target is None:
             return
+        # Restore the selection remembered for this target before the build, so
+        # the live executor starts already trimmed to it.
+        self._restore_sections_for_target(target)
         self._ensure_models_confirmed_before_build()
         self._session.set_target(FileTarget(target))
         # The build records what ORT actually loaded and may flip capabilities —

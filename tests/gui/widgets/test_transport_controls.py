@@ -254,6 +254,53 @@ class TestSectionEditing:
         assert widget.selected_index() == 0
 
 
+class TestSectionMenuAndCancel:
+    def test_cancel_pending_clears_marker(self, widget):
+        widget.mark_in(50)
+        assert widget.pending_in() == 50
+        widget.cancel_pending()
+        assert widget.pending_in() is None
+
+    def test_cancel_pending_without_pending_is_noop(self, widget):
+        widget.cancel_pending()  # must not raise
+        assert widget.pending_in() is None
+
+    def test_menu_mark_in_out_at_clicked_frame(self, widget):
+        # The menu targets the CLICKED frame, not the playhead.
+        widget._menu_mark_in(40)   # noqa: SLF001
+        widget._menu_mark_out(95)  # noqa: SLF001
+        assert widget.sections().ranges == ((40, 95),)
+
+    def test_menu_mark_in_on_band_nudges_it(self, widget):
+        widget.mark_in(50)
+        widget.mark_out(120)
+        # Right-click inside the band and "set in-point here" → nudge start.
+        widget._menu_mark_in(60)  # noqa: SLF001
+        assert widget.sections().ranges == ((60, 120),)
+
+    def test_menu_remove_section_under_cursor(self, widget):
+        widget.mark_in(50)
+        widget.mark_out(120)
+        widget.mark_in(180)
+        widget.mark_out(240)
+        widget._menu_remove(200)  # noqa: SLF001 — inside the second band
+        assert widget.sections().ranges == ((50, 120),)
+
+
+class TestSliderKeyIgnore:
+    def test_slider_ignores_arrow_keys(self, widget):
+        from PySide6.QtCore import QEvent, Qt
+        from PySide6.QtGui import QKeyEvent
+
+        ev = QKeyEvent(
+            QEvent.Type.KeyPress, Qt.Key.Key_Left,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        widget._slider.keyPressEvent(ev)  # noqa: SLF001
+        # Ignored → bubbles up to the main window's frame-step handler.
+        assert not ev.isAccepted()
+
+
 class TestSectionPainting:
     def test_overlay_pushed_to_slider(self, widget):
         widget.mark_in(50)

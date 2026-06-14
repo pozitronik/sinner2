@@ -1,8 +1,9 @@
-from PySide6.QtCore import QRectF, Qt, QTimer, Signal, Slot
-from PySide6.QtGui import QColor, QPainter, QPaintEvent
+from PySide6.QtCore import QPoint, QRectF, Qt, QTimer, Signal, Slot
+from PySide6.QtGui import QColor, QContextMenuEvent, QKeyEvent, QPainter, QPaintEvent
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
+    QMenu,
     QPushButton,
     QSlider,
     QStyle,
@@ -27,7 +28,21 @@ class _SectionSlider(QSlider):
     """Scrub slider that paints the selected timeline sections as bands over its
     groove, plus a marker for a half-finished (in-point set, no out-point yet)
     section. Pure view: the section STATE lives on QTransportControls, which
-    pushes it here via set_overlay()."""
+    pushes it here via set_overlay().
+
+    Right-clicking requests a section menu (`sectionMenuRequested`) at the
+    frame under the cursor. Navigation keys (arrows / Home / End / PageUp/Down)
+    are IGNORED so they bubble to the main window's frame-stepping handler
+    instead of being swallowed to nudge the slider's own value — otherwise the
+    arrows did nothing visible once the slider had focus from a scrub."""
+
+    # (frame_at_cursor, global_pos) — QTransportControls builds the menu.
+    sectionMenuRequested = Signal(int, QPoint)
+
+    _NAV_KEYS = frozenset({
+        Qt.Key.Key_Left, Qt.Key.Key_Right, Qt.Key.Key_Up, Qt.Key.Key_Down,
+        Qt.Key.Key_Home, Qt.Key.Key_End, Qt.Key.Key_PageUp, Qt.Key.Key_PageDown,
+    })
 
     def __init__(self, orientation: Qt.Orientation, parent: QWidget | None = None) -> None:
         super().__init__(orientation, parent)
@@ -45,6 +60,40 @@ class _SectionSlider(QSlider):
         self._selected = selected
         self._pending = pending
         self.update()
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        # Let the main window own frame stepping (1 / 10 / 100 via modifiers);
+        # don't let the slider eat the arrows to move its own handle.
+        if event.key() in self._NAV_KEYS:
+            event.ignore()
+            return
+        super().keyPressEvent(event)
+
+    def _frame_at(self, x: int) -> int:
+        """Map an x pixel (slider-local) to a frame value, inverse of the paint
+        mapping. Clamped to the valid range."""
+        if self.maximum() <= self.minimum():
+            return self.minimum()
+        opt = QStyleOptionSlider()
+        self.initStyleOption(opt)
+        groove = self.style().subControlRect(
+            QStyle.ComplexControl.CC_Slider, opt,
+            QStyle.SubControl.SC_SliderGroove, self,
+        )
+        handle = self.style().subControlRect(
+            QStyle.ComplexControl.CC_Slider, opt,
+            QStyle.SubControl.SC_SliderHandle, self,
+        )
+        span = groove.width() - handle.width()
+        pos = int(x - groove.x() - handle.width() / 2.0)
+        return QStyle.sliderValueFromPosition(
+            self.minimum(), self.maximum(), pos, span
+        )
+
+    def contextMenuEvent(self, event: QContextMenuEvent) -> None:
+        self.sectionMenuRequested.emit(
+            self._frame_at(event.pos().x()), event.globalPos()
+        )
 
     def paintEvent(self, event: QPaintEvent) -> None:
         super().paintEvent(event)
@@ -136,6 +185,7 @@ class QTransportControls(QWidget):
         self._slider.sliderPressed.connect(self._on_slider_pressed)
         self._slider.sliderMoved.connect(self._on_slider_moved)
         self._slider.sliderReleased.connect(self._on_slider_released)
+        self._slider.sectionMenuRequested.connect(self._show_section_menu)
         # Debounce rapid drag events. Without this, each slider tick during
         # a drag fires a seek that drains the worker queue, so the worker
         # never finishes any frame mid-drag.
@@ -327,6 +377,52 @@ class QTransportControls(QWidget):
         self._selected_index = None
         self._refresh_section_overlay()
         self._emit_sections()
+
+    def cancel_pending(self) -> None:
+        """Drop a half-finished in-point (Escape). No-op when none is pending."""
+        if self._pending_in is None:
+            return
+        self._pending_in = None
+        self._refresh_section_overlay()
+
+    def _show_section_menu(self, frame: int, global_pos: QPoint) -> None:
+        """Right-click menu on the timeline: mark in/out AT the clicked frame,
+        remove the section under it, or clear all. The clicked frame (not the
+        playhead) is the precise target, so a section can be built or trimmed
+        without first seeking there."""
+        menu = QMenu(self)
+        on_band = self._sections.index_at(frame)
+        menu.addAction(
+            f"Set in-point here (frame {frame})",
+            lambda: self._menu_mark_in(frame),
+        )
+        menu.addAction(
+            f"Set out-point here (frame {frame})",
+            lambda: self._menu_mark_out(frame),
+        )
+        remove = menu.addAction(
+            "Remove section under cursor",
+            lambda: self._menu_remove(frame),
+        )
+        remove.setEnabled(on_band is not None)
+        menu.addSeparator()
+        clear = menu.addAction("Clear all sections", self.clear_sections)
+        clear.setEnabled(not self._sections.is_empty())
+        menu.exec(global_pos)
+
+    def _menu_mark_in(self, frame: int) -> None:
+        # Select the band under the click first so mark_in nudges THAT band's
+        # start; off a band it begins a new section's in-point.
+        self._selected_index = self._sections.index_at(frame)
+        self.mark_in(frame)
+
+    def _menu_mark_out(self, frame: int) -> None:
+        self._selected_index = self._sections.index_at(frame)
+        self.mark_out(frame)
+
+    def _menu_remove(self, frame: int) -> None:
+        self._selected_index = self._sections.index_at(frame)
+        self.delete_selected()
 
     def _reselect_at(self, frame: int) -> None:
         """Re-resolve the selection by frame after an edit re-normalized the

@@ -19,6 +19,7 @@ htmlcov/
 models/
 gfpgan/
 settings.json
+batch_defaults.json
 temp/
 /batch/
 
