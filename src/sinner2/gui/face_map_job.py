@@ -68,7 +68,7 @@ class FaceMapAnalysisJob(QObject):
     def cancel(self) -> None:
         self._cancel.set()
 
-    @Slot(str, int, float, object, int, object, bool)
+    @Slot(str, int, float, object, int, object, bool, int)
     def run(
         self,
         target_path: str,
@@ -78,6 +78,7 @@ class FaceMapAnalysisJob(QObject):
         detection_size: int,
         sections: Any = None,
         preview: bool = False,
+        workers: int = 1,
     ) -> None:
         self._cancel.clear()
         try:
@@ -97,6 +98,7 @@ class FaceMapAnalysisJob(QObject):
             face_map = analyze_target(
                 reader, detect,
                 stride=stride, threshold=threshold, sections=sections,
+                workers=workers,
                 cancel_event=self._cancel,
                 on_progress=lambda done, total: self.progress.emit(done, total),
                 on_preview=on_preview,

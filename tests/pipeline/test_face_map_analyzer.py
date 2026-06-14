@@ -150,6 +150,43 @@ class TestSectionsAndPreview:
         assert len(previews) == 4  # interval 0 → every scanned frame
 
 
+class TestParallel:
+    def test_parallel_matches_serial(self):
+        # Two people alternating; workers=4 must cluster identically to workers=1.
+        frames = []
+        for k in range(12):
+            frames.append([_Face(_emb(1, 0.02 * (k % 2), 0))])
+            frames.append([_Face(_emb(0, 1, 0.02 * (k % 2)))])
+        serial = analyze_target(
+            _StubReader(frames), lambda f: f, stride=1, threshold=0.5, workers=1
+        )
+        parallel = analyze_target(
+            _StubReader(frames), lambda f: f, stride=1, threshold=0.5, workers=4
+        )
+        assert len(serial.identities) == len(parallel.identities) == 2
+        assert sorted(i.occurrences for i in parallel.identities) == [12, 12]
+
+    def test_parallel_progress_reaches_total(self):
+        frames = [_identity(1, 0, 0) for _ in range(10)]
+        events = []
+        analyze_target(
+            _StubReader(frames), lambda f: f, stride=2, workers=3,
+            on_progress=lambda d, t: events.append((d, t)),
+        )
+        assert events[-1] == (5, 5)  # indices 0,2,4,6,8
+
+    def test_parallel_respects_sections(self):
+        from sinner2.pipeline.sections import SectionSet
+
+        frames = [_identity(1, 0, 0) for _ in range(10)]
+        seen = []
+        analyze_target(
+            _StubReader(frames), lambda f: (seen.append(1) or f),
+            stride=1, workers=4, sections=SectionSet.of([(3, 6)]),
+        )
+        assert len(seen) == 4  # frames 3,4,5,6
+
+
 class TestCancellation:
     def test_cancel_returns_partial_catalog(self):
         frames = [_identity(1, 0, 0), _identity(0, 1, 0)]

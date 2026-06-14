@@ -23,6 +23,8 @@ def _ident(i, vec, **kw):
 def ctrl(qtbot, tmp_path):
     panel = MagicMock()
     panel.selected_identity.return_value = None
+    panel.workers.return_value = 4
+    panel.preview_enabled.return_value = True
     player = MagicMock()
     player.face_map.return_value = FaceMap.empty()
     sink = SimpleNamespace(_latest=None)
@@ -66,9 +68,11 @@ class TestAnalyze:
         ctrl._requestAnalysis.connect(lambda *a: fired.append(a))
         ctrl._on_analyze_requested(20)
         ctrl._panel.set_analyzing.assert_called_with(True)
-        # target, stride, threshold, providers, det_size, sections(None), preview.
+        # target, stride, threshold, providers, det_size, sections, preview, workers.
+        # show_preview is None in this fixture → preview False regardless.
         assert fired == [
-            (str(Path("/v/clip.mp4")), 20, 0.5, ["CPUExecutionProvider"], 640, None, False)
+            (str(Path("/v/clip.mp4")), 20, 0.5, ["CPUExecutionProvider"], 640,
+             None, False, 4)
         ]
 
     def test_analyze_emits_analyzing_active(self, ctrl):
@@ -83,6 +87,7 @@ class TestAnalyze:
 
         panel = MagicMock()
         panel.preview_enabled.return_value = True
+        panel.workers.return_value = 3
         player = MagicMock()
         player.face_map.return_value = FaceMap.empty()
         secs = SectionSet.of([(2, 5)])
@@ -99,6 +104,7 @@ class TestAnalyze:
             c._on_analyze_requested(3)
             assert fired[0][5] == secs   # sections forwarded
             assert fired[0][6] is True   # preview requested
+            assert fired[0][7] == 3      # workers forwarded
         finally:
             c.shutdown()
 

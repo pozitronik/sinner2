@@ -155,6 +155,15 @@ class QFaceMapPanel(QWidget):
             "appearances."
         )
         controls.addWidget(self._stride)
+        controls.addWidget(QLabel("workers"))
+        self._workers = QSpinBox()
+        self._workers.setRange(1, 16)
+        self._workers.setValue(4)
+        self._workers.setToolTip(
+            "Parallel detection threads. More keeps the GPU busier (the "
+            "detector is shared + thread-safe); too many can exhaust VRAM."
+        )
+        controls.addWidget(self._workers)
         controls.addStretch(1)
         self._preview_check = QCheckBox("Preview")
         self._preview_check.setChecked(True)
@@ -196,6 +205,9 @@ class QFaceMapPanel(QWidget):
 
     def preview_enabled(self) -> bool:
         return self._preview_check.isChecked()
+
+    def workers(self) -> int:
+        return self._workers.value()
 
     def selected_identity(self) -> str | None:
         return self._selected
@@ -254,6 +266,7 @@ class QFaceMapPanel(QWidget):
         self._analyzing = on
         self._analyze_btn.setText("Cancel" if on else "Analyze faces")
         self._stride.setEnabled(not on)
+        self._workers.setEnabled(not on)
         self._preview_check.setEnabled(not on)
         self._progress.setVisible(on)
         if on:
