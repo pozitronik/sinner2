@@ -29,6 +29,7 @@ from sinner2.pipeline.buffer.bounded_write_executor import BoundedWriteExecutor
 from sinner2.pipeline.buffer.store import FrameStore
 from sinner2.pipeline.cache_manager import CacheManager
 from sinner2.pipeline.chain_builder import build_chain
+from sinner2.pipeline.face_map import FaceMap
 from sinner2.pipeline.playback_mode import PlaybackMode
 from sinner2.pipeline.processor import Processor
 from sinner2.pipeline.processors.face_enhancer import (
@@ -104,6 +105,10 @@ class PlayerController(QObject):
         # it through reconfigure) until the main window clears it on a target
         # change. The controller holds it as the authority for re-application.
         self._sections: SectionSet = SectionSet.empty()
+        # Face-map routing (per-identity sources). Baked into every chain build
+        # AND hot-applied to the live swapper on change (no rebuild). Authority
+        # held here; persisted per-target by the main window.
+        self._face_map: FaceMap = FaceMap.empty()
         self._swapper_params = FaceSwapperParams()
         self._enhancer_params = FaceEnhancerParams()
         self._enhancer_enabled = True
@@ -553,6 +558,7 @@ class PlayerController(QObject):
             upscaler_enabled=self._upscaler_enabled,
             upscaler_params=self._upscaler_params,
             upscaler_device=self._upscaler_device,
+            face_map=self._face_map,
         )
 
     def deactivate(self) -> None:
@@ -817,6 +823,17 @@ class PlayerController(QObject):
 
     def sections(self) -> SectionSet:
         return self._sections
+
+    def set_face_map(self, face_map: FaceMap) -> None:
+        """Set per-identity source routing. Held as the authority, baked into
+        future chain builds, and hot-applied to the live swapper now (no
+        rebuild)."""
+        self._face_map = face_map
+        if self._executor is not None:
+            self._executor.set_face_map(face_map)
+
+    def face_map(self) -> FaceMap:
+        return self._face_map
 
     def seek_to(self, frame: int) -> None:
         """Audio-aware seek. The arrow / Home / End shortcuts route through here

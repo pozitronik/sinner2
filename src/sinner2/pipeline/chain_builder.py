@@ -9,6 +9,7 @@ pass the raw params they hold (controller state or a widget snapshot).
 from __future__ import annotations
 
 from sinner2.config.source import Source
+from sinner2.pipeline.face_map import FaceMap
 from sinner2.pipeline.processor import Processor
 from sinner2.pipeline.processors.face_enhancer import FaceEnhancer, FaceEnhancerParams
 from sinner2.pipeline.processors.face_swapper import FaceSwapper, FaceSwapperParams
@@ -29,11 +30,13 @@ def build_chain(
     upscaler_enabled: bool,
     upscaler_params: UpscalerParams,
     upscaler_device: str,
+    face_map: FaceMap | None = None,
 ) -> list[Processor]:
     """Compose the chain for the given source + params. Every processor is
     optional; an empty chain is valid (raw passthrough). Each gets its
     framework-native execution param: ONNX providers for the swapper, a torch
-    device for the enhancer/upscaler."""
+    device for the enhancer/upscaler. ``face_map`` (when active) routes each
+    detected face to a per-identity source."""
     chain: list[Processor] = []
     if swapper_enabled:
         chain.append(FaceSwapper(
@@ -44,6 +47,7 @@ def build_chain(
             # (ORT → CPU) instead of substituting a GPU default.
             providers=list(swapper_providers),
             detection_sink=detection_sink,
+            face_map=face_map,
         ))
     if enhancer_enabled:
         # GFPGAN isn't thread-safe, so a single shared instance serialises every

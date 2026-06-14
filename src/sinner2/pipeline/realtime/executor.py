@@ -21,6 +21,7 @@ from sinner2.pipeline.messages import (
     RerenderMsg,
     SeekMsg,
     SetChainMsg,
+    SetFaceMapMsg,
     SetParamsMsg,
     SetPlaybackModeMsg,
     SetSectionsMsg,
@@ -29,6 +30,7 @@ from sinner2.pipeline.messages import (
     StopMsg,
 )
 from sinner2.pipeline.cache_mode import CacheMode
+from sinner2.pipeline.face_map import FaceMap
 from sinner2.pipeline.playback_mode import PlaybackMode
 from sinner2.pipeline.processor import ChainContext, Processor
 from sinner2.pipeline.realtime.work_item import WorkItem
@@ -486,6 +488,11 @@ class RealtimeExecutor:
         timeline). Takes effect on the next dispatcher tick."""
         self._command_queue.put(SetSectionsMsg(sections=sections))
 
+    def set_face_map(self, face_map: FaceMap) -> None:
+        """Hot-apply per-identity source routing to the live chain's swapper
+        WITHOUT a rebuild. Applied on the dispatcher thread."""
+        self._command_queue.put(SetFaceMapMsg(face_map=face_map))
+
     def set_cache_mode(self, mode: CacheMode) -> None:
         """Hot-swap the buffer's cache mode. Cheap — just toggles which
         I/O paths the buffer takes; no rebuild required."""
@@ -628,6 +635,8 @@ class RealtimeExecutor:
                 self._handle_set_playback_mode(mode)
             case SetSectionsMsg(sections=sections):
                 self._handle_set_sections(sections)
+            case SetFaceMapMsg(face_map=face_map):
+                self._handle_set_face_map(face_map)
             case ReconfigureMsg():
                 self._handle_reconfigure(msg)
             case SetParamsMsg():
@@ -902,6 +911,32 @@ class RealtimeExecutor:
             self._sections = sections
         # Wake so a playhead currently inside a now-excluded gap is fast-
         # forwarded onto the next section on the very next dispatcher tick.
+        self._playback_wake.set()
+
+    def _handle_set_face_map(self, face_map: FaceMap) -> None:
+        """Push the new routing onto every chain processor that accepts a face
+        map (the swapper). Runs on the dispatcher thread; the swapper's
+        set_face_map re-analyses its source images in place (thread-safe single
+        assignments), so a concurrent worker never sees a half-updated map."""
+        with self._state_lock:
+            chain = self._chain
+        for p in chain:
+            hook = getattr(p, "set_face_map", None)
+            if hook is None:
+                continue
+            try:
+                hook(face_map)
+            except Exception as exc:  # noqa: BLE001
+                self.status.set(f"set_face_map error: {exc}")
+        # A routing change repaints the same frames with different sources →
+        # invalidate + re-render so the preview updates without a manual seek.
+        self._buffer.invalidate_all()
+        with self._state_lock:
+            current = self._timeline.current_frame()
+            self._last_submitted = current - 1
+            self._last_completed = min(self._last_completed, current - 1)
+        self._last_shown_frame_index = None
+        self._submit_specific_frame(current)
         self._playback_wake.set()
 
     def _handle_set_worker_count(self, n: int) -> None:

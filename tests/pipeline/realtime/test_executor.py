@@ -2320,3 +2320,48 @@ class TestSetSections:
         ex._handle_set_sections(SectionSet.of([(2, 8)]))  # noqa: SLF001
         assert ex._sections == SectionSet.of([(2, 8)])  # noqa: SLF001
         assert ex._playback_wake.is_set()  # noqa: SLF001
+
+
+class TestSetFaceMap:
+    def test_command_posts_message(self):
+        from queue import Queue
+
+        from sinner2.pipeline.face_map import FaceMap
+        from sinner2.pipeline.messages import SetFaceMapMsg
+
+        ex = object.__new__(RealtimeExecutor)
+        ex._command_queue = Queue()  # noqa: SLF001
+        ex.set_face_map(FaceMap.empty())
+        assert isinstance(ex._command_queue.get_nowait(), SetFaceMapMsg)  # noqa: SLF001
+
+    def test_handler_applies_to_chain_swapper_and_rerenders(self):
+        from queue import Queue
+        from unittest.mock import MagicMock
+
+        from sinner2.pipeline.face_map import FaceMap
+
+        ex = object.__new__(RealtimeExecutor)
+        ex._state_lock = threading.RLock()  # noqa: SLF001
+        ex._playback_wake = threading.Event()  # noqa: SLF001
+        ex._work_queue = Queue()  # noqa: SLF001
+        ex._generation = 0  # noqa: SLF001
+        ex._last_submitted = 10  # noqa: SLF001
+        ex._last_completed = 8  # noqa: SLF001
+        ex._last_shown_frame_index = 5  # noqa: SLF001
+        ex.status = MagicMock()
+        ex._buffer = MagicMock()  # noqa: SLF001
+        ex._reader_pool = MagicMock()  # noqa: SLF001
+        ex._reader_pool.frame_count = 100  # noqa: SLF001
+        ex._timeline = MagicMock()  # noqa: SLF001
+        ex._timeline.current_frame.return_value = 7  # noqa: SLF001
+        swapper = MagicMock()  # has set_face_map
+        plain = object()       # has no set_face_map → skipped
+        ex._chain = (swapper, plain)  # noqa: SLF001
+
+        fm = FaceMap.empty()
+        ex._handle_set_face_map(fm)  # noqa: SLF001
+
+        swapper.set_face_map.assert_called_once_with(fm)
+        ex._buffer.invalidate_all.assert_called_once()  # noqa: SLF001
+        assert ex._last_completed == 6  # noqa: SLF001 — min(8, 7-1)
+        ex._reader_pool.read_async.assert_called_once_with(7)  # noqa: SLF001 — re-render

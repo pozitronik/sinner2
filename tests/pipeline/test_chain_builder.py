@@ -15,10 +15,13 @@ from sinner2.pipeline.realtime.per_worker import PerWorkerProcessor
 
 
 class _MarkSwap:
-    def __init__(self, source, params, providers=None, detection_sink=None):
+    def __init__(
+        self, source, params, providers=None, detection_sink=None, face_map=None
+    ):
         self.kind = "swap"
         self.providers = providers
         self.detection_sink = detection_sink
+        self.face_map = face_map
 
 
 class _MarkEnh:
@@ -97,3 +100,16 @@ def test_swapper_gets_providers_and_sink(source):
     swap = chain[0]
     assert swap.providers == ["CUDAExecutionProvider", "CPUExecutionProvider"]
     assert swap.detection_sink is sink
+
+
+def test_swapper_gets_face_map(source):
+    from sinner2.pipeline.face_map import FaceMap, Identity, normalize
+
+    fm = FaceMap(identities=(Identity("a", normalize([1, 0]), source_path="/s.png"),))
+    chain = _call(source, enhancer_enabled=False, face_map=fm)
+    assert chain[0].face_map is fm
+
+
+def test_no_face_map_is_none(source):
+    chain = _call(source, enhancer_enabled=False)
+    assert chain[0].face_map is None

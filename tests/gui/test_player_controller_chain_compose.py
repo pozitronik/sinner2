@@ -12,10 +12,13 @@ from sinner2.pipeline.realtime.per_worker import PerWorkerProcessor
 
 
 class _MarkSwap:
-    def __init__(self, source, params, providers=None, detection_sink=None) -> None:
+    def __init__(
+        self, source, params, providers=None, detection_sink=None, face_map=None
+    ) -> None:
         self.kind = "swap"
         self.providers = providers
         self.detection_sink = detection_sink
+        self.face_map = face_map
 
 
 class _MarkEnh:

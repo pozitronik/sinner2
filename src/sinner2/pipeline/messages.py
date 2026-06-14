@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from sinner2.io.reader_pool import ReaderPool
     from sinner2.pipeline.buffer.buffer import FrameBuffer
     from sinner2.pipeline.buffer.timeline import Timeline
+    from sinner2.pipeline.face_map import FaceMap
     from sinner2.pipeline.processor import Processor
     from sinner2.pipeline.sections import SectionSet
     from sinner2.pipeline.skip_strategy import FrameSkipStrategy
@@ -79,6 +80,15 @@ class SetPlaybackModeMsg:
 
 
 @dataclass(frozen=True)
+class SetFaceMapMsg:
+    """Hot-apply a face map (per-identity source routing) to the live chain's
+    swapper WITHOUT a rebuild — the swapper re-analyses the assigned source
+    images in place. Empty map → the single global source."""
+
+    face_map: "FaceMap"
+
+
+@dataclass(frozen=True)
 class SetSectionsMsg:
     """Restrict playback to a set of timeline sections (an inclusive frame-range
     selection). Empty = no restriction. When non-empty, the dispatcher fast-
@@ -144,6 +154,7 @@ type Message = (
     | SetWorkerCountMsg
     | SetPlaybackModeMsg
     | SetSectionsMsg
+    | SetFaceMapMsg
     | RerenderMsg
     | ReconfigureMsg
 )
