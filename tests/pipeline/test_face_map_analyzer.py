@@ -102,6 +102,54 @@ class TestStrideAndProgress:
         assert fm.threshold == 0.62
 
 
+class TestSectionsAndPreview:
+    def test_scan_confined_to_sections(self):
+        from sinner2.pipeline.sections import SectionSet
+
+        # 10 frames; only frames 2..4 selected → scan exactly those.
+        frames = [_identity(1, 0, 0) for _ in range(10)]
+        seen = []
+        analyze_target(
+            _StubReader(frames),
+            lambda f: (seen.append(1) or f),
+            stride=1, sections=SectionSet.of([(2, 4)]),
+        )
+        assert len(seen) == 3  # frames 2, 3, 4 only
+
+    def test_sections_with_stride(self):
+        from sinner2.pipeline.sections import SectionSet
+
+        frames = [_identity(1, 0, 0) for _ in range(20)]
+        seen = []
+        analyze_target(
+            _StubReader(frames),
+            lambda f: (seen.append(1) or f),
+            stride=2, sections=SectionSet.of([(4, 11)]),
+        )
+        # Selected 4..11 (8 frames), every 2nd → 4 scans.
+        assert len(seen) == 4
+
+    def test_empty_sections_scans_whole(self):
+        from sinner2.pipeline.sections import SectionSet
+
+        frames = [_identity(1, 0, 0) for _ in range(6)]
+        seen = []
+        analyze_target(
+            _StubReader(frames), lambda f: (seen.append(1) or f),
+            stride=1, sections=SectionSet.empty(),
+        )
+        assert len(seen) == 6
+
+    def test_preview_callback_fires(self):
+        frames = [_identity(1, 0, 0) for _ in range(4)]
+        previews = []
+        analyze_target(
+            _StubReader(frames), lambda f: f, stride=1,
+            on_preview=previews.append, preview_interval=0.0,
+        )
+        assert len(previews) == 4  # interval 0 → every scanned frame
+
+
 class TestCancellation:
     def test_cancel_returns_partial_catalog(self):
         frames = [_identity(1, 0, 0), _identity(0, 1, 0)]

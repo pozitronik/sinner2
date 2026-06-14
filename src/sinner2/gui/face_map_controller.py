@@ -35,7 +35,8 @@ SourceThumbFn = Callable[[str], Any]
 class FaceMapController(QObject):
     """Owns the analysis job + thread and the face-map editing flow."""
 
-    _requestAnalysis = Signal(str, int, float, object, int)
+    _requestAnalysis = Signal(str, int, float, object, int, object, bool)
+    analyzingChanged = Signal(bool)  # the GUI locks editing while a scan runs
 
     def __init__(
         self,
@@ -48,6 +49,8 @@ class FaceMapController(QObject):
         providers: Callable[[], list[str] | None],
         detection_size: Callable[[], int],
         current_frame: Callable[[], int],
+        sections: Callable[[], Any] | None = None,
+        show_preview: Callable[[Any], None] | None = None,
         status: Callable[[str, int], None] | None = None,
         extract_target_thumb: TargetThumbFn | None = None,
         load_source_thumb: SourceThumbFn | None = None,
@@ -63,6 +66,8 @@ class FaceMapController(QObject):
         self._providers = providers
         self._detection_size = detection_size
         self._current_frame = current_frame
+        self._sections = sections or (lambda: None)
+        self._show_preview = show_preview
         self._status = status or (lambda _m, _ms=0: None)
         self._extract_target = extract_target_thumb or _default_target_thumb
         self._load_source = load_source_thumb or _default_source_thumb
@@ -83,9 +88,17 @@ class FaceMapController(QObject):
         self._job.failed.connect(
             self._on_analysis_failed, Qt.ConnectionType.QueuedConnection
         )
+        self._job.preview.connect(
+            self._on_preview, Qt.ConnectionType.QueuedConnection
+        )
 
         panel.analyzeRequested.connect(self._on_analyze_requested)
-        panel.cancelRequested.connect(self._job.cancel)
+        # DIRECT connection: cancel() only sets a thread-safe Event, and the job
+        # thread is busy in the scan loop (its event queue can't run a queued
+        # slot until run() returns) — a queued connection would never cancel.
+        panel.cancelRequested.connect(
+            self._job.cancel, Qt.ConnectionType.DirectConnection
+        )
         panel.deleteIdentityRequested.connect(self._on_delete_identity)
 
     # ---- Analysis ----
@@ -97,16 +110,20 @@ class FaceMapController(QObject):
             self._panel.set_analyzing(False)
             return
         self._panel.set_analyzing(True)
+        self.analyzingChanged.emit(True)
         self._requestAnalysis.emit(
             str(target),
             int(stride),
             self._player.face_map().threshold,
             self._providers(),
             self._detection_size(),
+            self._sections(),  # confine the scan to the selected parts, if any
+            bool(self._show_preview is not None and self._panel.preview_enabled()),
         )
 
     def _on_analysis_finished(self, face_map: FaceMap) -> None:
         self._panel.set_analyzing(False)
+        self.analyzingChanged.emit(False)
         # Keep any source assignments the user already made for surviving
         # identities — but a fresh scan rebuilds the catalog, so carry over
         # assignments by matching the new centroids against the old ones.
@@ -116,7 +133,12 @@ class FaceMapController(QObject):
 
     def _on_analysis_failed(self, message: str) -> None:
         self._panel.set_analyzing(False)
+        self.analyzingChanged.emit(False)
         self._status(f"Face analysis failed: {message}", 6000)
+
+    def _on_preview(self, frame: Any) -> None:
+        if self._show_preview is not None:
+            self._show_preview(frame)
 
     # ---- Edits (called by the panel / main window) ----
 

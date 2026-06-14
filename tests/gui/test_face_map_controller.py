@@ -66,9 +66,64 @@ class TestAnalyze:
         ctrl._requestAnalysis.connect(lambda *a: fired.append(a))
         ctrl._on_analyze_requested(20)
         ctrl._panel.set_analyzing.assert_called_with(True)
+        # target, stride, threshold, providers, det_size, sections(None), preview.
         assert fired == [
-            (str(Path("/v/clip.mp4")), 20, 0.5, ["CPUExecutionProvider"], 640)
+            (str(Path("/v/clip.mp4")), 20, 0.5, ["CPUExecutionProvider"], 640, None, False)
         ]
+
+    def test_analyze_emits_analyzing_active(self, ctrl):
+        states = []
+        ctrl.analyzingChanged.connect(states.append)
+        ctrl._on_analyze_requested(15)
+        ctrl._on_analysis_finished(FaceMap.empty())
+        assert states == [True, False]
+
+    def test_passes_sections_and_preview_when_enabled(self, qtbot, tmp_path):
+        from sinner2.pipeline.sections import SectionSet
+
+        panel = MagicMock()
+        panel.preview_enabled.return_value = True
+        player = MagicMock()
+        player.face_map.return_value = FaceMap.empty()
+        secs = SectionSet.of([(2, 5)])
+        c = FaceMapController(
+            panel=panel, player=player, detection_sink=SimpleNamespace(_latest=None),
+            store_dir=tmp_path, target_path=lambda: Path("/v.mp4"),
+            providers=lambda: None, detection_size=lambda: 640,
+            current_frame=lambda: 0, sections=lambda: secs,
+            show_preview=lambda _f: None,
+        )
+        try:
+            fired = []
+            c._requestAnalysis.connect(lambda *a: fired.append(a))
+            c._on_analyze_requested(3)
+            assert fired[0][5] == secs   # sections forwarded
+            assert fired[0][6] is True   # preview requested
+        finally:
+            c.shutdown()
+
+
+class TestCancel:
+    def test_cancel_is_direct_and_synchronous(self, qtbot, tmp_path):
+        from sinner2.gui.widgets.face_map_panel import QFaceMapPanel
+
+        panel = QFaceMapPanel()
+        qtbot.addWidget(panel)
+        player = MagicMock()
+        player.face_map.return_value = FaceMap.empty()
+        c = FaceMapController(
+            panel=panel, player=player, detection_sink=SimpleNamespace(_latest=None),
+            store_dir=tmp_path, target_path=lambda: Path("/v.mp4"),
+            providers=lambda: None, detection_size=lambda: 640, current_frame=lambda: 0,
+        )
+        try:
+            c._job._cancel.clear()
+            panel.cancelRequested.emit()
+            # Direct connection → the Event is set on THIS thread, immediately
+            # (a queued connection couldn't, since the job thread is mid-scan).
+            assert c._job._cancel.is_set()
+        finally:
+            c.shutdown()
 
     def test_finished_applies_and_persists(self, ctrl, tmp_path):
         fm = FaceMap(identities=(_ident("a", [1, 0, 0]),))

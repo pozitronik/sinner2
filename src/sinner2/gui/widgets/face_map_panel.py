@@ -11,6 +11,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
+    QCheckBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -155,6 +156,12 @@ class QFaceMapPanel(QWidget):
         )
         controls.addWidget(self._stride)
         controls.addStretch(1)
+        self._preview_check = QCheckBox("Preview")
+        self._preview_check.setChecked(True)
+        self._preview_check.setToolTip(
+            "Show the frames being scanned on the preview while analyzing."
+        )
+        controls.addWidget(self._preview_check)
         layout.addLayout(controls)
 
         self._progress = QProgressBar()
@@ -186,6 +193,9 @@ class QFaceMapPanel(QWidget):
 
     def stride(self) -> int:
         return self._stride.value()
+
+    def preview_enabled(self) -> bool:
+        return self._preview_check.isChecked()
 
     def selected_identity(self) -> str | None:
         return self._selected
@@ -244,6 +254,7 @@ class QFaceMapPanel(QWidget):
         self._analyzing = on
         self._analyze_btn.setText("Cancel" if on else "Analyze faces")
         self._stride.setEnabled(not on)
+        self._preview_check.setEnabled(not on)
         self._progress.setVisible(on)
         if on:
             self._progress.setRange(0, 0)  # busy until the first progress tick

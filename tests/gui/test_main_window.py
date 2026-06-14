@@ -630,6 +630,19 @@ class TestFaceMappingWiring:
         assigned = window._controller.face_map().identities[0].source_path  # noqa: SLF001
         assert assigned == str(Path("/src/alice.png"))
 
+    def test_analysis_active_pauses_and_locks(self, window, monkeypatch):
+        paused = []
+        locks = []
+        monkeypatch.setattr(window._session, "pause", lambda: paused.append(1))  # noqa: SLF001
+        monkeypatch.setattr(
+            window, "_set_editing_locked", lambda on: locks.append(on)  # noqa: SLF001
+        )
+        window._on_face_analysis_active(True)  # noqa: SLF001
+        assert paused == [1]
+        assert locks == [True]
+        window._on_face_analysis_active(False)  # noqa: SLF001
+        assert locks == [True, False]  # no batch running → unlocks
+
     def test_library_click_sets_global_source_off_faces_tab(self, window, monkeypatch):
         window._side_panel.setCurrentIndex(0)  # noqa: SLF001 — Settings tab
         src_calls = []

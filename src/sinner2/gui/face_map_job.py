@@ -51,6 +51,7 @@ class FaceMapAnalysisJob(QObject):
     progress = Signal(int, int)   # frames scanned, frames to scan
     finished = Signal(object)     # the built FaceMap
     failed = Signal(str)
+    preview = Signal(object)      # a frame being scanned (when preview is on)
 
     def __init__(
         self,
@@ -67,7 +68,7 @@ class FaceMapAnalysisJob(QObject):
     def cancel(self) -> None:
         self._cancel.set()
 
-    @Slot(str, int, float, object, int)
+    @Slot(str, int, float, object, int, object, bool)
     def run(
         self,
         target_path: str,
@@ -75,6 +76,8 @@ class FaceMapAnalysisJob(QObject):
         threshold: float,
         providers: Any,
         detection_size: int,
+        sections: Any = None,
+        preview: bool = False,
     ) -> None:
         self._cancel.clear()
         try:
@@ -82,15 +85,21 @@ class FaceMapAnalysisJob(QObject):
         except Exception as exc:  # noqa: BLE001 — surfaced to the GUI
             self.failed.emit(f"cannot open target: {exc}")
             return
+        # Copy the previewed frame: the reader may reuse its decode buffer, and
+        # the frame crosses to the GUI thread via a queued signal.
+        on_preview = (
+            (lambda frame: self.preview.emit(frame.copy())) if preview else None
+        )
         try:
             detect = self._detect_factory(
                 list(providers) if providers else None, detection_size
             )
             face_map = analyze_target(
                 reader, detect,
-                stride=stride, threshold=threshold,
+                stride=stride, threshold=threshold, sections=sections,
                 cancel_event=self._cancel,
                 on_progress=lambda done, total: self.progress.emit(done, total),
+                on_preview=on_preview,
             )
         except Exception as exc:  # noqa: BLE001
             self.failed.emit(str(exc))

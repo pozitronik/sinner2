@@ -467,10 +467,13 @@ class SinnerMainWindow(QMainWindow):
             providers=lambda: list(self._processors.swapper_providers()) or None,
             detection_size=lambda: self._settings.swapper_detection_size or 640,
             current_frame=self._current_display_frame,
+            sections=self._controller.sections,
+            show_preview=self._display.show_frame,
             status=self._status_bar.show_message,
             parent=self,
         )
         self._face_overlay.faceClicked.connect(self._face_map_ctl.on_face_clicked)
+        self._face_map_ctl.analyzingChanged.connect(self._on_face_analysis_active)
         self._side_panel.currentChanged.connect(self._on_side_tab_changed)
 
         # Live-camera engine: webcam -> chain -> MJPEG sink. Its preview frames
@@ -1600,6 +1603,15 @@ class SinnerMainWindow(QMainWindow):
         self._set_face_pick_mode(
             self._side_panel.currentWidget() is self._face_map_panel
         )
+
+    def _on_face_analysis_active(self, active: bool) -> None:
+        """Lock the editing surface while a face-map scan runs (like a batch
+        render): pause live playback so the scan owns the device + the preview,
+        and disable transport/settings/pickers. The Faces panel stays live so
+        Cancel works. On finish, unlock (unless a batch is still running)."""
+        if active:
+            self._session.pause()
+        self._set_editing_locked(active or self._batch_active)
 
     def _set_face_pick_mode(self, on: bool) -> None:
         """Enable clicking faces on the preview to select/capture an identity.
