@@ -21,6 +21,7 @@ from sinner2.batch.task_store import BatchTaskStore
 from sinner2.config import media_extensions
 from sinner2.config import settings as user_settings
 from sinner2.gui.face_detection_probe import FaceDetectionProbe, FaceDetectionSink
+from sinner2.gui.face_map_controller import FaceMapController
 from sinner2.gui.icon import app_icon
 from sinner2.gui.model_download import ensure_models
 from sinner2.pipeline.detectors import DETECTOR_MODEL_FILES, DetectorModel
@@ -65,6 +66,7 @@ from sinner2.gui.widgets.batch_task_dialog import QBatchTaskDialog
 from sinner2.gui.widgets.batch_view import QBatchView
 from sinner2.gui.widgets.models_view import QModelsView
 from sinner2.gui.widgets.face_detection_overlay import QFaceDetectionOverlay
+from sinner2.gui.widgets.face_map_panel import QFaceMapPanel
 from sinner2.gui.widgets.frame_display import QFrameDisplayWidget
 from sinner2.gui.widgets.fullscreen_control_bar import FullscreenControlBar
 from sinner2.gui.widgets.live_view import QLiveView
@@ -227,6 +229,7 @@ class SinnerMainWindow(QMainWindow):
         )
         self._batch_view.settingsRequested.connect(self._on_batch_settings)
         self._models_view = QModelsView()
+        self._face_map_panel = QFaceMapPanel()
         # Per-panel zoom: fall back to the legacy shared value, then 128.
         _legacy_dim = self._settings.library_display_dim or 128
         self._side_panel = QSidePanel(
@@ -235,6 +238,7 @@ class SinnerMainWindow(QMainWindow):
             batch_view=self._batch_view,
             models_view=self._models_view,
             live_view=self._live_view,
+            face_map_panel=self._face_map_panel,
             sources_display_dim=self._settings.library_sources_display_dim or _legacy_dim,
             targets_display_dim=self._settings.library_targets_display_dim or _legacy_dim,
         )
@@ -450,6 +454,25 @@ class SinnerMainWindow(QMainWindow):
         self._controller.strategyModeChanged.connect(self._update_strategy_mode_label)
         self._controller.sessionSwitching.connect(self._on_session_switching)
 
+        # Face mapping: the Faces panel + the analysis job + per-target catalog,
+        # coordinated by FaceMapController. The overlay's pick clicks and the
+        # Sources-library clicks route in via the handlers below.
+        self._face_pick_active = False
+        self._face_map_ctl = FaceMapController(
+            panel=self._face_map_panel,
+            player=self._controller,
+            detection_sink=self._detection_sink,
+            store_dir=default_cache_root() / "face_maps",
+            target_path=self._pickers.target_path,
+            providers=lambda: list(self._processors.swapper_providers()) or None,
+            detection_size=lambda: self._settings.swapper_detection_size or 640,
+            current_frame=self._current_display_frame,
+            status=self._status_bar.show_message,
+            parent=self,
+        )
+        self._face_overlay.faceClicked.connect(self._face_map_ctl.on_face_clicked)
+        self._side_panel.currentChanged.connect(self._on_side_tab_changed)
+
         # Live-camera engine: webcam -> chain -> MJPEG sink. Its preview frames
         # drive the same display; activation + transport are owned by the facade.
         self._live = LiveController(parent=self)
@@ -623,8 +646,9 @@ class SinnerMainWindow(QMainWindow):
             return
         # A new target is a new timeline — load that target's remembered
         # selection (or clear, if none), so the old video's regions can't apply
-        # to the new one.
+        # to the new one. Same for its face-map catalog.
         self._restore_sections_for_target(target_path)
+        self._face_map_ctl.restore_for_target(target_path)
         self._ensure_models_confirmed_before_build()
         self._session.set_target(FileTarget(target_path))
 
@@ -1562,6 +1586,42 @@ class SinnerMainWindow(QMainWindow):
 
     _PROBE_INTERVAL_S = 0.15  # ~6 Hz: enough to track, cheap enough to stay smooth
 
+    def _overlay_active(self) -> bool:
+        """The overlay shows + detects when F8 enabled it OR the Faces tab needs
+        it for face-pick clicks."""
+        return self._face_overlay_on or self._face_pick_active
+
+    def _current_display_frame(self) -> int:
+        ex = self._controller.executor()
+        return ex.current_frame.get() if ex is not None else 0
+
+    def _on_side_tab_changed(self, _index: int) -> None:
+        # The overlay becomes click-to-pick while the Faces tab is the front one.
+        self._set_face_pick_mode(
+            self._side_panel.currentWidget() is self._face_map_panel
+        )
+
+    def _set_face_pick_mode(self, on: bool) -> None:
+        """Enable clicking faces on the preview to select/capture an identity.
+        Shows the detection overlay for picking even if F8 didn't, and hides it
+        again on leave (unless F8 has it on)."""
+        self._face_pick_active = on
+        self._face_overlay.set_pick_enabled(on)
+        if self._face_overlay_on:
+            return  # F8 already manages the overlay; only the pick-ability changed
+        if on:
+            self._face_overlay.setGeometry(self._display.rect())
+            self._face_overlay.show()
+            self._overlay_timer.start()
+            if self._processors.swapper_enabled():
+                self._overlay_tick()
+            elif self._last_displayed_frame is not None:
+                self._submit_to_probe(self._last_displayed_frame)
+        else:
+            self._overlay_timer.stop()
+            self._face_overlay.hide()
+            self._face_overlay.clear()
+
     def _apply_face_overlay_visible(self, on: bool) -> None:
         self._face_overlay_on = on
         self._refresh_overlay_modes()
@@ -1576,7 +1636,8 @@ class SinnerMainWindow(QMainWindow):
                 self._overlay_tick()
             elif self._last_displayed_frame is not None:
                 self._submit_to_probe(self._last_displayed_frame)
-        else:
+        elif not self._face_pick_active:
+            # F8 off AND not picking → tear the overlay down.
             self._overlay_timer.stop()
             self._face_overlay.hide()
             self._face_overlay.clear()
@@ -1597,7 +1658,7 @@ class SinnerMainWindow(QMainWindow):
         # Swapper-on path: poll the swapper's published PRE-swap detections
         # (and, in comparison mode, its orig/swapped crops). The swapper-off
         # path runs through the probe, fed by displayed frames.
-        if not self._face_overlay_on or not self._processors.swapper_enabled():
+        if not self._overlay_active() or not self._processors.swapper_enabled():
             return
         latest = self._detection_sink.latest_detections()
         if latest is not None:
@@ -1660,7 +1721,7 @@ class SinnerMainWindow(QMainWindow):
         # poll), so re-detecting the swapped output would be both wrong and
         # wasteful. Zero detection cost when the overlay is off.
         self._last_displayed_frame = frame
-        if not self._face_overlay_on or self._processors.swapper_enabled():
+        if not self._overlay_active() or self._processors.swapper_enabled():
             return
         import time as _time
 
@@ -1677,7 +1738,7 @@ class SinnerMainWindow(QMainWindow):
         self._requestDetection.emit(frame.copy(), w, h)
 
     def _on_detections(self, detections: object, width: int, height: int) -> None:
-        if self._face_overlay_on:
+        if self._overlay_active():
             self._face_overlay.set_detections(detections, width, height)  # type: ignore[arg-type]
 
     def _on_use_camera(self) -> None:
@@ -1758,6 +1819,8 @@ class SinnerMainWindow(QMainWindow):
         # shared resources (models, etc.).
         self._batch_queue.stop()
         self._live.stop()
+        # Stop the face-map analysis thread before the controller/models tear down.
+        self._face_map_ctl.shutdown()
         self._controller.shutdown()
         # Stop the detection probe thread (debug overlay) so it doesn't
         # outlive Qt during shutdown. Wait in bounded increments rather than a
@@ -1921,9 +1984,10 @@ class SinnerMainWindow(QMainWindow):
         self._pending_initial_target = None
         if target is None:
             return
-        # Restore the selection remembered for this target before the build, so
-        # the live executor starts already trimmed to it.
+        # Restore the selection + face-map catalog remembered for this target
+        # before the build, so the live executor starts already configured.
         self._restore_sections_for_target(target)
+        self._face_map_ctl.restore_for_target(target)
         self._ensure_models_confirmed_before_build()
         self._session.set_target(FileTarget(target))
         # The build records what ORT actually loaded and may flip capabilities —
@@ -2129,11 +2193,17 @@ class SinnerMainWindow(QMainWindow):
             self._batch_view.reload_from_store()
 
     def _on_library_source_selected(self, path: Path) -> None:
-        """Library tile click → route through the same picker pipeline
-        as the file dialog. Setting the picker fires its sourceChanged
-        signal which wires straight into the controller."""
+        """Library tile click → normally sets the global source. But while the
+        Faces tab is up with an identity selected, the click ASSIGNS that source
+        to the selected face instead (the natural per-identity gesture)."""
         if self._batch_active:
             return  # editing locked during a render
+        if (
+            self._side_panel.currentWidget() is self._face_map_panel
+            and self._face_map_panel.selected_identity() is not None
+            and self._face_map_ctl.assign_source_to_selected(path)
+        ):
+            return
         self._pickers.set_source(path)
 
     def _on_library_target_selected(self, path: Path) -> None:

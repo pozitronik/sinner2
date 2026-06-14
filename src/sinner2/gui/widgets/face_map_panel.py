@@ -190,6 +190,14 @@ class QFaceMapPanel(QWidget):
     def selected_identity(self) -> str | None:
         return self._selected
 
+    def select_identity(self, identity_id: str | None) -> None:
+        """Programmatically select a card (e.g. after clicking its face on the
+        preview). No-op if the id isn't present."""
+        if identity_id is not None and identity_id not in self._cards:
+            return
+        self._selected = identity_id
+        self._refresh_selection()
+
     def face_map(self) -> FaceMap:
         return self._face_map
 

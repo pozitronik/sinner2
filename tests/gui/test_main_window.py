@@ -603,6 +603,43 @@ class TestSectionShortcuts:
         assert window._batch_store.list()[0].sections is None  # noqa: SLF001
 
 
+class TestFaceMappingWiring:
+    def test_faces_tab_enables_overlay_pick_mode(self, window):
+        idx = window._side_panel.indexOf(window._face_map_panel)  # noqa: SLF001
+        window._side_panel.setCurrentIndex(idx)  # noqa: SLF001
+        assert window._face_overlay._pick_enabled is True  # noqa: SLF001
+        window._side_panel.setCurrentIndex(0)  # noqa: SLF001 — back to Settings
+        assert window._face_overlay._pick_enabled is False  # noqa: SLF001
+
+    def test_library_click_assigns_to_selected_face(self, window, monkeypatch):
+        from sinner2.pipeline.face_map import FaceMap, Identity, normalize
+
+        fm = FaceMap(identities=(Identity("a", normalize([1, 0, 0])),))
+        window._controller.set_face_map(fm)  # noqa: SLF001
+        window._face_map_panel.set_face_map(fm)  # noqa: SLF001
+        window._face_map_panel.select_identity("a")  # noqa: SLF001
+        idx = window._side_panel.indexOf(window._face_map_panel)  # noqa: SLF001
+        window._side_panel.setCurrentIndex(idx)  # noqa: SLF001
+        src_calls = []
+        monkeypatch.setattr(
+            window._pickers, "set_source", lambda p: src_calls.append(p)  # noqa: SLF001
+        )
+        window._on_library_source_selected(Path("/src/alice.png"))  # noqa: SLF001
+        # Routed to per-face assignment, NOT the global source picker.
+        assert src_calls == []
+        assigned = window._controller.face_map().identities[0].source_path  # noqa: SLF001
+        assert assigned == str(Path("/src/alice.png"))
+
+    def test_library_click_sets_global_source_off_faces_tab(self, window, monkeypatch):
+        window._side_panel.setCurrentIndex(0)  # noqa: SLF001 — Settings tab
+        src_calls = []
+        monkeypatch.setattr(
+            window._pickers, "set_source", lambda p: src_calls.append(p)  # noqa: SLF001
+        )
+        window._on_library_source_selected(Path("/s.png"))  # noqa: SLF001
+        assert src_calls == [Path("/s.png")]
+
+
 class TestRotationShortcut:
     def test_r_key_cycles_rotation(self, window):
         from PySide6.QtCore import Qt
@@ -1388,9 +1425,10 @@ class TestDeferredInitialSession:
         win._refresh_transport_enabled = MagicMock()  # noqa: SLF001
         win._highlight_failed_providers = MagicMock()  # noqa: SLF001
         # A target change restores that target's remembered sections (transport
-        # + executor); with no saved entry it clears them.
+        # + executor) and face-map catalog; with no saved entry it clears them.
         win._transport = MagicMock()  # noqa: SLF001
         win._controller = MagicMock()  # noqa: SLF001
+        win._face_map_ctl = MagicMock()  # noqa: SLF001
         win._settings = MagicMock()  # noqa: SLF001
         win._settings.sections_by_target = None  # noqa: SLF001
         return win
