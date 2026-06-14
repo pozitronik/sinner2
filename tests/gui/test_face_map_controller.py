@@ -25,6 +25,7 @@ def ctrl(qtbot, tmp_path):
     panel.selected_identity.return_value = None
     panel.workers.return_value = 4
     panel.preview_enabled.return_value = True
+    panel.detect_demographics.return_value = False  # fast by default
     player = MagicMock()
     player.face_map.return_value = FaceMap.empty()
     sink = SimpleNamespace(_latest=None)
@@ -68,11 +69,12 @@ class TestAnalyze:
         ctrl._requestAnalysis.connect(lambda *a: fired.append(a))
         ctrl._on_analyze_requested(20)
         ctrl._panel.set_analyzing.assert_called_with(True)
-        # target, stride, threshold, providers, det_size, sections, preview, workers.
-        # show_preview is None in this fixture → preview False regardless.
+        # target, stride, threshold, providers, det_size, sections, preview,
+        # workers, fast. show_preview is None here → preview False; demographics
+        # off → fast True.
         assert fired == [
             (str(Path("/v/clip.mp4")), 20, 0.5, ["CPUExecutionProvider"], 640,
-             None, False, 4)
+             None, False, 4, True)
         ]
 
     def test_analyze_emits_analyzing_active(self, ctrl):
@@ -88,6 +90,7 @@ class TestAnalyze:
         panel = MagicMock()
         panel.preview_enabled.return_value = True
         panel.workers.return_value = 3
+        panel.detect_demographics.return_value = True  # full pack → fast=False
         player = MagicMock()
         player.face_map.return_value = FaceMap.empty()
         secs = SectionSet.of([(2, 5)])
@@ -105,6 +108,7 @@ class TestAnalyze:
             assert fired[0][5] == secs   # sections forwarded
             assert fired[0][6] is True   # preview requested
             assert fired[0][7] == 3      # workers forwarded
+            assert fired[0][8] is False  # demographics on → not fast
         finally:
             c.shutdown()
 

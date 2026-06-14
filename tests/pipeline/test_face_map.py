@@ -211,6 +211,18 @@ class TestReference:
         assert restored.identities[0].ref_frame == 7
         assert restored.identities[0].ref_bbox == (0.0, 1.0, 2.0, 3.0)
 
+    def test_with_reference_sets_demographics(self):
+        m = FaceMap(identities=(Identity("a", _unit(1, 0)),))
+        m2 = m.with_reference("a", 5, (0.0, 1.0, 2.0, 3.0), sex="M", age=34)
+        assert m2.identities[0].sex == "M"
+        assert m2.identities[0].age == 34
+
+    def test_demographics_round_trip(self):
+        m = FaceMap(identities=(Identity("a", _unit(1, 0), sex="F", age=28),))
+        restored = FaceMap.from_dict(m.to_dict())
+        assert restored.identities[0].sex == "F"
+        assert restored.identities[0].age == 28
+
 
 class TestSerialization:
     def test_round_trips(self):

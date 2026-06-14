@@ -59,7 +59,15 @@ class _IdentityCard(QFrame):
         self._name = QLabel(name)
         self._name.setStyleSheet("font-weight: bold;")
         info.addWidget(self._name)
-        self._count = QLabel(f"{identity.occurrences} appearance(s)")
+        demo = []
+        if identity.sex:
+            demo.append(identity.sex)
+        if identity.age is not None:
+            demo.append(f"{identity.age}y")
+        line = f"{identity.occurrences} appearance(s)"
+        if demo:
+            line += "   ·   " + " ".join(demo)
+        self._count = QLabel(line)
         self._count.setStyleSheet("color: #999;")
         info.addWidget(self._count)
         layout.addLayout(info, stretch=1)
@@ -173,6 +181,21 @@ class QFaceMapPanel(QWidget):
         controls.addWidget(self._preview_check)
         layout.addLayout(controls)
 
+        options = QHBoxLayout()
+        self._demographics_check = QCheckBox("Detect age/sex")
+        self._demographics_check.setChecked(False)  # fast det+rec by default
+        self._demographics_check.setToolTip(
+            "Also run the gender/age model (slower) so cards show age + sex and "
+            "can be grouped by them. Off = fast detection + recognition only."
+        )
+        options.addWidget(self._demographics_check)
+        self._group_check = QCheckBox("Group by sex")
+        self._group_check.setToolTip("Order the cards by sex (then appearances).")
+        self._group_check.toggled.connect(lambda _on: self._rebuild_cards())
+        options.addWidget(self._group_check)
+        options.addStretch(1)
+        layout.addLayout(options)
+
         self._progress = QProgressBar()
         self._progress.setVisible(False)
         layout.addWidget(self._progress)
@@ -209,6 +232,10 @@ class QFaceMapPanel(QWidget):
     def workers(self) -> int:
         return self._workers.value()
 
+    def detect_demographics(self) -> bool:
+        """Whether to run the (slower) gender/age model for grouping."""
+        return self._demographics_check.isChecked()
+
     def selected_identity(self) -> str | None:
         return self._selected
 
@@ -227,20 +254,22 @@ class QFaceMapPanel(QWidget):
         """Rebuild the cards from a catalog. Selection is preserved if the
         identity still exists, else cleared."""
         self._face_map = face_map
-        # Drop old cards.
+        self._rebuild_cards()
+
+    def _rebuild_cards(self) -> None:
+        from pathlib import Path
+
         for card in self._cards.values():
             self._list.removeWidget(card)
             card.deleteLater()
         self._cards = {}
-        for ident in face_map.identities:
+        for ident in self._ordered_identities():
             card = _IdentityCard(ident)
             card.selected.connect(self._on_card_selected)
             card.deleteRequested.connect(self.deleteIdentityRequested)
             # Show the assigned source as a name immediately (thumb arrives via
             # set_source_thumbnail when the main window has loaded the pixmap).
             if ident.source_path:
-                from pathlib import Path
-
                 card.set_source(None, None)
                 card._source.setText(Path(ident.source_path).name[:6])  # noqa: SLF001
             self._cards[ident.id] = card
@@ -248,7 +277,15 @@ class QFaceMapPanel(QWidget):
         if self._selected not in self._cards:
             self._selected = None
         self._refresh_selection()
-        self._hint.setVisible(face_map.is_empty())
+        self._hint.setVisible(self._face_map.is_empty())
+
+    def _ordered_identities(self) -> list[Identity]:
+        idents = list(self._face_map.identities)
+        if self._group_check.isChecked():
+            # Group same sex together (unknown last), most-seen first within.
+            rank = {"M": 0, "F": 1}
+            idents.sort(key=lambda i: (rank.get(i.sex or "", 2), -i.occurrences))
+        return idents
 
     def set_target_thumbnail(self, identity_id: str, pixmap: QPixmap) -> None:
         card = self._cards.get(identity_id)
@@ -268,6 +305,7 @@ class QFaceMapPanel(QWidget):
         self._stride.setEnabled(not on)
         self._workers.setEnabled(not on)
         self._preview_check.setEnabled(not on)
+        self._demographics_check.setEnabled(not on)
         self._progress.setVisible(on)
         if on:
             self._progress.setRange(0, 0)  # busy until the first progress tick

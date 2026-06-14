@@ -30,6 +30,9 @@ ProgressFn = Callable[[int, int], None]
 DetectFn = Callable[[Any], list]
 PreviewFn = Callable[[Frame], None]
 
+# (best_score, frame, bbox, sex, age) of an identity's clearest occurrence.
+_Rep = tuple[float, int, tuple[float, float, float, float], "str | None", "int | None"]
+
 
 class _ClusterState:
     """Accumulates the catalog as detected faces arrive. ``ingest`` MUST be
@@ -38,8 +41,9 @@ class _ClusterState:
 
     def __init__(self, face_map: FaceMap) -> None:
         self.face_map = face_map
-        # identity id -> (best_score, frame, bbox) for the thumbnail reference.
-        self.reps: dict[str, tuple[float, int, tuple[float, float, float, float]]] = {}
+        # identity id -> (best_score, frame, bbox, sex, age) of its clearest
+        # occurrence — drives the thumbnail + the displayed demographics.
+        self.reps: dict[str, _Rep] = {}
 
     def ingest(self, frame_idx: int, faces: list) -> None:
         for face in faces:
@@ -53,16 +57,21 @@ class _ClusterState:
             score = float(getattr(face, "det_score", 0.0) or 0.0)
             prev = self.reps.get(joined_id)
             if prev is None or score > prev[0]:
+                age_raw = getattr(face, "age", None)
                 self.reps[joined_id] = (
                     score,
                     int(frame_idx),
                     (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])),
+                    getattr(face, "sex", None),
+                    int(age_raw) if age_raw is not None else None,
                 )
 
     def finish(self) -> FaceMap:
         face_map = self.face_map
-        for ident_id, (_score, frame_idx, bbox) in self.reps.items():
-            face_map = face_map.with_reference(ident_id, frame_idx, bbox)
+        for ident_id, (_score, frame_idx, bbox, sex, age) in self.reps.items():
+            face_map = face_map.with_reference(
+                ident_id, frame_idx, bbox, sex=sex, age=age
+            )
         return face_map
 
 

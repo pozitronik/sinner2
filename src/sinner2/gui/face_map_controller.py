@@ -35,7 +35,7 @@ SourceThumbFn = Callable[[str], Any]
 class FaceMapController(QObject):
     """Owns the analysis job + thread and the face-map editing flow."""
 
-    _requestAnalysis = Signal(str, int, float, object, int, object, bool, int)
+    _requestAnalysis = Signal(str, int, float, object, int, object, bool, int, bool)
     analyzingChanged = Signal(bool)  # the GUI locks editing while a scan runs
 
     def __init__(
@@ -120,6 +120,7 @@ class FaceMapController(QObject):
             self._sections(),  # confine the scan to the selected parts, if any
             bool(self._show_preview is not None and self._panel.preview_enabled()),
             int(self._panel.workers()),  # parallel detection
+            bool(not self._panel.detect_demographics()),  # fast = skip age/sex
         )
 
     def _on_analysis_finished(self, face_map: FaceMap) -> None:

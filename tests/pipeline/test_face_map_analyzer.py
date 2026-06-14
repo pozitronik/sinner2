@@ -8,10 +8,13 @@ from sinner2.pipeline.face_map_analyzer import analyze_target
 
 
 class _Face:
-    def __init__(self, embedding, score=0.9, bbox=(0.0, 0.0, 4.0, 4.0)):
+    def __init__(self, embedding, score=0.9, bbox=(0.0, 0.0, 4.0, 4.0),
+                 sex=None, age=None):
         self.normed_embedding = embedding
         self.det_score = score
         self.bbox = bbox
+        self.sex = sex
+        self.age = age
 
 
 class _StubReader:
@@ -67,6 +70,15 @@ class TestClustering:
             _StubReader([[_Face(None)]]), lambda f: f, stride=1
         )
         assert fm.is_empty()
+
+    def test_captures_demographics_from_clearest(self):
+        frames = [
+            [_Face(_emb(1, 0, 0), score=0.6, sex="M", age=20)],
+            [_Face(_emb(1, 0, 0), score=0.95, sex="M", age=31)],  # clearer
+        ]
+        fm = analyze_target(_StubReader(frames), lambda f: f, stride=1)
+        assert fm.identities[0].sex == "M"
+        assert fm.identities[0].age == 31  # from the higher-score occurrence
 
     def test_empty_target_is_empty_catalog(self):
         fm = analyze_target(_StubReader([]), lambda f: f, stride=1)

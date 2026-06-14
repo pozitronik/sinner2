@@ -20,7 +20,7 @@ from sinner2.io.target_reader import ImageTargetReader, TargetReader
 from sinner2.pipeline.face_map_analyzer import DetectFn, analyze_target
 
 ReaderFactory = Callable[[str], TargetReader]
-DetectFactory = Callable[[list[str] | None, int], DetectFn]
+DetectFactory = Callable[[list[str] | None, int, bool], DetectFn]
 
 
 def _default_reader(target_path: str) -> TargetReader:
@@ -34,12 +34,17 @@ def _default_reader(target_path: str) -> TargetReader:
     raise ValueError(f"unsupported target kind: {target.kind}")
 
 
-def _default_detect(providers: list[str] | None, detection_size: int) -> DetectFn:
-    """A detector closure over a fresh buffalo_l analyser (the full pack — its
-    ArcFace embeddings are what make the clustering identity-stable)."""
+def _default_detect(
+    providers: list[str] | None, detection_size: int, fast: bool
+) -> DetectFn:
+    """A detector closure over a fresh buffalo_l analyser. ``fast`` runs
+    detection + recognition only (no age/sex/landmark — much quicker); otherwise
+    the full pack, which also yields the demographics for the cards."""
     from sinner2.pipeline.face_analyser import FaceAnalyser
 
     analyser = FaceAnalyser(providers=providers, detection_size=detection_size)
+    if fast:
+        return lambda frame: analyser.analyse_det_rec(frame)
     return lambda frame: analyser.analyse_uncached(frame)
 
 
@@ -68,7 +73,7 @@ class FaceMapAnalysisJob(QObject):
     def cancel(self) -> None:
         self._cancel.set()
 
-    @Slot(str, int, float, object, int, object, bool, int)
+    @Slot(str, int, float, object, int, object, bool, int, bool)
     def run(
         self,
         target_path: str,
@@ -79,6 +84,7 @@ class FaceMapAnalysisJob(QObject):
         sections: Any = None,
         preview: bool = False,
         workers: int = 1,
+        fast: bool = True,
     ) -> None:
         self._cancel.clear()
         try:
@@ -93,7 +99,7 @@ class FaceMapAnalysisJob(QObject):
         )
         try:
             detect = self._detect_factory(
-                list(providers) if providers else None, detection_size
+                list(providers) if providers else None, detection_size, fast
             )
             face_map = analyze_target(
                 reader, detect,

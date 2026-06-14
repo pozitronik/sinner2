@@ -83,6 +83,11 @@ class Identity:
     label: str | None = None
     ref_frame: int | None = None
     ref_bbox: tuple[float, float, float, float] | None = None
+    # Demographic hints from the representative detection (only the full
+    # buffalo_l pack provides them — None in fast det+rec-only mode). Display +
+    # grouping only; they don't affect swap routing.
+    sex: str | None = None
+    age: int | None = None
 
     @staticmethod
     def new(
@@ -207,11 +212,13 @@ class FaceMap:
         identity_id: str,
         ref_frame: int,
         ref_bbox: tuple[float, float, float, float],
+        sex: str | None = None,
+        age: int | None = None,
     ) -> "FaceMap":
         """Record an identity's representative occurrence (set by the analysis
-        pass for thumbnail extraction)."""
+        pass for thumbnail extraction) + its demographic hints."""
         idents = [
-            replace(i, ref_frame=ref_frame, ref_bbox=ref_bbox)
+            replace(i, ref_frame=ref_frame, ref_bbox=ref_bbox, sex=sex, age=age)
             if i.id == identity_id else i
             for i in self.identities
         ]
@@ -269,6 +276,8 @@ class FaceMap:
                     "label": i.label,
                     "ref_frame": i.ref_frame,
                     "ref_bbox": list(i.ref_bbox) if i.ref_bbox is not None else None,
+                    "sex": i.sex,
+                    "age": i.age,
                 }
                 for i in self.identities
             ],
@@ -285,6 +294,8 @@ class FaceMap:
                 label=d.get("label"),
                 ref_frame=d.get("ref_frame"),
                 ref_bbox=_bbox4(d.get("ref_bbox")),
+                sex=d.get("sex"),
+                age=d.get("age"),
             )
             for d in data.get("identities", [])
         )

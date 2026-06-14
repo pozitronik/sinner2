@@ -87,6 +87,32 @@ class TestAnalyze:
         assert panel._analyze_btn.text() == "Analyze faces"  # noqa: SLF001
 
 
+class TestDemographicsAndGrouping:
+    def test_demographics_default_off(self, panel):
+        assert panel.detect_demographics() is False
+
+    def test_card_shows_sex_and_age(self, panel):
+        fm = FaceMap(
+            identities=(Identity("a", normalize([1, 0]), occurrences=5, sex="M", age=34),)
+        )
+        panel.set_face_map(fm)
+        text = panel._cards["a"]._count.text()  # noqa: SLF001
+        assert "M" in text and "34y" in text
+
+    def test_group_by_sex_orders_identities(self, panel):
+        fm = FaceMap(
+            identities=(
+                Identity("a", normalize([1, 0, 0]), occurrences=5, sex="F"),
+                Identity("b", normalize([0, 1, 0]), occurrences=3, sex="M"),
+                Identity("c", normalize([0, 0, 1]), occurrences=9),  # unknown
+            )
+        )
+        panel.set_face_map(fm)
+        panel._group_check.setChecked(True)  # noqa: SLF001 — triggers re-sort
+        order = [i.id for i in panel._ordered_identities()]  # noqa: SLF001
+        assert order == ["b", "a", "c"]  # M, then F, then unknown
+
+
 class TestDelete:
     def test_delete_emits(self, panel, qtbot):
         panel.set_face_map(_map(("a", 1)))

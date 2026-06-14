@@ -244,6 +244,31 @@ class FaceAnalyser:
             _get_shared_face_analysis(self._providers, self._detection_size).get(frame)
         )
 
+    def analyse_det_rec(self, frame: Frame) -> list[Any]:
+        """Detection + RECOGNITION only — skip the genderage + two landmark nets
+        the full `.get()` runs per face. The ArcFace embedding is all the
+        face-map clustering needs, so this roughly halves the per-frame cost on
+        a multi-face frame. The returned faces carry bbox/kps/det_score/embedding
+        but NO sex/age/pose (use the full pack when you want those).
+
+        Same shared, thread-safe ORT sessions as `.get()`, so it parallelizes."""
+        from insightface.app.common import Face
+
+        app = _get_shared_face_analysis(self._providers, self._detection_size)
+        bboxes, kpss = app.det_model.detect(frame, max_num=0, metric="default")
+        rec = app.models.get("recognition")
+        faces: list[Any] = []
+        for i in range(len(bboxes)):
+            face = Face(
+                bbox=bboxes[i][0:4],
+                kps=kpss[i] if kpss is not None else None,
+                det_score=bboxes[i][4],
+            )
+            if rec is not None:
+                rec.get(frame, face)  # sets face.embedding (→ normed_embedding)
+            faces.append(face)
+        return faces
+
     def provides_gender(self) -> bool:
         """Whether detected faces carry insightface's `.sex` (only the full
         buffalo_l pack does — standalone detectors and detection_only mode are
