@@ -854,3 +854,117 @@ class TestOnSeekResetsDetectionCache:
         fs = object.__new__(FaceSwapper)
         fs._analyser = None  # noqa: SLF001
         fs.on_seek()  # must not raise
+
+
+class TestFaceMapping:
+    """A FaceMap routes each detected face to a per-identity source (insightface
+    backends only). Unmatched / unassigned / no-embedding faces are skipped."""
+
+    def _sources(self, tmp_path):
+        a = tmp_path / "alice.png"
+        b = tmp_path / "bob.png"
+        cv2.imwrite(str(a), np.full((32, 32, 3), 10, np.uint8))
+        cv2.imwrite(str(b), np.full((32, 32, 3), 20, np.uint8))
+        return a, b
+
+    def _target_face(self, embedding):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            normed_embedding=np.asarray(embedding, np.float32),
+            bbox=np.array([0, 0, 4, 4], float),
+            kps=np.zeros((5, 2), np.float32),
+        )
+
+    def test_routes_each_face_to_its_mapped_source(
+        self, source_image, models_dir, stub_insightface_app, stub_inswapper, tmp_path
+    ):
+        from sinner2.pipeline.face_map import FaceMap, Identity, normalize
+
+        a_path, b_path = self._sources(tmp_path)
+        src_a = object()  # sentinel "source face" objects the analyser returns
+        src_b = object()
+        t_a = self._target_face([1, 0, 0])     # → Alice
+        t_b = self._target_face([0, 1, 0])     # → Bob
+        t_stranger = self._target_face([0, 0, 1])  # matches neither
+        # setup: main source, then the two mapped sources; then process targets.
+        stub_insightface_app.get.side_effect = [
+            [object()], [src_a], [src_b], [t_a, t_b, t_stranger],
+        ]
+        fm = FaceMap(
+            identities=(
+                Identity("a", normalize([1, 0, 0]), source_path=str(a_path)),
+                Identity("b", normalize([0, 1, 0]), source_path=str(b_path)),
+            ),
+            threshold=0.5,
+        )
+        fs = FaceSwapper(
+            source=Source(path=source_image),
+            params=_params(rotation_compensation=False),
+            face_map=fm,
+        )
+        fs.setup()
+        assert fs._mapped_sources == {str(a_path): src_a, str(b_path): src_b}  # noqa: SLF001
+        fs.process(_blank())
+        # Two faces swapped; the stranger skipped. Each got ITS source.
+        calls = stub_inswapper.get.call_args_list
+        assert len(calls) == 2
+        assert calls[0].args[2] is src_a  # t_a → Alice's source
+        assert calls[1].args[2] is src_b  # t_b → Bob's source
+
+    def test_face_without_embedding_is_skipped(
+        self, source_image, models_dir, stub_insightface_app, stub_inswapper, tmp_path
+    ):
+        from types import SimpleNamespace
+
+        from sinner2.pipeline.face_map import FaceMap, Identity, normalize
+
+        a_path, _ = self._sources(tmp_path)
+        no_emb = SimpleNamespace(normed_embedding=None, bbox=np.zeros(4), kps=np.zeros((5, 2)))
+        stub_insightface_app.get.side_effect = [
+            [object()], [object()], [no_emb],
+        ]
+        fm = FaceMap(
+            identities=(Identity("a", normalize([1, 0, 0]), source_path=str(a_path)),),
+            threshold=0.5,
+        )
+        fs = FaceSwapper(
+            source=Source(path=source_image),
+            params=_params(rotation_compensation=False),
+            face_map=fm,
+        )
+        fs.setup()
+        fs.process(_blank())
+        stub_inswapper.get.assert_not_called()  # no embedding → can't route → skip
+
+    def test_inactive_map_uses_global_source(
+        self, source_image, models_dir, stub_insightface_app, stub_inswapper, tmp_path
+    ):
+        from sinner2.pipeline.face_map import FaceMap
+
+        # A map with identities but NO assigned sources is inactive → today's
+        # single-source path (every face swapped with the global source).
+        t = self._target_face([1, 0, 0])
+        stub_insightface_app.get.side_effect = [[object()], [t]]
+        fs = FaceSwapper(
+            source=Source(path=source_image),
+            params=_params(rotation_compensation=False),
+            face_map=FaceMap.empty(),
+        )
+        fs.setup()
+        fs.process(_blank())
+        stub_inswapper.get.assert_called_once()  # global-source swap, not skipped
+
+    def test_generic_backend_not_routable(self):
+        # Bypass-init: a generic (non-insightface) backend doesn't support
+        # per-call sources, so even an active map isn't routed (deferred).
+        from sinner2.pipeline.face_map import FaceMap, Identity, normalize
+
+        fs = object.__new__(FaceSwapper)
+        fs._supports_multi_source = False  # noqa: SLF001
+        fs._face_map = FaceMap(  # noqa: SLF001
+            identities=(Identity("a", normalize([1, 0]), source_path="/s.png"),)
+        )
+        assert fs._face_map_is_routable() is False  # noqa: SLF001
+        fs._supports_multi_source = True  # noqa: SLF001
+        assert fs._face_map_is_routable() is True  # noqa: SLF001

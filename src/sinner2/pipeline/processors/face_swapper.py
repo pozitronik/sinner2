@@ -11,6 +11,7 @@ from sinner2.config.source import Source
 from sinner2.io.cv2_unicode import imread_unicode
 from sinner2.pipeline.detectors import DetectorModel
 from sinner2.pipeline.face_analyser import FaceAnalyser
+from sinner2.pipeline.face_map import FaceMap
 from sinner2.pipeline.model_cache import (
     get_insightface_swap_model,
     get_model_path,
@@ -224,9 +225,18 @@ class FaceSwapper:
         params: FaceSwapperParams | None = None,
         providers: list[str] | None = None,
         detection_sink: Any = None,
+        face_map: FaceMap | None = None,
     ) -> None:
         self._source = source
         self._params = params or FaceSwapperParams()
+        # Face mapping: when active, each detected face is routed to a per-
+        # identity source (by ArcFace match) instead of the single global
+        # source. Only the insightface backends (inswapper/reswapper) take a
+        # per-call source, so multi-source is gated to them; generic backends
+        # keep the single-source path (deferred). Needs buffalo_l embeddings.
+        self._face_map = face_map
+        self._mapped_sources: dict[str, Any] = {}
+        self._supports_multi_source = False
         # ONNX providers from the swapper's OnnxExecution profile. Distinguish
         # None (caller didn't specify → platform default) from an EMPTY list
         # (user explicitly selected no providers → pass it through; ORT then runs
@@ -286,6 +296,11 @@ class FaceSwapper:
             # aligned crop) — must run after the source face is detected.
             backend.prepare_source(source_img, self._source_face)
         self._swapper = backend
+        # Only insightface backends accept a per-call source → multi-source
+        # face mapping is theirs; generic backends stay single-source.
+        self._supports_multi_source = spec.insightface
+        if self._face_map_is_routable():
+            self._prepare_mapped_sources(self._face_map)  # type: ignore[arg-type]
         if (
             self._params.landmark_refine
             or self._params.rotation_angle_source is RotationAngleSource.LANDMARK_68
@@ -330,6 +345,56 @@ class FaceSwapper:
             swapper.prepare_source(source_img, new_face)
         self._source = source
         self._source_face = new_face  # atomic swap — read via process()'s snapshot
+
+    def _face_map_is_routable(self) -> bool:
+        """True when a face map should actually route per-face sources — it's
+        active AND the backend supports per-call sources (insightface)."""
+        return (
+            self._face_map is not None
+            and self._face_map.is_active()
+            and self._supports_multi_source
+        )
+
+    def _prepare_mapped_sources(self, face_map: FaceMap) -> None:
+        """Analyse each source image the map assigns into a swap-ready source
+        face, keyed by its path. Sources that can't be read / have no face are
+        skipped (their identities simply won't swap)."""
+        analyser = self._analyser
+        if analyser is None:
+            return
+        prepared: dict[str, Any] = {}
+        for path in face_map.assigned_sources():
+            img = imread_unicode(Path(path))
+            if img is None:
+                continue
+            faces = analyser.analyse_uncached(img)
+            if faces:
+                prepared[path] = faces[0]
+        self._mapped_sources = prepared
+
+    def set_face_map(self, face_map: FaceMap | None) -> None:
+        """Re-point per-face source routing WITHOUT reloading models — re-analyse
+        the assigned source images and swap the routing state in place (like
+        set_source). Single assignments so concurrent workers never see a
+        half-updated map."""
+        self._face_map = face_map
+        if self._face_map_is_routable():
+            self._prepare_mapped_sources(face_map)  # type: ignore[arg-type]
+        else:
+            self._mapped_sources = {}
+
+    def _mapped_source_face(self, face: Any, face_map: FaceMap | None) -> Any:
+        """The prepared source face this detected face routes to, or None to skip
+        it (no embedding, no match, or its identity has no assigned source)."""
+        if face_map is None:
+            return None
+        embedding = getattr(face, "normed_embedding", None)
+        if embedding is None:
+            return None  # standalone/detection-only detector → can't match
+        path = face_map.source_for(embedding)
+        if path is None:
+            return None
+        return self._mapped_sources.get(path)
 
     def process(self, frame: Frame, ctx: Any = None) -> Frame:
         # Snapshot the backend handles into locals — release() (from a live
@@ -379,6 +444,15 @@ class FaceSwapper:
                 self._detection_sink.publish(faces, frame.shape[1], frame.shape[0])
             except Exception:
                 pass
+        # Face mapping (snapshot for a consistent view across this frame): when
+        # active it ROUTES each face to a per-identity source and supersedes the
+        # sex / many-faces selectors (the map decides what swaps with what).
+        face_map = self._face_map
+        multi = (
+            face_map is not None
+            and face_map.is_active()
+            and self._supports_multi_source
+        )
         target_sex = self._resolved_target_sex(source_face)
         # The gender filter needs insightface's .sex, which only the buffalo_l
         # pack provides — skip it (swap all) when a detection-only detector is
@@ -387,11 +461,17 @@ class FaceSwapper:
         result = frame
         swapped_faces: list[Any] = []
         for face in faces:
-            if gender_filter and not _face_matches(face, target_sex):
-                continue
+            if multi:
+                face_source = self._mapped_source_face(face, face_map)
+                if face_source is None:
+                    continue  # no embedding / no match / identity unassigned
+            else:
+                if gender_filter and not _face_matches(face, target_sex):
+                    continue
+                face_source = source_face
             before = result
             result = self._swap_one(
-                before, face, swapper, source_face, analyser,
+                before, face, swapper, face_source, analyser,
                 lm68_by_face.get(id(face)),
             )
             if self._params.occlusion_mask and masker is not None:
@@ -405,7 +485,7 @@ class FaceSwapper:
                     with self._mask_lock:
                         result = apply_occlusion(before, result, face, masker)
             swapped_faces.append(face)
-            if not self._params.many_faces:
+            if not multi and not self._params.many_faces:
                 break
         self._maybe_publish_crops(frame, result, swapped_faces)
         return result
@@ -513,3 +593,4 @@ class FaceSwapper:
         self._source_face = None
         self._masker = None
         self._landmarker = None
+        self._mapped_sources = {}

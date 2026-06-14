@@ -56,6 +56,7 @@ from sinner2.io.target_reader import ImageTargetReader, TargetReader
 from sinner2.io.video_backend import VideoBackend, build_video_target_reader
 from sinner2.io.video_encoder import FfmpegMissingError, encode_frames_to_mp4
 from sinner2.pipeline.detectors import DetectorModel
+from sinner2.pipeline.face_map import FaceMap
 from sinner2.pipeline.image_writer import build_image_writer
 from sinner2.pipeline.sections import SectionSet
 from sinner2.pipeline.processor import Processor
@@ -403,10 +404,11 @@ class BatchDriver:
                 occluder_model=OccluderModel(task.swapper_occluder_model),
             )
             providers = list(task.swapper_execution.providers)
+            face_map = FaceMap.from_dict(task.face_map) if task.face_map else None
             stages.append(StageSpec(
                 name="faceswapper",
-                factory=lambda p=swapper_params, eps=providers: FaceSwapper(
-                    source=source, params=p, providers=eps
+                factory=lambda p=swapper_params, eps=providers, fm=face_map: (
+                    FaceSwapper(source=source, params=p, providers=eps, face_map=fm)
                 ),
                 thread_safe=FaceSwapper.thread_safe,
                 workers=task.swapper_execution.workers,
