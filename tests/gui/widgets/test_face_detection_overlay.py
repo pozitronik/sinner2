@@ -165,3 +165,83 @@ class TestPainting:
         overlay.set_detections([FaceDetection(bbox=(0, 0, 10, 10))], 999, 999)
         overlay.show()
         overlay.grab()  # no crash; guard simply skips drawing
+
+
+class TestPickMode:
+    """Face-mapping pick mode: the overlay receives clicks and hit-tests them
+    against the boxes, emitting the clicked face's frame-space bbox."""
+
+    def _overlay(self, qtbot):
+        from PySide6.QtCore import QPointF
+        from PySide6.QtWidgets import QWidget
+
+        class _StubDisplay(QWidget):
+            def map_from_frame(self, fx, fy):
+                return QPointF(fx, fy)  # identity mapping
+
+            def current_frame_size(self):
+                return (200, 100)
+
+        parent = _StubDisplay()
+        qtbot.addWidget(parent)
+        overlay = QFaceDetectionOverlay(parent=parent)
+        # Keep the parent alive with the returned overlay (the C++ parent owns
+        # the child, so a GC'd parent would take the overlay with it).
+        overlay._test_parent = parent  # noqa: SLF001
+        overlay.set_detections([FaceDetection(bbox=(10, 10, 60, 80))], 200, 100)
+        return overlay
+
+    def test_set_pick_enabled_toggles_mouse_transparency(self, qtbot):
+        from PySide6.QtCore import Qt
+
+        overlay = self._overlay(qtbot)
+        overlay.set_pick_enabled(True)
+        assert not overlay.testAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents
+        )
+        overlay.set_pick_enabled(False)
+        assert overlay.testAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents
+        )
+
+    def test_hit_test_inside_box(self, qtbot):
+        from PySide6.QtCore import QPointF
+
+        overlay = self._overlay(qtbot)
+        assert overlay._hit_test(QPointF(30, 40)) == (10, 10, 60, 80)  # noqa: SLF001
+
+    def test_hit_test_outside_is_none(self, qtbot):
+        from PySide6.QtCore import QPointF
+
+        overlay = self._overlay(qtbot)
+        assert overlay._hit_test(QPointF(150, 95)) is None  # noqa: SLF001
+
+    def test_mouse_press_emits_bbox_when_picking(self, qtbot):
+        from PySide6.QtCore import QEvent, QPointF, Qt
+        from PySide6.QtGui import QMouseEvent
+
+        overlay = self._overlay(qtbot)
+        overlay.set_pick_enabled(True)
+        ev = QMouseEvent(
+            QEvent.Type.MouseButtonPress, QPointF(30, 40),
+            Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        with qtbot.waitSignal(overlay.faceClicked) as blocker:
+            overlay.mousePressEvent(ev)
+        assert blocker.args[0] == (10, 10, 60, 80)
+
+    def test_no_emit_when_pick_disabled(self, qtbot):
+        from PySide6.QtCore import QEvent, QPointF, Qt
+        from PySide6.QtGui import QMouseEvent
+
+        overlay = self._overlay(qtbot)  # pick off by default
+        fired = []
+        overlay.faceClicked.connect(lambda b: fired.append(b))
+        ev = QMouseEvent(
+            QEvent.Type.MouseButtonPress, QPointF(30, 40),
+            Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        overlay.mousePressEvent(ev)
+        assert fired == []

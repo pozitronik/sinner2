@@ -19,8 +19,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
-from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QPixmap
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtGui import QColor, QFont, QImage, QMouseEvent, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QWidget
 
 _BOX_COLOR = QColor(90, 220, 120)     # green box
@@ -82,6 +82,11 @@ def _bgr_to_pixmap(crop: np.ndarray) -> QPixmap:
 
 
 class QFaceDetectionOverlay(QWidget):
+    # Face-mapping pick mode: a detected face box was clicked. Carries the
+    # clicked face's frame-space bbox so the caller can match it back to the raw
+    # detection (with its embedding) in the detection sink.
+    faceClicked = Signal(object)  # bbox tuple (x1, y1, x2, y2)
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         # Transparent HUD child: click-through, and unpainted areas show the
@@ -89,6 +94,9 @@ class QFaceDetectionOverlay(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
+        # Pick mode: when on, the overlay receives clicks and hit-tests them
+        # against the boxes (for assigning/capturing an identity).
+        self._pick_enabled = False
         self._detections: list[FaceDetection] = []
         self._frame_size: tuple[int, int] | None = None
         # Comparison mode: [orig | swapped] thumbnail pairs next to each box.
@@ -127,6 +135,48 @@ class QFaceDetectionOverlay(QWidget):
         self._crop_pairs = []
         self._crop_frame_size = None
         self.update()
+
+    # ---- Pick mode (face mapping) ----
+
+    def set_pick_enabled(self, on: bool) -> None:
+        """Toggle click-to-pick. Off = the normal click-through HUD."""
+        self._pick_enabled = bool(on)
+        self.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents, not self._pick_enabled
+        )
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if not self._pick_enabled:
+            super().mousePressEvent(event)
+            return
+        bbox = self._hit_test(event.position())
+        if bbox is not None:
+            self.faceClicked.emit(bbox)
+
+    def _hit_test(
+        self, pos: QPointF
+    ) -> tuple[float, float, float, float] | None:
+        """Frame-space bbox of the topmost detection whose drawn box contains
+        ``pos`` (widget coords), or None. Uses the SAME mapping the paint does so
+        the hit area matches what the user sees."""
+        parent = self.parent()
+        mapper = getattr(parent, "map_from_frame", None)
+        cur_size_fn = getattr(parent, "current_frame_size", None)
+        cur = cur_size_fn() if cur_size_fn is not None else None
+        if mapper is None or cur is None:
+            return None
+        det_mapper = self._scaled_mapper(mapper, cur, self._frame_size)
+        if det_mapper is None:
+            return None
+        for det in self._detections:
+            x1, y1, x2, y2 = det.bbox
+            p1 = det_mapper(x1, y1)
+            p2 = det_mapper(x2, y2)
+            if p1 is None or p2 is None:
+                continue
+            if QRectF(p1, p2).normalized().contains(pos):
+                return det.bbox
+        return None
 
     def paintEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         parent = self.parent()
