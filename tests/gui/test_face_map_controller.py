@@ -22,7 +22,7 @@ def _ident(i, vec, **kw):
 @pytest.fixture
 def ctrl(qtbot, tmp_path):
     panel = MagicMock()
-    panel.selected_identity.return_value = None
+    panel.selected_identities.return_value = []
     panel.workers.return_value = 4
     panel.preview_enabled.return_value = True
     panel.detect_demographics.return_value = False  # fast by default
@@ -66,22 +66,24 @@ class TestAnalyze:
 
     def test_requests_analysis_with_params(self, ctrl):
         fired = []
-        ctrl._requestAnalysis.connect(lambda *a: fired.append(a))
+        ctrl._requestAnalysis.connect(fired.append)
         ctrl._on_analyze_requested(20)
         ctrl._panel.set_analyzing.assert_called_with(True)
-        # target, stride, threshold, providers, det_size, sections, preview,
-        # workers, fast. show_preview is None here → preview False; demographics
-        # off → fast True.
-        assert fired == [
-            (str(Path("/v/clip.mp4")), 20, 0.5, ["CPUExecutionProvider"], 640,
-             None, False, 4, True)
-        ]
+        req = fired[0]
+        assert req.target_path == str(Path("/v/clip.mp4"))
+        assert req.stride == 20
+        assert req.providers == ["CPUExecutionProvider"]
+        assert req.detection_size == 640
+        assert req.preview is False  # show_preview is None in this fixture
+        assert req.workers == 4
+        assert req.fast is True       # demographics off → fast
+        assert req.start_index == 0   # no prior progress → fresh
 
     def test_analyze_emits_analyzing_active(self, ctrl):
         states = []
         ctrl.analyzingChanged.connect(states.append)
         ctrl._on_analyze_requested(15)
-        ctrl._on_analysis_finished(FaceMap.empty())
+        ctrl._on_analysis_finished(FaceMap.empty(), 0, 0)
         assert states == [True, False]
 
     def test_passes_sections_and_preview_when_enabled(self, qtbot, tmp_path):
@@ -103,14 +105,43 @@ class TestAnalyze:
         )
         try:
             fired = []
-            c._requestAnalysis.connect(lambda *a: fired.append(a))
+            c._requestAnalysis.connect(fired.append)
             c._on_analyze_requested(3)
-            assert fired[0][5] == secs   # sections forwarded
-            assert fired[0][6] is True   # preview requested
-            assert fired[0][7] == 3      # workers forwarded
-            assert fired[0][8] is False  # demographics on → not fast
+            assert fired[0].sections == secs
+            assert fired[0].preview is True
+            assert fired[0].workers == 3
+            assert fired[0].fast is False  # demographics on → not fast
         finally:
             c.shutdown()
+
+
+class TestResumeRequest:
+    def test_resumes_from_saved_progress(self, ctrl, tmp_path):
+        from sinner2.pipeline.face_map_store import progress_path, save_progress
+
+        sig = ctrl._scan_signature(15, None)
+        save_progress(
+            progress_path(Path("/v/clip.mp4"), tmp_path / "face_maps"), sig, 3, 10
+        )
+        fired = []
+        ctrl._requestAnalysis.connect(fired.append)
+        ctrl._on_analyze_requested(15)
+        assert fired[0].start_index == 3  # resumed from where it stopped
+        assert ctrl._resuming is True
+
+    def test_fresh_when_signature_differs(self, ctrl, tmp_path):
+        from sinner2.pipeline.face_map_store import progress_path, save_progress
+
+        # Saved progress for stride 99; requesting stride 15 → can't resume.
+        save_progress(
+            progress_path(Path("/v/clip.mp4"), tmp_path / "face_maps"),
+            ctrl._scan_signature(99, None), 3, 10,
+        )
+        fired = []
+        ctrl._requestAnalysis.connect(fired.append)
+        ctrl._on_analyze_requested(15)
+        assert fired[0].start_index == 0
+        assert ctrl._resuming is False
 
 
 class TestCancel:
@@ -137,13 +168,17 @@ class TestCancel:
 
     def test_finished_applies_and_persists(self, ctrl, tmp_path):
         fm = FaceMap(identities=(_ident("a", [1, 0, 0]),))
-        ctrl._on_analysis_finished(fm)
+        ctrl._on_analysis_finished(fm, 5, 5)
         ctrl._panel.set_analyzing.assert_called_with(False)
         ctrl._player.set_face_map.assert_called_once()
         applied = ctrl._player.set_face_map.call_args.args[0]
         assert len(applied.identities) == 1
-        # Sidecar written.
+        # Catalog + progress sidecars written.
         assert face_map_path(Path("/v/clip.mp4"), tmp_path / "face_maps").is_file()
+        from sinner2.pipeline.face_map_store import load_progress, progress_path
+
+        prog = load_progress(progress_path(Path("/v/clip.mp4"), tmp_path / "face_maps"))
+        assert prog["scanned"] == 5 and prog["total"] == 5
 
     def test_failed_resets_state(self, ctrl):
         ctrl._on_analysis_failed("boom")
@@ -152,25 +187,62 @@ class TestCancel:
 
 
 class TestEdits:
-    def test_delete_identity(self, ctrl):
+    def test_delete_identities(self, ctrl):
         ctrl._player.face_map.return_value = FaceMap(
-            identities=(_ident("a", [1, 0]), _ident("b", [0, 1]))
+            identities=(_ident("a", [1, 0]), _ident("b", [0, 1]), _ident("c", [0, 0, 1]))
         )
-        ctrl._on_delete_identity("a")
+        ctrl._on_delete_identities(["a", "c"])  # exclude multiple
         applied = ctrl._player.set_face_map.call_args.args[0]
         assert [i.id for i in applied.identities] == ["b"]
 
-    def test_assign_source_to_selected(self, ctrl):
-        ctrl._player.face_map.return_value = FaceMap(identities=(_ident("a", [1, 0]),))
-        ctrl._panel.selected_identity.return_value = "a"
+    def test_assign_one_source_to_many_selected(self, ctrl):
+        ctrl._player.face_map.return_value = FaceMap(
+            identities=(_ident("a", [1, 0]), _ident("b", [0, 1]))
+        )
+        ctrl._panel.selected_identities.return_value = ["a", "b"]
         assert ctrl.assign_source_to_selected(Path("/src/alice.png")) is True
         applied = ctrl._player.set_face_map.call_args.args[0]
         assert applied.identities[0].source_path == str(Path("/src/alice.png"))
+        assert applied.identities[1].source_path == str(Path("/src/alice.png"))
 
     def test_assign_without_selection_is_noop(self, ctrl):
-        ctrl._panel.selected_identity.return_value = None
+        ctrl._panel.selected_identities.return_value = []
         assert ctrl.assign_source_to_selected(Path("/s.png")) is False
         ctrl._player.set_face_map.assert_not_called()
+
+    def test_navigate_forwards_frame(self, qtbot, tmp_path):
+        navs = []
+        panel = MagicMock()
+        player = MagicMock()
+        player.face_map.return_value = FaceMap.empty()
+        c = FaceMapController(
+            panel=panel, player=player, detection_sink=SimpleNamespace(_latest=None),
+            store_dir=tmp_path, target_path=lambda: Path("/v.mp4"),
+            providers=lambda: None, detection_size=lambda: 640,
+            current_frame=lambda: 0, navigate=navs.append,
+        )
+        try:
+            c._on_navigate(42)
+            assert navs == [42]
+        finally:
+            c.shutdown()
+
+    def test_position_forwards_to_set_position(self, qtbot, tmp_path):
+        positions = []
+        panel = MagicMock()
+        player = MagicMock()
+        player.face_map.return_value = FaceMap.empty()
+        c = FaceMapController(
+            panel=panel, player=player, detection_sink=SimpleNamespace(_latest=None),
+            store_dir=tmp_path, target_path=lambda: Path("/v.mp4"),
+            providers=lambda: None, detection_size=lambda: 640,
+            current_frame=lambda: 0, set_position=positions.append,
+        )
+        try:
+            c._on_position(123)
+            assert positions == [123]
+        finally:
+            c.shutdown()
 
 
 class TestFaceClick:

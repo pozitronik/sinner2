@@ -7,6 +7,12 @@ from sinner2.pipeline.face_map import normalize
 from sinner2.pipeline.face_map_analyzer import analyze_target
 
 
+def _catalog(*args, **kwargs):
+    """analyze_target now returns (catalog, scanned, total); most tests want
+    just the catalog."""
+    return analyze_target(*args, **kwargs)[0]
+
+
 class _Face:
     def __init__(self, embedding, score=0.9, bbox=(0.0, 0.0, 4.0, 4.0),
                  sex=None, age=None):
@@ -49,7 +55,7 @@ class TestClustering:
             _identity(0, 1, 0),
             [_Face(_emb(0.95, 0.05, 0))],  # person A again
         ]
-        fm = analyze_target(_StubReader(frames), lambda f: f, stride=1, threshold=0.5)
+        fm = _catalog(_StubReader(frames), lambda f: f, stride=1, threshold=0.5)
         assert len(fm.identities) == 2
         counts = sorted(i.occurrences for i in fm.identities)
         assert counts == [1, 2]
@@ -59,14 +65,14 @@ class TestClustering:
             [_Face(_emb(1, 0, 0), score=0.5, bbox=(0.0, 0.0, 4.0, 4.0))],
             [_Face(_emb(1, 0, 0), score=0.9, bbox=(1.0, 1.0, 5.0, 5.0))],  # clearer
         ]
-        fm = analyze_target(_StubReader(frames), lambda f: f, stride=1)
+        fm = _catalog(_StubReader(frames), lambda f: f, stride=1)
         ident = fm.identities[0]
         assert ident.occurrences == 2
         assert ident.ref_frame == 1  # the higher-score detection
         assert ident.ref_bbox == (1.0, 1.0, 5.0, 5.0)
 
     def test_face_without_embedding_skipped(self):
-        fm = analyze_target(
+        fm = _catalog(
             _StubReader([[_Face(None)]]), lambda f: f, stride=1
         )
         assert fm.is_empty()
@@ -76,12 +82,12 @@ class TestClustering:
             [_Face(_emb(1, 0, 0), score=0.6, sex="M", age=20)],
             [_Face(_emb(1, 0, 0), score=0.95, sex="M", age=31)],  # clearer
         ]
-        fm = analyze_target(_StubReader(frames), lambda f: f, stride=1)
+        fm = _catalog(_StubReader(frames), lambda f: f, stride=1)
         assert fm.identities[0].sex == "M"
         assert fm.identities[0].age == 31  # from the higher-score occurrence
 
     def test_empty_target_is_empty_catalog(self):
-        fm = analyze_target(_StubReader([]), lambda f: f, stride=1)
+        fm = _catalog(_StubReader([]), lambda f: f, stride=1)
         assert fm.is_empty()
 
 
@@ -108,7 +114,7 @@ class TestStrideAndProgress:
         assert events[-1] == (3, 3)
 
     def test_threshold_propagates_to_catalog(self):
-        fm = analyze_target(
+        fm = _catalog(
             _StubReader([_identity(1, 0)]), lambda f: f, stride=1, threshold=0.62
         )
         assert fm.threshold == 0.62
@@ -169,10 +175,10 @@ class TestParallel:
         for k in range(12):
             frames.append([_Face(_emb(1, 0.02 * (k % 2), 0))])
             frames.append([_Face(_emb(0, 1, 0.02 * (k % 2)))])
-        serial = analyze_target(
+        serial = _catalog(
             _StubReader(frames), lambda f: f, stride=1, threshold=0.5, workers=1
         )
-        parallel = analyze_target(
+        parallel = _catalog(
             _StubReader(frames), lambda f: f, stride=1, threshold=0.5, workers=4
         )
         assert len(serial.identities) == len(parallel.identities) == 2
@@ -208,8 +214,64 @@ class TestCancellation:
             ev.set()  # cancel after the first frame is detected
             return frame
 
-        fm = analyze_target(
+        fm = _catalog(
             _StubReader(frames), detect, stride=1, cancel_event=ev
         )
         # Loop checks cancel at the top → second frame never scanned.
         assert len(fm.identities) == 1
+
+
+class TestPositionAndFirstFrame:
+    def test_emits_scan_position(self):
+        frames = [_identity(1, 0, 0) for _ in range(6)]
+        positions = []
+        analyze_target(
+            _StubReader(frames), lambda f: f, stride=2,
+            on_position=positions.append,
+        )
+        assert positions == [0, 2, 4]
+
+    def test_first_frame_is_earliest_occurrence(self):
+        # Person A at frames 0 and 4; first_frame must be 0 (not the clearest).
+        frames = [
+            [_Face(_emb(1, 0, 0), score=0.5)],   # frame 0
+            [_Face(_emb(0, 1, 0), score=0.9)],   # frame 1 (person B)
+            [_Face(_emb(1, 0, 0), score=0.99)],  # frame 2 (A again, clearer)
+        ]
+        fm = _catalog(_StubReader(frames), lambda f: f, stride=1)
+        a = next(i for i in fm.identities if i.ref_frame == 2)  # clearest = frame 2
+        assert a.first_frame == 0  # but earliest = frame 0
+
+
+class TestResume:
+    def test_returns_scanned_and_total(self):
+        frames = [_identity(1, 0, 0) for _ in range(10)]
+        _fm, scanned, total = analyze_target(
+            _StubReader(frames), lambda f: f, stride=2
+        )
+        assert scanned == 5 and total == 5  # indices 0,2,4,6,8
+
+    def test_start_index_skips_already_scanned(self):
+        frames = [_identity(1, 0, 0) for _ in range(10)]
+        seen = []
+        _fm, scanned, total = analyze_target(
+            _StubReader(frames), lambda f: (seen.append(1) or f),
+            stride=2, start_index=3,
+        )
+        assert len(seen) == 2  # indices[3:] of [0,2,4,6,8] = [6,8]
+        assert scanned == 5 and total == 5  # progress reflects the whole job
+
+    def test_initial_seeds_clustering(self):
+        from sinner2.pipeline.face_map import FaceMap, Identity, normalize as _n
+
+        seed = FaceMap(
+            identities=(Identity("a", _n([1, 0, 0]), source_path="/s.png", occurrences=4),)
+        )
+        frames = [[_Face(_emb(1, 0, 0))], [_Face(_emb(1, 0, 0))]]  # same person
+        fm, _s, _t = analyze_target(
+            _StubReader(frames), lambda f: f, stride=1, initial=seed, threshold=0.5
+        )
+        assert len(fm.identities) == 1
+        assert fm.identities[0].id == "a"            # joined the seeded identity
+        assert fm.identities[0].occurrences == 6     # 4 seeded + 2 new
+        assert fm.identities[0].source_path == "/s.png"  # assignment preserved

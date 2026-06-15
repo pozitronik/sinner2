@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import threading
 
-from sinner2.gui.face_map_job import FaceMapAnalysisJob
+from sinner2.gui.face_map_job import AnalysisRequest, FaceMapAnalysisJob
 from sinner2.pipeline.face_map import FaceMap, normalize
 
 
@@ -48,7 +48,7 @@ class TestRun:
         frames = [[_Face(_emb(1, 0, 0))], [_Face(_emb(0, 1, 0))]]
         job, reader = _job(frames)
         with qtbot.waitSignal(job.finished, timeout=2000) as blocker:
-            job.run("clip.mp4", 1, 0.5, ["CPUExecutionProvider"], 640)
+            job.run(AnalysisRequest("clip.mp4", stride=1, providers=["CPUExecutionProvider"]))
         face_map = blocker.args[0]
         assert isinstance(face_map, FaceMap)
         assert len(face_map.identities) == 2
@@ -60,7 +60,7 @@ class TestRun:
         events = []
         job.progress.connect(lambda d, t: events.append((d, t)))
         with qtbot.waitSignal(job.finished, timeout=2000):
-            job.run("clip.mp4", 2, 0.5, None, 640)
+            job.run(AnalysisRequest("clip.mp4", stride=2))
         assert events[-1] == (2, 2)  # indices 0, 2
 
     def test_reader_failure_emits_failed(self, qtbot):
@@ -71,7 +71,7 @@ class TestRun:
             reader_factory=boom, detect_factory=lambda _p, _s, _fast: (lambda f: f)
         )
         with qtbot.waitSignal(job.failed, timeout=2000) as blocker:
-            job.run("missing.mp4", 1, 0.5, None, 640)
+            job.run(AnalysisRequest("missing.mp4", stride=1))
         assert "cannot open target" in blocker.args[0]
 
     def test_detect_failure_emits_failed_and_releases(self, qtbot):
@@ -86,7 +86,7 @@ class TestRun:
             detect_factory=lambda _prov, _size, _fast: bad_detect,
         )
         with qtbot.waitSignal(job.failed, timeout=2000) as blocker:
-            job.run("clip.mp4", 1, 0.5, None, 640)
+            job.run(AnalysisRequest("clip.mp4", stride=1))
         assert "detector exploded" in blocker.args[0]
         assert reader.released
 
@@ -102,5 +102,5 @@ class TestRun:
         job, _ = _job(frames, detect=detect)
         job_ref.append(job)
         with qtbot.waitSignal(job.finished, timeout=2000) as blocker:
-            job.run("clip.mp4", 1, 0.5, None, 640)
+            job.run(AnalysisRequest("clip.mp4", stride=1))
         assert len(blocker.args[0].identities) == 1  # second frame not scanned

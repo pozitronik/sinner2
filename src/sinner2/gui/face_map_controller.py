@@ -18,12 +18,15 @@ from typing import Any
 
 from PySide6.QtCore import QObject, Qt, QThread, Signal
 
-from sinner2.gui.face_map_job import FaceMapAnalysisJob
+from sinner2.gui.face_map_job import AnalysisRequest, FaceMapAnalysisJob
 from sinner2.pipeline.face_map import FaceMap, Identity
 from sinner2.pipeline.face_map_store import (
     face_map_path,
     load_face_map,
+    load_progress,
+    progress_path,
     save_face_map,
+    save_progress,
 )
 
 # (identity_id) -> a target thumbnail object (a QPixmap in the app; anything in
@@ -35,8 +38,8 @@ SourceThumbFn = Callable[[str], Any]
 class FaceMapController(QObject):
     """Owns the analysis job + thread and the face-map editing flow."""
 
-    _requestAnalysis = Signal(str, int, float, object, int, object, bool, int, bool)
-    analyzingChanged = Signal(bool)  # the GUI locks editing while a scan runs
+    _requestAnalysis = Signal(object)  # an AnalysisRequest
+    analyzingChanged = Signal(bool)    # the GUI locks editing while a scan runs
 
     def __init__(
         self,
@@ -51,6 +54,8 @@ class FaceMapController(QObject):
         current_frame: Callable[[], int],
         sections: Callable[[], Any] | None = None,
         show_preview: Callable[[Any], None] | None = None,
+        set_position: Callable[[int], None] | None = None,
+        navigate: Callable[[int], None] | None = None,
         status: Callable[[str, int], None] | None = None,
         extract_target_thumb: TargetThumbFn | None = None,
         load_source_thumb: SourceThumbFn | None = None,
@@ -68,9 +73,13 @@ class FaceMapController(QObject):
         self._current_frame = current_frame
         self._sections = sections or (lambda: None)
         self._show_preview = show_preview
+        self._set_position = set_position
+        self._navigate = navigate
         self._status = status or (lambda _m, _ms=0: None)
         self._extract_target = extract_target_thumb or _default_target_thumb
         self._load_source = load_source_thumb or _default_source_thumb
+        self._resuming = False
+        self._signature = ""
 
         self._job = job or FaceMapAnalysisJob()
         self._thread = QThread(self)
@@ -91,6 +100,9 @@ class FaceMapController(QObject):
         self._job.preview.connect(
             self._on_preview, Qt.ConnectionType.QueuedConnection
         )
+        self._job.position.connect(
+            self._on_position, Qt.ConnectionType.QueuedConnection
+        )
 
         panel.analyzeRequested.connect(self._on_analyze_requested)
         # DIRECT connection: cancel() only sets a thread-safe Event, and the job
@@ -99,9 +111,17 @@ class FaceMapController(QObject):
         panel.cancelRequested.connect(
             self._job.cancel, Qt.ConnectionType.DirectConnection
         )
-        panel.deleteIdentityRequested.connect(self._on_delete_identity)
+        panel.deleteIdentitiesRequested.connect(self._on_delete_identities)
+        panel.navigateRequested.connect(self._on_navigate)
 
     # ---- Analysis ----
+
+    def _scan_signature(self, stride: int, sections: Any) -> str:
+        pairs = (
+            sections.to_pairs()
+            if sections is not None and not sections.is_empty() else []
+        )
+        return f"{int(stride)}|{pairs}"
 
     def _on_analyze_requested(self, stride: int) -> None:
         target = self._target_path()
@@ -109,29 +129,59 @@ class FaceMapController(QObject):
             self._status("Load a target first.", 3000)
             self._panel.set_analyzing(False)
             return
+        sections = self._sections()
+        self._signature = self._scan_signature(stride, sections)
+        # Resume an interrupted scan of the SAME shape (stride + sections) from
+        # where it stopped, seeding with the current catalog so nothing's lost.
+        prog = load_progress(progress_path(target, self._store_dir))
+        self._resuming = bool(
+            prog
+            and prog.get("signature") == self._signature
+            and 0 < int(prog.get("scanned", 0)) < int(prog.get("total", 0))
+        )
+        start_index = int(prog["scanned"]) if (self._resuming and prog) else 0
+        if self._resuming:
+            self._status(f"Resuming scan from {start_index}…", 3000)
+
         self._panel.set_analyzing(True)
         self.analyzingChanged.emit(True)
-        self._requestAnalysis.emit(
-            str(target),
-            int(stride),
-            self._player.face_map().threshold,
-            self._providers(),
-            self._detection_size(),
-            self._sections(),  # confine the scan to the selected parts, if any
-            bool(self._show_preview is not None and self._panel.preview_enabled()),
-            int(self._panel.workers()),  # parallel detection
-            bool(not self._panel.detect_demographics()),  # fast = skip age/sex
-        )
+        self._requestAnalysis.emit(AnalysisRequest(
+            target_path=str(target),
+            stride=int(stride),
+            threshold=self._player.face_map().threshold,
+            providers=self._providers(),
+            detection_size=self._detection_size(),
+            sections=sections,
+            preview=bool(
+                self._show_preview is not None and self._panel.preview_enabled()
+            ),
+            workers=int(self._panel.workers()),
+            fast=bool(not self._panel.detect_demographics()),
+            start_index=start_index,
+            initial=self._player.face_map() if self._resuming else None,
+        ))
 
-    def _on_analysis_finished(self, face_map: FaceMap) -> None:
+    def _on_analysis_finished(
+        self, catalog: FaceMap, scanned: int, total: int
+    ) -> None:
         self._panel.set_analyzing(False)
         self.analyzingChanged.emit(False)
-        # Keep any source assignments the user already made for surviving
-        # identities — but a fresh scan rebuilds the catalog, so carry over
-        # assignments by matching the new centroids against the old ones.
-        merged = _carry_over_assignments(self._player.face_map(), face_map)
-        self._apply(merged, persist=True)
-        self._status(f"Found {len(merged.identities)} face(s).", 4000)
+        # A resume seeded the existing catalog, so its assignments are already
+        # in the result. A fresh scan rebuilt it — carry assignments over by
+        # matching the new centroids against the old.
+        result = (
+            catalog if self._resuming
+            else _carry_over_assignments(self._player.face_map(), catalog)
+        )
+        self._apply(result, persist=True)
+        target = self._target_path()
+        if target is not None:
+            save_progress(
+                progress_path(target, self._store_dir),
+                self._signature, scanned, total,
+            )
+        tail = " (cancelled — Analyze again to resume)" if scanned < total else ""
+        self._status(f"Found {len(result.identities)} face(s){tail}.", 4000)
 
     def _on_analysis_failed(self, message: str) -> None:
         self._panel.set_analyzing(False)
@@ -142,23 +192,36 @@ class FaceMapController(QObject):
         if self._show_preview is not None:
             self._show_preview(frame)
 
+    def _on_position(self, frame_idx: int) -> None:
+        if self._set_position is not None:
+            self._set_position(int(frame_idx))
+
+    def _on_navigate(self, frame_idx: int) -> None:
+        if self._navigate is not None and frame_idx >= 0:
+            self._navigate(int(frame_idx))
+
     # ---- Edits (called by the panel / main window) ----
 
-    def _on_delete_identity(self, identity_id: str) -> None:
-        self._apply(self._player.face_map().without_identity(identity_id), persist=True)
+    def _on_delete_identities(self, identity_ids: list) -> None:
+        face_map = self._player.face_map()
+        for ident_id in identity_ids:
+            face_map = face_map.without_identity(str(ident_id))
+        self._apply(face_map, persist=True)
 
     def assign_source_to_selected(self, source_path: Path) -> bool:
-        """Assign ``source_path`` to the currently-selected identity. Returns
-        False (a no-op) when nothing is selected — the main window only routes a
-        library click here while the Faces tab is active."""
-        selected = self._panel.selected_identity()
-        if selected is None:
+        """Assign ``source_path`` to EVERY selected identity (one source for many
+        is the point of multi-select). Returns False (a no-op) when nothing's
+        selected — the main window only routes a library click here while the
+        Faces tab is active."""
+        selected = list(self._panel.selected_identities())
+        if not selected:
             return False
-        self._apply(
-            self._player.face_map().assign_source(selected, str(source_path)),
-            persist=True,
-        )
-        self._status("Source assigned.", 2000)
+        face_map = self._player.face_map()
+        for ident_id in selected:
+            face_map = face_map.assign_source(ident_id, str(source_path))
+        self._apply(face_map, persist=True)
+        n = len(selected)
+        self._status(f"Source assigned to {n} face(s).", 2000)
         return True
 
     def on_face_clicked(self, bbox: tuple[float, float, float, float]) -> None:

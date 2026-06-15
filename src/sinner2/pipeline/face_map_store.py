@@ -52,3 +52,35 @@ def delete_face_map(path: Path) -> bool:
         return True
     except FileNotFoundError:
         return False
+
+
+# ---- Scan progress (resume) ----
+
+def progress_path(target: Path, root: Path) -> Path:
+    """Sidecar holding how far the last scan got (separate from the catalog so
+    the catalog stays a clean value object)."""
+    digest = hashlib.sha1(str(target).encode()).hexdigest()[:16]
+    return root / f"{digest}.progress.json"
+
+
+def load_progress(path: Path) -> dict | None:
+    """``{signature, scanned, total}`` of the last scan, or None when absent /
+    unreadable. Never raises."""
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except (json.JSONDecodeError, OSError, ValueError):
+        return None
+
+
+def save_progress(path: Path, signature: str, scanned: int, total: int) -> None:
+    """Atomically record scan progress for resume."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(
+        json.dumps({"signature": signature, "scanned": scanned, "total": total}),
+        encoding="utf-8",
+    )
+    os.replace(tmp, path)

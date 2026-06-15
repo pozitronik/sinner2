@@ -469,6 +469,9 @@ class SinnerMainWindow(QMainWindow):
             current_frame=self._current_display_frame,
             sections=self._controller.sections,
             show_preview=self._display.show_frame,
+            set_position=self._transport.set_current_frame,
+            # Deferred: the session facade is built a few lines below.
+            navigate=lambda frame: self._session.seek_to(frame),
             status=self._status_bar.show_message,
             parent=self,
         )
@@ -1611,7 +1614,16 @@ class SinnerMainWindow(QMainWindow):
         Cancel works. On finish, unlock (unless a batch is still running)."""
         if active:
             self._session.pause()
+            # The scan drives the display directly; stop the overlay polling +
+            # clear stale (paused-frame) boxes so they don't draw over the scan.
+            self._overlay_timer.stop()
+            self._face_overlay.clear()
         self._set_editing_locked(active or self._batch_active)
+        if not active:
+            # Restore the pick overlay if the Faces tab is still the front one.
+            self._set_face_pick_mode(
+                self._side_panel.currentWidget() is self._face_map_panel
+            )
 
     def _set_face_pick_mode(self, on: bool) -> None:
         """Enable clicking faces on the preview to select/capture an identity.
@@ -2212,7 +2224,7 @@ class SinnerMainWindow(QMainWindow):
             return  # editing locked during a render
         if (
             self._side_panel.currentWidget() is self._face_map_panel
-            and self._face_map_panel.selected_identity() is not None
+            and self._face_map_panel.selected_identities()
             and self._face_map_ctl.assign_source_to_selected(path)
         ):
             return

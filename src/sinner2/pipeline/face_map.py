@@ -81,8 +81,9 @@ class Identity:
     source_path: str | None = None
     occurrences: int = 1
     label: str | None = None
-    ref_frame: int | None = None
+    ref_frame: int | None = None  # clearest occurrence — drives the thumbnail
     ref_bbox: tuple[float, float, float, float] | None = None
+    first_frame: int | None = None  # EARLIEST occurrence — drives navigation
     # Demographic hints from the representative detection (only the full
     # buffalo_l pack provides them — None in fast det+rec-only mode). Display +
     # grouping only; they don't affect swap routing.
@@ -214,11 +215,16 @@ class FaceMap:
         ref_bbox: tuple[float, float, float, float],
         sex: str | None = None,
         age: int | None = None,
+        first_frame: int | None = None,
     ) -> "FaceMap":
         """Record an identity's representative occurrence (set by the analysis
-        pass for thumbnail extraction) + its demographic hints."""
+        pass for thumbnail extraction), its first-seen frame (for navigation),
+        and its demographic hints."""
         idents = [
-            replace(i, ref_frame=ref_frame, ref_bbox=ref_bbox, sex=sex, age=age)
+            replace(
+                i, ref_frame=ref_frame, ref_bbox=ref_bbox, sex=sex, age=age,
+                first_frame=first_frame if first_frame is not None else i.first_frame,
+            )
             if i.id == identity_id else i
             for i in self.identities
         ]
@@ -276,6 +282,7 @@ class FaceMap:
                     "label": i.label,
                     "ref_frame": i.ref_frame,
                     "ref_bbox": list(i.ref_bbox) if i.ref_bbox is not None else None,
+                    "first_frame": i.first_frame,
                     "sex": i.sex,
                     "age": i.age,
                 }
@@ -294,6 +301,7 @@ class FaceMap:
                 label=d.get("label"),
                 ref_frame=d.get("ref_frame"),
                 ref_bbox=_bbox4(d.get("ref_bbox")),
+                first_frame=d.get("first_frame"),
                 sex=d.get("sex"),
                 age=d.get("age"),
             )

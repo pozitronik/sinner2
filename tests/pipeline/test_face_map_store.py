@@ -68,3 +68,28 @@ class TestDelete:
 
     def test_delete_missing_is_false(self, tmp_path):
         assert delete_face_map(tmp_path / "nope.json") is False
+
+
+class TestProgress:
+    def test_round_trips(self, tmp_path):
+        from sinner2.pipeline.face_map_store import (
+            load_progress,
+            progress_path,
+            save_progress,
+        )
+
+        p = progress_path(Path("/v/clip.mp4"), tmp_path)
+        save_progress(p, "15|[]", 30, 100)
+        prog = load_progress(p)
+        assert prog == {"signature": "15|[]", "scanned": 30, "total": 100}
+
+    def test_progress_path_distinct_from_catalog(self, tmp_path):
+        from sinner2.pipeline.face_map_store import face_map_path, progress_path
+
+        t = Path("/v/clip.mp4")
+        assert progress_path(t, tmp_path) != face_map_path(t, tmp_path)
+
+    def test_load_missing_is_none(self, tmp_path):
+        from sinner2.pipeline.face_map_store import load_progress
+
+        assert load_progress(tmp_path / "nope.progress.json") is None

@@ -223,6 +223,12 @@ class TestReference:
         assert restored.identities[0].sex == "F"
         assert restored.identities[0].age == 28
 
+    def test_first_frame_set_and_round_trip(self):
+        m = FaceMap(identities=(Identity("a", _unit(1, 0)),))
+        m2 = m.with_reference("a", 5, (0.0, 1.0, 2.0, 3.0), first_frame=2)
+        assert m2.identities[0].first_frame == 2
+        assert FaceMap.from_dict(m2.to_dict()).identities[0].first_frame == 2
+
 
 class TestSerialization:
     def test_round_trips(self):

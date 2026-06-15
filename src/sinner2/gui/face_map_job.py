@@ -1,14 +1,16 @@
 """Background job that builds a target's face-map catalog off the GUI thread.
 
 Wraps the headless `analyze_target` scan in a QObject that lives on its own
-QThread (like FaceDetectionProbe): the GUI kicks it via a queued `run` and gets
-`progress` / `finished` / `failed` back. The reader + detector builders are
-injectable so tests need no media or models.
+QThread (like FaceDetectionProbe): the GUI kicks it via a queued `run` carrying
+an `AnalysisRequest`, and gets `progress` / `preview` / `position` / `finished`
+/ `failed` back. The reader + detector builders are injectable so tests need no
+media or models.
 """
 from __future__ import annotations
 
 import threading
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +23,24 @@ from sinner2.pipeline.face_map_analyzer import DetectFn, analyze_target
 
 ReaderFactory = Callable[[str], TargetReader]
 DetectFactory = Callable[[list[str] | None, int, bool], DetectFn]
+
+
+@dataclass
+class AnalysisRequest:
+    """Everything one scan needs. Carried verbatim across the queued `run`
+    signal so the parameter list never has to grow into the signal signature."""
+
+    target_path: str
+    stride: int = 15
+    threshold: float = 0.5
+    providers: list[str] | None = None
+    detection_size: int = 640
+    sections: Any = None              # SectionSet | None
+    preview: bool = False
+    workers: int = 1
+    fast: bool = True
+    start_index: int = 0              # resume: skip this many sampled positions
+    initial: Any = field(default=None)  # FaceMap | None — seed for a resume
 
 
 def _default_reader(target_path: str) -> TargetReader:
@@ -53,10 +73,11 @@ class FaceMapAnalysisJob(QObject):
     one (thread-safe). Emits from whatever thread `run` executes on, so the GUI
     connects the signals with a queued connection."""
 
-    progress = Signal(int, int)   # frames scanned, frames to scan
-    finished = Signal(object)     # the built FaceMap
+    progress = Signal(int, int)        # sampled positions done, total
+    finished = Signal(object, int, int)  # catalog, scanned positions, total
     failed = Signal(str)
-    preview = Signal(object)      # a frame being scanned (when preview is on)
+    preview = Signal(object)           # a frame being scanned (when preview is on)
+    position = Signal(int)             # the frame index currently being scanned
 
     def __init__(
         self,
@@ -73,41 +94,34 @@ class FaceMapAnalysisJob(QObject):
     def cancel(self) -> None:
         self._cancel.set()
 
-    @Slot(str, int, float, object, int, object, bool, int, bool)
-    def run(
-        self,
-        target_path: str,
-        stride: int,
-        threshold: float,
-        providers: Any,
-        detection_size: int,
-        sections: Any = None,
-        preview: bool = False,
-        workers: int = 1,
-        fast: bool = True,
-    ) -> None:
+    @Slot(object)
+    def run(self, request: AnalysisRequest) -> None:
         self._cancel.clear()
         try:
-            reader = self._reader_factory(target_path)
+            reader = self._reader_factory(request.target_path)
         except Exception as exc:  # noqa: BLE001 — surfaced to the GUI
             self.failed.emit(f"cannot open target: {exc}")
             return
         # Copy the previewed frame: the reader may reuse its decode buffer, and
         # the frame crosses to the GUI thread via a queued signal.
         on_preview = (
-            (lambda frame: self.preview.emit(frame.copy())) if preview else None
+            (lambda frame: self.preview.emit(frame.copy()))
+            if request.preview else None
         )
         try:
             detect = self._detect_factory(
-                list(providers) if providers else None, detection_size, fast
+                list(request.providers) if request.providers else None,
+                request.detection_size, request.fast,
             )
-            face_map = analyze_target(
+            catalog, scanned, total = analyze_target(
                 reader, detect,
-                stride=stride, threshold=threshold, sections=sections,
-                workers=workers,
+                stride=request.stride, threshold=request.threshold,
+                sections=request.sections, workers=request.workers,
+                start_index=request.start_index, initial=request.initial,
                 cancel_event=self._cancel,
-                on_progress=lambda done, total: self.progress.emit(done, total),
+                on_progress=lambda done, tot: self.progress.emit(done, tot),
                 on_preview=on_preview,
+                on_position=lambda idx: self.position.emit(idx),
             )
         except Exception as exc:  # noqa: BLE001
             self.failed.emit(str(exc))
@@ -117,4 +131,4 @@ class FaceMapAnalysisJob(QObject):
                 reader.release()
             except Exception:  # noqa: BLE001 — best-effort
                 pass
-        self.finished.emit(face_map)
+        self.finished.emit(catalog, scanned, total)
