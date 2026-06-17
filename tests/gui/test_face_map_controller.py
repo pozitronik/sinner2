@@ -238,6 +238,34 @@ class TestEdits:
         applied = ctrl._player.set_face_map.call_args.args[0]
         assert [i.id for i in applied.identities] == ["b"]
 
+    def test_deleting_last_identity_announces_routing_off(self, ctrl):
+        # Removing the final face empties the map → routing force-disables; the
+        # user must be told (the source picker silently unlocks otherwise).
+        msgs: list[str] = []
+        ctrl._status = lambda m, *a: msgs.append(m)
+        ctrl._catalog = FaceMap(identities=(_ident("a", [1, 0]),))
+        ctrl._on_delete_identities(["a"])
+        assert ctrl._catalog.is_empty()
+        assert any("routing off" in m for m in msgs)
+
+    def test_deleting_non_last_identity_is_silent(self, ctrl):
+        # Removing one of several faces does NOT empty the map → no message.
+        msgs: list[str] = []
+        ctrl._status = lambda m, *a: msgs.append(m)
+        ctrl._catalog = FaceMap(identities=(_ident("a", [1, 0]), _ident("b", [0, 1])))
+        ctrl._on_delete_identities(["a"])
+        assert not msgs
+
+    def test_deleting_last_identity_silent_when_routing_off(self, ctrl):
+        # Routing already off → emptying the map flips nothing visible, so no
+        # message (only an on→off routing flip is worth announcing).
+        msgs: list[str] = []
+        ctrl._status = lambda m, *a: msgs.append(m)
+        ctrl._mode_active = False
+        ctrl._catalog = FaceMap(identities=(_ident("a", [1, 0]),))
+        ctrl._on_delete_identities(["a"])
+        assert not msgs
+
     def test_merge_identities(self, ctrl):
         ctrl._catalog = FaceMap(identities=(  # noqa: SLF001
             _ident("a", [1, 0], occurrences=4),

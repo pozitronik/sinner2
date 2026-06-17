@@ -277,7 +277,17 @@ class FaceMapController(QObject):
         face_map = self._catalog
         for ident_id in identity_ids:
             face_map = face_map.without_identity(str(ident_id))
+        emptied = face_map.is_empty() and not self._catalog.is_empty()
         self._apply(face_map, persist=True)
+        if emptied and self._mode_active:
+            # The last face is gone while routing was ON, so the map can no
+            # longer route: the GUI forces single-source and unlocks the source
+            # picker. Say why — the editor stays open, so a silent flip looks
+            # like a glitch. (No-op when routing was already off.)
+            self._status(
+                "Last face removed — face-map routing off; using the single source.",
+                5000,
+            )
 
     def _on_merge_identities(self, identity_ids: list) -> None:
         """Fold the selected identities into one (the fragmentation fix). A pure
