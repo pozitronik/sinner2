@@ -121,6 +121,7 @@ class QFaceMapPanel(QWidget):
     selectionChanged = Signal()                # table row selection changed
     settingsChanged = Signal()                 # a scan-settings control changed
     useFaceMapToggled = Signal(bool)           # the in-panel routing toggle
+    showOverlayToggled = Signal(bool)          # show/hide the face-map preview overlay
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -161,7 +162,20 @@ class QFaceMapPanel(QWidget):
             "Face recognition settings. Remembered per target."
         )
         self._use_face_map_check.toggled.connect(self.useFaceMapToggled)
-        form.addRow(self._use_face_map_check)
+        self._use_face_map_check.toggled.connect(self._update_show_overlay_enabled)
+        # The face-map overlay (boxes + selected-identity highlight) is managed
+        # here, not by F8 — this toggles it so you can get a clean preview after
+        # assigning. Only meaningful while routing is on, so grayed otherwise.
+        self._show_overlay_check = QCheckBox("Show overlay")
+        self._show_overlay_check.setChecked(True)
+        self._show_overlay_check.setEnabled(False)
+        self._show_overlay_check.setToolTip(
+            "Show detected-face boxes + the selected person's highlight on the "
+            "preview while the face map is in use. Turn off for a clean view "
+            "after you've assigned sources."
+        )
+        self._show_overlay_check.toggled.connect(self.showOverlayToggled)
+        form.addRow(_field_row(self._use_face_map_check, self._show_overlay_check))
         top_divider = QFrame()
         top_divider.setFrameShape(QFrame.Shape.HLine)
         top_divider.setFrameShadow(QFrame.Shadow.Sunken)
@@ -442,18 +456,27 @@ class QFaceMapPanel(QWidget):
     def use_face_map(self) -> bool:
         return self._use_face_map_check.isChecked()
 
+    def show_overlay(self) -> bool:
+        return self._show_overlay_check.isChecked()
+
     def set_use_face_map(self, on: bool) -> None:
         """Reflect the routing state WITHOUT emitting (the owner syncs it from the
         settings switch / restore / auto-on)."""
         self._use_face_map_check.blockSignals(True)
         self._use_face_map_check.setChecked(bool(on))
         self._use_face_map_check.blockSignals(False)
+        self._update_show_overlay_enabled()
 
     def set_face_map_available(self, available: bool) -> None:
         """Enable the 'Use face map' toggle only once a map exists for the target
         (you can't route through a map that isn't built). The scanner controls
         stay usable regardless — this gates only the toggle."""
         self._use_face_map_check.setEnabled(bool(available))
+
+    def _update_show_overlay_enabled(self) -> None:
+        """'Show overlay' only does anything while the map is in use — gray it
+        when routing is off so the dependency is visible."""
+        self._show_overlay_check.setEnabled(self._use_face_map_check.isChecked())
 
     # ---- Selection ----
 

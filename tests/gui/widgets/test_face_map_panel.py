@@ -336,3 +336,19 @@ class TestUseFaceMapToggle:
         panel.set_use_face_map(True)
         assert panel.use_face_map() is True
         assert fired == []  # synced from the owner — no echo
+
+    def test_show_overlay_default_on_and_gated_by_use_face_map(self, panel):
+        # Defaults on (you see faces when editing); grayed unless routing is on
+        # (it only controls the overlay in face-map mode).
+        assert panel.show_overlay() is True
+        assert panel._show_overlay_check.isEnabled() is False  # noqa: SLF001 — routing off
+        panel._use_face_map_check.setChecked(True)  # noqa: SLF001
+        assert panel._show_overlay_check.isEnabled() is True  # noqa: SLF001
+        panel._use_face_map_check.setChecked(False)  # noqa: SLF001
+        assert panel._show_overlay_check.isEnabled() is False  # noqa: SLF001
+
+    def test_show_overlay_toggle_emits(self, panel, qtbot):
+        panel._use_face_map_check.setChecked(True)  # noqa: SLF001 — enable it
+        with qtbot.waitSignal(panel.showOverlayToggled) as blocker:
+            panel._show_overlay_check.setChecked(False)  # noqa: SLF001
+        assert blocker.args == [False]

@@ -394,6 +394,20 @@ class TestStatusActionButtons:
         assert window._diagnostic_overlay_on() is False  # noqa: SLF001 — F8 yields
         assert window._face_overlay._pick_enabled is True  # noqa: SLF001 — face-map pick
 
+    def test_show_overlay_toggle_clears_face_map_overlay(self, window):
+        # In face-map mode the Faces panel's 'Show overlay' toggle is the off
+        # switch (F8 is grayed) — turning it off hides the face-map overlay.
+        window._use_face_map = True  # noqa: SLF001
+        window._faces_mode = True  # noqa: SLF001
+        window._face_map_panel.set_use_face_map(True)  # noqa: SLF001 — enables Show overlay
+        assert window._face_map_overlay_on() is True  # noqa: SLF001 — default on
+        window._face_map_panel._show_overlay_check.setChecked(False)  # noqa: SLF001
+        assert window._face_map_overlay_on() is False  # noqa: SLF001 — cleared
+        assert window._face_overlay.isHidden() is True  # noqa: SLF001
+        # F8 still drives only the single-source diagnostic (off in face-map mode).
+        window._face_overlay_on = True  # noqa: SLF001
+        assert window._diagnostic_overlay_on() is False  # noqa: SLF001 — routing on
+
     def test_analysis_forces_overlay_down(self, window, monkeypatch):
         # A scan owns the display: the overlay is fully down regardless of mode,
         # and comes back when it finishes.

@@ -532,6 +532,8 @@ class SinnerMainWindow(QMainWindow):
         # The in-panel "Use face map" toggle is the SAME routing switch as the one
         # in the Face-recognition settings — same handler keeps them in sync.
         self._face_map_panel.useFaceMapToggled.connect(self._on_use_face_map_toggled)
+        # The Faces panel's "Show overlay" toggle controls the face-map overlay.
+        self._face_map_panel.showOverlayToggled.connect(self._on_show_overlay_toggled)
         # The Sources-tab "Faces" toggle drives face-mapping MODE: reveal the
         # panel, lock the global source picker, enable preview face-picking, and
         # route source-tile clicks to the selected face(s).
@@ -1675,16 +1677,22 @@ class SinnerMainWindow(QMainWindow):
         ) and not self._face_analyzing
 
     def _face_map_overlay_on(self) -> bool:
-        """The face-map overlay (selected-identity highlight + click-to-pick) is
-        gated by the 'Use face map' TOGGLE — the single gate for face-map mode —
-        AND the editor being open (so there's a selection). With the toggle OFF
-        the preview is pure single-source: no face-map overlay at all."""
-        return self._use_face_map and self._faces_mode
+        """The face-map overlay (boxes + selected-identity highlight + pick) is
+        gated by the 'Use face map' TOGGLE (the single gate for face-map mode) AND
+        the editor being open (so there's a selection) AND the Faces panel's own
+        'Show overlay' toggle (so you can clear it for a clean preview after
+        assigning). Toggle OFF → pure single-source, no face-map overlay."""
+        return (
+            self._use_face_map
+            and self._faces_mode
+            and self._face_map_panel.show_overlay()
+        )
 
     def _diagnostic_overlay_on(self) -> bool:
-        """The F8 'Show detection overlay' diagnostic boxes — shown whenever the
-        face-map overlay isn't owning the surface (toggle off, or editor closed)."""
-        return self._face_overlay_on and not self._face_map_overlay_on()
+        """The F8 'Show detection overlay' diagnostic boxes — single-source mode
+        only. In face-map mode the overlay is the face-map one (managed by the
+        Faces panel's 'Show overlay'), so F8 is grayed and shows nothing here."""
+        return self._face_overlay_on and not self._use_face_map
 
     def _current_display_frame(self) -> int:
         ex = self._controller.executor()
@@ -1703,6 +1711,12 @@ class SinnerMainWindow(QMainWindow):
     def _on_use_face_map_toggled(self, on: bool) -> None:
         """The user toggled the Face-detector "Use face map" switch."""
         self._set_use_face_map(bool(on))
+
+    def _on_show_overlay_toggled(self, _on: bool) -> None:
+        """The Faces panel's 'Show overlay' toggle — re-evaluate the overlay (it
+        gates the face-map overlay) + the highlight."""
+        self._refresh_overlay_state()
+        self._refresh_face_highlight()
 
     def _on_use_for_playback_restored(self, use: bool) -> None:
         """A target's saved 'use the map' preference loaded — apply it without
