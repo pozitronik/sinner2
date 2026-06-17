@@ -1011,6 +1011,47 @@ class TestGeometryMappingPath:
         # centroid-as-embedding routes back to its own identity's source
         assert fm.source_for(f.normed_embedding) == "/s.png"
 
+    def test_geometry_rescales_to_processing_scaled_frame(self):
+        # Geometry baked at native res must rescale to the (downscaled) frame the
+        # swapper actually processes, or mapped swaps land at the wrong coords.
+        from types import SimpleNamespace
+
+        from sinner2.pipeline.face_map import FaceMap, Identity, normalize
+        from sinner2.pipeline.face_map_geometry import FrameGeometry, GeomFace
+
+        fm = FaceMap(
+            identities=(Identity("a", normalize([1, 0, 0]), source_path="/s"),),
+            threshold=0.5,
+        )
+        kps = tuple((float(i * 2), 0.0) for i in range(5))  # x = 0,2,4,6,8
+        geom = FrameGeometry(
+            faces={5: (GeomFace("a", (10.0, 20.0, 30.0, 40.0), kps),)},
+            frame_count=10,
+            bake_size=(640, 480),  # baked at 640x480
+        )
+        frame = np.zeros((240, 320, 3), np.uint8)  # live at half (320x240)
+        f = self._fs(fm)._geometry_faces(  # noqa: SLF001
+            geom, SimpleNamespace(frame_index=5), frame
+        )[0]
+        assert tuple(float(v) for v in f.bbox) == (5.0, 10.0, 15.0, 20.0)  # halved
+        assert float(f.kps[2][0]) == 2.0  # kps x halved (4 -> 2)
+
+    def test_geometry_no_rescale_when_bake_size_unset(self):
+        # Old sidecars (no bake_size) assume the live frame → never rescale.
+        from types import SimpleNamespace
+
+        from sinner2.pipeline.face_map import FaceMap, Identity, normalize
+
+        fm = FaceMap(
+            identities=(Identity("a", normalize([1, 0, 0]), source_path="/s"),),
+            threshold=0.5,
+        )
+        frame = np.zeros((240, 320, 3), np.uint8)
+        f = self._fs(fm)._geometry_faces(  # noqa: SLF001
+            self._geom(5), SimpleNamespace(frame_index=5), frame  # bake_size=None
+        )[0]
+        assert tuple(float(v) for v in f.bbox) == (0.0, 0.0, 4.0, 4.0)  # unchanged
+
     def test_baked_embedding_routes_against_live_catalog(self):
         # A0: a face whose baked identity_id is GONE from the catalog still routes
         # — by its baked embedding — to the current best match. This is what lets

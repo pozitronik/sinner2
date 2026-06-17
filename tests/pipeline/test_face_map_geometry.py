@@ -87,6 +87,25 @@ class TestSaveLoad:
         for got, want in zip(f0.embedding, emb_a):
             assert abs(got - want) < 1e-3
 
+    def test_bake_size_round_trips(self, tmp_path):
+        # The bake resolution survives the round-trip so the runtime can rescale;
+        # absent (old sidecar) → None.
+        p = geometry_path(Path("/v/bake.mp4"), tmp_path)
+        g = FrameGeometry(
+            faces={0: (GeomFace("a", (0.0, 0.0, 4.0, 4.0),
+                                _kps(lambda i: (i, i))),)},
+            frame_count=1,
+            bake_size=(1920, 1080),
+        )
+        save_geometry(p, g)
+        loaded = load_geometry(p)
+        assert loaded is not None and loaded.bake_size == (1920, 1080)
+        # A geometry saved without bake_size loads as None (back-compat).
+        p2 = geometry_path(Path("/v/nobake.mp4"), tmp_path)
+        save_geometry(p2, FrameGeometry(faces=g.faces, frame_count=1))
+        loaded2 = load_geometry(p2)
+        assert loaded2 is not None and loaded2.bake_size is None
+
     def test_roll_round_trips(self, tmp_path):
         # D5: a baked per-face roll survives the round-trip; absent → None.
         p = geometry_path(Path("/v/roll.mp4"), tmp_path)

@@ -33,6 +33,14 @@ class _StubReader:
     def frame_count(self):
         return len(self._frames)
 
+    @property
+    def width(self):
+        return 64
+
+    @property
+    def height(self):
+        return 48
+
     def read(self, idx):
         return self._frames[idx] if 0 <= idx < len(self._frames) else None
 

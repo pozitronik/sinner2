@@ -178,9 +178,13 @@ class _GeometryCollector:
                 )
             )
 
-    def finish(self, frame_count: int, refined: bool) -> FrameGeometry:
+    def finish(
+        self, frame_count: int, refined: bool,
+        bake_size: tuple[int, int] | None,
+    ) -> FrameGeometry:
         return FrameGeometry(
-            {k: tuple(v) for k, v in self.faces.items()}, frame_count, refined
+            {k: tuple(v) for k, v in self.faces.items()},
+            frame_count, refined, bake_size,
         )
 
 
@@ -229,7 +233,10 @@ def precompute_geometry(
             reader, detect, indices, collector, workers, counter, total,
             cancelled, on_progress, None, on_position, 0.0,
         )
-    return collector.finish(total_frames, refined), counter.done, total
+    # Bake resolution = what the reader produces (the scan reads at native,
+    # processing_scale=1.0); the runtime rescales geometry to its own frame size.
+    bake_size = (int(reader.width), int(reader.height))
+    return collector.finish(total_frames, refined, bake_size), counter.done, total
 
 
 def analyze_target(

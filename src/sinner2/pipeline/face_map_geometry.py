@@ -61,6 +61,12 @@ class FrameGeometry:
     faces: dict[int, tuple[GeomFace, ...]] = field(default_factory=dict)
     frame_count: int = 0
     refined: bool = False
+    # The frame resolution (width, height) the bboxes/kps were baked at — the
+    # scan reads at native (processing_scale=1.0). The runtime rescales to the
+    # frame it actually processes (which a processing_scale < 1 downsizes), so
+    # detection-free swaps land correctly at any scale. None = old sidecar →
+    # assume the geometry already matches the live frame (no rescale).
+    bake_size: tuple[int, int] | None = None
 
     def faces_at(self, frame: int) -> tuple[GeomFace, ...]:
         return self.faces.get(int(frame), ())
@@ -134,6 +140,9 @@ def save_geometry(path: Path, geometry: FrameGeometry) -> None:
     # scan either baked angles or didn't).
     if have_rolls and rolls and len(rolls) == len(frames):
         arrays["roll"] = np.asarray(rolls, dtype=np.float32)
+    # The bake resolution, so the runtime can rescale to a processing-scaled frame.
+    if geometry.bake_size is not None:
+        arrays["bake_size"] = np.asarray(geometry.bake_size, dtype=np.int32)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     # Write to the temp file object so np.savez doesn't append its own ".npz",
@@ -161,6 +170,11 @@ def load_geometry(path: Path) -> FrameGeometry | None:
             # Older sidecars have no baked embeddings → route by id at runtime.
             embeddings = data["embeddings"] if "embeddings" in data else None
             rolls = data["roll"] if "roll" in data else None
+            # Older sidecars have no bake size → assume native (no rescale).
+            bake_size = (
+                (int(data["bake_size"][0]), int(data["bake_size"][1]))
+                if "bake_size" in data else None
+            )
     except (OSError, ValueError, KeyError, EOFError, BadZipFile) as exc:
         _log.warning("face geometry unreadable (%s); ignoring", exc)
         return None
@@ -183,7 +197,7 @@ def load_geometry(path: Path) -> FrameGeometry | None:
         )
         faces.setdefault(int(frames[i]), []).append(gf)
     return FrameGeometry(
-        {k: tuple(v) for k, v in faces.items()}, frame_count, refined
+        {k: tuple(v) for k, v in faces.items()}, frame_count, refined, bake_size
     )
 
 

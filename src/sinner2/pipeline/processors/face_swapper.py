@@ -464,12 +464,17 @@ class FaceSwapper:
         self._geometry = geometry
 
     def _geometry_faces(
-        self, geometry: FrameGeometry | None, ctx: Any
+        self, geometry: FrameGeometry | None, ctx: Any,
+        frame: Frame | None = None,
     ) -> list[Any] | None:
         """Rebuild this frame's faces from ``geometry`` (no detection), or None to
         fall back to detecting. Each face gets its identity's centroid as the
         embedding so the multi-source routing maps it unchanged. Gated on mapping
-        being active + multi-source-capable + a known frame index."""
+        being active + multi-source-capable + a known frame index.
+
+        Geometry is baked at the scan resolution; rescale its bboxes/kps to the
+        frame we actually process (a processing_scale < 1 downsizes it) so the
+        swap lands correctly. Old sidecars (no bake_size) assume the live frame."""
         face_map = self._face_map
         if (
             geometry is None
@@ -480,6 +485,12 @@ class FaceSwapper:
             or getattr(ctx, "frame_index", None) is None
         ):
             return None
+        sx, sy = 1.0, 1.0
+        bake = geometry.bake_size
+        if frame is not None and bake is not None and bake[0] > 0 and bake[1] > 0:
+            fh, fw = frame.shape[:2]
+            sx, sy = fw / bake[0], fh / bake[1]
+        rescale = sx != 1.0 or sy != 1.0
         by_id = {ident.id: ident for ident in face_map.identities}
         faces: list[Any] = []
         for gf in geometry.faces_at(ctx.frame_index):
@@ -491,9 +502,13 @@ class FaceSwapper:
             emb = gf.embedding or (ident.centroid if ident is not None else None)
             if not emb:
                 continue
+            bbox, kps = gf.bbox, gf.kps
+            if rescale:
+                bbox = (bbox[0] * sx, bbox[1] * sy, bbox[2] * sx, bbox[3] * sy)
+                kps = tuple((x * sx, y * sy) for x, y in kps)
             faces.append(
                 _MappedFace(
-                    gf.bbox, gf.kps, emb, gf.roll, **_mapped_meta(ident, gf.roll)
+                    bbox, kps, emb, gf.roll, **_mapped_meta(ident, gf.roll)
                 )
             )
         # No precomputed faces for this frame (outside the analysed range, a
@@ -573,7 +588,7 @@ class FaceSwapper:
         # Face-mapping's detection-free runtime: when geometry is loaded for this
         # frame, rebuild faces from it (NO detection). Otherwise detect as usual.
         geometry = self._geometry
-        geom_faces = self._geometry_faces(geometry, ctx)
+        geom_faces = self._geometry_faces(geometry, ctx, frame)
         if geom_faces is not None:
             faces = geom_faces
             already_refined = geometry.refined  # type: ignore[union-attr]
