@@ -655,8 +655,9 @@ class QProcessorControls(QWidget):
         self._detection_size.setSingleStep(32)
         self._detection_size.setValue(swapper_defaults.detection_size)
         self._detection_size.setToolTip(
-            "Face-detector input size (px). Smaller = faster detection but may "
-            "miss small or distant faces. 640 is the default; multiples of 32."
+            "Face-detector input size (px) for LIVE playback — separate from the "
+            "Faces panel's scan size. Smaller = faster detection but may miss "
+            "small or distant faces. 640 is the default; multiples of 32."
         )
         self._detection_size.valueChanged.connect(self.configChanged)
         face_form.addRow("Detection size", self._detection_size)

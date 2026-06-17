@@ -102,19 +102,19 @@ class QSidePanel(QTabWidget):
             self.addTab(self._live_view, "Live")
 
     def _build_sources_tab(self) -> QWidget:
-        """Sources tab = the face-mapping panel beside the sources library, with
-        a "Faces" toggle hosted INLINE in the library's control row (next to the
-        filter edit) that reveals the panel. The toggle drives face-mapping MODE
-        — its facesModeToggled signal is wired upstream to lock the global source
-        picker, enable preview face picks, and route tile clicks to selection."""
+        """Sources tab = the face-map panel beside the sources library, with a
+        "Face map" toggle hosted INLINE in the library's control row (next to the
+        filter edit) that reveals the panel. The toggle opens the face-map EDITOR
+        — its facesModeToggled signal is wired upstream to enable preview face
+        picks and route source-tile clicks to the selected face."""
         if self._face_map_panel is None:
             return self._sources_library
         self._faces_toggle = QPushButton("Face map")
         self._faces_toggle.setCheckable(True)
         self._faces_toggle.setToolTip(
             "Open the face-map editor — discover people and map each to a source "
-            "(file targets only). Routing is the 'Use face map' switch in the "
-            "Face detector settings."
+            "(file targets only). Routing playback through the map is the "
+            "'Use face map' switch in the Faces settings group."
         )
         self._faces_toggle.toggled.connect(self._on_faces_toggled)
         self._sources_library.add_leading_control(self._faces_toggle)

@@ -1,12 +1,14 @@
 """The Faces panel: discover and map people in a multi-face target.
 
-A subpanel of the Sources tab (revealed by its "Faces" toggle). Top: the scan
-SETTINGS (stride, workers, preview, age/sex), then Analyze + progress. Below:
-the discovered people as a SORTABLE TABLE — face thumbnail, id, appearances,
-age, sex, assigned source. Click a row to jump the preview to that person's
-first frame; ✕ removes a row. With a face row selected, clicking a tile in the
-adjacent sources library assigns that source to it. Pure view: the FaceMap is
-owned upstream (controller); this widget renders it and emits intents.
+A subpanel of the Sources tab (revealed by its "Face map" toggle). Top: the
+Scan settings (stride, workers, preview, age/sex, precompute) and the Detection
+settings, then Analyze + progress. Below: the discovered people as a SORTABLE
+TABLE — face thumbnail, source, age, sex, appearances, score, pose. Click a row
+to jump the preview to that person's first frame and highlight their face;
+Delete (or right-click) removes rows, Ctrl+M merges them. With a face row
+selected, clicking a tile in the adjacent sources library assigns that source to
+it. Pure view: the FaceMap is owned upstream (controller); this widget renders
+it and emits intents.
 """
 from __future__ import annotations
 
@@ -107,15 +109,17 @@ class QFaceMapPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
 
-        # ---- Settings (Analyze comes AFTER, per the redesign) ----
+        # ---- Scan settings group (Analyze comes AFTER, per the redesign) ----
+        scan_group = QGroupBox("Scan")
+        scan_box = QVBoxLayout(scan_group)
         row1 = QHBoxLayout()
-        row1.addWidget(QLabel("stride"))
+        row1.addWidget(QLabel("Stride"))
         self._stride = QSpinBox()
         self._stride.setRange(1, 300)
         self._stride.setValue(15)
         self._stride.setToolTip("Sample every Nth frame. Larger = faster scan.")
         row1.addWidget(self._stride)
-        row1.addWidget(QLabel("workers"))
+        row1.addWidget(QLabel("Workers"))
         self._workers = QSpinBox()
         self._workers.setRange(1, 16)
         self._workers.setValue(4)
@@ -124,7 +128,7 @@ class QFaceMapPanel(QWidget):
         )
         row1.addWidget(self._workers)
         row1.addStretch(1)
-        layout.addLayout(row1)
+        scan_box.addLayout(row1)
 
         row2 = QHBoxLayout()
         self._preview_check = QCheckBox("Preview")
@@ -139,7 +143,7 @@ class QFaceMapPanel(QWidget):
             "Off = fast detection + recognition only."
         )
         row2.addWidget(self._demographics_check)
-        self._precompute_check = QCheckBox("Precompute")
+        self._precompute_check = QCheckBox("Precompute map")
         self._precompute_check.setChecked(True)
         self._precompute_check.setToolTip(
             "After the scan, build the per-frame map so live playback + render "
@@ -148,7 +152,8 @@ class QFaceMapPanel(QWidget):
         )
         row2.addWidget(self._precompute_check)
         row2.addStretch(1)
-        layout.addLayout(row2)
+        scan_box.addLayout(row2)
+        layout.addWidget(scan_group)
 
         # ---- Detection (the scan's OWN settings, independent of the live
         # swapper). The detector is fixed to buffalo_l: identity matching needs
@@ -161,17 +166,21 @@ class QFaceMapPanel(QWidget):
         det_label.setToolTip(
             "Analysis always uses buffalo_l — identity matching needs ArcFace "
             "embeddings, which the detection-only detectors don't produce. "
-            "Execution providers come from the global execution settings."
+            "Execution providers follow the swapper's ONNX provider selection."
         )
         det_row1.addWidget(det_label)
-        det_row1.addWidget(QLabel("size"))
+        det_row1.addWidget(QLabel("Size"))
         self._det_size = QSpinBox()
-        self._det_size.setRange(64, 2048)
+        # Same range/step as the live swapper's detection size (multiples of 32),
+        # but a SEPARATE setting: this one is the offline scan's detector input,
+        # the swapper's is for live playback.
+        self._det_size.setRange(128, 1280)
         self._det_size.setSingleStep(32)
         self._det_size.setValue(640)
         self._det_size.setToolTip(
-            "Detector input size (px, aligned to a multiple of 32). Larger finds "
-            "smaller/distant faces but scans slower."
+            "Detector input size for the SCAN (px, multiples of 32) — separate "
+            "from the swapper's live detection size. Larger finds smaller/distant "
+            "faces but scans slower."
         )
         det_row1.addWidget(self._det_size)
         det_row1.addStretch(1)
@@ -183,7 +192,7 @@ class QFaceMapPanel(QWidget):
             "alignment on tilted faces. Adds time to the scan."
         )
         det_row2.addWidget(self._refine_check)
-        det_row2.addWidget(QLabel("min score"))
+        det_row2.addWidget(QLabel("Min score"))
         self._refine_score = QDoubleSpinBox()
         self._refine_score.setRange(0.0, 1.0)
         self._refine_score.setSingleStep(0.05)
@@ -398,7 +407,8 @@ class QFaceMapPanel(QWidget):
         face.setToolTip(ident.label or f"P-{ident.id[:6]}")
         source = QStandardItem()
         source.setEditable(False)
-        source.setToolTip("Double-click to pick a source for this face.")
+        source.setToolTip("Select this row, then click a source in the library "
+                          "to assign it to this face.")
         if ident.source_path:
             # Thumbnail only — no filename text (set via set_source_thumbnail).
             source.setToolTip(ident.source_path)
