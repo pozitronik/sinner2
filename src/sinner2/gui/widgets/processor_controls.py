@@ -4,6 +4,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDialog,
     QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
@@ -196,6 +197,104 @@ def _label_for_video_backend(backend: VideoBackend) -> str | None:
     return None
 
 
+_TRT_PROVIDER = "TensorrtExecutionProvider"
+_CPU_PROVIDER = "CPUExecutionProvider"
+_TRT_TIP = (
+    "TensorRT: compiles a GPU-specific engine for this model — typically 2–3×\n"
+    "faster than plain CUDA. The FIRST run after enabling builds the engine\n"
+    "(tens of seconds, one-time) and caches it to disk. Needs the TensorRT\n"
+    "runtime; falls back to CUDA if it's missing."
+)
+_GENERIC_PROVIDER_TIP = (
+    "ONNX execution provider. Multiple may be checked; ORT tries them in the\n"
+    "order shown. You can't run on no provider — unchecking everything forces\n"
+    "CPU back on (the floor). Applies immediately (rebuilds the session)."
+)
+
+
+def _short_provider_label(prov: str) -> str:
+    """'CUDAExecutionProvider' → 'CUDA'; 'TensorrtExecutionProvider' → 'Tensor'."""
+    name = prov.replace("ExecutionProvider", "")
+    return "Tensor" if name == "Tensorrt" else name
+
+
+class _OnnxProvidersRow(QWidget):
+    """The ``[ ]Tensor [ ]CUDA [ ]CPU`` checkbox strip for one ONNX-using
+    processor — added to a QFormLayout with an "ONNX Providers" label so it sits
+    in the field column like every other row. Forces CPU on when everything is
+    unchecked (an ONNX model can't run on zero providers). ``changed`` fires on
+    any user toggle."""
+
+    changed = Signal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        self._checkboxes: dict[str, QCheckBox] = {}
+        self._tooltips: dict[str, str] = {}
+        try:
+            available = available_onnx_providers()
+        except Exception:  # noqa: BLE001 — broken ORT install → render the defaults
+            available = list(DEFAULT_ONNX_PROVIDERS)
+        default_active = set(DEFAULT_ONNX_PROVIDERS)
+        for prov in available:
+            tip = _TRT_TIP if prov == _TRT_PROVIDER else _GENERIC_PROVIDER_TIP
+            self._tooltips[prov] = tip
+            cb = QCheckBox(_short_provider_label(prov))
+            cb.setToolTip(tip)
+            cb.setChecked(prov in default_active)
+            cb.toggled.connect(self._on_toggled)
+            layout.addWidget(cb)
+            self._checkboxes[prov] = cb
+        layout.addStretch(1)
+
+    def _force_cpu_if_empty(self) -> None:
+        if any(cb.isChecked() for cb in self._checkboxes.values()):
+            return
+        cpu = self._checkboxes.get(_CPU_PROVIDER)
+        if cpu is not None:
+            cpu.blockSignals(True)
+            cpu.setChecked(True)
+            cpu.blockSignals(False)
+
+    def _on_toggled(self) -> None:
+        self._force_cpu_if_empty()
+        self.changed.emit()
+
+    def selected(self) -> list[str]:
+        """Checked providers in the platform's preference order. Non-empty."""
+        return [p for p, cb in self._checkboxes.items() if cb.isChecked()]
+
+    def set_selected(self, providers: list[str]) -> None:
+        """Reflect a restored selection WITHOUT firing ``changed``."""
+        wanted = set(providers)
+        for p, cb in self._checkboxes.items():
+            cb.blockSignals(True)
+            cb.setChecked(p in wanted)
+            cb.blockSignals(False)
+        self._force_cpu_if_empty()
+
+    def checkboxes(self) -> dict[str, QCheckBox]:
+        return self._checkboxes
+
+    def mark_failed(self, failed: set[str]) -> None:
+        """Red strikethrough on providers ORT couldn't initialise; empty clears."""
+        for name, cb in self._checkboxes.items():
+            if name in failed:
+                cb.setStyleSheet(
+                    "QCheckBox { color: #d94545; text-decoration: line-through; }"
+                )
+                cb.setToolTip(
+                    f"{name} failed to initialise — ORT fell back to a\n"
+                    "lower-priority provider (its runtime libs are likely missing)."
+                )
+            else:
+                cb.setStyleSheet("")
+                cb.setToolTip(self._tooltips.get(name, ""))
+
+
 class QProcessorControls(QWidget):
     """Param editors for the v1 chain — FaceSwapper + FaceEnhancer.
 
@@ -213,6 +312,8 @@ class QProcessorControls(QWidget):
     # View toggles (do NOT rebuild the session, unlike configChanged).
     faceOverlayToggled = Signal(bool)
     faceComparisonToggled = Signal(bool)
+    useFaceMapToggled = Signal(bool)  # route playback through the target's face map
+    openFaceMapRequested = Signal()   # jump to the Sources-tab face-map editor
     browseRootRequested = Signal()
     resetRootRequested = Signal()
     invalidateRequested = Signal()
@@ -224,10 +325,26 @@ class QProcessorControls(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
 
+        # While face-map routing is active the per-identity map decides what
+        # swaps with what, so the gender filter / many-faces / detector choice are
+        # superseded and grayed out. Tracked here so _update_detector_rows (which
+        # also gates the gender filter) composes the two conditions.
+        self._face_map_routing = False
         swapper_defaults = FaceSwapperParams()
         enhancer_defaults = FaceEnhancerParams()
 
-        swapper_box = QGroupBox("Face swapper")
+        # Controls are grouped by stage, with SUB-GROUPS that keep each
+        # dependency inside its own box (gender under the detector; rotation /
+        # occlusion knobs under their master toggles). Built up front so widgets
+        # can be added regardless of creation order.
+        self._which_to_swap_box = QGroupBox("Which to swap")
+        which_to_swap_form = QFormLayout(self._which_to_swap_box)
+        self._rotation_box = QGroupBox("Rotation")
+        rotation_form = QFormLayout(self._rotation_box)
+        self._occlusion_box = QGroupBox("Occlusion")
+        occlusion_form = QFormLayout(self._occlusion_box)
+
+        swapper_box = QGroupBox("Face swap")
         swapper_box.setCheckable(True)
         swapper_box.setChecked(True)
         swapper_box.toggled.connect(self.configChanged)
@@ -252,7 +369,9 @@ class QProcessorControls(QWidget):
         self._many_faces = QCheckBox()
         self._many_faces.setChecked(swapper_defaults.many_faces)
         self._many_faces.toggled.connect(self.configChanged)
-        swapper_form.addRow("Many faces", self._many_faces)
+        # Face SELECTION (which detected faces to swap) — lives in the Faces
+        # group's "Which to swap" sub-box, with the detector it depends on.
+        which_to_swap_form.addRow("Many faces", self._many_faces)
         self._fast_paste = QCheckBox()
         self._fast_paste.setChecked(swapper_defaults.fast_paste)
         self._fast_paste.toggled.connect(self.configChanged)
@@ -284,7 +403,7 @@ class QProcessorControls(QWidget):
             "swap the wrong gender)."
         )
         self._target_sex.currentIndexChanged.connect(self.configChanged)
-        swapper_form.addRow("Swap which", self._target_sex)
+        which_to_swap_form.addRow("Gender", self._target_sex)
         self._occlusion_mask = QCheckBox()
         self._occlusion_mask.setChecked(swapper_defaults.occlusion_mask)
         self._occlusion_mask.setToolTip(
@@ -294,7 +413,7 @@ class QProcessorControls(QWidget):
         )
         self._occlusion_mask.toggled.connect(self.configChanged)
         self._occlusion_mask.toggled.connect(self._update_occlusion_rows)
-        swapper_form.addRow("Occlusion mask", self._occlusion_mask)
+        occlusion_form.addRow("Occlusion mask", self._occlusion_mask)
         # The mode comes FIRST in the form — it decides which of the two
         # dependent rows below it (parser / occluder) apply.
         self._occlusion_mode = QComboBox()
@@ -315,7 +434,7 @@ class QProcessorControls(QWidget):
         self._occlusion_mode.currentIndexChanged.connect(
             self._update_occlusion_rows
         )
-        swapper_form.addRow("Mask source", self._occlusion_mode)
+        occlusion_form.addRow("Mask source", self._occlusion_mode)
         self._occlusion_parser = QComboBox()
         for value, label in _OCCLUSION_PARSERS:
             self._occlusion_parser.addItem(label, value)
@@ -329,7 +448,7 @@ class QProcessorControls(QWidget):
             "one GFPGAN/CodeFormer use. Try both. Each downloads on first use."
         )
         self._occlusion_parser.currentIndexChanged.connect(self.configChanged)
-        swapper_form.addRow("Mask parser", self._occlusion_parser)
+        occlusion_form.addRow("Mask parser", self._occlusion_parser)
         self._occluder_model = QComboBox()
         for value, label in _OCCLUDER_MODELS:
             self._occluder_model.addItem(label, value)
@@ -344,61 +463,15 @@ class QProcessorControls(QWidget):
             "downloads on first use."
         )
         self._occluder_model.currentIndexChanged.connect(self.configChanged)
-        swapper_form.addRow("Occluder", self._occluder_model)
+        occlusion_form.addRow("Occluder", self._occluder_model)
 
-        # ONNX execution providers — multi-select for the swapper + analyser
-        # (both ONNX). Order matters: ORT tries providers in the order listed,
-        # falling back through to CPU. We expose every available provider as a
-        # checkbox and preserve the platform-default order from
-        # get_available_providers (already "best first"). Unchecking all
-        # reverts to the default order at session-build time.
-        providers_box = QWidget()
-        providers_layout = QVBoxLayout(providers_box)
-        providers_layout.setContentsMargins(0, 0, 0, 0)
-        providers_layout.setSpacing(2)
-        self._provider_checkboxes: dict[str, QCheckBox] = {}
-        try:
-            available = available_onnx_providers()
-        except Exception:
-            # ORT might fail to load on a broken install — fall back to
-            # the known-good defaults so the panel still renders.
-            available = list(DEFAULT_ONNX_PROVIDERS)
-        # Pre-check the platform-default EP order (CUDA + CPU) so the user
-        # sees the actual effective state on a fresh launch instead of an
-        # all-unchecked column that lies about what ORT will use.
-        # apply_restored_settings overrides this when there's a persisted list.
-        default_active = set(DEFAULT_ONNX_PROVIDERS)
-        # Single source for per-provider tooltips: read here at construction
-        # AND by mark_providers_failed when clearing a mark — otherwise the
-        # clear path overwrote the TRT-specific text with generic copy on
-        # every launch (and the two generic variants drifted apart).
-        _GENERIC_PROVIDER_TIP = (
-            "ONNX execution provider. Multiple may be checked; ORT\n"
-            "tries them in the order shown. You can't run on no provider\n"
-            "— unchecking everything forces CPU back on (the floor).\n"
-            "Applies immediately — rebuilds the session (chain reloads)."
-        )
-        self._provider_tooltips: dict[str, str] = {
-            prov: (
-                "TensorRT: compiles a GPU-specific engine for the swapper +\n"
-                "detector — typically 2–3× faster than plain CUDA. The FIRST\n"
-                "run after enabling builds the engine (tens of seconds,\n"
-                "one-time) and caches it to disk; later runs load it fast.\n"
-                "Needs the TensorRT runtime (the installer offers it); falls\n"
-                "back to CUDA if it's missing."
-                if prov == "TensorrtExecutionProvider"
-                else _GENERIC_PROVIDER_TIP
-            )
-            for prov in available
-        }
-        for prov in available:
-            cb = QCheckBox(prov)
-            cb.setToolTip(self._provider_tooltips[prov])
-            cb.setChecked(prov in default_active)
-            cb.toggled.connect(self._on_provider_toggled)
-            providers_layout.addWidget(cb)
-            self._provider_checkboxes[prov] = cb
-        swapper_form.addRow("ONNX providers", providers_box)
+        # ONNX execution providers for the swapper — its own one-line selector in
+        # the swap group. Detection runs on a process-WIDE shared insightface
+        # model whose EPs are fixed at first load, so the detector necessarily
+        # uses these too (it can't have a separate line).
+        self._swapper_providers_row = _OnnxProvidersRow()
+        self._swapper_providers_row.changed.connect(self.configChanged)
+        swapper_form.addRow("ONNX Providers", self._swapper_providers_row)
 
         enhancer_box = QGroupBox("Face enhancer")
         enhancer_box.setCheckable(True)
@@ -467,7 +540,13 @@ class QProcessorControls(QWidget):
             "Applies immediately — rebuilds the chain (reloads the model)."
         )
         self._enhancer_device.currentIndexChanged.connect(self.configChanged)
-        enhancer_form.addRow("Device", self._enhancer_device)
+        enhancer_form.addRow("CUDA device", self._enhancer_device)
+        # ONNX providers for the ONNX restorer backends (CodeFormer / GPEN /
+        # RestoreFormer++ / GFPGAN-ONNX). Active only when an ONNX model is
+        # chosen (torch GFPGAN uses the CUDA device above instead).
+        self._enhancer_providers_row = _OnnxProvidersRow()
+        self._enhancer_providers_row.changed.connect(self.configChanged)
+        enhancer_form.addRow("ONNX Providers", self._enhancer_providers_row)
         self._enhancer_box = enhancer_box
         self._update_enhancer_model_rows()  # gray out the inactive model's knob
 
@@ -515,15 +594,44 @@ class QProcessorControls(QWidget):
             "Torch device for the upscaler (independent of the enhancer's)."
         )
         self._upscaler_device.currentIndexChanged.connect(self.configChanged)
-        upscaler_form.addRow("Device", self._upscaler_device)
+        upscaler_form.addRow("CUDA device", self._upscaler_device)
+        # ONNX providers for the ONNX upscalers (HAT, fp16 exports). Active only
+        # when an ONNX model is chosen (torch Real-ESRGAN uses the CUDA device).
+        self._upscaler_providers_row = _OnnxProvidersRow()
+        self._upscaler_providers_row.changed.connect(self.configChanged)
+        upscaler_form.addRow("ONNX Providers", self._upscaler_providers_row)
         self._upscaler_box = upscaler_box
 
-        # ---- Face detector group (detector + sizing + rotation) ----
-        # Detection comes before the swap — you can't swap a face you didn't
-        # find — so this group sits first and owns the "how faces are found"
-        # knobs (detector model / input size / interval) plus rotation handling.
-        face_box = QGroupBox("Face detector")
+        # ---- Faces group: detection + selection + the face-map routing mode,
+        # together because they depend on each other (gender needs the detector;
+        # the face-map mode overrides the detector + selection). ----
+        face_box = QGroupBox("Faces")
         face_form = QFormLayout(face_box)
+        # Face-mapping routing switch at the TOP of the Faces group (decoupled
+        # from the Sources-tab editor): always shown so the feature is
+        # discoverable, enabled only once a map exists for the target. On →
+        # playback routes each face to its mapped source; off → single source.
+        # When on, it grays the detector + "Which to swap" — both inside THIS box.
+        self._use_face_map = QCheckBox("Use face map")
+        self._use_face_map.setEnabled(False)
+        self._use_face_map.setToolTip(
+            "Route playback through this target's face map — each person swapped "
+            "with their mapped source — instead of the single global source. "
+            "Build a map with 'Open face map' first; enabled once one exists. "
+            "Remembered per target."
+        )
+        self._use_face_map.toggled.connect(self.useFaceMapToggled)
+        self._open_face_map = QPushButton("Open face map…")
+        self._open_face_map.setToolTip(
+            "Open the face-map editor on the Sources tab to discover people and "
+            "map each to a source."
+        )
+        self._open_face_map.clicked.connect(self.openFaceMapRequested)
+        face_map_row = QHBoxLayout()
+        face_map_row.addWidget(self._use_face_map)
+        face_map_row.addWidget(self._open_face_map)
+        face_map_row.addStretch(1)
+        face_form.addRow("Face map", face_map_row)  # top of the Faces group
         self._detector = QComboBox()
         for value, label in _DETECTOR_MODELS:
             self._detector.addItem(label, value)
@@ -562,6 +670,9 @@ class QProcessorControls(QWidget):
         )
         self._detection_interval.valueChanged.connect(self.configChanged)
         face_form.addRow("Detection interval", self._detection_interval)
+        # "Which to swap" sub-box (many-faces + gender) sits under the detector
+        # it depends on, inside the Faces group.
+        face_form.addRow(self._which_to_swap_box)
         self._rotation_enabled = QCheckBox()
         self._rotation_enabled.setChecked(swapper_defaults.rotation_compensation)
         self._rotation_enabled.setToolTip(
@@ -572,7 +683,9 @@ class QProcessorControls(QWidget):
         )
         self._rotation_enabled.toggled.connect(self.configChanged)
         self._rotation_enabled.toggled.connect(self._update_rotation_rows)
-        face_form.addRow("Rotation compensation", self._rotation_enabled)
+        # Rotation knobs live in the swap group's "Rotation" sub-box so the
+        # angle-source/threshold dependencies stay inside it.
+        rotation_form.addRow("Rotation compensation", self._rotation_enabled)
 
         self._rotation_threshold = QSpinBox()
         self._rotation_threshold.setRange(0, 90)
@@ -583,7 +696,7 @@ class QProcessorControls(QWidget):
             "a plain swap."
         )
         self._rotation_threshold.valueChanged.connect(self.configChanged)
-        face_form.addRow("Roll threshold", self._rotation_threshold)
+        rotation_form.addRow("Roll threshold", self._rotation_threshold)
 
         self._rotation_redetect = QCheckBox()
         self._rotation_redetect.setChecked(swapper_defaults.rotation_redetect)
@@ -592,7 +705,7 @@ class QProcessorControls(QWidget):
             "rotating the existing ones in). The main quality lever."
         )
         self._rotation_redetect.toggled.connect(self.configChanged)
-        face_form.addRow("Re-detect uprighted", self._rotation_redetect)
+        rotation_form.addRow("Re-detect uprighted", self._rotation_redetect)
 
         self._rotation_source = QComboBox()
         for label, value in _ROTATION_SOURCES:
@@ -608,7 +721,7 @@ class QProcessorControls(QWidget):
         self._rotation_source.currentTextChanged.connect(
             lambda _: self.configChanged.emit()
         )
-        face_form.addRow("Angle source", self._rotation_source)
+        rotation_form.addRow("Angle source", self._rotation_source)
         self._landmark_refine = QCheckBox()
         self._landmark_refine.setChecked(swapper_defaults.landmark_refine)
         self._landmark_refine.setToolTip(
@@ -619,7 +732,10 @@ class QProcessorControls(QWidget):
             "Experimental; downloads the 2dfan4 model on first enable."
         )
         self._landmark_refine.toggled.connect(self.configChanged)
-        face_form.addRow("Landmark refine", self._landmark_refine)
+        swapper_form.addRow("Landmark refine", self._landmark_refine)
+        # The Rotation + Occlusion sub-boxes render inside the Face swap group.
+        swapper_form.addRow(self._rotation_box)
+        swapper_form.addRow(self._occlusion_box)
 
         # Detection overlay toggle (view-only → its own signal, never
         # configChanged). Boxes + sex/age/score/pose on the preview.
@@ -648,7 +764,7 @@ class QProcessorControls(QWidget):
         # overlay" before the coupling enables it.
         self._comparison_enabled.toggled.connect(self._couple_comparison_to_overlay)
         self._comparison_enabled.toggled.connect(self.faceComparisonToggled)
-        face_form.addRow("Show orig/swapped", self._comparison_enabled)
+        swapper_form.addRow("Show orig/swapped", self._comparison_enabled)
         self._face_box = face_box
         self._update_rotation_rows()  # reflect the default rotation-on state
         self._update_occlusion_rows()  # occlusion subknobs follow the checkbox
@@ -941,13 +1057,28 @@ class QProcessorControls(QWidget):
         self._execution_box = execution_box
         self._cache_box = cache_box
         self._cache_storage_box = cache_storage_box
-        inner_layout.addWidget(face_box)
-        inner_layout.addWidget(swapper_box)
+        # Cache + Cache-storage live in a separate "Cache settings…" dialog (kept
+        # off the main scroll); a button opens it. Both are file-only.
+        self._cache_dialog = QDialog(self)
+        self._cache_dialog.setWindowTitle("Cache settings")
+        cache_dialog_layout = QVBoxLayout(self._cache_dialog)
+        cache_dialog_layout.addWidget(cache_box)
+        cache_dialog_layout.addWidget(cache_storage_box)
+        cache_dialog_layout.addStretch(1)
+        self._cache_settings_btn = QPushButton("Cache settings…")
+        self._cache_settings_btn.setToolTip(
+            "Open the cache + cache-storage settings (mode, image format/quality, "
+            "memory budget, write workers, on-disk usage + clear)."
+        )
+        self._cache_settings_btn.clicked.connect(self._open_cache_settings)
+        # Assembled in pipeline order: Faces (face-map + detection + selection) →
+        # Face swap → enhance → upscale → file-only Execution + the cache button.
+        inner_layout.addWidget(face_box)              # Faces
+        inner_layout.addWidget(swapper_box)           # Face swap
         inner_layout.addWidget(enhancer_box)
         inner_layout.addWidget(upscaler_box)
         inner_layout.addWidget(execution_box)
-        inner_layout.addWidget(cache_box)
-        inner_layout.addWidget(cache_storage_box)
+        inner_layout.addWidget(self._cache_settings_btn)
         inner_layout.addStretch()
 
         scroll = QScrollArea(self)
@@ -970,12 +1101,22 @@ class QProcessorControls(QWidget):
         self._uniform_label_width = self._compute_uniform_label_width()
         self._apply_form_density()
 
+    def _open_cache_settings(self) -> None:
+        """Open the cache-settings dialog (modeless, so cache changes preview
+        live)."""
+        self._cache_dialog.show()
+        self._cache_dialog.raise_()
+        self._cache_dialog.activateWindow()
+
     def set_file_only_visible(self, visible: bool) -> None:
-        """Show/hide the file-only groups (Execution, Cache, Cache storage). Live
-        mode hides them: a camera has no timeline cache, reader pool, processing
-        scale, or video backend, and its worker count lives in the Live tab."""
-        for box in (self._execution_box, self._cache_box, self._cache_storage_box):
-            box.setVisible(visible)
+        """Show/hide the file-only surface (Execution group + the Cache-settings
+        button). Live mode hides them: a camera has no timeline cache, reader
+        pool, processing scale, or video backend, and its worker count lives in
+        the Live tab. Closing the cache dialog too keeps it from lingering."""
+        self._execution_box.setVisible(visible)
+        self._cache_settings_btn.setVisible(visible)
+        if not visible:
+            self._cache_dialog.hide()
 
     # ---- Responsive form density (consistent + adaptive caption columns) ----
 
@@ -1149,10 +1290,12 @@ class QProcessorControls(QWidget):
         is_gfpgan = model == EnhancerModel.GFPGAN.value
         self._upscale.setEnabled(is_gfpgan)
         self._enhancer_fidelity.setEnabled(model == EnhancerModel.CODEFORMER.value)
-        # fp16 + torch device are GFPGAN-only knobs (the ONNX restorers use
-        # the swapper's EP providers, not a torch device).
+        # fp16 + CUDA device are GFPGAN-only (torch). The ONNX restorers
+        # (CodeFormer / GPEN / RestoreFormer++ / GFPGAN-ONNX) use the ONNX
+        # providers row instead — so the two are mutually exclusive by model.
         self._enhancer_fp16.setEnabled(is_gfpgan)
         self._enhancer_device.setEnabled(is_gfpgan)
+        self._enhancer_providers_row.setEnabled(not is_gfpgan)
 
     def enhancer_model(self) -> str:
         return self._enhancer_model.currentData()
@@ -1232,6 +1375,20 @@ class QProcessorControls(QWidget):
         self._comparison_enabled.setChecked(bool(on))
         self._comparison_enabled.blockSignals(False)
 
+    def use_face_map(self) -> bool:
+        return self._use_face_map.isChecked()
+
+    def set_use_face_map(self, on: bool) -> None:
+        """Reflect the 'use face map' state without firing useFaceMapToggled."""
+        self._use_face_map.blockSignals(True)
+        self._use_face_map.setChecked(bool(on))
+        self._use_face_map.blockSignals(False)
+
+    def set_face_map_available(self, available: bool) -> None:
+        """Enable/disable the 'Use face map' switch. The owner (main_window) owns
+        the CHECKED state — it's the single source of truth for routing."""
+        self._use_face_map.setEnabled(bool(available))
+
     def _update_rotation_rows(self) -> None:
         """Gray out the rotation knobs (threshold / re-detect / angle source)
         when rotation compensation is off — they have no effect then."""
@@ -1240,11 +1397,26 @@ class QProcessorControls(QWidget):
         self._rotation_redetect.setEnabled(on)
         self._rotation_source.setEnabled(on)
 
+    def set_face_map_routing_active(self, active: bool) -> None:
+        """Gray what the per-identity map supersedes while routing is active — all
+        INSIDE the Faces group so the override stays local: the whole detection
+        config (detector + size + interval — detection is skipped, read from the
+        precomputed geometry) and the "Which to swap" sub-box (the map decides
+        what swaps with what). The detection OVERLAY stays usable — it shows the
+        mapped faces. The swap's Angle source stays too (it still applies on
+        frames the geometry didn't cover)."""
+        self._face_map_routing = bool(active)
+        self._detector.setEnabled(not active)
+        self._detection_size.setEnabled(not active)
+        self._detection_interval.setEnabled(not active)
+        self._which_to_swap_box.setEnabled(not active)
+        self._update_detector_rows()  # target_sex also gates on the detector
+
     def _update_detector_rows(self) -> None:
-        """Gray out the gender filter for detection-only detectors — they don't
-        provide insightface's .sex, so the swapper can't filter by gender."""
+        """Gray out the gender filter for detection-only detectors (no
+        insightface .sex) OR while face-map routing supersedes it."""
         full_pack = self._detector.currentData() == DetectorModel.BUFFALO_L.value
-        self._target_sex.setEnabled(full_pack)
+        self._target_sex.setEnabled(full_pack and not self._face_map_routing)
 
     def _update_occlusion_rows(self) -> None:
         """Link the occlusion sub-controls to the master checkbox and to each
@@ -1272,8 +1444,11 @@ class QProcessorControls(QWidget):
         upscalers (no effect) and SwinIR (its attention can't run in half) —
         and the torch device for the ONNX upscalers (they run on ORT EPs)."""
         model = UpscalerModel(self._upscaler_model.currentData())
+        is_onnx = model_runtime(model) == "onnx"
         self._upscaler_fp16.setEnabled(model_supports_fp16(model))
-        self._upscaler_device.setEnabled(model_runtime(model) == "torch")
+        # Torch device for torch models; ONNX providers row for ONNX models.
+        self._upscaler_device.setEnabled(not is_onnx)
+        self._upscaler_providers_row.setEnabled(is_onnx)
 
     def _couple_comparison_to_overlay(self, on: bool) -> None:
         """The comparison thumbnails draw on the detection overlay, so enabling
@@ -1336,35 +1511,18 @@ class QProcessorControls(QWidget):
     def video_backend(self) -> VideoBackend:
         return _VIDEO_BACKENDS[self._video_backend_combo.currentText()]
 
-    _CPU_PROVIDER = "CPUExecutionProvider"
-
-    def _force_cpu_if_no_provider(self) -> None:
-        """Refuse an empty provider selection by forcing the CPU provider on.
-        You can't run an ONNX model on zero providers — CPU is the floor — so
-        unchecking everything snaps CPU back. Signals are blocked so this doesn't
-        re-trigger the toggle handler."""
-        if any(cb.isChecked() for cb in self._provider_checkboxes.values()):
-            return
-        cpu = self._provider_checkboxes.get(self._CPU_PROVIDER)
-        if cpu is not None:
-            cpu.blockSignals(True)
-            cpu.setChecked(True)
-            cpu.blockSignals(False)
-
-    def _on_provider_toggled(self) -> None:
-        """A provider checkbox changed: keep at least CPU selected, then apply."""
-        self._force_cpu_if_no_provider()
-        self.configChanged.emit()
-
     def swapper_providers(self) -> list[str]:
-        """Realtime ONNX providers for the swapper + analyser, in the order they
-        appear in the checkbox column (the platform's default preference order).
-        Always non-empty — the UI forces CPU on when everything is unchecked."""
-        return [
-            name
-            for name, cb in self._provider_checkboxes.items()
-            if cb.isChecked()
-        ]
+        """Realtime ONNX providers for the swapper (+ the shared detector), in
+        the platform's preference order. Always non-empty (CPU floor)."""
+        return self._swapper_providers_row.selected()
+
+    def enhancer_providers(self) -> list[str]:
+        """ONNX providers for the enhancer's ONNX restorer backends."""
+        return self._enhancer_providers_row.selected()
+
+    def upscaler_providers(self) -> list[str]:
+        """ONNX providers for the ONNX upscalers."""
+        return self._upscaler_providers_row.selected()
 
     def enhancer_device(self) -> str:
         """Selected torch device token for the realtime enhancer
@@ -1372,27 +1530,9 @@ class QProcessorControls(QWidget):
         return self._enhancer_device.currentData()
 
     def mark_providers_failed(self, failed: set[str]) -> None:
-        """Visually flag providers that were requested but ORT couldn't
-        initialise. Red strikethrough on the checkbox label + a tooltip
-        explaining what happened. Call with an empty set to clear all
-        marks (e.g. when a new selection succeeds clean)."""
-        for name, cb in self._provider_checkboxes.items():
-            if name in failed:
-                cb.setStyleSheet(
-                    "QCheckBox { color: #d94545; text-decoration: line-through; }"
-                )
-                cb.setToolTip(
-                    f"{name} failed to initialise — ORT fell back to a\n"
-                    "lower-priority provider. Usually means the runtime\n"
-                    "libraries this EP depends on (e.g. nvinfer for\n"
-                    "TensorRT) aren't installed or aren't on PATH.\n"
-                    "Status bar shows what ORT is actually using."
-                )
-            else:
-                cb.setStyleSheet("")
-                # Restore the construction-time tooltip (TRT keeps its
-                # specific text) instead of overwriting with generic copy.
-                cb.setToolTip(self._provider_tooltips.get(name, ""))
+        """Flag providers ORT couldn't initialise on the SWAPPER row (that's what
+        record_actual_providers reports). Empty set clears the marks."""
+        self._swapper_providers_row.mark_failed(failed)
 
     def cache_mode(self) -> CacheMode:
         return _CACHE_MODES[self._cache_mode_combo.currentText()]
@@ -1423,9 +1563,11 @@ class QProcessorControls(QWidget):
             enhancer_enabled=self.enhancer_enabled(),
             enhancer_params=self.enhancer_params(),
             enhancer_device=self.enhancer_device(),
+            enhancer_providers=tuple(self.enhancer_providers()),
             upscaler_enabled=self.upscaler_enabled(),
             upscaler_params=self.upscaler_params(),
             upscaler_device=self.upscaler_device(),
+            upscaler_providers=tuple(self.upscaler_providers()),
             strategy_name=self.strategy_name(),
             realtime_workers=self.realtime_workers(),
             playback_mode=self.playback_mode(),
@@ -1496,6 +1638,8 @@ class QProcessorControls(QWidget):
         upscaler_tile: int | None = None,
         upscaler_fp16: bool | None = None,
         upscaler_device: str | None = None,
+        enhancer_providers: list[str] | None = None,
+        upscaler_providers: list[str] | None = None,
     ) -> None:
         """Apply persisted values without firing configChanged per field.
 
@@ -1546,7 +1690,6 @@ class QProcessorControls(QWidget):
             self._reader_pool_size,
             self._scale_slider,
             self._synced_max_lag_frames,
-            *self._provider_checkboxes.values(),
         )
         for w in widgets:
             w.blockSignals(True)
@@ -1684,17 +1827,14 @@ class QProcessorControls(QWidget):
                 )
             if synced_max_lag_frames is not None:
                 self._synced_max_lag_frames.setValue(synced_max_lag_frames)
+            # Restore each per-model provider row's selection (set_selected
+            # blocks signals + forces CPU on for an empty/all-unknown list).
             if swapper_providers is not None:
-                # Restore exact selection — only providers in the
-                # persisted list become checked; unknown providers in
-                # the list are ignored (a different machine may not
-                # have the same ORT build).
-                wanted = set(swapper_providers)
-                for name, cb in self._provider_checkboxes.items():
-                    cb.setChecked(name in wanted)
-                # A persisted empty (or all-unknown) selection would leave zero
-                # providers — force CPU on (you can't run on none).
-                self._force_cpu_if_no_provider()
+                self._swapper_providers_row.set_selected(swapper_providers)
+            if enhancer_providers is not None:
+                self._enhancer_providers_row.set_selected(enhancer_providers)
+            if upscaler_providers is not None:
+                self._upscaler_providers_row.set_selected(upscaler_providers)
         finally:
             for w in widgets:
                 w.blockSignals(False)

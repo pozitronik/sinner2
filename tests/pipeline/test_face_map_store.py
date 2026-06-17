@@ -8,7 +8,10 @@ from sinner2.pipeline.face_map_store import (
     delete_face_map,
     face_map_path,
     load_face_map,
+    load_use_map,
     save_face_map,
+    save_use_map,
+    use_map_path,
 )
 
 
@@ -68,6 +71,27 @@ class TestDelete:
 
     def test_delete_missing_is_false(self, tmp_path):
         assert delete_face_map(tmp_path / "nope.json") is False
+
+
+class TestUseMap:
+    def test_distinct_per_target(self, tmp_path):
+        a = use_map_path(Path("/v/a.mp4"), tmp_path)
+        b = use_map_path(Path("/v/b.mp4"), tmp_path)
+        assert a != b and a.parent == tmp_path
+
+    def test_save_load_round_trip(self, tmp_path):
+        p = use_map_path(Path("/v/clip.mp4"), tmp_path)
+        assert load_use_map(p) is False        # absent → off
+        save_use_map(p, True)
+        assert load_use_map(p) is True
+        save_use_map(p, False)                 # off removes the marker
+        assert load_use_map(p) is False
+        assert not p.exists()
+
+    def test_save_off_when_absent_is_safe(self, tmp_path):
+        p = use_map_path(Path("/v/clip.mp4"), tmp_path)
+        save_use_map(p, False)  # no marker to remove → no error
+        assert load_use_map(p) is False
 
 
 class TestProgress:

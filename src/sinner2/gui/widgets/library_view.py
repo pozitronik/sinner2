@@ -299,7 +299,7 @@ class QLibraryView(QWidget):
         )
         self._clear_button.clicked.connect(self._confirm_clear)
 
-        controls = QHBoxLayout()
+        self._controls = controls = QHBoxLayout()
         controls.addWidget(self._filter_edit, stretch=1)
         controls.addWidget(self._scan_label)
         controls.addWidget(self._shrink_button)
@@ -363,6 +363,12 @@ class QLibraryView(QWidget):
         self._roots: list[Path] = []
 
     # ---- Public API ----
+
+    def add_leading_control(self, widget: QWidget) -> None:
+        """Insert a widget at the LEFT of the top control row (before the filter
+        edit) — lets the Sources tab host its "Faces" toggle inline with the
+        library controls instead of in a separate row above the grid."""
+        self._controls.insertWidget(0, widget)
 
     def paths(self) -> list[Path]:
         return self._model.paths()

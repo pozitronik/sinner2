@@ -93,11 +93,18 @@ class FaceDetectionProbe(QObject):
         providers: list[str] | None = None,
         parent: QObject | None = None,
         detection_size: int = 640,
+        sink: FaceDetectionSink | None = None,
     ) -> None:
         super().__init__(parent)
         self._detect_fn = detect_fn
         self._providers = list(providers) if providers else None
         self._detection_size = detection_size
+        # The same sink the swapper publishes to. The probe runs ONLY when the
+        # swapper is off (the two never feed it at once), so publishing the raw
+        # faces here keeps the selection-highlight + face-pick working in the
+        # swapper-off mapping workflow — otherwise the sink would be empty and
+        # clicking a face couldn't capture it.
+        self._sink = sink
         self._analyser: Any = None
         # configure() is called from the GUI thread while _detect runs on the
         # probe's own thread — guard the providers/size/analyser trio.
@@ -128,6 +135,10 @@ class FaceDetectionProbe(QObject):
             faces = self._detect(frame)
         except Exception:
             return
+        # Publish the RAW faces (with embeddings) for the highlight/pick path
+        # BEFORE converting to the drawable subset, which drops the embedding.
+        if self._sink is not None:
+            self._sink.publish(faces, width, height)
         detections: list[FaceDetection] = [
             face_from_insightface(f) for f in faces
         ]

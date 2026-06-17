@@ -255,6 +255,11 @@ class QSourceTargetPanel(QWidget):
         """Hide the target picker in live mode (the camera is the target)."""
         self._target.setVisible(visible)
 
+    def set_source_enabled(self, enabled: bool) -> None:
+        """Lock the source picker. Used as the visual cue that face-mapping mode
+        owns sourcing per-face — the global source no longer applies."""
+        self._source.setEnabled(enabled)
+
     def source_recents(self) -> list[Path]:
         return self._source.recents()
 

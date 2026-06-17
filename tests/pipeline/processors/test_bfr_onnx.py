@@ -28,6 +28,18 @@ class _IdentitySession:
         return [feeds["input"]]
 
 
+def test_providers_none_uses_default_but_empty_is_preserved():
+    # Stage 1: the global ONNX list must behave like the swapper — None → default,
+    # an explicit [] (user picked no providers) is kept (ORT CPU last-resort).
+    from sinner2.config.execution import DEFAULT_ONNX_PROVIDERS
+
+    assert PlainBfrBackend("m.onnx")._providers == list(DEFAULT_ONNX_PROVIDERS)
+    assert PlainBfrBackend("m.onnx", providers=[])._providers == []
+    assert PlainBfrBackend(
+        "m.onnx", providers=["CPUExecutionProvider"]
+    )._providers == ["CPUExecutionProvider"]
+
+
 def test_restore_aligned_shape_and_dtype():
     aligned = np.random.randint(0, 255, (512, 512, 3), np.uint8)
     out = _restore_aligned(_IdentitySession(), aligned)

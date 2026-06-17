@@ -89,6 +89,13 @@ class Identity:
     # grouping only; they don't affect swap routing.
     sex: str | None = None
     age: int | None = None
+    # Representative-detection metadata for the Faces table. det_score comes from
+    # any detector; pitch/yaw/roll (degrees, insightface face.pose) need the full
+    # pack, so they're None in fast det+rec mode. Display only — never routing.
+    det_score: float | None = None
+    pitch: float | None = None
+    yaw: float | None = None
+    roll: float | None = None
 
     @staticmethod
     def new(
@@ -123,6 +130,11 @@ class FaceMap:
     unmatched: UnmatchedPolicy = UnmatchedPolicy.SKIP
     default_source: str | None = None
     mode: IdentityMode = IdentityMode.EMBEDDING
+    # Routing engaged because the user turned face-mapping MODE on, even before
+    # any source is assigned. Transient UI state — NOT serialized (a reloaded map
+    # is unarmed until the live mode re-arms it). Lets "mode on, nothing mapped"
+    # show original faces instead of falling back to the single global source.
+    armed: bool = False
 
     # ---- Construction / queries ----
 
@@ -134,8 +146,13 @@ class FaceMap:
         return not self.identities
 
     def is_active(self) -> bool:
-        """True when the map would actually change swap routing — at least one
-        identity has a source, or a default/first policy with a default source."""
+        """True when the map should route swaps per-identity (suppressing the
+        single global source). Armed = the user turned face-mapping mode on, so
+        routing engages even before the first assignment (every face is then
+        unmapped → shows the original, not the global source). Also active when an
+        identity has a source, or a default-source policy is set."""
+        if self.armed:
+            return True
         if any(i.source_path for i in self.identities):
             return True
         return (
@@ -201,6 +218,56 @@ class FaceMap:
             identities=tuple(i for i in self.identities if i.id != identity_id),
         )
 
+    def merge(self, identity_ids: Sequence[str]) -> "FaceMap":
+        """Fold the given identities into ONE (fixing over-clustering where one
+        person split across several). The first listed is the survivor (keeps its
+        id + position); it absorbs the others' occurrences, its centroid becomes
+        the occurrence-weighted mean (renormalized), it keeps its own source (else
+        the first merged-in source), the earliest first_frame, and the clearest
+        (highest det_score) occurrence's reference + demographics + pose. The
+        others are removed. <2 valid ids → unchanged.
+
+        Geometry needs no rewrite: baked embeddings re-match against the new
+        catalog, so a fragment's faces route to the survivor automatically."""
+        ids = [i for i in identity_ids if self.index_of(i) is not None]
+        if len(ids) < 2:
+            return self
+        keep_id = ids[0]
+        members = {m.id: m for m in self.identities if m.id in set(ids)}
+        keeper = members[keep_id]
+        ordered = [members[i] for i in ids]
+        total = sum(m.occurrences for m in ordered) or 1
+        dim = len(keeper.centroid)
+        summed = [0.0] * dim
+        for m in ordered:
+            for k in range(min(dim, len(m.centroid))):
+                summed[k] += m.centroid[k] * m.occurrences
+        merged_centroid = normalize(tuple(s / total for s in summed))
+        source = keeper.source_path or next(
+            (m.source_path for m in ordered if m.source_path), None
+        )
+        rep = max(ordered, key=lambda m: (m.det_score or 0.0))
+        firsts = [m.first_frame for m in ordered if m.first_frame is not None]
+        merged = replace(
+            keeper,
+            centroid=merged_centroid,
+            occurrences=total,
+            source_path=source,
+            first_frame=min(firsts) if firsts else keeper.first_frame,
+            ref_frame=rep.ref_frame, ref_bbox=rep.ref_bbox,
+            sex=rep.sex, age=rep.age, det_score=rep.det_score,
+            pitch=rep.pitch, yaw=rep.yaw, roll=rep.roll,
+        )
+        absorbed = set(ids) - {keep_id}
+        return replace(
+            self,
+            identities=tuple(
+                merged if i.id == keep_id else i
+                for i in self.identities
+                if i.id not in absorbed
+            ),
+        )
+
     def assign_source(self, identity_id: str, source_path: str | None) -> "FaceMap":
         idents = [
             replace(i, source_path=source_path) if i.id == identity_id else i
@@ -216,14 +283,19 @@ class FaceMap:
         sex: str | None = None,
         age: int | None = None,
         first_frame: int | None = None,
+        det_score: float | None = None,
+        pitch: float | None = None,
+        yaw: float | None = None,
+        roll: float | None = None,
     ) -> "FaceMap":
         """Record an identity's representative occurrence (set by the analysis
         pass for thumbnail extraction), its first-seen frame (for navigation),
-        and its demographic hints."""
+        its demographic hints, and the table metadata (detection score + pose)."""
         idents = [
             replace(
                 i, ref_frame=ref_frame, ref_bbox=ref_bbox, sex=sex, age=age,
                 first_frame=first_frame if first_frame is not None else i.first_frame,
+                det_score=det_score, pitch=pitch, yaw=yaw, roll=roll,
             )
             if i.id == identity_id else i
             for i in self.identities
@@ -232,6 +304,10 @@ class FaceMap:
 
     def with_threshold(self, threshold: float) -> "FaceMap":
         return replace(self, threshold=threshold)
+
+    def with_armed(self, armed: bool) -> "FaceMap":
+        """Engage/disengage routing (face-mapping mode). See ``armed``/``is_active``."""
+        return replace(self, armed=bool(armed))
 
     def with_unmatched(
         self, policy: UnmatchedPolicy, default_source: str | None = None
@@ -285,6 +361,10 @@ class FaceMap:
                     "first_frame": i.first_frame,
                     "sex": i.sex,
                     "age": i.age,
+                    "det_score": i.det_score,
+                    "pitch": i.pitch,
+                    "yaw": i.yaw,
+                    "roll": i.roll,
                 }
                 for i in self.identities
             ],
@@ -304,6 +384,10 @@ class FaceMap:
                 first_frame=d.get("first_frame"),
                 sex=d.get("sex"),
                 age=d.get("age"),
+                det_score=d.get("det_score"),
+                pitch=d.get("pitch"),
+                yaw=d.get("yaw"),
+                roll=d.get("roll"),
             )
             for d in data.get("identities", [])
         )

@@ -330,6 +330,48 @@ class TestStatusActionButtons:
         window._set_face_overlay_visible(False)  # noqa: SLF001
         assert window._detection_sink.latest_detections() is not None  # noqa: SLF001
 
+    def test_seek_clears_stale_overlay_when_active(self, window, monkeypatch):
+        # A seek is a discontinuity: with the overlay UP, drop the boxes + the
+        # sink so a box from the old position can't linger "stuck" on the new
+        # frame (it repopulates from the next detection).
+        from types import SimpleNamespace
+
+        import numpy as np
+
+        from sinner2.gui.widgets.face_detection_overlay import FaceDetection
+
+        seeks = []
+        monkeypatch.setattr(window._session, "seek_to", seeks.append)  # noqa: SLF001
+        window._face_overlay_on = True  # noqa: SLF001 — overlay active
+        window._detection_sink.publish(  # noqa: SLF001
+            [SimpleNamespace(bbox=np.array([0.0, 0.0, 10.0, 10.0]))], 20, 10
+        )
+        window._face_overlay.set_detections(  # noqa: SLF001
+            [FaceDetection(bbox=(0.0, 0.0, 10.0, 10.0))], 20, 10
+        )
+        window._on_seek_requested(7)  # noqa: SLF001
+        assert window._detection_sink.latest_detections() is None  # noqa: SLF001
+        assert window._face_overlay._detections == []  # noqa: SLF001
+        assert seeks == [7]  # still seeks the active session
+
+    def test_seek_keeps_sink_when_overlay_inactive(self, window, monkeypatch):
+        # Overlay DOWN: leave the sink alone (the swapper keeps it warm for an
+        # immediate re-enable) — only seek.
+        from types import SimpleNamespace
+
+        import numpy as np
+
+        seeks = []
+        monkeypatch.setattr(window._session, "seek_to", seeks.append)  # noqa: SLF001
+        window._face_overlay_on = False  # noqa: SLF001
+        window._face_pick_active = False  # noqa: SLF001
+        window._detection_sink.publish(  # noqa: SLF001
+            [SimpleNamespace(bbox=np.array([0.0, 0.0, 10.0, 10.0]))], 20, 10
+        )
+        window._on_seek_requested(3)  # noqa: SLF001
+        assert window._detection_sink.latest_detections() is not None  # noqa: SLF001
+        assert seeks == [3]
+
     def test_comparison_checkbox_drives_wants_crops(self, window):
         window._processors._overlay_enabled.toggle()  # noqa: SLF001  # overlay on
         window._processors._comparison_enabled.toggle()  # noqa: SLF001  # comparison on
@@ -604,31 +646,102 @@ class TestSectionShortcuts:
 
 
 class TestFaceMappingWiring:
-    def test_faces_tab_enables_overlay_pick_mode(self, window):
-        idx = window._side_panel.indexOf(window._face_map_panel)  # noqa: SLF001
-        window._side_panel.setCurrentIndex(idx)  # noqa: SLF001
+    def test_faces_toggle_opens_editor_and_enables_pick(self, window):
+        # The Sources-tab "Face map" toggle opens the EDITOR (preview face-picking
+        # + highlight). It does NOT lock the source picker — that follows ROUTING
+        # (the "Use face map" switch), which needs a built map.
+        window._on_faces_mode_toggled(True)  # noqa: SLF001
+        assert window._faces_mode is True  # noqa: SLF001
         assert window._face_overlay._pick_enabled is True  # noqa: SLF001
-        window._side_panel.setCurrentIndex(0)  # noqa: SLF001 — back to Settings
+        assert window._pickers._source.isEnabled() is True  # noqa: SLF001 — not locked
+        window._on_faces_mode_toggled(False)  # noqa: SLF001
+        assert window._faces_mode is False  # noqa: SLF001
         assert window._face_overlay._pick_enabled is False  # noqa: SLF001
 
-    def test_library_click_assigns_to_selected_face(self, window, monkeypatch):
-        from sinner2.pipeline.face_map import FaceMap, Identity, normalize
-
-        fm = FaceMap(identities=(Identity("a", normalize([1, 0, 0])),))
-        window._controller.set_face_map(fm)  # noqa: SLF001
-        window._face_map_panel.set_face_map(fm)  # noqa: SLF001
-        window._face_map_panel.select_identity("a")  # noqa: SLF001
-        idx = window._side_panel.indexOf(window._face_map_panel)  # noqa: SLF001
-        window._side_panel.setCurrentIndex(idx)  # noqa: SLF001
-        src_calls = []
+    def test_use_face_map_switch_drives_routing(self, window, monkeypatch):
+        # D6: the Face-detector "Use face map" switch routes playback with the
+        # editor closed, locks the source, and persists per target.
+        routing, persisted = [], []
         monkeypatch.setattr(
-            window._pickers, "set_source", lambda p: src_calls.append(p)  # noqa: SLF001
+            window._face_map_ctl, "set_mode_active",  # noqa: SLF001
+            lambda on: routing.append(on),
         )
-        window._on_library_source_selected(Path("/src/alice.png"))  # noqa: SLF001
-        # Routed to per-face assignment, NOT the global source picker.
-        assert src_calls == []
-        assigned = window._controller.face_map().identities[0].source_path  # noqa: SLF001
-        assert assigned == str(Path("/src/alice.png"))
+        monkeypatch.setattr(
+            window._face_map_ctl, "set_use_for_playback",  # noqa: SLF001
+            lambda on: persisted.append(on),
+        )
+        window._on_use_face_map_toggled(True)  # noqa: SLF001
+        assert window._use_face_map is True and routing[-1] is True  # noqa: SLF001
+        assert persisted == [True]
+        assert window._pickers._source.isEnabled() is False  # noqa: SLF001 — locked
+        window._on_use_face_map_toggled(False)  # noqa: SLF001
+        assert routing[-1] is False
+        assert window._pickers._source.isEnabled() is True  # noqa: SLF001
+
+    def test_opening_editor_does_not_change_routing(self, window, monkeypatch):
+        # Item 1: opening the editor must NOT flip routing on — the switch owns
+        # routing and only unlocks once a map is built.
+        routing = []
+        monkeypatch.setattr(
+            window._face_map_ctl, "set_mode_active",  # noqa: SLF001
+            lambda on: routing.append(on),
+        )
+        window._on_faces_mode_toggled(True)  # noqa: SLF001 — open editor, no map
+        assert window._use_face_map is False  # noqa: SLF001 — switch untouched
+        assert window._processors.use_face_map() is False  # noqa: SLF001
+
+    def test_switch_unlocks_only_when_a_map_is_built(self, window):
+        # Item 1: enabled ⟺ a catalog exists — never just because the editor is
+        # open. The processor widget reflects it.
+        window._on_faces_mode_toggled(True)  # noqa: SLF001 — editor open, no map
+        assert window._processors._use_face_map.isEnabled() is False  # noqa: SLF001
+        window._on_map_availability_changed(True)  # noqa: SLF001 — map built
+        assert window._processors._use_face_map.isEnabled() is True  # noqa: SLF001
+
+    def test_map_unavailable_disables_and_clears_routing(self, window, monkeypatch):
+        routing = []
+        monkeypatch.setattr(
+            window._face_map_ctl, "set_mode_active",  # noqa: SLF001
+            lambda on: routing.append(on),
+        )
+        monkeypatch.setattr(
+            window._face_map_ctl, "set_use_for_playback", lambda on: None  # noqa: SLF001
+        )
+        window._on_map_availability_changed(True)  # noqa: SLF001
+        window._set_use_face_map(True)  # noqa: SLF001 — routing on
+        window._on_map_availability_changed(False)  # noqa: SLF001 — map gone (reset)
+        assert window._use_face_map is False and routing[-1] is False  # noqa: SLF001
+        assert window._processors._use_face_map.isEnabled() is False  # noqa: SLF001
+
+    def test_fresh_analysis_turns_routing_on(self, window, monkeypatch):
+        # Issue 1: after a scan builds a catalog the "Use face map" switch flips
+        # ON by itself — the user shouldn't have to toggle it every analysis.
+        routing = []
+        monkeypatch.setattr(
+            window._face_map_ctl, "set_mode_active",  # noqa: SLF001
+            lambda on: routing.append(on),
+        )
+        monkeypatch.setattr(
+            window._face_map_ctl, "set_use_for_playback", lambda on: None  # noqa: SLF001
+        )
+        window._on_analysis_produced_map(True)  # noqa: SLF001
+        assert window._use_face_map is True and routing[-1] is True  # noqa: SLF001
+        # An empty scan leaves routing untouched (nothing to route).
+        window._set_use_face_map(False)  # noqa: SLF001
+        routing.clear()
+        window._on_analysis_produced_map(False)  # noqa: SLF001
+        assert window._use_face_map is False  # noqa: SLF001
+
+    def test_restore_preference_reflects_and_routes(self, window, monkeypatch):
+        routing = []
+        monkeypatch.setattr(
+            window._face_map_ctl, "set_mode_active",  # noqa: SLF001
+            lambda on: routing.append(on),
+        )
+        window._on_use_for_playback_restored(True)  # noqa: SLF001
+        assert window._use_face_map is True  # noqa: SLF001
+        assert window._processors.use_face_map() is True  # noqa: SLF001
+        assert routing[-1] is True
 
     def test_analysis_active_pauses_and_locks(self, window, monkeypatch):
         paused = []
@@ -643,14 +756,117 @@ class TestFaceMappingWiring:
         window._on_face_analysis_active(False)  # noqa: SLF001
         assert locks == [True, False]  # no batch running → unlocks
 
-    def test_library_click_sets_global_source_off_faces_tab(self, window, monkeypatch):
-        window._side_panel.setCurrentIndex(0)  # noqa: SLF001 — Settings tab
+    def test_library_click_off_mode_sets_global_source(self, window, monkeypatch):
+        window._faces_mode = False  # noqa: SLF001
         src_calls = []
         monkeypatch.setattr(
             window._pickers, "set_source", lambda p: src_calls.append(p)  # noqa: SLF001
         )
         window._on_library_source_selected(Path("/s.png"))  # noqa: SLF001
         assert src_calls == [Path("/s.png")]
+
+    def test_library_click_in_mode_assigns_to_selection(self, window):
+        from sinner2.pipeline.face_map import FaceMap, Identity, normalize
+
+        fm = FaceMap(
+            identities=(
+                Identity("a", normalize([1, 0, 0])),
+                Identity("b", normalize([0, 1, 0])),
+            )
+        )
+        window._face_map_ctl._catalog = fm  # noqa: SLF001 — controller is the authority
+        window._face_map_ctl._mode_active = True  # noqa: SLF001 — routing pushed live
+        window._controller.set_face_map(fm)  # noqa: SLF001
+        window._face_map_panel.set_face_map(fm)  # noqa: SLF001
+        window._face_map_panel._table.selectAll()  # noqa: SLF001 — both rows
+        window._faces_mode = True  # noqa: SLF001
+        window._on_library_source_selected(Path("/src/alice.png"))  # noqa: SLF001
+        by_id = {
+            i.id: i.source_path
+            for i in window._controller.face_map().identities  # noqa: SLF001
+        }
+        assert by_id["a"] == str(Path("/src/alice.png"))
+        assert by_id["b"] == str(Path("/src/alice.png"))
+
+    def test_library_click_in_mode_without_selection_nudges(self, window, monkeypatch):
+        from sinner2.pipeline.face_map import FaceMap
+
+        calls = []
+        monkeypatch.setattr(
+            window._face_map_ctl, "assign_source",  # noqa: SLF001
+            lambda ids, p: calls.append((ids, p)),
+        )
+        window._face_map_panel.set_face_map(FaceMap.empty())  # noqa: SLF001
+        window._faces_mode = True  # noqa: SLF001
+        window._on_library_source_selected(Path("/src/x.png"))  # noqa: SLF001
+        assert calls == []  # nothing selected → no assignment
+        assert "Select one or more faces" in window._status_bar.current_message()  # noqa: SLF001
+
+    def test_library_click_locked_during_batch(self, window, monkeypatch):
+        calls = []
+        src = []
+        monkeypatch.setattr(
+            window._face_map_ctl, "assign_source",  # noqa: SLF001
+            lambda ids, p: calls.append((ids, p)),
+        )
+        monkeypatch.setattr(
+            window._pickers, "set_source", lambda p: src.append(p)  # noqa: SLF001
+        )
+        window._faces_mode = True  # noqa: SLF001
+        window._batch_active = True  # noqa: SLF001
+        window._on_library_source_selected(Path("/src/x.png"))  # noqa: SLF001
+        assert calls == [] and src == []  # editing locked → nothing happens
+
+    def test_selecting_face_highlights_only_its_box(self, window, monkeypatch):
+        window._faces_mode = True  # noqa: SLF001
+        monkeypatch.setattr(
+            window._face_map_ctl, "selected_face_bbox",  # noqa: SLF001
+            lambda: (1.0, 2.0, 3.0, 4.0),
+        )
+        calls = []
+        monkeypatch.setattr(
+            window._face_overlay, "set_highlight", lambda b: calls.append(b)  # noqa: SLF001
+        )
+        window._refresh_face_highlight()  # noqa: SLF001
+        assert calls == [(1.0, 2.0, 3.0, 4.0)]
+        window._faces_mode = False  # noqa: SLF001 — mode off → highlight cleared
+        window._refresh_face_highlight()  # noqa: SLF001
+        assert calls[-1] is None
+
+    def test_live_running_disables_faces_toggle(self, window):
+        window._on_live_running(True)  # noqa: SLF001
+        assert window._side_panel.faces_mode() is False  # noqa: SLF001
+        assert window._side_panel._faces_toggle.isEnabled() is False  # noqa: SLF001
+        window._on_live_running(False)  # noqa: SLF001
+        assert window._side_panel._faces_toggle.isEnabled() is True  # noqa: SLF001
+
+    def test_reset_confirmed_resets(self, window, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            window._face_map_ctl, "reset_catalog", lambda: calls.append(1)  # noqa: SLF001
+        )
+        monkeypatch.setattr("sinner2.gui.main_window.confirm", lambda *a, **k: True)
+        window._on_face_map_reset()  # noqa: SLF001
+        assert calls == [1]
+
+    def test_reset_declined_does_nothing(self, window, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            window._face_map_ctl, "reset_catalog", lambda: calls.append(1)  # noqa: SLF001
+        )
+        monkeypatch.setattr("sinner2.gui.main_window.confirm", lambda *a, **k: False)
+        window._on_face_map_reset()  # noqa: SLF001
+        assert calls == []
+
+    def test_reset_confirm_is_suppressible(self, window, monkeypatch):
+        # D3: the reset prompt now offers "Don't ask me again".
+        seen = {}
+        monkeypatch.setattr(
+            "sinner2.gui.main_window.confirm",
+            lambda *a, **k: seen.update(k) or True,
+        )
+        window._on_face_map_reset()  # noqa: SLF001
+        assert seen.get("suppressible") is True
 
 
 class TestRotationShortcut:
@@ -1166,6 +1382,43 @@ class TestUpdateSettingsResilience:
         assert win._settings.source_path == "/new/src.png"  # noqa: SLF001
 
 
+class TestFaceAnalyzeSettingsPersistence:
+    """D2: the Faces scan settings (stride/workers/preview/age-sex/precompute)
+    persist across restarts via the Settings model."""
+
+    def test_persist_writes_all_fields(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from sinner2.config.settings import Settings
+        from sinner2.gui import main_window as mw
+
+        win = mw.SinnerMainWindow.__new__(mw.SinnerMainWindow)
+        win._settings = Settings()  # noqa: SLF001
+        monkeypatch.setattr(mw.user_settings, "save", lambda _s: None)
+        panel = MagicMock()
+        panel.stride.return_value = 9
+        panel.workers.return_value = 3
+        panel.preview_enabled.return_value = False
+        panel.detect_demographics.return_value = True
+        panel.precompute_geometry.return_value = False
+        panel.detection_size.return_value = 800
+        panel.landmark_refine.return_value = True
+        panel.landmark_min_score.return_value = 0.7
+        panel.bake_angle.return_value = False
+        win._face_map_panel = panel  # noqa: SLF001
+        win._persist_face_analyze_settings()  # noqa: SLF001
+        s = win._settings  # noqa: SLF001
+        assert s.face_analyze_stride == 9
+        assert s.face_analyze_workers == 3
+        assert s.face_analyze_preview is False
+        assert s.face_analyze_demographics is True
+        assert s.face_analyze_precompute is False
+        assert s.face_analyze_detection_size == 800
+        assert s.face_analyze_landmark_refine is True
+        assert s.face_analyze_landmark_min_score == 0.7
+        assert s.face_analyze_bake_angle is False
+
+
 class TestMetricsRateResetOnShow:
     """Re-showing the metrics overlay must reset the write/drop rate trackers
     (rank 38): the overlay timer stops while hidden, freezing the trackers, so
@@ -1247,6 +1500,7 @@ class TestLiveMode:
         win._transport = MagicMock()  # noqa: SLF001
         win._controller = MagicMock()  # noqa: SLF001
         win._session = MagicMock()  # noqa: SLF001
+        win._side_panel = MagicMock()  # noqa: SLF001 — faces toggle gating
         win._batch_active = False  # noqa: SLF001
         win._models_confirmed = True  # noqa: SLF001 — deferred confirm already done
         win._update_settings = MagicMock()  # noqa: SLF001 — persist no-op

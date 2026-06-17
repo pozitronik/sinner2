@@ -139,9 +139,10 @@ class CacheController:
         manager.touch_last_used(cache_dir)
         manager.enforce_size_cap(self._size_cap_bytes, protect=[cache_dir])
 
-    def clear_all(self, protect: list[Path]) -> tuple[int, int]:
+    def clear_all(self, protect: list[Path]) -> int:
         """Wipe every cache entry under the current root, sparing `protect`.
-        Returns (entries_deleted, bytes_freed) for the UI to display."""
+        Returns the number of entries deleted (no size measured — see
+        CacheManager.clear_all)."""
         result = self.cache_manager().clear_all(protect=protect)
         self._on_changed()
         return result

@@ -1,8 +1,11 @@
+import os
+import sys
 import threading
 from pathlib import Path
 from typing import Any, cast
 
 import cv2
+import numpy as np
 from pydantic import Field
 
 from sinner2.config.base import SinnerBaseModel
@@ -12,6 +15,7 @@ from sinner2.io.cv2_unicode import imread_unicode
 from sinner2.pipeline.detectors import DetectorModel
 from sinner2.pipeline.face_analyser import FaceAnalyser
 from sinner2.pipeline.face_map import FaceMap
+from sinner2.pipeline.face_map_geometry import FrameGeometry
 from sinner2.pipeline.model_cache import (
     get_insightface_swap_model,
     get_model_path,
@@ -143,6 +147,16 @@ class FaceSwapperParams(SinnerBaseModel):
     )
 
 
+# SINNER2_GEOM_TRACE=1 prints a per-frame diagnostic when the geometry branch
+# runs (detection-free face-mapping) — how many faces were rebuilt from the
+# precomputed table and, per face, which identity it routed to and whether that
+# identity has a usable assigned source. The one tool that distinguishes "the
+# geometry is empty" from "the geometry routes to an unassigned identity" when
+# mapped faces aren't swapping. Throttled so playback isn't flooded.
+_GEOM_TRACE = bool(os.environ.get("SINNER2_GEOM_TRACE"))
+_GEOM_TRACE_EVERY = 30
+
+
 _CROP_THUMB_MAX = 96  # longest side of a comparison thumbnail, px
 
 
@@ -211,6 +225,63 @@ def _load_inswapper(path: Path, providers: list[str]) -> Any:
     return model
 
 
+class _MappedFace:
+    """A face-like object rebuilt from precomputed geometry — enough for the
+    swap (``bbox`` + ``kps``) and for the per-identity routing (``normed_embedding``
+    set to the identity's centroid, so the existing source lookup maps it without
+    change). No detection produced it; the runtime skips detection in mapping
+    mode and feeds these instead."""
+
+    def __init__(
+        self,
+        bbox: tuple[float, ...],
+        kps: tuple[tuple[float, float], ...],
+        centroid: tuple[float, ...],
+        baked_roll: float | None = None,
+        *,
+        det_score: float = 1.0,
+        sex: str | None = None,
+        age: int | None = None,
+        pose: tuple[float, float, float] | None = None,
+    ) -> None:
+        self.bbox = np.asarray(bbox, dtype=np.float32)
+        self.kps = np.asarray(kps, dtype=np.float32)
+        self.normed_embedding = np.asarray(centroid, dtype=np.float32)
+        # Carry the matched identity's representative metadata so the detection
+        # overlay shows REAL values (score / sex / age / pose) instead of the old
+        # hardcoded "1.00" — detection is skipped, so this is what we know.
+        self.det_score = float(det_score)
+        self.sex = sex
+        self.age = age
+        self.pose = pose  # (pitch, yaw, roll) degrees, or None
+        # Precomputed in-plane roll (degrees) from the geometry, or None to
+        # measure it live. compute_roll reads this before any angle source so
+        # rotation compensation keeps a steady angle without a pose estimate.
+        self.baked_roll = baked_roll
+
+
+def _mapped_meta(ident: Any, baked_roll: float | None) -> dict[str, Any]:
+    """Display metadata (score/sex/age/pose) for a geometry face, taken from its
+    matched identity so the overlay shows REAL values. ``pose`` is filled only
+    when the identity has a full pose (the full buffalo_l pack ran); its roll uses
+    the per-frame baked value when present, else the identity's."""
+    if ident is None:
+        return {}
+    pitch = getattr(ident, "pitch", None)
+    yaw = getattr(ident, "yaw", None)
+    score = getattr(ident, "det_score", None)
+    pose: tuple[float, float, float] | None = None
+    if pitch is not None and yaw is not None:
+        roll = baked_roll if baked_roll is not None else getattr(ident, "roll", None)
+        pose = (float(pitch), float(yaw), float(roll) if roll is not None else 0.0)
+    return {
+        "det_score": float(score) if score is not None else 1.0,
+        "sex": getattr(ident, "sex", None),
+        "age": getattr(ident, "age", None),
+        "pose": pose,
+    }
+
+
 class FaceSwapper:
     name = "FaceSwapper"
     thread_safe = True  # one ORT session, called concurrently by N workers
@@ -235,8 +306,10 @@ class FaceSwapper:
         # per-call source, so multi-source is gated to them; generic backends
         # keep the single-source path (deferred). Needs buffalo_l embeddings.
         self._face_map = face_map
+        self._geometry: FrameGeometry | None = None
         self._mapped_sources: dict[str, Any] = {}
         self._supports_multi_source = False
+        self._geom_trace_n = 0  # SINNER2_GEOM_TRACE throttle counter
         # ONNX providers from the swapper's OnnxExecution profile. Distinguish
         # None (caller didn't specify → platform default) from an EMPTY list
         # (user explicitly selected no providers → pass it through; ORT then runs
@@ -383,6 +456,93 @@ class FaceSwapper:
         else:
             self._mapped_sources = {}
 
+    def set_geometry(self, geometry: FrameGeometry | None) -> None:
+        """Per-frame precomputed geometry for detection-free mapping (hot-applied
+        like set_face_map). When set + mapping is active, ``process`` rebuilds
+        each frame's faces from it instead of detecting; None reverts to live
+        detection. Single assignment — concurrent workers snapshot it."""
+        self._geometry = geometry
+
+    def _geometry_faces(
+        self, geometry: FrameGeometry | None, ctx: Any
+    ) -> list[Any] | None:
+        """Rebuild this frame's faces from ``geometry`` (no detection), or None to
+        fall back to detecting. Each face gets its identity's centroid as the
+        embedding so the multi-source routing maps it unchanged. Gated on mapping
+        being active + multi-source-capable + a known frame index."""
+        face_map = self._face_map
+        if (
+            geometry is None
+            or face_map is None
+            or not face_map.is_active()
+            or not self._supports_multi_source
+            or ctx is None
+            or getattr(ctx, "frame_index", None) is None
+        ):
+            return None
+        by_id = {ident.id: ident for ident in face_map.identities}
+        faces: list[Any] = []
+        for gf in geometry.faces_at(ctx.frame_index):
+            ident = by_id.get(gf.identity_id)
+            # Prefer the baked embedding (routes against the LIVE catalog, so a
+            # merged/reassigned/dropped identity is handled with no re-precompute).
+            # Older sidecars have none → fall back to the matched identity's
+            # centroid by id (skip if that identity is gone from the catalog).
+            emb = gf.embedding or (ident.centroid if ident is not None else None)
+            if not emb:
+                continue
+            faces.append(
+                _MappedFace(
+                    gf.bbox, gf.kps, emb, gf.roll, **_mapped_meta(ident, gf.roll)
+                )
+            )
+        # No precomputed faces for this frame (outside the analysed range, a
+        # frame the scan missed, or a stale-only entry) → fall back to live
+        # detection so the swap still shows. Geometry stays a fast cache over the
+        # frames it DID cover; it never makes a face silently un-swappable.
+        return faces or None
+
+    def _trace_geometry(
+        self, faces: list[Any], face_map: FaceMap | None, ctx: Any
+    ) -> None:
+        """SINNER2_GEOM_TRACE diagnostic (read-only). For the geometry branch,
+        print — per rebuilt face — which catalog identity it routes to, whether
+        that identity has a source assigned, and whether a prepared source face
+        exists. Reveals whether non-swapping geometry is empty, routes to an
+        unassigned identity, or has an unprepared source. Throttled."""
+        self._geom_trace_n += 1
+        if self._geom_trace_n % _GEOM_TRACE_EVERY != 1:
+            return
+        fidx = getattr(ctx, "frame_index", None)
+        assigned = sorted(
+            i.id[:8]
+            for i in (face_map.identities if face_map is not None else ())
+            if i.source_path
+        )
+        rows: list[str] = []
+        for f in faces:
+            emb = getattr(f, "normed_embedding", None)
+            match = (
+                face_map.best_match(emb)
+                if (face_map is not None and emb is not None)
+                else None
+            )
+            src = self._mapped_source_face(f, face_map)
+            rows.append(
+                f"match={match.id[:8] if match is not None else None}"
+                f"/srcAssigned={'Y' if (match is not None and match.source_path) else 'n'}"
+                f"/srcPrepared={'Y' if src is not None else 'n'}"
+            )
+        active = face_map.is_active() if face_map is not None else None
+        print(
+            f"[geom] frame={fidx} built={len(faces)} active={active} "
+            f"multiCapable={self._supports_multi_source} "
+            f"preparedSources={len(self._mapped_sources)} "
+            f"assignedIdentities={assigned} faces=[{'; '.join(rows)}]",
+            file=sys.stderr,
+            flush=True,
+        )
+
     def _mapped_source_face(self, face: Any, face_map: FaceMap | None) -> Any:
         """The prepared source face this detected face routes to, or None to skip
         it (no embedding, no match, or its identity has no assigned source)."""
@@ -410,13 +570,33 @@ class FaceSwapper:
         landmarker = self._landmarker
         if analyser is None or swapper is None or source_face is None:
             raise RuntimeError("FaceSwapper.process called before setup()")
-        faces = analyser.analyse(frame)
+        # Face-mapping's detection-free runtime: when geometry is loaded for this
+        # frame, rebuild faces from it (NO detection). Otherwise detect as usual.
+        geometry = self._geometry
+        geom_faces = self._geometry_faces(geometry, ctx)
+        if geom_faces is not None:
+            faces = geom_faces
+            already_refined = geometry.refined  # type: ignore[union-attr]
+            if _GEOM_TRACE:
+                self._trace_geometry(faces, self._face_map, ctx)
+        elif self._face_map_is_routable() and not analyser.provides_embeddings():
+            # Per-identity routing matches each TARGET face's embedding to the
+            # catalog, so faces MUST carry one. The full buffalo_l pack provides
+            # it; a standalone detector / detection-only `analyse` does NOT →
+            # every face would route to nothing. Force det+rec for embeddings.
+            faces = analyser.analyse_det_rec(frame)
+            already_refined = False
+        else:
+            faces = analyser.analyse(frame)
+            already_refined = False
         # Landmark refinement: replace each face's 5 keypoints with the 5
         # derived from 2dfan4's 68 landmarks (better alignment on tilted
         # faces), and keep the 68 for the landmark-68 roll source. Best-effort
         # per face — a low score or failure leaves the detector keypoints.
+        # Skipped when the geometry already baked refined keypoints (self-heal:
+        # a raw-geometry frame still refines here if the setting is now on).
         lm68_by_face: dict[int, Any] = {}
-        if landmarker is not None:
+        if landmarker is not None and not already_refined:
             for face in faces:
                 try:
                     lm68, score = landmarker.detect_68(frame, face.bbox)

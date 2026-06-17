@@ -14,7 +14,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtWidgets import QTabWidget, QWidget
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtWidgets import (
+    QPushButton,
+    QSplitter,
+    QTabWidget,
+    QWidget,
+)
 
 from sinner2.config.media_extensions import images_filter, media_filter
 from sinner2.gui.widgets.batch_view import QBatchView
@@ -27,6 +33,8 @@ from sinner2.library.thumbnail_generator import ThumbnailGenerator
 
 class QSidePanel(QTabWidget):
     """Tabbed side panel. Holds processors + libraries."""
+
+    facesModeToggled = Signal(bool)  # face-mapping mode on/off (Sources tab)
 
     def __init__(
         self,
@@ -76,21 +84,52 @@ class QSidePanel(QTabWidget):
         self._models_view = models_view
         self._live_view = live_view
         self._face_map_panel = face_map_panel
+        self._faces_toggle: QPushButton | None = None
 
         # Order: settings first (most-used during initial setup), then
         # libraries for ongoing source/target switching, then batch
-        # (queue management), then models (occasional management).
+        # (queue management), then models (occasional management). The Faces
+        # panel is NOT its own tab — it's a togglable subpanel of Sources.
         self.addTab(self._processors, "Settings")
-        self.addTab(self._sources_library, "Sources")
+        self._sources_tab = self._build_sources_tab()
+        self.addTab(self._sources_tab, "Sources")
         self.addTab(self._targets_library, "Targets")
-        if self._face_map_panel is not None:
-            self.addTab(self._face_map_panel, "Faces")
         if self._batch_view is not None:
             self.addTab(self._batch_view, "Batch")
         if self._models_view is not None:
             self.addTab(self._models_view, "Models")
         if self._live_view is not None:
             self.addTab(self._live_view, "Live")
+
+    def _build_sources_tab(self) -> QWidget:
+        """Sources tab = the face-mapping panel beside the sources library, with
+        a "Faces" toggle hosted INLINE in the library's control row (next to the
+        filter edit) that reveals the panel. The toggle drives face-mapping MODE
+        — its facesModeToggled signal is wired upstream to lock the global source
+        picker, enable preview face picks, and route tile clicks to selection."""
+        if self._face_map_panel is None:
+            return self._sources_library
+        self._faces_toggle = QPushButton("Face map")
+        self._faces_toggle.setCheckable(True)
+        self._faces_toggle.setToolTip(
+            "Open the face-map editor — discover people and map each to a source "
+            "(file targets only). Routing is the 'Use face map' switch in the "
+            "Face detector settings."
+        )
+        self._faces_toggle.toggled.connect(self._on_faces_toggled)
+        self._sources_library.add_leading_control(self._faces_toggle)
+        self._face_map_panel.setVisible(False)  # revealed by the toggle
+        split = QSplitter(Qt.Orientation.Horizontal)
+        split.addWidget(self._face_map_panel)
+        split.addWidget(self._sources_library)
+        split.setStretchFactor(0, 1)
+        split.setStretchFactor(1, 1)
+        return split
+
+    def _on_faces_toggled(self, on: bool) -> None:
+        if self._face_map_panel is not None:
+            self._face_map_panel.setVisible(on)
+        self.facesModeToggled.emit(on)
 
     # ---- Accessors ----
 
@@ -99,6 +138,27 @@ class QSidePanel(QTabWidget):
 
     def sources_library(self) -> QLibraryView:
         return self._sources_library
+
+    def faces_mode(self) -> bool:
+        """Whether face-mapping mode (the Sources-tab "Faces" toggle) is on."""
+        return self._faces_toggle is not None and self._faces_toggle.isChecked()
+
+    def open_face_map_editor(self) -> None:
+        """Reveal the face-map editor: switch to the Sources tab and turn the
+        toggle on (no-op when face-mapping is unavailable — e.g. live camera)."""
+        if self._faces_toggle is None or not self._faces_toggle.isEnabled():
+            return
+        self.setCurrentWidget(self._sources_tab)
+        self._faces_toggle.setChecked(True)
+
+    def set_faces_available(self, available: bool) -> None:
+        """Enable/disable the Faces toggle. Face-mapping is file-only, so the
+        camera session disables it (and clears the mode if it was on)."""
+        if self._faces_toggle is None:
+            return
+        if not available and self._faces_toggle.isChecked():
+            self._faces_toggle.setChecked(False)  # emits facesModeToggled(False)
+        self._faces_toggle.setEnabled(available)
 
     def targets_library(self) -> QLibraryView:
         return self._targets_library
@@ -119,6 +179,8 @@ class QSidePanel(QTabWidget):
         self._processors.setEnabled(not locked)
         self._sources_library.setEnabled(not locked)
         self._targets_library.setEnabled(not locked)
+        if self._face_map_panel is not None:
+            self._face_map_panel.setEnabled(not locked)
 
     def set_mode(self, mode: str) -> None:
         """Show only the tabs relevant to the active mode. Live hides Targets +

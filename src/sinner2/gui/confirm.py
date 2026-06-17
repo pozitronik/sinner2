@@ -1,10 +1,13 @@
 """Shared yes/no confirmation with an optional "Don't ask me again".
 
 Every confirmation dialog routes through `confirm()`, so a user can permanently
-suppress an individual prompt (keyed by a stable `dialog_id`) and have the
-remembered answer reused. The suppression map is persisted in Settings; the
-helper reaches it through a `SuppressionStore` (a load/save pair) injected by
-the app owner so this module stays free of Settings/persistence wiring.
+suppress an individual prompt (keyed by a stable `dialog_id`) by ticking "Don't
+ask me again" — but ONLY on an affirmative answer, so the suppression means
+"always proceed without asking", never "always cancel" (remembering a No would
+silently lock the action out for good). The suppression map is persisted in
+Settings; the helper reaches it through a `SuppressionStore` (a load/save pair)
+injected by the app owner so this module stays free of Settings/persistence
+wiring.
 
 The owner installs one process-wide store via `set_default_suppression_store()`;
 call sites then just call `confirm(parent, dialog_id, title, text)`. Pass
@@ -63,14 +66,17 @@ def confirm(
 ) -> bool:
     """Ask a yes/no question; return True for Yes.
 
-    When `suppressible` and a store has a remembered answer for `dialog_id`,
-    return it without showing any UI. Otherwise show a Yes/No box carrying a
-    "Don't ask me again" checkbox; if ticked, persist the chosen answer."""
+    When `suppressible` and a store has a remembered YES for `dialog_id`, return
+    True without showing any UI. Otherwise show a Yes/No box carrying a "Don't
+    ask me again" checkbox; if ticked AND answered Yes, persist the suppression
+    (a ticked No is not remembered — see the module docstring)."""
     effective = store if store is not None else _default_store
     if suppressible and effective is not None:
-        remembered = effective.remembered(dialog_id)
-        if remembered is not None:
-            return remembered
+        # Only a remembered YES suppresses the prompt — a remembered (or legacy)
+        # NO is ignored, so "Don't ask again" + Cancel can never permanently
+        # disable an action. The checkbox means "always do this without asking".
+        if effective.remembered(dialog_id):
+            return True
 
     box = QMessageBox(parent)
     box.setIcon(QMessageBox.Icon.Question)
@@ -90,6 +96,8 @@ def confirm(
         box.setCheckBox(checkbox)
 
     answer = box.exec() == QMessageBox.StandardButton.Yes
-    if checkbox is not None and checkbox.isChecked() and effective is not None:
-        effective.remember(dialog_id, answer)
+    # Persist the suppression ONLY for an affirmative answer — remembering a No
+    # would lock the action out for good (the user's reported Reset trap).
+    if checkbox is not None and checkbox.isChecked() and answer and effective is not None:
+        effective.remember(dialog_id, True)
     return answer

@@ -70,6 +70,13 @@ class TestQSourceTargetPanel:
         panel.set_target_visible(True)
         assert panel._target.isVisibleTo(panel)      # noqa: SLF001
 
+    def test_set_source_enabled_locks_only_source(self, panel):
+        panel.set_source_enabled(False)
+        assert panel._source.isEnabled() is False    # noqa: SLF001 — locked
+        assert panel._target.isEnabled() is True     # noqa: SLF001 — target stays
+        panel.set_source_enabled(True)
+        assert panel._source.isEnabled() is True      # noqa: SLF001
+
     def test_use_camera_button_emits_camera_requested(self, panel, qtbot):
         with qtbot.waitSignal(panel.cameraRequested, timeout=1000):
             panel._use_camera.click()  # noqa: SLF001

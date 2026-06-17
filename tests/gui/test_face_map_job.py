@@ -1,17 +1,16 @@
 """Tests for the background face-map analysis job."""
 from __future__ import annotations
 
-import threading
-
 from sinner2.gui.face_map_job import AnalysisRequest, FaceMapAnalysisJob
 from sinner2.pipeline.face_map import FaceMap, normalize
 
 
 class _Face:
-    def __init__(self, embedding, score=0.9, bbox=(0.0, 0.0, 4.0, 4.0)):
+    def __init__(self, embedding, score=0.9, bbox=(0.0, 0.0, 4.0, 4.0), kps=None):
         self.normed_embedding = embedding
         self.det_score = score
         self.bbox = bbox
+        self.kps = kps if kps is not None else [(float(i), float(i)) for i in range(5)]
 
 
 class _StubReader:
@@ -48,10 +47,14 @@ class TestRun:
         frames = [[_Face(_emb(1, 0, 0))], [_Face(_emb(0, 1, 0))]]
         job, reader = _job(frames)
         with qtbot.waitSignal(job.finished, timeout=2000) as blocker:
-            job.run(AnalysisRequest("clip.mp4", stride=1, providers=["CPUExecutionProvider"]))
+            job.run(AnalysisRequest(
+                "clip.mp4", stride=1, providers=["CPUExecutionProvider"],
+                compute_geometry=False,
+            ))
         face_map = blocker.args[0]
         assert isinstance(face_map, FaceMap)
         assert len(face_map.identities) == 2
+        assert blocker.args[1] is None  # geometry skipped
         assert reader.released  # reader cleaned up
 
     def test_progress_emitted(self, qtbot):
@@ -60,8 +63,89 @@ class TestRun:
         events = []
         job.progress.connect(lambda d, t: events.append((d, t)))
         with qtbot.waitSignal(job.finished, timeout=2000):
-            job.run(AnalysisRequest("clip.mp4", stride=2))
+            job.run(AnalysisRequest("clip.mp4", stride=2, compute_geometry=False))
         assert events[-1] == (2, 2)  # indices 0, 2
+
+    def test_geometry_phase_builds_table(self, qtbot):
+        # Phase 2: a full-frame geometry pass matches each face to the catalog.
+        frames = [[_Face(_emb(1, 0, 0))], [_Face(_emb(1, 0, 0))]]
+        job, _ = _job(frames)
+        started = []
+        job.geometryStarted.connect(lambda: started.append(1))
+        with qtbot.waitSignal(job.finished, timeout=2000) as blocker:
+            job.run(AnalysisRequest("clip.mp4", stride=1))  # compute_geometry default
+        geometry = blocker.args[1]
+        assert started == [1]
+        assert geometry is not None
+        assert geometry.face_count() == 2  # one mapped face per frame
+        assert geometry.refined is False   # landmark_refine off → raw kps
+
+    def test_geometry_phase_uses_fast_detector(self, qtbot):
+        # The catalog scan may use the slow age/sex pack, but the geometry pass
+        # must build the fast det+rec detector (fast=True) — no genderage/frame.
+        fasts = []
+        reader = _StubReader([[_Face(_emb(1, 0, 0))]])
+        job = FaceMapAnalysisJob(
+            reader_factory=lambda _p: reader,
+            detect_factory=lambda _prov, _size, fast: (
+                fasts.append(fast) or (lambda f: f)
+            ),
+        )
+        with qtbot.waitSignal(job.finished, timeout=2000):
+            job.run(AnalysisRequest("clip.mp4", stride=1, fast=False))  # age/sex ON
+        assert fasts == [False, True]  # phase 1 full-pack, phase 2 det+rec only
+
+    def test_landmark_refine_bakes_and_flags_refined(self, qtbot):
+        # With landmark_refine on, the job builds a landmarker and stamps refined.
+        frames = [[_Face(_emb(1, 0, 0))]]
+        reader = _StubReader(frames)
+
+        class _StubLandmarker:
+            def detect_68(self, frame, bbox):
+                import numpy as np
+                return np.zeros((68, 2), np.float32), 0.99
+
+            def release(self):
+                pass
+
+        job = FaceMapAnalysisJob(
+            reader_factory=lambda _p: reader,
+            detect_factory=lambda _prov, _size, _fast: (lambda f: f),
+            landmarker_factory=lambda _prov: _StubLandmarker(),
+        )
+        with qtbot.waitSignal(job.finished, timeout=2000) as blocker:
+            job.run(AnalysisRequest("clip.mp4", stride=1, landmark_refine=True))
+        geometry = blocker.args[1]
+        assert geometry is not None and geometry.refined is True
+
+    def test_geometry_detect_bakes_roll_from_landmarks(self):
+        # D5: with bake_angle on, the geometry detector attaches a per-face roll
+        # measured from the 2dfan4 eye-line (45° here) — even with refine off.
+        import numpy as np
+
+        class _LM:
+            def detect_68(self, frame, bbox):
+                lm = np.zeros((68, 2), np.float32)
+                lm[36:42] = [0, 0]      # left eye centre
+                lm[42:48] = [10, 10]    # right eye centre → 45°
+                return lm, 0.99
+
+        base = [_Face(_emb(1, 0, 0))]
+        detect = FaceMapAnalysisJob._geometry_detect(  # noqa: SLF001
+            lambda _fr: base, _LM(), 0.5, refine=False, bake_angle=True
+        )
+        out = detect(object())
+        assert abs(out[0].baked_roll - 45.0) < 1e-3
+        # refine off → keypoints untouched
+        assert base[0].kps == [(float(i), float(i)) for i in range(5)]
+
+    def test_geometry_detect_no_landmarker_is_passthrough(self):
+        base = [_Face(_emb(1, 0, 0))]
+        detect = FaceMapAnalysisJob._geometry_detect(  # noqa: SLF001
+            lambda _fr: base, None, 0.5, refine=False, bake_angle=False
+        )
+        out = detect(object())
+        assert out is base and not hasattr(out[0], "baked_roll")
 
     def test_reader_failure_emits_failed(self, qtbot):
         def boom(_path):
@@ -92,7 +176,6 @@ class TestRun:
 
     def test_cancel_stops_the_scan(self, qtbot):
         frames = [[_Face(_emb(1, 0, 0))], [_Face(_emb(0, 1, 0))]]
-        ev_seen = threading.Event()
         job_ref: list = []
 
         def detect(frame):

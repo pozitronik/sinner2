@@ -968,3 +968,310 @@ class TestFaceMapping:
         assert fs._face_map_is_routable() is False  # noqa: SLF001
         fs._supports_multi_source = True  # noqa: SLF001
         assert fs._face_map_is_routable() is True  # noqa: SLF001
+
+
+class TestGeometryMappingPath:
+    """Detection-free runtime: with precomputed geometry loaded, process()
+    rebuilds the frame's faces from it (no detection) and routes each by its
+    identity's centroid through the existing multi-source path."""
+
+    def _fs(self, face_map):
+        fs = object.__new__(FaceSwapper)
+        fs._supports_multi_source = True  # noqa: SLF001
+        fs._face_map = face_map  # noqa: SLF001
+        fs._geometry = None  # noqa: SLF001
+        return fs
+
+    def _geom(self, frame, ident_id="a", refined=False):
+        from sinner2.pipeline.face_map_geometry import FrameGeometry, GeomFace
+
+        kps = tuple((float(i), 0.0) for i in range(5))
+        return FrameGeometry(
+            faces={frame: (GeomFace(ident_id, (0.0, 0.0, 4.0, 4.0), kps),)},
+            frame_count=10,
+            refined=refined,
+        )
+
+    def test_reconstructs_face_with_centroid_embedding(self):
+        from types import SimpleNamespace
+
+        from sinner2.pipeline.face_map import FaceMap, Identity, normalize
+
+        fm = FaceMap(
+            identities=(Identity("a", normalize([1, 0, 0]), source_path="/s.png"),),
+            threshold=0.5,
+        )
+        faces = self._fs(fm)._geometry_faces(  # noqa: SLF001
+            self._geom(5), SimpleNamespace(frame_index=5)
+        )
+        assert faces is not None and len(faces) == 1
+        f = faces[0]
+        assert f.kps.shape == (5, 2)
+        assert tuple(float(v) for v in f.bbox) == (0.0, 0.0, 4.0, 4.0)
+        # centroid-as-embedding routes back to its own identity's source
+        assert fm.source_for(f.normed_embedding) == "/s.png"
+
+    def test_baked_embedding_routes_against_live_catalog(self):
+        # A0: a face whose baked identity_id is GONE from the catalog still routes
+        # — by its baked embedding — to the current best match. This is what lets
+        # merge / reassignment work with no re-precompute.
+        from types import SimpleNamespace
+
+        from sinner2.pipeline.face_map import FaceMap, Identity, normalize
+        from sinner2.pipeline.face_map_geometry import FrameGeometry, GeomFace
+
+        fm = FaceMap(
+            identities=(Identity("a", normalize([1, 0, 0]), source_path="/s.png"),),
+            threshold=0.5,
+        )
+        kps = tuple((float(i), 0.0) for i in range(5))
+        geom = FrameGeometry(
+            faces={5: (GeomFace(
+                "GONE", (0.0, 0.0, 4.0, 4.0), kps,
+                tuple(normalize([0.98, 0.02, 0])),  # baked emb ~ identity "a"
+            ),)},
+            frame_count=10,
+        )
+        faces = self._fs(fm)._geometry_faces(  # noqa: SLF001
+            geom, SimpleNamespace(frame_index=5)
+        )
+        assert faces is not None and len(faces) == 1
+        # Routed via the baked embedding to "a" despite the dead id (not dropped).
+        assert fm.source_for(faces[0].normed_embedding) == "/s.png"
+
+    def test_mapped_face_carries_identity_metadata(self):
+        # Item 5: the overlay shows REAL score/sex/age/pose (not hardcoded 1.00).
+        from types import SimpleNamespace
+
+        from sinner2.pipeline.face_map import FaceMap, Identity, normalize
+        from sinner2.pipeline.face_map_geometry import FrameGeometry, GeomFace
+
+        fm = FaceMap(identities=(
+            Identity("a", normalize([1, 0, 0]), source_path="/s",
+                     det_score=0.87, sex="M", age=34,
+                     pitch=2.0, yaw=-4.0, roll=10.0),
+        ))
+        kps = tuple((float(i), 0.0) for i in range(5))
+        geom = FrameGeometry(
+            faces={3: (GeomFace("a", (0.0, 0.0, 4.0, 4.0), kps, (), 18.0),)},
+            frame_count=10,
+        )
+        f = self._fs(fm)._geometry_faces(  # noqa: SLF001
+            geom, SimpleNamespace(frame_index=3)
+        )[0]
+        assert f.det_score == 0.87 and f.sex == "M" and f.age == 34
+        # pose = rep pitch/yaw + the PER-FRAME baked roll (18, not the rep 10).
+        assert f.pose == (2.0, -4.0, 18.0)
+
+    def test_mapped_face_no_pose_without_full_pack(self):
+        # Fast-mode identity (no pitch/yaw) → pose None, but score still real.
+        from types import SimpleNamespace
+
+        from sinner2.pipeline.face_map import FaceMap, Identity, normalize
+        from sinner2.pipeline.face_map_geometry import FrameGeometry, GeomFace
+
+        fm = FaceMap(identities=(
+            Identity("a", normalize([1, 0, 0]), source_path="/s", det_score=0.7),
+        ))
+        kps = tuple((float(i), 0.0) for i in range(5))
+        geom = FrameGeometry(
+            faces={3: (GeomFace("a", (0.0, 0.0, 4.0, 4.0), kps),)}, frame_count=10
+        )
+        f = self._fs(fm)._geometry_faces(  # noqa: SLF001
+            geom, SimpleNamespace(frame_index=3)
+        )[0]
+        assert f.det_score == 0.7 and f.pose is None
+
+    def test_baked_roll_flows_to_mapped_face(self):
+        # D5: a geometry face's baked roll reaches the rebuilt face so rotation
+        # compensation uses it instead of a (missing) pose estimate.
+        from types import SimpleNamespace
+
+        from sinner2.pipeline.face_map import FaceMap, Identity, normalize
+        from sinner2.pipeline.face_map_geometry import FrameGeometry, GeomFace
+
+        fm = FaceMap(
+            identities=(Identity("a", normalize([1, 0, 0]), source_path="/s"),)
+        )
+        kps = tuple((float(i), 0.0) for i in range(5))
+        geom = FrameGeometry(
+            faces={3: (GeomFace("a", (0.0, 0.0, 4.0, 4.0), kps, (), 18.5),)},
+            frame_count=10,
+        )
+        faces = self._fs(fm)._geometry_faces(  # noqa: SLF001
+            geom, SimpleNamespace(frame_index=3)
+        )
+        assert faces is not None and faces[0].baked_roll == 18.5
+
+    def test_stale_only_frame_falls_back_to_detection(self):
+        from types import SimpleNamespace
+
+        from sinner2.pipeline.face_map import FaceMap, Identity, normalize
+
+        fm = FaceMap(identities=(Identity("a", normalize([1, 0, 0]), source_path="/s"),))
+        # The frame's only geometry face is a since-deleted identity → no usable
+        # mapped faces → None, so process() re-detects rather than show nothing.
+        faces = self._fs(fm)._geometry_faces(  # noqa: SLF001
+            self._geom(0, ident_id="GONE"), SimpleNamespace(frame_index=0)
+        )
+        assert faces is None
+
+    def test_none_when_not_usable(self):
+        from types import SimpleNamespace
+
+        from sinner2.pipeline.face_map import FaceMap, Identity, normalize
+
+        active = FaceMap(
+            identities=(Identity("a", normalize([1, 0, 0]), source_path="/s"),)
+        )
+        geom = self._geom(0)
+        at0 = SimpleNamespace(frame_index=0)
+        assert self._fs(active)._geometry_faces(None, at0) is None       # no geometry  # noqa: SLF001
+        assert self._fs(active)._geometry_faces(geom, None) is None      # no ctx  # noqa: SLF001
+        assert self._fs(active)._geometry_faces(  # noqa: SLF001
+            geom, SimpleNamespace(frame_index=None)
+        ) is None                                                        # unknown frame
+        inactive = self._fs(FaceMap(identities=(Identity("a", normalize([1, 0, 0])),)))
+        assert inactive._geometry_faces(geom, at0) is None               # map inactive  # noqa: SLF001
+        gen = self._fs(active)
+        gen._supports_multi_source = False  # noqa: SLF001
+        assert gen._geometry_faces(geom, at0) is None                    # generic backend  # noqa: SLF001
+
+    def test_trace_reports_unassigned_routing(self, capsys):
+        # SINNER2_GEOM_TRACE diagnostic: with the map ACTIVE (identity "a" has a
+        # source) but the frame's geometry face tagged to the UNASSIGNED "b", the
+        # face routes to nothing → srcAssigned=n. This is the exact signature of
+        # the reported "Precompute ON → no swap" (built faces that don't route).
+        from types import SimpleNamespace
+
+        from sinner2.pipeline.face_map import FaceMap, Identity, normalize
+
+        fm = FaceMap(identities=(
+            Identity("a", normalize([1, 0, 0]), source_path="/s.png"),  # active
+            Identity("b", normalize([0, 1, 0])),                        # no source
+        ))
+        fs = self._fs(fm)
+        fs._mapped_sources = {"/s.png": object()}  # noqa: SLF001
+        fs._geom_trace_n = 0  # noqa: SLF001
+        # The geometry face on this frame belongs to "b" (unassigned).
+        faces = fs._geometry_faces(  # noqa: SLF001
+            self._geom(5, ident_id="b"), SimpleNamespace(frame_index=5)
+        )
+        assert faces is not None
+        fs._trace_geometry(faces, fm, SimpleNamespace(frame_index=5))  # noqa: SLF001
+        err = capsys.readouterr().err
+        assert "[geom]" in err and "built=1" in err
+        assert "match=b" in err and "srcAssigned=n" in err
+        assert "assignedIdentities=['a']" in err
+
+    def test_trace_reports_assigned_routing(self, capsys):
+        from types import SimpleNamespace
+
+        from sinner2.pipeline.face_map import FaceMap, Identity, normalize
+
+        fm = FaceMap(
+            identities=(Identity("a", normalize([1, 0, 0]), source_path="/s.png"),)
+        )
+        fs = self._fs(fm)
+        fs._mapped_sources = {"/s.png": object()}  # noqa: SLF001 — prepared source
+        fs._geom_trace_n = 0  # noqa: SLF001
+        faces = fs._geometry_faces(self._geom(5), SimpleNamespace(frame_index=5))  # noqa: SLF001
+        fs._trace_geometry(faces, fm, SimpleNamespace(frame_index=5))  # noqa: SLF001
+        err = capsys.readouterr().err
+        assert "srcAssigned=Y" in err and "srcPrepared=Y" in err
+
+    def test_process_uses_geometry_and_skips_detection(
+        self, source_image, models_dir, stub_insightface_app, stub_inswapper, tmp_path
+    ):
+        from sinner2.pipeline.face_map import FaceMap, Identity, normalize
+        from sinner2.pipeline.processor import ChainContext
+
+        a = tmp_path / "alice.png"
+        cv2.imwrite(str(a), np.full((32, 32, 3), 10, np.uint8))
+        src_a = object()
+        # setup consumes: main source [obj], mapped source for alice [src_a].
+        stub_insightface_app.get.side_effect = [[object()], [src_a]]
+        fm = FaceMap(
+            identities=(Identity("a", normalize([1, 0, 0]), source_path=str(a)),),
+            threshold=0.5,
+        )
+        fs = FaceSwapper(
+            source=Source(path=source_image),
+            params=_params(rotation_compensation=False),
+            face_map=fm,
+        )
+        fs.setup()
+        fs.set_geometry(self._geom(3))
+        get_calls = stub_insightface_app.get.call_count
+        fs.process(_blank(), ChainContext(frame_index=3))
+        # NO further detection — geometry supplied the face.
+        assert stub_insightface_app.get.call_count == get_calls
+        # And it was swapped with alice's mapped source.
+        assert stub_inswapper.get.call_count == 1
+        assert stub_inswapper.get.call_args.args[2] is src_a
+
+    def test_routing_switches_to_det_rec_when_no_embeddings(
+        self, source_image, models_dir, stub_insightface_app, stub_inswapper, tmp_path
+    ):
+        # No geometry + active map + a detection-only analyser (no embeddings) →
+        # the swap must call analyse_det_rec so routing has embeddings to match;
+        # the default full-pack analyser (embeddings) keeps the fast analyse path.
+        from sinner2.pipeline.face_map import FaceMap, Identity, normalize
+
+        a = tmp_path / "alice.png"
+        cv2.imwrite(str(a), np.full((32, 32, 3), 10, np.uint8))
+        stub_insightface_app.get.side_effect = [[object()], [object()]]  # setup only
+        fm = FaceMap(
+            identities=(Identity("a", normalize([1, 0, 0]), source_path=str(a)),),
+            threshold=0.5,
+        )
+        fs = FaceSwapper(
+            source=Source(path=source_image),
+            params=_params(rotation_compensation=False),
+            face_map=fm,
+        )
+        fs.setup()
+        called = []
+        fs._analyser.analyse = lambda f: called.append("analyse") or []  # noqa: SLF001
+        fs._analyser.analyse_det_rec = lambda f: called.append("det_rec") or []  # noqa: SLF001
+        # No-embeddings analyser (e.g. yoloface) → det+rec.
+        fs._analyser.provides_embeddings = lambda: False  # noqa: SLF001
+        fs.process(_blank())
+        assert called == ["det_rec"]
+        # Full-pack analyser (embeddings) → keep the cached analyse path.
+        called.clear()
+        fs._analyser.provides_embeddings = lambda: True  # noqa: SLF001
+        fs.process(_blank())
+        assert called == ["analyse"]
+
+    def test_uncovered_frame_falls_back_to_live_detection(
+        self, source_image, models_dir, stub_insightface_app, stub_inswapper, tmp_path
+    ):
+        from types import SimpleNamespace
+
+        from sinner2.pipeline.face_map import FaceMap, Identity, normalize
+        from sinner2.pipeline.processor import ChainContext
+
+        a = tmp_path / "alice.png"
+        cv2.imwrite(str(a), np.full((32, 32, 3), 10, np.uint8))
+        stranger = SimpleNamespace(  # detected live, but matches no identity
+            normed_embedding=np.asarray(normalize([0, 0, 1]), np.float32),
+            bbox=np.array([0, 0, 4, 4], float), kps=np.zeros((5, 2), np.float32),
+            det_score=0.9, sex=None,
+        )
+        stub_insightface_app.get.side_effect = [[object()], [object()], [stranger]]
+        fm = FaceMap(
+            identities=(Identity("a", normalize([1, 0, 0]), source_path=str(a)),),
+            threshold=0.5,
+        )
+        fs = FaceSwapper(
+            source=Source(path=source_image),
+            params=_params(rotation_compensation=False),
+            face_map=fm,
+        )
+        fs.setup()
+        fs.set_geometry(self._geom(3))  # only frame 3 has geometry
+        get_calls = stub_insightface_app.get.call_count
+        fs.process(_blank(), ChainContext(frame_index=99))  # uncovered → fall back
+        assert stub_insightface_app.get.call_count == get_calls + 1  # re-detected live
+        stub_inswapper.get.assert_not_called()  # the stranger matched nothing → no swap

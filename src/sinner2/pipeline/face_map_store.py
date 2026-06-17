@@ -54,6 +54,30 @@ def delete_face_map(path: Path) -> bool:
         return False
 
 
+# ---- "Use this map for playback" preference (per target) ----
+
+def use_map_path(target: Path, root: Path) -> Path:
+    """Marker sidecar recording that the user chose to ROUTE playback through
+    this target's map (independent of the editor panel being open)."""
+    digest = hashlib.sha1(str(target).encode()).hexdigest()[:16]
+    return root / f"{digest}.usemap"
+
+
+def save_use_map(path: Path, on: bool) -> None:
+    """Persist the per-target 'use the map for playback' preference: the marker
+    exists when on, is removed when off."""
+    if on:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("1", encoding="utf-8")
+    else:
+        path.unlink(missing_ok=True)
+
+
+def load_use_map(path: Path) -> bool:
+    """Whether playback routing through the map was last left ON for this target."""
+    return path.is_file()
+
+
 # ---- Scan progress (resume) ----
 
 def progress_path(target: Path, root: Path) -> Path:

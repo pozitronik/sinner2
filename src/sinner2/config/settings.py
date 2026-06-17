@@ -49,6 +49,16 @@ class Settings(SinnerBaseModel):
     swapper_fast_paste: bool | None = None  # ROI feather paste vs insightface blend
     swapper_landmark_refine: bool | None = None  # refine kps with 2dfan4
     swapper_target_sex: str | None = None  # "M"/"F"/"B"/"I"
+    # Faces (face-mapping analysis) panel — scan settings, persisted across runs
+    face_analyze_stride: int | None = None
+    face_analyze_workers: int | None = None
+    face_analyze_preview: bool | None = None
+    face_analyze_demographics: bool | None = None  # also run the age/sex model
+    face_analyze_precompute: bool | None = None     # build the per-frame geometry
+    face_analyze_detection_size: int | None = None  # detector input size for the scan
+    face_analyze_landmark_refine: bool | None = None    # bake 2dfan4 kps
+    face_analyze_landmark_min_score: float | None = None
+    face_analyze_bake_angle: bool | None = None         # bake per-face roll
     enhancer_model: str | None = None  # an EnhancerModel value
     enhancer_upscale: int | None = None
     enhancer_only_center_face: bool | None = None
@@ -90,14 +100,16 @@ class Settings(SinnerBaseModel):
     swapper_occlusion_mode: str | None = None  # region | occluder | both
     swapper_occlusion_parser: str | None = None  # a FaceParser value
     swapper_occluder_model: str | None = None  # an OccluderModel value
-    swapper_providers: list[str] | None = None  # realtime ONNX EPs (swapper + analyser)
+    swapper_providers: list[str] | None = None  # ONNX EPs for the swapper + detector
     enhancer_device: str | None = None  # realtime torch device for GFPGAN
+    enhancer_providers: list[str] | None = None  # ONNX EPs for ONNX enhancer models
     # Upscaler (Real-ESRGAN) — whole-frame super-resolution
     upscaler_enabled: bool | None = None
     upscaler_model: str | None = None  # general-x4v3 | x4plus | x2plus
     upscaler_tile: int | None = None
     upscaler_fp16: bool | None = None
     upscaler_device: str | None = None
+    upscaler_providers: list[str] | None = None  # ONNX EPs for ONNX upscaler models
     recent_sources: list[str] | None = None
     recent_targets: list[str] | None = None
     library_sources: list[str] | None = None

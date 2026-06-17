@@ -26,6 +26,7 @@ def ctrl(qtbot, tmp_path):
     panel.workers.return_value = 4
     panel.preview_enabled.return_value = True
     panel.detect_demographics.return_value = False  # fast by default
+    panel.precompute_geometry.return_value = True
     player = MagicMock()
     player.face_map.return_value = FaceMap.empty()
     sink = SimpleNamespace(_latest=None)
@@ -43,6 +44,7 @@ def ctrl(qtbot, tmp_path):
         load_source_thumb=lambda p: "SRC",
     )
     c._panel, c._player, c._sink = panel, player, sink  # handles for assertions
+    c._mode_active = True  # mode ON so routing is pushed to the (mock) player
     yield c
     c.shutdown()
 
@@ -78,12 +80,20 @@ class TestAnalyze:
         assert req.workers == 4
         assert req.fast is True       # demographics off → fast
         assert req.start_index == 0   # no prior progress → fresh
+        assert req.compute_geometry is True  # precompute checkbox on
+
+    def test_precompute_unchecked_skips_geometry(self, ctrl):
+        ctrl._panel.precompute_geometry.return_value = False
+        fired = []
+        ctrl._requestAnalysis.connect(fired.append)
+        ctrl._on_analyze_requested(15)
+        assert fired[0].compute_geometry is False  # catalog only, no phase 2
 
     def test_analyze_emits_analyzing_active(self, ctrl):
         states = []
         ctrl.analyzingChanged.connect(states.append)
         ctrl._on_analyze_requested(15)
-        ctrl._on_analysis_finished(FaceMap.empty(), 0, 0)
+        ctrl._on_analysis_finished(FaceMap.empty(), None, 0, 0)
         assert states == [True, False]
 
     def test_passes_sections_and_preview_when_enabled(self, qtbot, tmp_path):
@@ -168,7 +178,7 @@ class TestCancel:
 
     def test_finished_applies_and_persists(self, ctrl, tmp_path):
         fm = FaceMap(identities=(_ident("a", [1, 0, 0]),))
-        ctrl._on_analysis_finished(fm, 5, 5)
+        ctrl._on_analysis_finished(fm, None, 5, 5)
         ctrl._panel.set_analyzing.assert_called_with(False)
         ctrl._player.set_face_map.assert_called_once()
         applied = ctrl._player.set_face_map.call_args.args[0]
@@ -188,27 +198,99 @@ class TestCancel:
 
 class TestEdits:
     def test_delete_identities(self, ctrl):
-        ctrl._player.face_map.return_value = FaceMap(
+        ctrl._catalog = FaceMap(
             identities=(_ident("a", [1, 0]), _ident("b", [0, 1]), _ident("c", [0, 0, 1]))
         )
         ctrl._on_delete_identities(["a", "c"])  # exclude multiple
         applied = ctrl._player.set_face_map.call_args.args[0]
         assert [i.id for i in applied.identities] == ["b"]
 
-    def test_assign_one_source_to_many_selected(self, ctrl):
-        ctrl._player.face_map.return_value = FaceMap(
+    def test_merge_identities(self, ctrl):
+        ctrl._catalog = FaceMap(identities=(  # noqa: SLF001
+            _ident("a", [1, 0], occurrences=4),
+            _ident("b", [0.9, 0.1], occurrences=1, source_path="/s.png"),
+            _ident("c", [0, 1], occurrences=2),
+        ))
+        ctrl._on_merge_identities(["a", "b"])  # noqa: SLF001
+        # b folded into a → catalog has a + c; a kept b's source + summed occ.
+        assert [i.id for i in ctrl._catalog.identities] == ["a", "c"]  # noqa: SLF001
+        a = ctrl._catalog.identities[0]  # noqa: SLF001
+        assert a.occurrences == 5 and a.source_path == "/s.png"
+        ctrl._panel.select_identity.assert_called_with("a")  # noqa: SLF001
+
+    def test_merge_needs_two_is_noop(self, ctrl):
+        ctrl._catalog = FaceMap(identities=(_ident("a", [1, 0]),))  # noqa: SLF001
+        ctrl._player.set_face_map.reset_mock()  # noqa: SLF001
+        ctrl._on_merge_identities(["a"])  # noqa: SLF001 — <2 valid
+        ctrl._player.set_face_map.assert_not_called()  # noqa: SLF001
+
+    def test_assign_one_source_to_many_ids(self, ctrl):
+        # One source onto a multi-row selection (the embedded-sources gesture).
+        ctrl._catalog = FaceMap(
             identities=(_ident("a", [1, 0]), _ident("b", [0, 1]))
         )
-        ctrl._panel.selected_identities.return_value = ["a", "b"]
-        assert ctrl.assign_source_to_selected(Path("/src/alice.png")) is True
+        assert ctrl.assign_source(["a", "b"], Path("/src/alice.png")) is True
         applied = ctrl._player.set_face_map.call_args.args[0]
         assert applied.identities[0].source_path == str(Path("/src/alice.png"))
         assert applied.identities[1].source_path == str(Path("/src/alice.png"))
 
-    def test_assign_without_selection_is_noop(self, ctrl):
-        ctrl._panel.selected_identities.return_value = []
-        assert ctrl.assign_source_to_selected(Path("/s.png")) is False
+    def test_assign_source_empty_ids_is_noop(self, ctrl):
+        assert ctrl.assign_source([], Path("/s.png")) is False
         ctrl._player.set_face_map.assert_not_called()
+
+    def test_assign_source_does_not_re_extract_targets(self, ctrl, monkeypatch):
+        # Perf guard: assigning must NOT re-extract target thumbnails (the slow
+        # per-identity video decode that froze the UI) — only update the source.
+        ctrl._catalog = FaceMap(identities=(_ident("a", [1, 0]),))
+        extracts = []
+        monkeypatch.setattr(
+            ctrl, "_extract_target", lambda t, i: extracts.append(i)  # noqa: SLF001
+        )
+        assert ctrl.assign_source(["a"], Path("/src/x.png")) is True
+        assert extracts == []  # no video re-extraction
+        ctrl._panel.set_source_thumbnail.assert_called()  # source cell updated
+
+
+class TestReset:
+    def test_reset_clears_catalog_and_progress(self, ctrl, tmp_path):
+        from sinner2.pipeline.face_map_store import (
+            progress_path,
+            save_progress,
+        )
+
+        store = tmp_path / "face_maps"
+        target = Path("/v/clip.mp4")
+        save_face_map(
+            face_map_path(target, store),
+            FaceMap(identities=(_ident("a", [1, 0], source_path="/s.png"),)),
+        )
+        save_progress(progress_path(target, store), "15|[]", 3, 10)
+        ctrl._resuming = True
+
+        ctrl.reset_catalog()
+
+        applied = ctrl._player.set_face_map.call_args.args[0]
+        assert applied.is_empty()
+        assert not face_map_path(target, store).exists()   # catalog gone
+        assert not progress_path(target, store).exists()   # progress gone
+        assert ctrl._resuming is False
+
+    def test_reset_without_target_is_safe(self, qtbot, tmp_path):
+        player = MagicMock()
+        player.face_map.return_value = FaceMap.empty()
+        c = FaceMapController(
+            panel=MagicMock(), player=player,
+            detection_sink=SimpleNamespace(_latest=None),
+            store_dir=tmp_path, target_path=lambda: None,
+            providers=lambda: None, detection_size=lambda: 640,
+            current_frame=lambda: 0,
+        )
+        try:
+            c.reset_catalog()  # no target → no sidecar work, no crash
+            applied = player.set_face_map.call_args.args[0]
+            assert applied.is_empty()
+        finally:
+            c.shutdown()
 
     def test_navigate_forwards_frame(self, qtbot, tmp_path):
         navs = []
@@ -247,7 +329,7 @@ class TestEdits:
 
 class TestFaceClick:
     def test_click_selects_matching_identity(self, ctrl):
-        ctrl._player.face_map.return_value = FaceMap(
+        ctrl._catalog = FaceMap(
             identities=(_ident("a", [1, 0, 0]),), threshold=0.5
         )
         face = SimpleNamespace(
@@ -259,7 +341,7 @@ class TestFaceClick:
         ctrl._player.set_face_map.assert_not_called()  # selection, not capture
 
     def test_click_captures_new_identity(self, ctrl):
-        ctrl._player.face_map.return_value = FaceMap(
+        ctrl._catalog = FaceMap(
             identities=(_ident("a", [1, 0, 0]),), threshold=0.5
         )
         stranger = SimpleNamespace(
@@ -278,6 +360,33 @@ class TestFaceClick:
         ctrl._player.set_face_map.assert_not_called()
 
 
+class TestSelectedFaceBbox:
+    def test_returns_matching_face_box(self, ctrl):
+        ctrl._panel.selected_identities.return_value = ["a"]
+        ctrl._catalog = FaceMap(
+            identities=(_ident("a", [1, 0, 0]),), threshold=0.5
+        )
+        match = SimpleNamespace(normed_embedding=normalize([1, 0, 0]), bbox=(1, 2, 3, 4))
+        other = SimpleNamespace(normed_embedding=normalize([0, 1, 0]), bbox=(5, 6, 7, 8))
+        ctrl._sink._latest = ([other, match], 100, 100)
+        assert ctrl.selected_face_bbox() == (1.0, 2.0, 3.0, 4.0)
+
+    def test_none_unless_exactly_one_selected(self, ctrl):
+        ctrl._panel.selected_identities.return_value = []
+        assert ctrl.selected_face_bbox() is None
+        ctrl._panel.selected_identities.return_value = ["a", "b"]
+        assert ctrl.selected_face_bbox() is None
+
+    def test_none_when_no_face_matches(self, ctrl):
+        ctrl._panel.selected_identities.return_value = ["a"]
+        ctrl._catalog = FaceMap(
+            identities=(_ident("a", [1, 0, 0]),), threshold=0.5
+        )
+        stranger = SimpleNamespace(normed_embedding=normalize([0, 0, 1]), bbox=(1, 2, 3, 4))
+        ctrl._sink._latest = ([stranger], 100, 100)
+        assert ctrl.selected_face_bbox() is None  # below threshold
+
+
 class TestRestore:
     def test_restores_sidecar(self, ctrl, tmp_path):
         fm = FaceMap(identities=(_ident("a", [1, 0], source_path="/s.png"),))
@@ -290,6 +399,230 @@ class TestRestore:
         ctrl.restore_for_target(Path("/v/unseen.mp4"))
         applied = ctrl._player.set_face_map.call_args.args[0]
         assert applied.is_empty()
+
+    def test_restore_loads_geometry_sidecar(self, ctrl, tmp_path):
+        from sinner2.pipeline.face_map_geometry import (
+            FrameGeometry, GeomFace, geometry_path, save_geometry,
+        )
+
+        store = tmp_path / "face_maps"
+        kps = tuple((float(i), 0.0) for i in range(5))
+        save_geometry(
+            geometry_path(Path("/v/clip.mp4"), store),
+            FrameGeometry(faces={0: (GeomFace("a", (0., 0., 4., 4.), kps),)}, frame_count=1),
+        )
+        ctrl.restore_for_target(Path("/v/clip.mp4"))
+        assert ctrl._geometry is not None  # noqa: SLF001
+        assert ctrl._geometry.face_count() == 1  # noqa: SLF001
+
+
+class TestGeometryActivation:
+    def _geom(self):
+        from sinner2.pipeline.face_map_geometry import FrameGeometry, GeomFace
+
+        kps = tuple((float(i), 0.0) for i in range(5))
+        return FrameGeometry(
+            faces={0: (GeomFace("a", (0., 0., 4., 4.), kps),)}, frame_count=1
+        )
+
+    def test_finished_persists_geometry_and_applies_when_active(self, ctrl, tmp_path):
+        from sinner2.pipeline.face_map_geometry import geometry_path, load_geometry
+
+        ctrl.set_mode_active(True)
+        geom = self._geom()
+        ctrl._on_analysis_finished(  # noqa: SLF001
+            FaceMap(identities=(_ident("a", [1, 0]),)), geom, 1, 1
+        )
+        # NPZ persisted next to the catalog…
+        assert load_geometry(
+            geometry_path(Path("/v/clip.mp4"), tmp_path / "face_maps")
+        ) is not None
+        # …and applied to the live swapper (mode active).
+        ctrl._player.set_geometry.assert_called_with(geom)  # noqa: SLF001
+
+    def test_mode_toggle_applies_then_clears_geometry(self, ctrl):
+        ctrl._geometry = self._geom()  # noqa: SLF001
+        ctrl.set_mode_active(True)
+        ctrl._player.set_geometry.assert_called_with(ctrl._geometry)  # noqa: SLF001
+        ctrl.set_mode_active(False)
+        ctrl._player.set_geometry.assert_called_with(None)  # noqa: SLF001
+
+    def test_finished_reports_geometry_in_status(self, ctrl):
+        # The geometry summary now goes to the STATUS BAR (no panel caption), so
+        # the user can still tell build-time (0 faces) from runtime (N faces).
+        seen = []
+        ctrl._status = lambda msg, *_a: seen.append(msg)  # noqa: SLF001
+        ctrl._on_analysis_finished(  # noqa: SLF001
+            FaceMap(identities=(_ident("a", [1, 0]),)), self._geom(), 1, 1
+        )
+        assert "1 faces" in seen[-1] and "1 frames" in seen[-1]
+
+    def test_finished_status_no_geometry(self, ctrl):
+        seen = []
+        ctrl._status = lambda msg, *_a: seen.append(msg)  # noqa: SLF001
+        ctrl._on_analysis_finished(FaceMap.empty(), None, 0, 0)  # noqa: SLF001
+        assert "Precompute off" in seen[-1]
+
+    def test_finished_status_empty_geometry(self, ctrl):
+        from sinner2.pipeline.face_map_geometry import FrameGeometry
+
+        seen = []
+        ctrl._status = lambda msg, *_a: seen.append(msg)  # noqa: SLF001
+        ctrl._on_analysis_finished(  # noqa: SLF001
+            FaceMap.empty(), FrameGeometry.empty(), 1, 1
+        )
+        assert "0 faces" in seen[-1]
+
+    def test_finished_signals_produced_map(self, ctrl):
+        # A fresh scan that found someone asks the GUI to turn routing ON (so the
+        # map drives playback at once). Empty scan → no auto-routing.
+        seen = []
+        ctrl.analysisProducedMap.connect(seen.append)
+        ctrl._on_analysis_finished(  # noqa: SLF001
+            FaceMap(identities=(_ident("a", [1, 0]),)), None, 1, 1
+        )
+        assert seen[-1] is True
+        ctrl._on_analysis_finished(FaceMap.empty(), None, 0, 0)  # noqa: SLF001
+        assert seen[-1] is False
+
+    def test_produced_map_emitted_after_catalog_applied(self, ctrl):
+        # Ordering matters: routing-on (driven by this signal) cascades into
+        # set_face_map/set_geometry, so the catalog + geometry must already be
+        # applied when it fires — assert the apply happened before the emit.
+        order = []
+        ctrl._player.set_face_map.side_effect = (  # noqa: SLF001
+            lambda *_a, **_k: order.append("apply")
+        )
+        ctrl.set_mode_active(True)  # so _apply pushes to the player
+        ctrl.analysisProducedMap.connect(lambda _b: order.append("produced"))
+        ctrl._on_analysis_finished(  # noqa: SLF001
+            FaceMap(identities=(_ident("a", [1, 0]),)), None, 1, 1
+        )
+        assert order and order[-1] == "produced" and "apply" in order
+
+    def test_mode_off_clears_catalog_routing(self, ctrl):
+        # The bug: leaving Faces mode left the active map on the swapper, jamming
+        # normal swapping. Mode off must push the EMPTY map (global source again).
+        ctrl._catalog = FaceMap(  # noqa: SLF001
+            identities=(_ident("a", [1, 0], source_path="/s"),)
+        )
+        ctrl.set_mode_active(True)
+        assert ctrl._player.set_face_map.call_args.args[0].is_active()  # noqa: SLF001
+        ctrl.set_mode_active(False)
+        assert ctrl._player.set_face_map.call_args.args[0].is_empty()  # noqa: SLF001
+
+    def test_mode_on_arms_map_without_assignments(self, ctrl):
+        # Point 1 fix: mode on with NO source assigned still routes (armed), so
+        # unmapped faces show the original instead of the single global source.
+        ctrl._catalog = FaceMap(identities=(_ident("a", [1, 0]),))  # noqa: SLF001
+        ctrl.set_mode_active(True)
+        pushed = ctrl._player.set_face_map.call_args.args[0]  # noqa: SLF001
+        assert pushed.armed is True and pushed.is_active() is True
+        # …but the stored catalog stays unarmed (clean to persist / carry over).
+        assert ctrl._catalog.armed is False  # noqa: SLF001
+
+    def test_inactive_mode_pushes_neither_geometry_nor_routing(self, ctrl):
+        # Mode OFF: analysis persists the catalog + geometry but pushes NOTHING
+        # live (empty face map + no geometry) — so a plain swap isn't jammed.
+        ctrl._mode_active = False  # noqa: SLF001 — override the mode-on fixture
+        ctrl._on_analysis_finished(  # noqa: SLF001
+            FaceMap(identities=(_ident("a", [1, 0], source_path="/s"),)), self._geom(), 1, 1
+        )
+        for c in ctrl._player.set_geometry.call_args_list:  # noqa: SLF001
+            assert c.args[0] is None  # geometry never pushed
+        # The face map pushed to the swapper is EMPTY (routing cleared)…
+        assert ctrl._player.set_face_map.call_args.args[0].is_empty()  # noqa: SLF001
+        # …but the catalog is still held for when mode turns on.
+        assert ctrl._catalog.is_active()  # noqa: SLF001
+
+    def test_reset_deletes_geometry_sidecar(self, ctrl, tmp_path):
+        from sinner2.pipeline.face_map_geometry import (
+            geometry_path, load_geometry, save_geometry,
+        )
+
+        ctrl.set_mode_active(True)
+        gp = geometry_path(Path("/v/clip.mp4"), tmp_path / "face_maps")
+        save_geometry(gp, self._geom())
+        ctrl._geometry = load_geometry(gp)  # noqa: SLF001
+        ctrl.reset_catalog()
+        assert not gp.exists()
+        ctrl._player.set_geometry.assert_called_with(None)  # noqa: SLF001
+
+
+class TestUseForPlayback:
+    """D6: per-target 'use the map for playback' preference + availability."""
+
+    def test_apply_emits_availability(self, ctrl):
+        seen = []
+        ctrl.mapAvailabilityChanged.connect(seen.append)
+        ctrl._apply(  # noqa: SLF001
+            FaceMap(identities=(_ident("a", [1, 0]),)), persist=False
+        )
+        assert seen[-1] is True
+        ctrl._apply(FaceMap.empty(), persist=False)  # noqa: SLF001
+        assert seen[-1] is False
+
+    def test_set_use_for_playback_persists(self, ctrl, tmp_path):
+        from sinner2.pipeline.face_map_store import load_use_map, use_map_path
+
+        p = use_map_path(Path("/v/clip.mp4"), tmp_path / "face_maps")
+        ctrl.set_use_for_playback(True)
+        assert load_use_map(p) is True
+        ctrl.set_use_for_playback(False)
+        assert load_use_map(p) is False
+
+    def test_restore_emits_saved_preference(self, ctrl, tmp_path):
+        from sinner2.pipeline.face_map_store import (
+            face_map_path, save_face_map, save_use_map, use_map_path,
+        )
+
+        store = tmp_path / "face_maps"
+        save_face_map(
+            face_map_path(Path("/v/clip.mp4"), store),
+            FaceMap(identities=(_ident("a", [1, 0], source_path="/s"),)),
+        )
+        save_use_map(use_map_path(Path("/v/clip.mp4"), store), True)
+        seen = []
+        ctrl.useForPlaybackRestored.connect(seen.append)
+        ctrl.restore_for_target(Path("/v/clip.mp4"))
+        assert seen[-1] is True
+
+    def test_restore_off_when_no_catalog(self, ctrl, tmp_path):
+        from sinner2.pipeline.face_map_store import save_use_map, use_map_path
+
+        # A stray 'use' marker with no catalog must NOT route (nothing to map).
+        save_use_map(use_map_path(Path("/v/clip.mp4"), tmp_path / "face_maps"), True)
+        seen = []
+        ctrl.useForPlaybackRestored.connect(seen.append)
+        ctrl.restore_for_target(Path("/v/clip.mp4"))
+        assert seen[-1] is False
+
+    def test_restore_does_not_force_routing_on(self, ctrl, tmp_path):
+        # Restore must honour the SAVED preference (useForPlaybackRestored), never
+        # the fresh-scan auto-on path — otherwise reopening a target with the map
+        # turned off would re-enable it.
+        from sinner2.pipeline.face_map_store import (
+            face_map_path, save_face_map, save_use_map, use_map_path,
+        )
+
+        store = tmp_path / "face_maps"
+        save_face_map(
+            face_map_path(Path("/v/clip.mp4"), store),
+            FaceMap(identities=(_ident("a", [1, 0], source_path="/s"),)),
+        )
+        save_use_map(use_map_path(Path("/v/clip.mp4"), store), False)
+        produced = []
+        ctrl.analysisProducedMap.connect(produced.append)
+        ctrl.restore_for_target(Path("/v/clip.mp4"))
+        assert produced == []  # restore never fires the fresh-scan auto-on
+
+    def test_reset_clears_preference(self, ctrl, tmp_path):
+        from sinner2.pipeline.face_map_store import load_use_map, use_map_path
+
+        p = use_map_path(Path("/v/clip.mp4"), tmp_path / "face_maps")
+        ctrl.set_use_for_playback(True)
+        ctrl.reset_catalog()
+        assert load_use_map(p) is False
 
 
 class TestCarryOver:

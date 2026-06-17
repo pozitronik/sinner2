@@ -35,6 +35,19 @@ class TestComputeRoll:
     def test_no_data_returns_zero(self):
         assert rc.compute_roll(SimpleNamespace(), RotationAngleSource.KEYPOINTS) == 0.0
 
+    def test_baked_roll_wins_over_every_source(self):
+        # D5: a detection-free geometry face carries baked_roll → used as-is,
+        # ignoring pose/kps (a rebuilt face has no live pose estimate to read).
+        face = SimpleNamespace(
+            baked_roll=22.0,
+            pose=np.array([0.0, 0.0, 99.0]),  # would say 99 if pose were read
+            kps=np.array([[0, 0], [10, 10]], float),  # would say 45 from kps
+        )
+        assert rc.compute_roll(face, RotationAngleSource.POSE) == pytest.approx(22.0)
+        assert rc.compute_roll(
+            face, RotationAngleSource.KEYPOINTS
+        ) == pytest.approx(22.0)
+
     def test_landmark_68_uses_eye_centre_line(self):
         lm = np.zeros((68, 2), np.float32)
         lm[36:42] = [40, 50]   # left eye centre

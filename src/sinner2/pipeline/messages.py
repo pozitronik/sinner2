@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from sinner2.pipeline.buffer.buffer import FrameBuffer
     from sinner2.pipeline.buffer.timeline import Timeline
     from sinner2.pipeline.face_map import FaceMap
+    from sinner2.pipeline.face_map_geometry import FrameGeometry
     from sinner2.pipeline.processor import Processor
     from sinner2.pipeline.sections import SectionSet
     from sinner2.pipeline.skip_strategy import FrameSkipStrategy
@@ -89,6 +90,15 @@ class SetFaceMapMsg:
 
 
 @dataclass(frozen=True)
+class SetGeometryMsg:
+    """Hot-apply (or clear) the precomputed per-frame geometry on the live
+    swapper WITHOUT a rebuild. When set + mapping is active, the swapper skips
+    detection and rebuilds each frame's faces from it; None reverts to detecting."""
+
+    geometry: "FrameGeometry | None"
+
+
+@dataclass(frozen=True)
 class SetSectionsMsg:
     """Restrict playback to a set of timeline sections (an inclusive frame-range
     selection). Empty = no restriction. When non-empty, the dispatcher fast-
@@ -155,6 +165,7 @@ type Message = (
     | SetPlaybackModeMsg
     | SetSectionsMsg
     | SetFaceMapMsg
+    | SetGeometryMsg
     | RerenderMsg
     | ReconfigureMsg
 )

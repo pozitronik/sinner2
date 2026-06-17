@@ -131,3 +131,31 @@ def test_swallows_detect_errors(qtbot):
     probe.analyze(np.zeros((4, 4, 3), dtype=np.uint8), 4, 4)
 
     assert received == []  # error swallowed, nothing emitted
+
+
+def test_publishes_raw_faces_to_sink(qtbot):
+    # The probe feeds the SAME sink the swapper uses, so the face-map highlight +
+    # pick work with the swapper off. It must publish the RAW face (embedding
+    # intact) — the sink stores it as-is, not the drawable FaceDetection.
+    face = SimpleNamespace(
+        bbox=np.array([0.0, 0.0, 10.0, 10.0]),
+        normed_embedding=np.array([1.0, 0.0, 0.0]),
+        det_score=0.9,
+    )
+    sink = FaceDetectionSink()
+    probe = FaceDetectionProbe(detect_fn=lambda frame: [face], sink=sink)
+    probe.analyze(np.zeros((10, 10, 3), dtype=np.uint8), 10, 10)
+    assert sink._latest is not None  # noqa: SLF001
+    faces, w, h = sink._latest  # noqa: SLF001
+    assert (w, h) == (10, 10)
+    assert faces[0] is face  # raw face, embedding preserved
+
+
+def test_detect_error_leaves_sink_untouched(qtbot):
+    def boom(_frame):
+        raise RuntimeError("nope")
+
+    sink = FaceDetectionSink()
+    probe = FaceDetectionProbe(detect_fn=boom, sink=sink)
+    probe.analyze(np.zeros((4, 4, 3), dtype=np.uint8), 4, 4)
+    assert sink._latest is None  # noqa: SLF001 — failed detect publishes nothing

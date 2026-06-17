@@ -1,10 +1,14 @@
-"""Build a target's identity catalog by a strided scan.
+"""Build a target's identity catalog by a strided scan — and, for face-mapping's
+detection-free runtime, a full-frame per-frame geometry table.
 
-Samples the target on a configurable stride, detects faces (buffalo_l → ArcFace
-embeddings), and online-clusters them into a FaceMap. Each identity's clearest
-occurrence (highest det_score) is recorded as ``ref_frame``/``ref_bbox`` so the
-UI can extract a representative thumbnail later. Headless + cancellable; the GUI
-runs it on a worker thread with a progress callback.
+``analyze_target`` samples the target on a configurable stride, detects faces
+(buffalo_l → ArcFace embeddings), and online-clusters them into a FaceMap. Each
+identity's clearest occurrence (highest det_score) is recorded as
+``ref_frame``/``ref_bbox`` so the UI can extract a representative thumbnail
+later. ``precompute_geometry`` then does a full-frame (stride-1) pass, matching
+each detected face to that catalog and recording its bbox + keypoints per frame
+so the runtime can swap without detecting. Both are headless + cancellable; the
+GUI runs them on a worker thread with a progress callback.
 
 The detect function is injected (a closure over the shared analyser in the app,
 a stub in tests) so this module needs no models and the analyser's lifecycle
@@ -17,12 +21,15 @@ import time
 from collections import deque
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Any
+from typing import Any, Protocol
 
 from sinner2.io.target_reader import TargetReader
 from sinner2.pipeline.face_map import FaceMap
+from sinner2.pipeline.face_map_geometry import FrameGeometry, GeomFace
 from sinner2.pipeline.sections import SectionSet
 from sinner2.types import Frame
+
+_KPS = 5  # insightface 5-point keypoints; geometry needs exactly these
 
 # (frames_scanned, frames_to_scan)
 ProgressFn = Callable[[int, int], None]
@@ -31,8 +38,28 @@ DetectFn = Callable[[Any], list]
 PreviewFn = Callable[[Frame], None]
 PositionFn = Callable[[int], None]  # the frame index currently being scanned
 
-# (best_score, frame, bbox, sex, age) of an identity's clearest occurrence.
-_Rep = tuple[float, int, tuple[float, float, float, float], "str | None", "int | None"]
+# (best_score, frame, bbox, sex, age, pitch, yaw, roll) of an identity's clearest
+# occurrence. pitch/yaw/roll (insightface face.pose, degrees) are None unless the
+# full buffalo_l pack ran (fast det+rec mode yields no pose).
+_Rep = tuple[
+    float, int, tuple[float, float, float, float],
+    "str | None", "int | None", "float | None", "float | None", "float | None",
+]
+
+
+def _pose(face: Any) -> tuple["float | None", "float | None", "float | None"]:
+    """(pitch, yaw, roll) from insightface's face.pose, or all-None when absent."""
+    pose = getattr(face, "pose", None)
+    if pose is None or len(pose) < 3:
+        return None, None, None
+    return float(pose[0]), float(pose[1]), float(pose[2])
+
+
+class _ScanSink(Protocol):
+    """What the scanners feed each detected-faces batch to — the catalog
+    clusterer or the geometry collector both satisfy it structurally."""
+
+    def ingest(self, frame_idx: int, faces: list) -> None: ...
 
 
 class _Counter:
@@ -60,13 +87,16 @@ class _ClusterState:
         # identity id -> earliest frame it was seen at (drives navigation).
         self.firsts: dict[str, int] = {}
         # Seed from an existing catalog so a RESUMED scan keeps its identities,
-        # occurrence counts, and references instead of starting blank. The
-        # seeded rep uses score 0 so the persisted thumbnail is kept unless the
-        # resumed portion finds the person again (a real det_score beats 0).
+        # occurrence counts, and references instead of starting blank. The seed
+        # carries the stored det_score so the best-ever occurrence (its thumbnail,
+        # score, and pose) survives the resume — a re-found occurrence replaces it
+        # only when it scores higher.
         for ident in face_map.identities:
             if ident.ref_frame is not None and ident.ref_bbox is not None:
                 self.reps[ident.id] = (
-                    0.0, ident.ref_frame, ident.ref_bbox, ident.sex, ident.age,
+                    float(ident.det_score or 0.0),
+                    ident.ref_frame, ident.ref_bbox, ident.sex, ident.age,
+                    ident.pitch, ident.yaw, ident.roll,
                 )
             if ident.first_frame is not None:
                 self.firsts[ident.id] = ident.first_frame
@@ -85,22 +115,121 @@ class _ClusterState:
             prev = self.reps.get(joined_id)
             if prev is None or score > prev[0]:
                 age_raw = getattr(face, "age", None)
+                pitch, yaw, roll = _pose(face)
                 self.reps[joined_id] = (
                     score,
                     int(frame_idx),
                     (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])),
                     getattr(face, "sex", None),
                     int(age_raw) if age_raw is not None else None,
+                    pitch, yaw, roll,
                 )
 
     def finish(self) -> FaceMap:
         face_map = self.face_map
-        for ident_id, (_score, frame_idx, bbox, sex, age) in self.reps.items():
+        for ident_id, rep in self.reps.items():
+            score, frame_idx, bbox, sex, age, pitch, yaw, roll = rep
             face_map = face_map.with_reference(
                 ident_id, frame_idx, bbox, sex=sex, age=age,
                 first_frame=self.firsts.get(ident_id),
+                det_score=score, pitch=pitch, yaw=yaw, roll=roll,
             )
         return face_map
+
+
+class _GeometryCollector:
+    """Scan sink (duck-types ``_ClusterState.ingest`` so the same scanners feed
+    it) that, instead of clustering, MATCHES each detected face to an existing
+    catalog and records its geometry (bbox + 5 kps) tagged with the matched
+    identity. Faces with no embedding, no match, or the wrong keypoint count are
+    dropped — the runtime simply skips anything not in this table."""
+
+    def __init__(self, catalog: FaceMap) -> None:
+        self._catalog = catalog
+        self.faces: dict[int, list[GeomFace]] = {}
+
+    def ingest(self, frame_idx: int, faces: list) -> None:
+        for face in faces:
+            emb = getattr(face, "normed_embedding", None)
+            if emb is None:
+                continue
+            match = self._catalog.best_match(emb)
+            if match is None:
+                continue  # unmapped → no swap at runtime, so don't record it
+            bbox = getattr(face, "bbox", None)
+            kps = getattr(face, "kps", None)
+            if bbox is None or kps is None or len(kps) != _KPS:
+                continue
+            roll = getattr(face, "baked_roll", None)
+            self.faces.setdefault(int(frame_idx), []).append(
+                GeomFace(
+                    match.id,
+                    (
+                        float(bbox[0]), float(bbox[1]),
+                        float(bbox[2]), float(bbox[3]),
+                    ),
+                    tuple((float(p[0]), float(p[1])) for p in kps),
+                    # Bake the REAL embedding so the runtime routes against the
+                    # live catalog (merges/reassignments need no re-precompute).
+                    tuple(float(x) for x in emb),
+                    # Baked in-plane roll for detection-free rotation comp (or None
+                    # when the detect closure didn't measure it).
+                    float(roll) if roll is not None else None,
+                )
+            )
+
+    def finish(self, frame_count: int, refined: bool) -> FrameGeometry:
+        return FrameGeometry(
+            {k: tuple(v) for k, v in self.faces.items()}, frame_count, refined
+        )
+
+
+def precompute_geometry(
+    reader: TargetReader,
+    detect: DetectFn,
+    catalog: FaceMap,
+    *,
+    sections: SectionSet | None = None,
+    workers: int = 1,
+    refined: bool = False,
+    cancel_event: threading.Event | None = None,
+    on_progress: ProgressFn | None = None,
+    on_position: PositionFn | None = None,
+) -> tuple[FrameGeometry, int, int]:
+    """Full-frame pass (stride 1) recording per-frame geometry for every face
+    that matches ``catalog`` — the artifact that lets the runtime skip detection.
+
+    With ``sections`` non-empty only the selected frames are covered (others get
+    no geometry, hence no swap there). Reads stay single-threaded; ``workers`` >
+    1 detects in parallel (same pool pattern as the catalog scan). ``refined``
+    is metadata stamped onto the result: pass True when ``detect`` already
+    2dfan4-refines the keypoints it returns (landmark-refine baking), so the
+    runtime knows it can use them as-is. Returns ``(geometry, scanned, total)``;
+    an early cancel returns the partial table.
+    """
+    total_frames = max(0, reader.frame_count)
+    if sections is not None and not sections.is_empty():
+        indices = sections.frame_plan(total_frames)
+    else:
+        indices = list(range(total_frames))
+    total = len(indices)
+    collector = _GeometryCollector(catalog)
+    counter = _Counter(0)
+
+    def cancelled() -> bool:
+        return cancel_event is not None and cancel_event.is_set()
+
+    if workers <= 1:
+        _scan_serial(
+            reader, detect, indices, collector, counter, total, cancelled,
+            on_progress, None, on_position, 0.0,
+        )
+    else:
+        _scan_parallel(
+            reader, detect, indices, collector, workers, counter, total,
+            cancelled, on_progress, None, on_position, 0.0,
+        )
+    return collector.finish(total_frames, refined), counter.done, total
 
 
 def analyze_target(
@@ -186,7 +315,7 @@ def _scan_serial(
     reader: TargetReader,
     detect: DetectFn,
     to_scan: list[int],
-    state: _ClusterState,
+    state: _ScanSink,
     counter: _Counter,
     total: int,
     cancelled: Callable[[], bool],
@@ -216,7 +345,7 @@ def _scan_parallel(
     reader: TargetReader,
     detect: DetectFn,
     to_scan: list[int],
-    state: _ClusterState,
+    state: _ScanSink,
     workers: int,
     counter: _Counter,
     total: int,

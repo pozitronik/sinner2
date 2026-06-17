@@ -19,14 +19,24 @@ from typing import Any
 from PySide6.QtCore import QObject, Qt, QThread, Signal
 
 from sinner2.gui.face_map_job import AnalysisRequest, FaceMapAnalysisJob
-from sinner2.pipeline.face_map import FaceMap, Identity
+from sinner2.pipeline.face_map import FaceMap, Identity, cosine
+from sinner2.pipeline.face_map_geometry import (
+    FrameGeometry,
+    delete_geometry,
+    geometry_path,
+    load_geometry,
+    save_geometry,
+)
 from sinner2.pipeline.face_map_store import (
     face_map_path,
     load_face_map,
     load_progress,
+    load_use_map,
     progress_path,
     save_face_map,
     save_progress,
+    save_use_map,
+    use_map_path,
 )
 
 # (identity_id) -> a target thumbnail object (a QPixmap in the app; anything in
@@ -40,6 +50,9 @@ class FaceMapController(QObject):
 
     _requestAnalysis = Signal(object)  # an AnalysisRequest
     analyzingChanged = Signal(bool)    # the GUI locks editing while a scan runs
+    mapAvailabilityChanged = Signal(bool)  # a usable catalog exists (non-empty)
+    useForPlaybackRestored = Signal(bool)  # per-target "use the map" pref on load
+    analysisProducedMap = Signal(bool)  # a FRESH scan built a catalog (turn routing on)
 
     def __init__(
         self,
@@ -53,6 +66,8 @@ class FaceMapController(QObject):
         detection_size: Callable[[], int],
         current_frame: Callable[[], int],
         sections: Callable[[], Any] | None = None,
+        landmark_refine: Callable[[], bool] | None = None,
+        landmark_min_score: Callable[[], float] | None = None,
         show_preview: Callable[[Any], None] | None = None,
         set_position: Callable[[int], None] | None = None,
         navigate: Callable[[int], None] | None = None,
@@ -72,6 +87,8 @@ class FaceMapController(QObject):
         self._detection_size = detection_size
         self._current_frame = current_frame
         self._sections = sections or (lambda: None)
+        self._landmark_refine = landmark_refine or (lambda: False)
+        self._landmark_min_score = landmark_min_score or (lambda: 0.5)
         self._show_preview = show_preview
         self._set_position = set_position
         self._navigate = navigate
@@ -80,6 +97,14 @@ class FaceMapController(QObject):
         self._load_source = load_source_thumb or _default_source_thumb
         self._resuming = False
         self._signature = ""
+        # Authoritative catalog (held here, not on the player) + the precomputed
+        # geometry + whether face-mapping MODE is on. The catalog routing AND the
+        # geometry are pushed to the live swapper ONLY while mode is active; mode
+        # off clears them so the swapper returns to the single global source
+        # (otherwise an analyzed-but-unassigned map would jam it into multi mode).
+        self._catalog: FaceMap = FaceMap.empty()
+        self._geometry: FrameGeometry | None = None
+        self._mode_active = False
 
         self._job = job or FaceMapAnalysisJob()
         self._thread = QThread(self)
@@ -93,6 +118,9 @@ class FaceMapController(QObject):
         )
         self._job.finished.connect(
             self._on_analysis_finished, Qt.ConnectionType.QueuedConnection
+        )
+        self._job.geometryStarted.connect(
+            self._on_geometry_started, Qt.ConnectionType.QueuedConnection
         )
         self._job.failed.connect(
             self._on_analysis_failed, Qt.ConnectionType.QueuedConnection
@@ -112,6 +140,7 @@ class FaceMapController(QObject):
             self._job.cancel, Qt.ConnectionType.DirectConnection
         )
         panel.deleteIdentitiesRequested.connect(self._on_delete_identities)
+        panel.mergeIdentitiesRequested.connect(self._on_merge_identities)
         panel.navigateRequested.connect(self._on_navigate)
 
     # ---- Analysis ----
@@ -148,7 +177,7 @@ class FaceMapController(QObject):
         self._requestAnalysis.emit(AnalysisRequest(
             target_path=str(target),
             stride=int(stride),
-            threshold=self._player.face_map().threshold,
+            threshold=self._catalog.threshold,
             providers=self._providers(),
             detection_size=self._detection_size(),
             sections=sections,
@@ -158,11 +187,19 @@ class FaceMapController(QObject):
             workers=int(self._panel.workers()),
             fast=bool(not self._panel.detect_demographics()),
             start_index=start_index,
-            initial=self._player.face_map() if self._resuming else None,
+            initial=self._catalog if self._resuming else None,
+            compute_geometry=bool(self._panel.precompute_geometry()),
+            landmark_refine=bool(self._landmark_refine()),
+            landmark_min_score=float(self._landmark_min_score()),
+            bake_angle=bool(self._panel.bake_angle()),
         ))
 
+    def _on_geometry_started(self) -> None:
+        self._status("Building per-frame face map…", 0)
+
     def _on_analysis_finished(
-        self, catalog: FaceMap, scanned: int, total: int
+        self, catalog: FaceMap, geometry: FrameGeometry | None,
+        scanned: int, total: int,
     ) -> None:
         self._panel.set_analyzing(False)
         self.analyzingChanged.emit(False)
@@ -171,17 +208,37 @@ class FaceMapController(QObject):
         # matching the new centroids against the old.
         result = (
             catalog if self._resuming
-            else _carry_over_assignments(self._player.face_map(), catalog)
+            else _carry_over_assignments(self._catalog, catalog)
         )
         self._apply(result, persist=True)
+        self._set_geometry(geometry, persist=True)
         target = self._target_path()
         if target is not None:
             save_progress(
                 progress_path(target, self._store_dir),
                 self._signature, scanned, total,
             )
+        # Geometry summary goes to the STATUS BAR only (no persistent panel
+        # caption): did Precompute build a usable detection-free table?
+        if geometry is None:
+            geo = " · no per-frame map (Precompute off)"
+        elif geometry.is_empty():
+            geo = " · per-frame map: 0 faces (live detection)"
+        else:
+            kind = "refined" if geometry.refined else "raw kps"
+            geo = (
+                f" · per-frame map: {geometry.face_count()} faces / "
+                f"{len(geometry.faces)} frames ({kind})"
+            )
         tail = " (cancelled — Analyze again to resume)" if scanned < total else ""
-        self._status(f"Found {len(result.identities)} face(s){tail}.", 4000)
+        self._status(f"Found {len(result.identities)} face(s){geo}{tail}.", 8000)
+        # A fresh scan that found anyone turns routing ON (the "Use face map"
+        # switch) so the map drives playback immediately — emitted LAST, after the
+        # catalog + geometry are applied, so the resulting set_mode_active cascade
+        # (set_face_map / set_geometry) reprocesses the current frame with the new
+        # map in place. Target-restore takes the useForPlaybackRestored path
+        # instead, so this only fires on a real analysis.
+        self.analysisProducedMap.emit(not result.is_empty())
 
     def _on_analysis_failed(self, message: str) -> None:
         self._panel.set_analyzing(False)
@@ -203,26 +260,87 @@ class FaceMapController(QObject):
     # ---- Edits (called by the panel / main window) ----
 
     def _on_delete_identities(self, identity_ids: list) -> None:
-        face_map = self._player.face_map()
+        face_map = self._catalog
         for ident_id in identity_ids:
             face_map = face_map.without_identity(str(ident_id))
         self._apply(face_map, persist=True)
 
-    def assign_source_to_selected(self, source_path: Path) -> bool:
-        """Assign ``source_path`` to EVERY selected identity (one source for many
-        is the point of multi-select). Returns False (a no-op) when nothing's
-        selected — the main window only routes a library click here while the
-        Faces tab is active."""
-        selected = list(self._panel.selected_identities())
-        if not selected:
+    def _on_merge_identities(self, identity_ids: list) -> None:
+        """Fold the selected identities into one (the fragmentation fix). A pure
+        catalog edit — the baked geometry re-routes the absorbed fragments to the
+        survivor by embedding, so no re-precompute is needed."""
+        ids = [str(i) for i in identity_ids]
+        merged = self._catalog.merge(ids)
+        if merged == self._catalog:
+            return  # <2 valid → nothing to do
+        self._apply(merged, persist=True)
+        self._panel.select_identity(ids[0])  # keep the survivor selected
+        self._status(f"Merged {len(ids)} faces into one.", 4000)
+
+    def assign_source(self, identity_ids: list, source_path: Path) -> bool:
+        """Assign ``source_path`` to each id in ``identity_ids`` (one source for
+        many). FAST path: only the changed Source cells repaint — NOT a full
+        _apply, whose _load_thumbnails re-extracts a video frame per identity and
+        froze the UI for seconds on every click. False when the list is empty."""
+        ids = [str(i) for i in identity_ids]
+        if not ids:
             return False
-        face_map = self._player.face_map()
-        for ident_id in selected:
+        face_map = self._catalog
+        for ident_id in ids:
             face_map = face_map.assign_source(ident_id, str(source_path))
-        self._apply(face_map, persist=True)
-        n = len(selected)
-        self._status(f"Source assigned to {n} face(s).", 2000)
+        self._catalog = face_map
+        # Update the one source thumbnail + the changed cells first so the table
+        # reacts instantly; routing (queued, non-blocking) + persist follow.
+        self._panel.note_face_map(face_map)
+        thumb = self._load_source(str(source_path))
+        name = Path(source_path).name
+        for ident_id in ids:
+            self._panel.set_source_thumbnail(ident_id, thumb, name)
+        self._sync_face_map()
+        target = self._target_path()
+        if target is not None:
+            self._save(target, face_map)
+        self._status(f"Source assigned to {len(ids)} face(s).", 2000)
         return True
+
+    def reset_catalog(self) -> None:
+        """Clear the catalog, the per-frame geometry, AND the saved scan progress
+        so the next Analyze starts fresh from frame 0 (live routing clears too)."""
+        self._apply(FaceMap.empty(), persist=True)
+        self._set_geometry(None, persist=True)
+        target = self._target_path()
+        if target is not None:
+            progress_path(target, self._store_dir).unlink(missing_ok=True)
+            save_use_map(use_map_path(target, self._store_dir), False)  # clear pref
+        self._resuming = False
+        self._status("Catalog cleared — Analyze starts fresh.", 3000)
+
+    def _set_geometry(self, geometry: FrameGeometry | None, *, persist: bool) -> None:
+        """Hold the per-frame geometry, persist its NPZ sidecar (or delete it when
+        empty), and apply it to the live swapper iff mapping mode is active."""
+        self._geometry = geometry
+        if persist:
+            target = self._target_path()
+            if target is not None:
+                path = geometry_path(target, self._store_dir)
+                if geometry is None or geometry.is_empty():
+                    delete_geometry(path)
+                else:
+                    try:
+                        save_geometry(path, geometry)
+                    except OSError as exc:
+                        self._status(f"could not save geometry: {exc}", 4000)
+        if self._mode_active:
+            self._player.set_geometry(geometry)
+
+    def set_mode_active(self, on: bool) -> None:
+        """Face-mapping MODE on/off (the Faces toggle). On → push the catalog
+        routing + the precomputed geometry to the live swapper. Off → clear BOTH
+        so the swapper returns to the single global source + live detection (an
+        analyzed map must not jam normal swapping once you leave the mode)."""
+        self._mode_active = bool(on)
+        self._sync_face_map()
+        self._player.set_geometry(self._geometry if on else None)
 
     def on_face_clicked(self, bbox: tuple[float, float, float, float]) -> None:
         """A face box was clicked on the preview: select its catalogued identity,
@@ -234,7 +352,7 @@ class FaceMapController(QObject):
         if embedding is None:
             self._status("That detector has no embeddings (use buffalo_l).", 4000)
             return
-        face_map = self._player.face_map()
+        face_map = self._catalog
         match = face_map.best_match(embedding)
         if match is not None:
             self._panel.select_identity(match.id)
@@ -254,17 +372,51 @@ class FaceMapController(QObject):
         without re-saving."""
         loaded = load_face_map(face_map_path(target, self._store_dir))
         self._apply(loaded or FaceMap.empty(), persist=False)
+        self._set_geometry(
+            load_geometry(geometry_path(target, self._store_dir)), persist=False
+        )
+        # Restore the per-target "use the map for playback" preference (only
+        # meaningful when a catalog exists).
+        use = bool(loaded) and load_use_map(use_map_path(target, self._store_dir))
+        self.useForPlaybackRestored.emit(use)
 
     # ---- Internals ----
 
     def _apply(self, face_map: FaceMap, *, persist: bool) -> None:
-        self._player.set_face_map(face_map)
+        self._catalog = face_map
+        self._sync_face_map()
         self._panel.set_face_map(face_map)
         self._load_thumbnails(face_map)
         if persist:
             target = self._target_path()
             if target is not None:
                 self._save(target, face_map)
+        # A usable catalog exists once it has any identity → the "Use face map"
+        # control can offer to route playback through it.
+        self.mapAvailabilityChanged.emit(not face_map.is_empty())
+
+    def set_use_for_playback(self, on: bool) -> None:
+        """Persist the per-target 'route playback through this map' preference
+        (independent of the editor panel). The caller drives routing; this only
+        remembers the choice so reopening the target restores it."""
+        target = self._target_path()
+        if target is not None:
+            try:
+                save_use_map(use_map_path(target, self._store_dir), bool(on))
+            except OSError as exc:
+                self._status(f"could not save map preference: {exc}", 4000)
+
+    def _sync_face_map(self) -> None:
+        """Push the catalog routing to the live swapper only while mode is on;
+        off → the empty map, so the swapper swaps with the single global source.
+
+        While on, the pushed copy is ARMED so routing engages even before the
+        first assignment — unmapped faces then show the original instead of the
+        global source. ``self._catalog`` itself stays unarmed (clean to persist
+        and carry over)."""
+        self._player.set_face_map(
+            self._catalog.with_armed(True) if self._mode_active else FaceMap.empty()
+        )
 
     def _load_thumbnails(self, face_map: FaceMap) -> None:
         target = self._target_path()
@@ -290,6 +442,38 @@ class FaceMapController(QObject):
                 save_face_map(path, face_map)
             except OSError as exc:
                 self._status(f"could not save face map: {exc}", 4000)
+
+    def selected_face_bbox(self) -> tuple[float, float, float, float] | None:
+        """The box of the SINGLE selected identity in the CURRENT frame — matched
+        by cosine-nearest embedding in the detection sink — for the overlay to
+        highlight just it. None when 0 or many rows are selected, the identity's
+        gone, or no face in this frame matches it."""
+        ids = self._panel.selected_identities()
+        if len(ids) != 1:
+            return None
+        face_map = self._catalog
+        ident = next((i for i in face_map.identities if i.id == ids[0]), None)
+        if ident is None:
+            return None
+        latest = self._sink._latest  # noqa: SLF001 — raw faces (with embeddings)
+        if latest is None:
+            return None
+        faces, _w, _h = latest
+        best: Any = None
+        best_sim = -1.0
+        for face in faces:
+            emb = getattr(face, "normed_embedding", None)
+            if emb is None:
+                continue
+            sim = cosine(ident.centroid, emb)
+            if sim > best_sim:
+                best_sim, best = sim, face
+        if best is None or best_sim < face_map.threshold:
+            return None
+        bbox = getattr(best, "bbox", None)
+        if bbox is None:
+            return None
+        return (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3]))
 
     def _raw_face_at(self, bbox: tuple[float, float, float, float]) -> Any:
         """The detection-sink face whose box centre is nearest the clicked bbox

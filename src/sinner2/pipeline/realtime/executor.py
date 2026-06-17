@@ -22,6 +22,7 @@ from sinner2.pipeline.messages import (
     SeekMsg,
     SetChainMsg,
     SetFaceMapMsg,
+    SetGeometryMsg,
     SetParamsMsg,
     SetPlaybackModeMsg,
     SetSectionsMsg,
@@ -31,6 +32,7 @@ from sinner2.pipeline.messages import (
 )
 from sinner2.pipeline.cache_mode import CacheMode
 from sinner2.pipeline.face_map import FaceMap
+from sinner2.pipeline.face_map_geometry import FrameGeometry
 from sinner2.pipeline.playback_mode import PlaybackMode
 from sinner2.pipeline.processor import ChainContext, Processor
 from sinner2.pipeline.realtime.work_item import WorkItem
@@ -493,6 +495,11 @@ class RealtimeExecutor:
         WITHOUT a rebuild. Applied on the dispatcher thread."""
         self._command_queue.put(SetFaceMapMsg(face_map=face_map))
 
+    def set_geometry(self, geometry: "FrameGeometry | None") -> None:
+        """Hot-apply (or clear) the precomputed per-frame geometry on the live
+        swapper WITHOUT a rebuild. Applied on the dispatcher thread."""
+        self._command_queue.put(SetGeometryMsg(geometry=geometry))
+
     def set_cache_mode(self, mode: CacheMode) -> None:
         """Hot-swap the buffer's cache mode. Cheap — just toggles which
         I/O paths the buffer takes; no rebuild required."""
@@ -637,6 +644,8 @@ class RealtimeExecutor:
                 self._handle_set_sections(sections)
             case SetFaceMapMsg(face_map=face_map):
                 self._handle_set_face_map(face_map)
+            case SetGeometryMsg(geometry=geometry):
+                self._handle_set_geometry(geometry)
             case ReconfigureMsg():
                 self._handle_reconfigure(msg)
             case SetParamsMsg():
@@ -939,6 +948,30 @@ class RealtimeExecutor:
         self._submit_specific_frame(current)
         self._playback_wake.set()
 
+    def _handle_set_geometry(self, geometry: "FrameGeometry | None") -> None:
+        """Push the precomputed geometry (or None) onto every chain processor
+        that takes it (the swapper) and re-render the shown frame so switching
+        detection-free mapping on/off updates the preview without a seek. Runs
+        on the dispatcher thread — single assignment, worker-safe."""
+        with self._state_lock:
+            chain = self._chain
+        for p in chain:
+            hook = getattr(p, "set_geometry", None)
+            if hook is None:
+                continue
+            try:
+                hook(geometry)
+            except Exception as exc:  # noqa: BLE001
+                self.status.set(f"set_geometry error: {exc}")
+        self._buffer.invalidate_all()
+        with self._state_lock:
+            current = self._timeline.current_frame()
+            self._last_submitted = current - 1
+            self._last_completed = min(self._last_completed, current - 1)
+        self._last_shown_frame_index = None
+        self._submit_specific_frame(current)
+        self._playback_wake.set()
+
     def _handle_set_worker_count(self, n: int) -> None:
         """Scale the worker pool to size n. Runs on the dispatcher thread.
 
@@ -1174,7 +1207,7 @@ class RealtimeExecutor:
                 # workers calling the same chain's swapper.get() in parallel
                 # is the intended fast path.
                 chain = self._chain
-                result = self._apply_chain(source_frame, chain)
+                result = self._apply_chain(source_frame, chain, item.frame_index)
                 # Publish under the generation guard: a reconfigure may have
                 # swapped the world while this worker was parked on its source
                 # future (it's neither queued nor counted inflight), so discard a
@@ -1240,7 +1273,10 @@ class RealtimeExecutor:
             except Exception as e:  # noqa: BLE001
                 self.status.set(f"thread-local release error: {e}")
 
-    def _apply_chain(self, frame: Frame, chain: tuple[Processor, ...]) -> Frame:
+    def _apply_chain(
+        self, frame: Frame, chain: tuple[Processor, ...],
+        frame_index: int | None = None,
+    ) -> Frame:
         # Wrap each processor with perf_counter so the metrics overlay
         # can attribute wall-clock to FaceSwapper vs FaceEnhancer. The
         # measurement excludes the chain-iteration overhead and the
@@ -1249,8 +1285,9 @@ class RealtimeExecutor:
         #
         # One ChainContext per frame: the swapper publishes its detections,
         # downstream context-aware processors (enhancer ONNX backends) reuse
-        # them instead of re-detecting — one detection pass per frame.
-        ctx = ChainContext()
+        # them instead of re-detecting — one detection pass per frame. The frame
+        # index lets face-mapping read its precomputed per-frame geometry.
+        ctx = ChainContext(frame_index=frame_index)
         for p in chain:
             t0 = time.perf_counter_ns()
             if getattr(p, "accepts_context", False):

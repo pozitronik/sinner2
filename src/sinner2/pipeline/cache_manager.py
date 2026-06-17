@@ -211,23 +211,30 @@ class CacheManager:
         except OSError:
             return False
 
-    def clear_all(self, protect: Iterable[Path] = ()) -> tuple[int, int]:
-        """Remove every cache entry. Returns (entries_deleted, bytes_freed).
+    def entry_paths(self) -> list[Path]:
+        """The cache-entry directories under the root, WITHOUT walking them for
+        sizes — fast, for a bulk wipe or a count."""
+        if not self._root.is_dir():
+            return []
+        return [c for c in sorted(self._root.iterdir()) if c.is_dir()]
 
-        Entries whose path is in `protect` are skipped — used to spare the
-        currently-active session's directory from a bulk wipe.
+    def clear_all(self, protect: Iterable[Path] = ()) -> int:
+        """Remove every cache-entry directory (rmtree), sparing any in `protect`;
+        return how many were deleted. Deliberately does NOT measure sizes first —
+        a bulk wipe shouldn't pay to walk every file it's about to delete (that
+        size walk hung the UI on large caches). It just drops the directories.
         """
         protected = {Path(p).resolve() for p in protect}
         deleted = 0
-        freed = 0
-        for entry in self.list_entries():
-            if entry.path.resolve() in protected:
+        for entry_dir in self.entry_paths():
+            try:
+                if entry_dir.resolve() in protected:
+                    continue
+            except OSError:
                 continue
-            size = entry.size_bytes
-            if self.delete_entry(entry.path):
+            if self.delete_entry(entry_dir):
                 deleted += 1
-                freed += size
-        return deleted, freed
+        return deleted
 
     def enforce_size_cap(
         self,

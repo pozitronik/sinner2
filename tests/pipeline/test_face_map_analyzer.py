@@ -243,6 +243,27 @@ class TestPositionAndFirstFrame:
         assert a.first_frame == 0  # but earliest = frame 0
 
 
+class TestRepMetadata:
+    def test_captures_det_score_and_pose(self):
+        # The clearest occurrence's det_score + pose (pitch, yaw, roll) land on
+        # the identity for the Faces table.
+        import numpy as np
+
+        f = _Face(_emb(1, 0, 0), score=0.88)
+        f.pose = np.array([3.0, -7.0, 15.0])  # insightface: pitch, yaw, roll
+        fm = _catalog(_StubReader([[f]]), lambda fr: fr, stride=1)
+        ident = fm.identities[0]
+        assert ident.det_score == 0.88
+        assert ident.pitch == 3.0 and ident.yaw == -7.0 and ident.roll == 15.0
+
+    def test_pose_none_without_full_pack(self):
+        # Fast det+rec faces have no .pose → pitch/yaw/roll stay None.
+        fm = _catalog(_StubReader([[_Face(_emb(1, 0, 0))]]), lambda fr: fr, stride=1)
+        ident = fm.identities[0]
+        assert ident.pitch is None and ident.yaw is None and ident.roll is None
+        assert ident.det_score == 0.9  # det_score still captured
+
+
 class TestResume:
     def test_returns_scanned_and_total(self):
         frames = [_identity(1, 0, 0) for _ in range(10)]
@@ -275,3 +296,133 @@ class TestResume:
         assert fm.identities[0].id == "a"            # joined the seeded identity
         assert fm.identities[0].occurrences == 6     # 4 seeded + 2 new
         assert fm.identities[0].source_path == "/s.png"  # assignment preserved
+
+
+class TestPrecomputeGeometry:
+    """The full-frame geometry pass: matches each detected face to the catalog
+    and records bbox + kps per frame (drops unmapped / embeddingless faces)."""
+
+    def _face(self, emb, bbox=(0.0, 0.0, 4.0, 4.0), kps=None):
+        f = _Face(_emb(*emb), bbox=bbox)
+        f.kps = kps if kps is not None else [(float(i), float(i)) for i in range(5)]
+        return f
+
+    def _catalog2(self):
+        from sinner2.pipeline.face_map import FaceMap, Identity
+
+        return FaceMap(
+            identities=(Identity("a", _emb(1, 0, 0)), Identity("b", _emb(0, 1, 0))),
+            threshold=0.5,
+        )
+
+    def test_records_matched_faces_with_bbox_kps(self):
+        from sinner2.pipeline.face_map_analyzer import precompute_geometry
+
+        frames = [
+            [self._face((0.95, 0.05, 0), bbox=(0.0, 0.0, 4.0, 4.0))],   # ~a
+            [self._face((0.05, 0.95, 0), bbox=(1.0, 1.0, 5.0, 5.0))],   # ~b
+        ]
+        geom, scanned, total = precompute_geometry(
+            _StubReader(frames), lambda f: f, self._catalog2(), workers=1
+        )
+        assert total == 2 and scanned == 2 and geom.frame_count == 2
+        assert geom.refined is False  # default: detect closure didn't refine
+        f0 = geom.faces_at(0)[0]
+        assert f0.identity_id == "a"
+        assert f0.bbox == (0.0, 0.0, 4.0, 4.0)
+        assert len(f0.kps) == 5
+        assert geom.faces_at(1)[0].identity_id == "b"
+
+    def test_bakes_real_embedding(self):
+        # A0: the matched face's real (normalized) embedding is baked into the
+        # geometry so the runtime can route against the live catalog.
+        from sinner2.pipeline.face_map_analyzer import precompute_geometry
+
+        emb = (0.95, 0.05, 0)
+        geom, *_ = precompute_geometry(
+            _StubReader([[self._face(emb)]]), lambda f: f, self._catalog2()
+        )
+        f0 = geom.faces_at(0)[0]
+        assert f0.embedding == tuple(float(x) for x in _emb(*emb))
+
+    def test_bakes_roll_from_face(self):
+        # D5: the detect closure's `baked_roll` is recorded onto the GeomFace.
+        from sinner2.pipeline.face_map_analyzer import precompute_geometry
+
+        f = self._face((0.95, 0.05, 0))
+        f.baked_roll = 17.0
+
+        geom, *_ = precompute_geometry(
+            _StubReader([[f]]), lambda fr: fr, self._catalog2()
+        )
+        assert geom.faces_at(0)[0].roll == 17.0
+
+    def test_roll_none_when_face_has_no_baked_roll(self):
+        from sinner2.pipeline.face_map_analyzer import precompute_geometry
+
+        geom, *_ = precompute_geometry(
+            _StubReader([[self._face((1, 0, 0))]]), lambda fr: fr, self._catalog2()
+        )
+        assert geom.faces_at(0)[0].roll is None
+
+    def test_refined_metadata_is_stamped(self):
+        from sinner2.pipeline.face_map_analyzer import precompute_geometry
+
+        frames = [[self._face((1, 0, 0))]]
+        geom, *_ = precompute_geometry(
+            _StubReader(frames), lambda f: f, self._catalog2(), refined=True
+        )
+        assert geom.refined is True  # caller's detect closure pre-refined kps
+
+    def test_skips_unmatched_and_embeddingless(self):
+        from sinner2.pipeline.face_map_analyzer import precompute_geometry
+
+        stranger = self._face((0, 0, 1))      # orthogonal → below threshold
+        noemb = _Face(None)
+        noemb.kps = [(0.0, 0.0)] * 5
+        geom, *_ = precompute_geometry(
+            _StubReader([[stranger, noemb]]), lambda f: f, self._catalog2()
+        )
+        assert geom.is_empty()
+
+    def test_skips_wrong_keypoint_count(self):
+        from sinner2.pipeline.face_map_analyzer import precompute_geometry
+
+        bad = self._face((1, 0, 0), kps=[(0.0, 0.0)] * 3)  # not 5 kps
+        geom, *_ = precompute_geometry(
+            _StubReader([[bad]]), lambda f: f, self._catalog2()
+        )
+        assert geom.is_empty()
+
+    def test_sections_confine_coverage(self):
+        from sinner2.pipeline.face_map_analyzer import precompute_geometry
+        from sinner2.pipeline.sections import SectionSet
+
+        frames = [[self._face((1, 0, 0))] for _ in range(5)]
+        secs = SectionSet.of([(1, 2)])
+        geom, scanned, total = precompute_geometry(
+            _StubReader(frames), lambda f: f, self._catalog2(), sections=secs
+        )
+        plan = secs.frame_plan(5)
+        assert total == len(plan)
+        assert set(geom.faces.keys()) <= set(plan)  # nothing outside the section
+
+    def test_cancel_returns_partial(self):
+        from sinner2.pipeline.face_map_analyzer import precompute_geometry
+
+        ev = threading.Event()
+        ev.set()  # cancelled before the first ingest
+        frames = [[self._face((1, 0, 0))] for _ in range(3)]
+        geom, scanned, _t = precompute_geometry(
+            _StubReader(frames), lambda f: f, self._catalog2(), cancel_event=ev
+        )
+        assert geom.is_empty() and scanned == 0
+
+    def test_parallel_path_records_all(self):
+        from sinner2.pipeline.face_map_analyzer import precompute_geometry
+
+        frames = [[self._face((1, 0, 0))] for _ in range(6)]
+        geom, scanned, total = precompute_geometry(
+            _StubReader(frames), lambda f: f, self._catalog2(), workers=3
+        )
+        assert geom.face_count() == 6 and scanned == 6 and total == 6

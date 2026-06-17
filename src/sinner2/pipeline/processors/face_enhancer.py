@@ -135,11 +135,18 @@ class FaceEnhancer:
         self,
         params: FaceEnhancerParams | None = None,
         device: str = "auto",
+        providers: list[str] | None = None,
     ) -> None:
         self._params = params or FaceEnhancerParams()
         # Torch device from the enhancer's TorchExecution profile
-        # ("auto"/"cpu"/"cuda"/"cuda:N"); resolved at setup().
+        # ("auto"/"cpu"/"cuda"/"cuda:N"); resolved at setup(). Used by the torch
+        # GFPGAN path only.
         self._device = device
+        # GLOBAL ONNX execution providers (same list the swapper + detector use).
+        # The ONNX restorer backends (CodeFormer / GPEN / RestoreFormer++ /
+        # GFPGAN-ONNX) and the rotation detector run on these. None = platform
+        # default. Torch GFPGAN ignores it (it uses _device).
+        self._providers = list(providers) if providers is not None else None
         self._restorer: Any = None
         # CodeFormer backend (ONNX) when that model is selected; None for GFPGAN.
         self._codeformer: CodeFormerBackend | None = None
@@ -166,14 +173,19 @@ class FaceEnhancer:
         from sinner2.config.execution import resolve_torch_device
 
         if self._params.model is EnhancerModel.CODEFORMER:
-            # ONNX restorer — its own (shared, thread-safe) session + detector.
+            # ONNX restorer — its own (shared, thread-safe) session + detector,
+            # on the GLOBAL ONNX providers.
             self._codeformer = CodeFormerBackend(
-                fidelity=self._params.codeformer_fidelity
+                fidelity=self._params.codeformer_fidelity,
+                providers=self._providers,
             )
             self._codeformer.setup()
         elif self._params.model in _BFR_MODEL_FILES:
-            # GPEN / RestoreFormer++ — plain BFR ONNX (no knobs), shared session.
-            self._bfr = PlainBfrBackend(_BFR_MODEL_FILES[self._params.model])
+            # GPEN / RestoreFormer++ / GFPGAN-ONNX — plain BFR ONNX (no knobs),
+            # shared session, on the GLOBAL ONNX providers.
+            self._bfr = PlainBfrBackend(
+                _BFR_MODEL_FILES[self._params.model], providers=self._providers
+            )
             self._bfr.setup()
         else:
             # GFPGAN is PyTorch, so its device is torch's CUDA — independent of
@@ -200,7 +212,7 @@ class FaceEnhancer:
                 fp16=self._fp16,
             )
         if self._params.rotation_compensation:
-            self._analyser = FaceAnalyser()
+            self._analyser = FaceAnalyser(providers=self._providers)
 
     def _gfpgan_autocast(self) -> Any:
         """fp16 autocast context for the GFPGAN forward, or a no-op context when

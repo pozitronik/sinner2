@@ -27,6 +27,8 @@ _BOX_COLOR = QColor(90, 220, 120)     # green box
 _KPS_COLOR = QColor(240, 220, 90)     # yellow keypoints
 _TEXT_COLOR = QColor(240, 240, 240)
 _TEXT_BG = QColor(0, 0, 0, 170)
+_HIGHLIGHT_COLOR = QColor(60, 170, 255)   # the SELECTED identity's box (blue)
+_DIM_COLOR = QColor(90, 220, 120, 70)     # the other boxes, faded back
 
 
 @dataclass(frozen=True)
@@ -99,6 +101,9 @@ class QFaceDetectionOverlay(QWidget):
         self._pick_enabled = False
         self._detections: list[FaceDetection] = []
         self._frame_size: tuple[int, int] | None = None
+        # When set, the box nearest this bbox is drawn HIGHLIGHTED and the rest
+        # are dimmed — the selected identity stands out on the preview.
+        self._highlight: tuple[float, float, float, float] | None = None
         # Comparison mode: [orig | swapped] thumbnail pairs next to each box.
         self._comparison_on = False
         self._crop_pairs: list[tuple[tuple, QPixmap, QPixmap]] = []
@@ -111,6 +116,32 @@ class QFaceDetectionOverlay(QWidget):
         self._detections = list(detections)
         self._frame_size = (frame_w, frame_h)
         self.update()
+
+    def set_highlight(
+        self, bbox: tuple[float, float, float, float] | None
+    ) -> None:
+        """Highlight the box nearest ``bbox`` (the selected identity's face) and
+        dim the rest; ``None`` restores every box to normal."""
+        self._highlight = (
+            (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3]))
+            if bbox is not None else None
+        )
+        self.update()
+
+    def _highlight_index(self) -> int:
+        """Index of the detection nearest the highlight (by box centre), or -1."""
+        if self._highlight is None or not self._detections:
+            return -1
+        hx = (self._highlight[0] + self._highlight[2]) / 2.0
+        hy = (self._highlight[1] + self._highlight[3]) / 2.0
+        best, best_d = -1, float("inf")
+        for i, det in enumerate(self._detections):
+            cx = (det.bbox[0] + det.bbox[2]) / 2.0
+            cy = (det.bbox[1] + det.bbox[3]) / 2.0
+            d = (cx - hx) ** 2 + (cy - hy) ** 2
+            if d < best_d:
+                best_d, best = d, i
+        return best
 
     def set_comparison(self, on: bool) -> None:
         self._comparison_on = on
@@ -132,6 +163,7 @@ class QFaceDetectionOverlay(QWidget):
     def clear(self) -> None:
         self._detections = []
         self._frame_size = None
+        self._highlight = None
         self._crop_pairs = []
         self._crop_frame_size = None
         self.update()
@@ -195,8 +227,12 @@ class QFaceDetectionOverlay(QWidget):
         # distorted on the wrong content.
         det_mapper = self._scaled_mapper(mapper, cur, self._frame_size)
         if self._detections and det_mapper is not None:
-            for det in self._detections:
-                self._draw_face(painter, det_mapper, det)
+            hi = self._highlight_index()
+            for i, det in enumerate(self._detections):
+                self._draw_face(
+                    painter, det_mapper, det,
+                    highlighted=(i == hi), dimmed=(hi >= 0 and i != hi),
+                )
         crop_mapper = self._scaled_mapper(mapper, cur, self._crop_frame_size)
         if self._comparison_on and self._crop_pairs and crop_mapper is not None:
             for bbox, pm_orig, pm_swap in self._crop_pairs:
@@ -215,17 +251,29 @@ class QFaceDetectionOverlay(QWidget):
             return None  # aspect mismatch → different content, don't draw
         return lambda fx, fy: mapper(fx * sx, fy * sy)
 
-    def _draw_face(self, painter: QPainter, mapper, det: FaceDetection) -> None:
+    def _draw_face(
+        self, painter: QPainter, mapper, det: FaceDetection,
+        *, highlighted: bool = False, dimmed: bool = False,
+    ) -> None:
         x1, y1, x2, y2 = det.bbox
         p1 = mapper(x1, y1)
         p2 = mapper(x2, y2)
         if p1 is None or p2 is None:
             return
         rect = QRectF(p1, p2).normalized()
-        pen = QPen(_BOX_COLOR)
-        pen.setWidth(2)
+        if highlighted:
+            pen = QPen(_HIGHLIGHT_COLOR)
+            pen.setWidth(3)
+        elif dimmed:
+            pen = QPen(_DIM_COLOR)
+            pen.setWidth(1)
+        else:
+            pen = QPen(_BOX_COLOR)
+            pen.setWidth(2)
         painter.setPen(pen)
         painter.drawRect(rect)
+        if dimmed:
+            return  # a backgrounded box: box only, no keypoints/callout clutter
         painter.setPen(QPen(_KPS_COLOR))
         for kx, ky in det.kps:
             kp = mapper(kx, ky)

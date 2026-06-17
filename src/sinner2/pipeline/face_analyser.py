@@ -275,6 +275,13 @@ class FaceAnalyser:
         box+keypoints only). The swapper gates its gender filter on this."""
         return self._detector is None and not self._detection_only
 
+    def provides_embeddings(self) -> bool:
+        """Whether ``analyse()`` yields a `.normed_embedding` per face — only the
+        full buffalo_l pack does (same condition as the aux models). Per-identity
+        face-mapping needs this; when False the swapper switches to
+        ``analyse_det_rec`` so routing has embeddings to match."""
+        return self._detector is None and not self._detection_only
+
     def reset_cache(self) -> None:
         with self._lock:
             self._cached_faces = None

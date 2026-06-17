@@ -1,4 +1,5 @@
 import logging
+import os
 import threading
 from pathlib import Path
 
@@ -89,6 +90,12 @@ _log = logging.getLogger(__name__)
 # download), so a single wait(2000) can time out and destroy a running thread.
 _THREAD_JOIN_WAIT_MS = 2000
 _THREAD_JOIN_MAX_WAITS = 15  # ~30s worst case before giving up and logging
+
+# Set SINNER2_OVERLAY_TRACE=1 to log the detection-overlay poll state (flags +
+# sink/overlay counts + the displayed frame) on every tick. Diagnoses an
+# intermittent "stuck box" — whether the sink is stale vs the displayed frame,
+# and which flag (F8 vs face-map pick mode) is keeping the overlay up.
+_OVERLAY_TRACE = bool(os.environ.get("SINNER2_OVERLAY_TRACE"))
 
 
 def _join_qthread(thread, per_wait_ms: int, max_waits: int) -> bool:  # type: ignore[no-untyped-def]
@@ -230,6 +237,18 @@ class SinnerMainWindow(QMainWindow):
         self._batch_view.settingsRequested.connect(self._on_batch_settings)
         self._models_view = QModelsView()
         self._face_map_panel = QFaceMapPanel()
+        # Seed the scan settings from disk (None fields keep the panel defaults).
+        self._face_map_panel.restore_settings(
+            stride=self._settings.face_analyze_stride,
+            workers=self._settings.face_analyze_workers,
+            preview=self._settings.face_analyze_preview,
+            demographics=self._settings.face_analyze_demographics,
+            precompute=self._settings.face_analyze_precompute,
+            detection_size=self._settings.face_analyze_detection_size,
+            landmark_refine=self._settings.face_analyze_landmark_refine,
+            landmark_min_score=self._settings.face_analyze_landmark_min_score,
+            bake_angle=self._settings.face_analyze_bake_angle,
+        )
         # Per-panel zoom: fall back to the legacy shared value, then 128.
         _legacy_dim = self._settings.library_display_dim or 128
         self._side_panel = QSidePanel(
@@ -287,6 +306,10 @@ class SinnerMainWindow(QMainWindow):
         self._detection_probe = FaceDetectionProbe(
             providers=self._settings.swapper_providers,
             detection_size=self._settings.swapper_detection_size or 640,
+            # Feed the same sink the swapper publishes to, so the face-map
+            # selection highlight + click-to-pick work with the swapper OFF
+            # (probe and swapper never feed it at once).
+            sink=self._detection_sink,
         )
         self._detection_thread = QThread(self)
         self._detection_probe.moveToThread(self._detection_thread)
@@ -458,6 +481,14 @@ class SinnerMainWindow(QMainWindow):
         # coordinated by FaceMapController. The overlay's pick clicks and the
         # Sources-library clicks route in via the handlers below.
         self._face_pick_active = False
+        # _faces_mode = the editor panel is open (pick faces, highlight).
+        # _use_face_map = the routing switch in the Face detector group — the
+        # SINGLE SOURCE OF TRUTH for whether the map routes playback. Opening the
+        # editor turns it on; it persists after the editor closes.
+        # _map_available = a usable catalog exists for the current target.
+        self._faces_mode = False
+        self._use_face_map = False
+        self._map_available = False
         self._face_map_ctl = FaceMapController(
             panel=self._face_map_panel,
             player=self._controller,
@@ -465,19 +496,33 @@ class SinnerMainWindow(QMainWindow):
             store_dir=default_cache_root() / "face_maps",
             target_path=self._pickers.target_path,
             providers=lambda: list(self._processors.swapper_providers()) or None,
-            detection_size=lambda: self._settings.swapper_detection_size or 640,
+            # Detection-quality settings come from the Faces panel's own Detection
+            # group (D1) — decoupled from the live swapper so the scan can use a
+            # different size / refinement than playback.
+            detection_size=lambda: self._face_map_panel.detection_size(),
             current_frame=self._current_display_frame,
             sections=self._controller.sections,
+            landmark_refine=lambda: self._face_map_panel.landmark_refine(),
+            landmark_min_score=lambda: self._face_map_panel.landmark_min_score(),
             show_preview=self._display.show_frame,
             set_position=self._transport.set_current_frame,
-            # Deferred: the session facade is built a few lines below.
-            navigate=lambda frame: self._session.seek_to(frame),
+            # Deferred: the session facade is built a few lines below. Route
+            # through _on_seek_requested so a row-click jump clears stale boxes.
+            navigate=lambda frame: self._on_seek_requested(frame),
             status=self._status_bar.show_message,
             parent=self,
         )
         self._face_overlay.faceClicked.connect(self._face_map_ctl.on_face_clicked)
         self._face_map_ctl.analyzingChanged.connect(self._on_face_analysis_active)
-        self._side_panel.currentChanged.connect(self._on_side_tab_changed)
+        self._face_map_panel.resetRequested.connect(self._on_face_map_reset)
+        self._face_map_panel.selectionChanged.connect(self._refresh_face_highlight)
+        self._face_map_panel.settingsChanged.connect(
+            self._persist_face_analyze_settings
+        )
+        # The Sources-tab "Faces" toggle drives face-mapping MODE: reveal the
+        # panel, lock the global source picker, enable preview face-picking, and
+        # route source-tile clicks to the selected face(s).
+        self._side_panel.facesModeToggled.connect(self._on_faces_mode_toggled)
 
         # Live-camera engine: webcam -> chain -> MJPEG sink. Its preview frames
         # drive the same display; activation + transport are owned by the facade.
@@ -506,7 +551,10 @@ class SinnerMainWindow(QMainWindow):
         self._pickers.cameraRequested.connect(self._on_use_camera)
         self._transport.playRequested.connect(self._session.play)
         self._transport.pauseRequested.connect(self._session.pause)
-        self._transport.seekRequested.connect(self._session.seek_to)
+        # All user seeks funnel through _on_seek_requested so the overlay drops
+        # its stale boxes before the playhead jumps (otherwise a box from the old
+        # position lingers "stuck" over the new frame until a fresh detection).
+        self._transport.seekRequested.connect(self._on_seek_requested)
         # Timeline section selection ([ / ] in/out) → restrict live playback +
         # carry into the next "Add to batch".
         self._transport.sectionsChanged.connect(self._on_sections_changed)
@@ -536,6 +584,19 @@ class SinnerMainWindow(QMainWindow):
         self._processors.configChanged.connect(self._persist_processor_settings)
         self._processors.faceOverlayToggled.connect(self._set_face_overlay_visible)
         self._processors.faceComparisonToggled.connect(self._set_comparison_visible)
+        self._processors.useFaceMapToggled.connect(self._on_use_face_map_toggled)
+        self._processors.openFaceMapRequested.connect(
+            self._side_panel.open_face_map_editor
+        )
+        self._face_map_ctl.mapAvailabilityChanged.connect(
+            self._on_map_availability_changed
+        )
+        self._face_map_ctl.useForPlaybackRestored.connect(
+            self._on_use_for_playback_restored
+        )
+        self._face_map_ctl.analysisProducedMap.connect(
+            self._on_analysis_produced_map
+        )
         # Cache-management actions (own signals so they don't go through
         # configChanged, which is for runtime tuning of the chain).
         self._processors.browseRootRequested.connect(self._on_browse_cache_root)
@@ -856,9 +917,10 @@ class SinnerMainWindow(QMainWindow):
 
     def _on_clear_all_caches(self) -> None:
         manager = self._controller.cache_manager()
-        entries = manager.list_entries()
         protected = self._controller.session_cache_dir()
-        deletable = [e for e in entries if e.path != protected]
+        # Count via entry_paths() (no per-file size walk) so the dialog opens
+        # instantly even on a huge cache — the size walk is what hung the app.
+        deletable = [p for p in manager.entry_paths() if p != protected]
         if not deletable:
             QMessageBox.information(
                 self,
@@ -866,12 +928,11 @@ class SinnerMainWindow(QMainWindow):
                 "Nothing to delete — only the current session's cache is present.",
             )
             return
-        total = sum(e.size_bytes for e in deletable)
         if not confirm(
             self,
             "clear_all_caches",
             "Clear all caches",
-            f"Delete {len(deletable)} cache entries ({_fmt_size(total)})?\n"
+            f"Delete {len(deletable)} cache entries?\n"
             "The currently active session will be spared.",
         ):
             return
@@ -1336,13 +1397,13 @@ class SinnerMainWindow(QMainWindow):
                 current - step if key == Qt.Key.Key_Left else current + step
             )
             # Floor at 0; the timeline clamps the upper bound to the last frame.
-            self._session.seek_to(max(0, target))
+            self._on_seek_requested(max(0, target))
             return
         if key == Qt.Key.Key_Home:
-            self._session.seek_to(0)
+            self._on_seek_requested(0)
             return
         if key == Qt.Key.Key_End:
-            self._session.seek_to(max(0, executor.frame_count() - 1))
+            self._on_seek_requested(max(0, executor.frame_count() - 1))
             return
         # Section selection: [ sets a section's start at the playhead, ] its
         # end; Delete removes the selected band. The transport owns the state
@@ -1601,11 +1662,71 @@ class SinnerMainWindow(QMainWindow):
         ex = self._controller.executor()
         return ex.current_frame.get() if ex is not None else 0
 
-    def _on_side_tab_changed(self, _index: int) -> None:
-        # The overlay becomes click-to-pick while the Faces tab is the front one.
-        self._set_face_pick_mode(
-            self._side_panel.currentWidget() is self._face_map_panel
-        )
+    def _on_faces_mode_toggled(self, on: bool) -> None:
+        """The Sources-tab "Face map" toggle opens/closes the EDITOR (click-to-pick
+        faces + selection highlight). It does NOT touch routing — the "Use face
+        map" switch owns that, and only unlocks once a map is built (so the switch
+        never sits enabled with nothing to route). Assigning a source flips the
+        switch on (see _on_library_source_selected)."""
+        self._faces_mode = on
+        self._set_face_pick_mode(on)
+        self._refresh_face_highlight()  # clears the highlight when the editor closes
+
+    def _on_use_face_map_toggled(self, on: bool) -> None:
+        """The user toggled the Face-detector "Use face map" switch."""
+        self._set_use_face_map(bool(on))
+
+    def _on_use_for_playback_restored(self, use: bool) -> None:
+        """A target's saved 'use the map' preference loaded — apply it without
+        re-persisting."""
+        self._set_use_face_map(bool(use), persist=False)
+
+    def _on_map_availability_changed(self, available: bool) -> None:
+        """A usable catalog appeared/vanished for the current target."""
+        self._map_available = bool(available)
+        self._update_face_map_enabled()
+        if not available:
+            self._set_use_face_map(False)  # nothing to route
+
+    def _on_analysis_produced_map(self, has_map: bool) -> None:
+        """A fresh scan built a usable catalog → turn the "Use face map" switch ON
+        so the map drives playback at once (the user shouldn't have to flip it
+        manually after every analysis). Routing-on pushes the armed map + geometry,
+        which reprocesses the current frame — so the mapped swap appears and the
+        detection sink repopulates for the selection highlight. Target-restore
+        honours the saved preference instead (useForPlaybackRestored)."""
+        if has_map and not self._use_face_map:
+            self._set_use_face_map(True)
+
+    def _update_face_map_enabled(self) -> None:
+        """The switch unlocks ONLY once a map is built for the target — never just
+        because the editor is open (a switch you can flip with nothing to route is
+        confusing)."""
+        self._processors.set_face_map_available(self._map_available)
+
+    def _set_use_face_map(self, on: bool, *, persist: bool = True) -> None:
+        """SINGLE SOURCE OF TRUTH for routing: set the switch state, reflect it on
+        the checkbox, (optionally) persist per target, and apply routing."""
+        self._use_face_map = bool(on)
+        self._processors.set_use_face_map(on)
+        if persist:
+            self._face_map_ctl.set_use_for_playback(on)
+        self._refresh_face_map_routing()
+
+    def _refresh_face_map_routing(self) -> None:
+        """Routing is active ⟺ the "Use face map" switch is on. When active the
+        global source picker + the superseded swap controls lock, and the
+        controller arms the map + pushes the geometry."""
+        active = self._use_face_map
+        self._pickers.set_source_enabled(not active)
+        self._processors.set_face_map_routing_active(active)
+        self._face_map_ctl.set_mode_active(active)
+
+    def _refresh_face_highlight(self) -> None:
+        """Highlight the selected identity's box on the overlay (only in
+        face-mapping mode); nothing selected / mode off → all boxes normal."""
+        bbox = self._face_map_ctl.selected_face_bbox() if self._faces_mode else None
+        self._face_overlay.set_highlight(bbox)
 
     def _on_face_analysis_active(self, active: bool) -> None:
         """Lock the editing surface while a face-map scan runs (like a batch
@@ -1620,10 +1741,8 @@ class SinnerMainWindow(QMainWindow):
             self._face_overlay.clear()
         self._set_editing_locked(active or self._batch_active)
         if not active:
-            # Restore the pick overlay if the Faces tab is still the front one.
-            self._set_face_pick_mode(
-                self._side_panel.currentWidget() is self._face_map_panel
-            )
+            # Restore the pick overlay if face-mapping mode is still on.
+            self._set_face_pick_mode(self._faces_mode)
 
     def _set_face_pick_mode(self, on: bool) -> None:
         """Enable clicking faces on the preview to select/capture an identity.
@@ -1678,21 +1797,62 @@ class SinnerMainWindow(QMainWindow):
         self._detection_sink.set_wants_crops(comparison)
         self._face_overlay.set_comparison(comparison)
 
+    def _clear_overlay_for_seek(self) -> None:
+        """A seek is a discontinuity: the boxes drawn for the old frame are stale
+        on the new one. Drop them — AND the sink they're polled from — so a box
+        from the previous position can't linger "stuck" over a face that moved or
+        is gone. The new frame's detection (the swapper's publish, or the probe)
+        repopulates within a poll tick. No-op when the overlay is down."""
+        if not self._overlay_active():
+            return
+        self._detection_sink.clear()
+        self._face_overlay.clear()
+
+    def _on_seek_requested(self, frame: int) -> None:
+        """The single funnel for user seeks (transport knob, arrow/Home/End,
+        face-row navigate): clear stale overlay boxes, then seek the active
+        session."""
+        self._clear_overlay_for_seek()
+        self._session.seek_to(int(frame))
+
     def _overlay_tick(self) -> None:
         # Swapper-on path: poll the swapper's published PRE-swap detections
         # (and, in comparison mode, its orig/swapped crops). The swapper-off
         # path runs through the probe, fed by displayed frames.
+        if _OVERLAY_TRACE:
+            self._trace_overlay()
         if not self._overlay_active() or not self._processors.swapper_enabled():
             return
         latest = self._detection_sink.latest_detections()
         if latest is not None:
             detections, w, h = latest
             self._face_overlay.set_detections(detections, w, h)
+            self._refresh_face_highlight()  # follow the selected identity's box
         if self._comparison_on:
             crops = self._detection_sink.latest_crops()
             if crops is not None:
                 pairs, w, h = crops
                 self._face_overlay.set_crop_pairs(pairs, w, h)
+
+    def _trace_overlay(self) -> None:
+        """SINNER2_OVERLAY_TRACE diagnostic (read-only): the poll-time overlay
+        state, so an intermittent "stuck box" can be pinned to a stale sink vs
+        the displayed frame, and to which flag is keeping the overlay up."""
+        import sys
+
+        latest = self._detection_sink.latest_detections()
+        sink_n = len(latest[0]) if latest is not None else None
+        sink_wh = latest[1:] if latest is not None else None
+        ex = self._controller.executor()
+        print(
+            f"[overlay] f8={self._face_overlay_on} pick={self._face_pick_active} "
+            f"swapper={self._processors.swapper_enabled()} "
+            f"sinkFaces={sink_n} sinkWH={sink_wh} "
+            f"shownFaces={len(self._face_overlay._detections)} "  # noqa: SLF001
+            f"curFrame={ex.current_frame.get() if ex is not None else None} "
+            f"playing={ex.is_playing.get() if ex is not None else None}",
+            file=sys.stderr, flush=True,
+        )
 
     def _set_face_overlay_visible(self, on: bool) -> None:
         """Toggle handler for the face button (and F8). Applies + persists."""
@@ -1783,6 +1943,20 @@ class SinnerMainWindow(QMainWindow):
             mjpeg_port=self._live_view.port(),
         ))
 
+    def _persist_face_analyze_settings(self) -> None:
+        p = self._face_map_panel
+        self._update_settings(
+            face_analyze_stride=p.stride(),
+            face_analyze_workers=p.workers(),
+            face_analyze_preview=p.preview_enabled(),
+            face_analyze_demographics=p.detect_demographics(),
+            face_analyze_precompute=p.precompute_geometry(),
+            face_analyze_detection_size=p.detection_size(),
+            face_analyze_landmark_refine=p.landmark_refine(),
+            face_analyze_landmark_min_score=p.landmark_min_score(),
+            face_analyze_bake_angle=p.bake_angle(),
+        )
+
     def _persist_camera_config(self) -> None:
         self._update_settings(
             camera_device=self._live_view.device(),
@@ -1796,6 +1970,9 @@ class SinnerMainWindow(QMainWindow):
     def _on_live_running(self, running: bool) -> None:
         self._live_view.set_running(running)
         self._live_view.set_url(self._live.sink_url() if running else None)
+        # Face-mapping is file-only — a camera can't be precomputed; disable the
+        # Faces toggle (and clear the mode) while the camera session runs.
+        self._side_panel.set_faces_available(not running)
         # Reflect the camera session on the transport (play = stop/start; the
         # capability gate keeps seek/volume disabled).
         self._refresh_transport_enabled()
@@ -1914,11 +2091,13 @@ class SinnerMainWindow(QMainWindow):
                 synced_max_lag_frames=self._settings.synced_max_lag_frames,
                 swapper_providers=self._settings.swapper_providers,
                 enhancer_device=self._settings.enhancer_device,
+                enhancer_providers=self._settings.enhancer_providers,
                 upscaler_enabled=self._settings.upscaler_enabled,
                 upscaler_model=self._settings.upscaler_model,
                 upscaler_tile=self._settings.upscaler_tile,
                 upscaler_fp16=self._settings.upscaler_fp16,
                 upscaler_device=self._settings.upscaler_device,
+                upscaler_providers=self._settings.upscaler_providers,
             )
         finally:
             self._restoring_settings = False
@@ -2128,6 +2307,11 @@ class SinnerMainWindow(QMainWindow):
         # the refresh (which honours both the lock and the picker state).
         self._refresh_transport_enabled()
         self._pickers.setEnabled(not locked)
+        if not locked:
+            # Re-honour the face-mapping source lock (re-enabling the whole
+            # picker above would otherwise unlock the source the map owns) —
+            # the lock follows ROUTING (the "Use face map" switch), not the editor.
+            self._pickers.set_source_enabled(not self._use_face_map)
         self._side_panel.set_editing_locked(locked)
 
     def _on_batch_task_started(self, _task_id: str) -> None:
@@ -2217,18 +2401,41 @@ class SinnerMainWindow(QMainWindow):
             self._batch_view.reload_from_store()
 
     def _on_library_source_selected(self, path: Path) -> None:
-        """Library tile click → normally sets the global source. But while the
-        Faces tab is up with an identity selected, the click ASSIGNS that source
-        to the selected face instead (the natural per-identity gesture)."""
+        """A Sources-library tile click. In face-mapping MODE it assigns to the
+        selected face(s) (a nudge if none selected); otherwise it sets the
+        GLOBAL source. The mode toggle keeps the two unambiguous."""
         if self._batch_active:
             return  # editing locked during a render
-        if (
-            self._side_panel.currentWidget() is self._face_map_panel
-            and self._face_map_panel.selected_identities()
-            and self._face_map_ctl.assign_source_to_selected(path)
-        ):
+        if self._faces_mode:
+            ids = self._face_map_panel.selected_identities()
+            if ids:
+                self._face_map_ctl.assign_source(ids, path)
+                # Assigning IS entering the map workflow → ensure routing is on so
+                # the "Use face map" switch reflects the live mode (item 4).
+                if not self._use_face_map:
+                    self._set_use_face_map(True)
+            else:
+                self._status_bar.show_message(
+                    "Select one or more faces first, then click a source.", 3000
+                )
             return
         self._pickers.set_source(path)
+
+    def _on_face_map_reset(self) -> None:
+        """Reset → discard the catalog AND scan progress so Analyze starts over.
+        Confirmed (it throws away any manual source assignments), but suppressible
+        — the user can tick "Don't ask me again" to skip the prompt next time."""
+        if self._batch_active:
+            return
+        if confirm(
+            self,
+            "face_map_reset",
+            "Reset faces",
+            "Clear the discovered faces, their source assignments, and saved scan "
+            "progress? Analyze will start fresh.",
+            suppressible=True,
+        ):
+            self._face_map_ctl.reset_catalog()
 
     def _on_library_target_selected(self, path: Path) -> None:
         if self._batch_active:

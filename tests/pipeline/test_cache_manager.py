@@ -146,21 +146,28 @@ class TestDelete:
 
 
 class TestClearAll:
+    def test_entry_paths_lists_dirs_without_sizing(self, tmp_path: Path):
+        _make_entry(tmp_path, "a", [100])
+        _make_entry(tmp_path, "b", [200])
+        (tmp_path / "loose.txt").write_text("x")  # not a dir → ignored
+        mgr = CacheManager(tmp_path)
+        names = sorted(p.name for p in mgr.entry_paths())
+        assert names == ["a", "b"]
+
     def test_clears_every_entry(self, tmp_path: Path):
         _make_entry(tmp_path, "a", [100])
         _make_entry(tmp_path, "b", [200])
         _make_entry(tmp_path, "c", [300])
         mgr = CacheManager(tmp_path)
-        deleted, freed = mgr.clear_all()
+        deleted = mgr.clear_all()
         assert deleted == 3
-        assert freed >= 600
         assert mgr.list_entries() == []
 
     def test_protect_spares_listed_paths(self, tmp_path: Path):
         a = _make_entry(tmp_path, "a", [100])
         b = _make_entry(tmp_path, "b", [200])
         mgr = CacheManager(tmp_path)
-        deleted, _ = mgr.clear_all(protect=[a])
+        deleted = mgr.clear_all(protect=[a])
         assert deleted == 1
         assert a.exists()
         assert not b.exists()

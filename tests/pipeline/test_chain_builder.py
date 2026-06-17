@@ -22,6 +22,10 @@ class _MarkSwap:
         self.providers = providers
         self.detection_sink = detection_sink
         self.face_map = face_map
+        self.geometry = None
+
+    def set_geometry(self, geometry):
+        self.geometry = geometry
 
 
 class _MarkEnh:
@@ -113,3 +117,16 @@ def test_swapper_gets_face_map(source):
 def test_no_face_map_is_none(source):
     chain = _call(source, enhancer_enabled=False)
     assert chain[0].face_map is None
+
+
+def test_swapper_gets_geometry(source):
+    from sinner2.pipeline.face_map_geometry import FrameGeometry
+
+    geom = FrameGeometry(faces={}, frame_count=5, refined=True)
+    chain = _call(source, enhancer_enabled=False, geometry=geom)
+    assert chain[0].geometry is geom
+
+
+def test_no_geometry_is_none(source):
+    chain = _call(source, enhancer_enabled=False)
+    assert chain[0].geometry is None

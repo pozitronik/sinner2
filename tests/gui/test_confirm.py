@@ -60,12 +60,14 @@ class TestConfirmShortCircuit:
         )
         assert confirm(None, "x", "T", "msg", store=store) is True
 
-    def test_remembered_false_returns_false_without_dialog(self, qtbot, monkeypatch):
+    def test_remembered_false_is_ignored_and_shows(self, qtbot, monkeypatch):
+        # A remembered (or legacy) NO must NOT suppress — the dialog shows again,
+        # so "Don't ask again" + Cancel can't lock an action out for good.
         _, store = _store({"x": False})
         monkeypatch.setattr(
-            QMessageBox, "exec", lambda self: pytest.fail("dialog shown")
+            QMessageBox, "exec", lambda self: QMessageBox.StandardButton.Yes
         )
-        assert confirm(None, "x", "T", "msg", store=store) is False
+        assert confirm(None, "x", "T", "msg", store=store) is True
 
     def test_non_suppressible_ignores_remembered_and_shows(self, qtbot, monkeypatch):
         _, store = _store({"x": True})
@@ -95,6 +97,17 @@ class TestConfirmPersistsOnTick:
         monkeypatch.setattr(QCheckBox, "isChecked", lambda self: False)
         assert confirm(None, "x", "T", "msg", store=store) is True
         assert data == {}  # not remembered
+
+    def test_ticked_no_does_not_persist(self, qtbot, monkeypatch):
+        # The reported trap: ticking "Don't ask again" then Cancelling must NOT
+        # remember anything (otherwise the action is locked out permanently).
+        data, store = _store()
+        monkeypatch.setattr(
+            QMessageBox, "exec", lambda self: QMessageBox.StandardButton.No
+        )
+        monkeypatch.setattr(QCheckBox, "isChecked", lambda self: True)
+        assert confirm(None, "x", "T", "msg", store=store) is False
+        assert data == {}  # ticked No is NOT persisted
 
     def test_uses_default_store_when_none_passed(self, qtbot, monkeypatch):
         _, store = _store({"x": True})

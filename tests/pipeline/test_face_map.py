@@ -125,6 +125,20 @@ class TestActivation:
         m = FaceMap(unmatched=UnmatchedPolicy.DEFAULT, default_source="/d.png")
         assert m.is_active()
 
+    def test_armed_activates_without_assignments(self):
+        # Faces mode on but nothing mapped yet → routing still engages (every
+        # face is unmapped → shows original, not the global source).
+        m = FaceMap(identities=(Identity("a", _unit(1, 0)),)).with_armed(True)
+        assert m.is_active()
+        assert m.with_armed(False).is_active() is False
+
+    def test_armed_is_not_serialized(self):
+        # Transient UI state — a reloaded map is unarmed until the live mode
+        # re-arms it.
+        m = FaceMap(identities=(Identity("a", _unit(1, 0)),)).with_armed(True)
+        assert "armed" not in m.to_dict()
+        assert FaceMap.from_dict(m.to_dict()).armed is False
+
 
 class TestEdits:
     def test_assign_source(self):
@@ -153,6 +167,55 @@ class TestEdits:
         m = FaceMap(identities=(Identity("a", _unit(1, 0)),))
         assert m.index_of("a") == 0
         assert m.index_of("nope") is None
+
+
+class TestMerge:
+    def test_merges_into_first_and_sums_occurrences(self):
+        m = FaceMap(identities=(
+            Identity("a", _unit(1, 0, 0), occurrences=10, source_path="/alice.png"),
+            Identity("b", _unit(0.9, 0.1, 0), occurrences=2),
+            Identity("c", _unit(0, 0, 1), occurrences=5),  # untouched
+        ))
+        merged = m.merge(["a", "b"])
+        assert [i.id for i in merged.identities] == ["a", "c"]  # b absorbed, order kept
+        assert merged.identities[0].occurrences == 12
+        assert merged.identities[0].source_path == "/alice.png"  # keeper's source
+
+    def test_keeper_source_falls_back_to_a_member(self):
+        m = FaceMap(identities=(
+            Identity("a", _unit(1, 0), occurrences=1),  # no source
+            Identity("b", _unit(0.9, 0.1), occurrences=1, source_path="/bob.png"),
+        ))
+        assert m.merge(["a", "b"]).identities[0].source_path == "/bob.png"
+
+    def test_centroid_is_occurrence_weighted(self):
+        import math
+
+        m = FaceMap(identities=(
+            Identity("a", _unit(1, 0), occurrences=3),
+            Identity("b", _unit(0, 1), occurrences=1),
+        ))
+        got = m.merge(["a", "b"]).identities[0].centroid
+        for g, e in zip(got, normalize((3.0, 1.0))):
+            assert math.isclose(g, e, abs_tol=1e-6)
+
+    def test_keeps_clearest_rep_and_earliest_first_frame(self):
+        m = FaceMap(identities=(
+            Identity("a", _unit(1, 0), occurrences=1, first_frame=10,
+                     det_score=0.6, sex="M", age=30),
+            Identity("b", _unit(0.9, 0.1), occurrences=1, first_frame=3,
+                     det_score=0.95, sex="M", age=31),
+        ))
+        merged = m.merge(["a", "b"]).identities[0]
+        assert merged.first_frame == 3        # earliest
+        assert merged.det_score == 0.95       # clearest occurrence
+        assert merged.age == 31               # from the clearest
+
+    def test_needs_two_valid_ids(self):
+        m = FaceMap(identities=(Identity("a", _unit(1, 0)),))
+        assert m.merge(["a"]) == m
+        assert m.merge([]) == m
+        assert m.merge(["a", "ghost"]) == m  # only one valid id
 
 
 class TestClustering:
@@ -252,6 +315,29 @@ class TestSerialization:
         # Centroid survives (within float round-trip).
         for got, exp in zip(restored.identities[0].centroid, m.identities[0].centroid):
             assert math.isclose(got, exp)
+
+    def test_score_and_pose_round_trip(self):
+        m = FaceMap(identities=(
+            Identity("a", _unit(1, 0), det_score=0.91,
+                     pitch=2.0, yaw=-4.0, roll=11.0),
+        ))
+        i = FaceMap.from_dict(m.to_dict()).identities[0]
+        assert i.det_score == 0.91
+        assert (i.pitch, i.yaw, i.roll) == (2.0, -4.0, 11.0)
+
+    def test_legacy_dict_without_score_pose(self):
+        # Older sidecars predate these fields → None, never a KeyError.
+        i = FaceMap.from_dict({"identities": [{"id": "a", "centroid": [1.0, 0.0]}]})
+        assert i.identities[0].det_score is None
+        assert i.identities[0].roll is None
+
+    def test_with_reference_stores_score_and_pose(self):
+        m = FaceMap(identities=(Identity("a", _unit(1, 0)),)).with_reference(
+            "a", 5, (0.0, 0.0, 4.0, 4.0),
+            det_score=0.8, pitch=1.0, yaw=2.0, roll=3.0,
+        )
+        i = m.identities[0]
+        assert i.det_score == 0.8 and (i.pitch, i.yaw, i.roll) == (1.0, 2.0, 3.0)
 
     def test_from_empty_dict_is_safe(self):
         assert FaceMap.from_dict({}).is_empty()

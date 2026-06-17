@@ -19,6 +19,10 @@ class _MarkSwap:
         self.providers = providers
         self.detection_sink = detection_sink
         self.face_map = face_map
+        self.geometry = None
+
+    def set_geometry(self, geometry):
+        self.geometry = geometry
 
 
 class _MarkEnh:

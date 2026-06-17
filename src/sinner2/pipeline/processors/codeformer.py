@@ -51,7 +51,11 @@ class CodeFormerBackend:
         self, fidelity: float = 0.7, providers: list[str] | None = None
     ) -> None:
         self._fidelity = float(fidelity)
-        self._providers = list(providers) if providers else list(DEFAULT_ONNX_PROVIDERS)
+        # None → platform default; an explicit [] is PRESERVED (CPU last-resort),
+        # matching the swapper so the global ONNX provider list is uniform.
+        self._providers = (
+            list(providers) if providers is not None else list(DEFAULT_ONNX_PROVIDERS)
+        )
         self._session: Any = None
         self._analyser: FaceAnalyser | None = None
 

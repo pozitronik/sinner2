@@ -61,6 +61,76 @@ class TestQSidePanel:
         assert side_panel.sources_library().paths() == []
         assert side_panel.targets_library().paths() == []
 
+    def test_faces_subpanel_lives_on_sources_tab_no_separate_tab(
+        self, qtbot, tmp_path
+    ):
+        from PySide6.QtWidgets import QWidget
+
+        faces = QWidget()
+        panel = QSidePanel(
+            thumbnail_cache_dir=tmp_path / "thumbs",
+            processors=QProcessorControls(),
+            face_map_panel=faces,
+        )
+        qtbot.addWidget(panel)
+        try:
+            # No separate "Faces" tab — it's a subpanel of Sources, hidden until
+            # the toggle, and exposed via face_map_panel().
+            assert "Faces" not in [panel.tabText(i) for i in range(panel.count())]
+            assert panel.face_map_panel() is faces
+            assert faces.isHidden() is True
+            assert panel.faces_mode() is False
+            with qtbot.waitSignal(panel.facesModeToggled) as blocker:
+                panel._faces_toggle.setChecked(True)  # noqa: SLF001
+            assert blocker.args == [True]
+            assert panel.faces_mode() is True
+            assert faces.isHidden() is False
+        finally:
+            panel.shutdown()
+
+    def test_set_faces_available_disables_and_clears_mode(self, qtbot, tmp_path):
+        from PySide6.QtWidgets import QWidget
+
+        faces = QWidget()
+        panel = QSidePanel(
+            thumbnail_cache_dir=tmp_path / "thumbs",
+            processors=QProcessorControls(),
+            face_map_panel=faces,
+        )
+        qtbot.addWidget(panel)
+        try:
+            panel._faces_toggle.setChecked(True)  # noqa: SLF001
+            with qtbot.waitSignal(panel.facesModeToggled) as blocker:
+                panel.set_faces_available(False)  # camera session → file-only off
+            assert blocker.args == [False]  # mode cleared
+            assert panel.faces_mode() is False
+            assert panel._faces_toggle.isEnabled() is False  # noqa: SLF001
+        finally:
+            panel.shutdown()
+
+    def test_open_face_map_editor_selects_tab_and_toggles(self, qtbot, tmp_path):
+        from PySide6.QtWidgets import QWidget
+
+        faces = QWidget()
+        panel = QSidePanel(
+            thumbnail_cache_dir=tmp_path / "thumbs",
+            processors=QProcessorControls(),
+            face_map_panel=faces,
+        )
+        qtbot.addWidget(panel)
+        try:
+            with qtbot.waitSignal(panel.facesModeToggled) as blocker:
+                panel.open_face_map_editor()
+            assert blocker.args == [True] and panel.faces_mode() is True
+            assert panel.tabText(panel.currentIndex()) == "Sources"
+            # No-op when face-mapping is unavailable (e.g. camera).
+            panel._faces_toggle.setChecked(False)  # noqa: SLF001
+            panel.set_faces_available(False)
+            panel.open_face_map_editor()
+            assert panel.faces_mode() is False
+        finally:
+            panel.shutdown()
+
     def test_set_display_dim_mirrors_to_both_libraries(self, side_panel):
         # The side panel's set_display_dim is what main_window calls
         # to keep source/target tiles in sync; verify it actually

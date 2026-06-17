@@ -17,6 +17,11 @@ class ChainContext:
     consumers self-detect as before. An EMPTY list is a real result ("this
     frame has no faces") and is trusted, not re-detected.
 
+    ``frame_index``: which frame this is, when the executor knows it (realtime +
+    batch both do). Face-mapping's detection-free runtime keys its precomputed
+    per-frame geometry on this; ``None`` (direct call / stage without an index)
+    falls back to detecting.
+
     Executors construct one context per frame and pass it only to processors
     whose class sets ``accepts_context = True`` (their ``process`` takes an
     optional second argument); everything else keeps the plain one-argument
@@ -24,6 +29,7 @@ class ChainContext:
     """
 
     faces: list[Any] | None = field(default=None)
+    frame_index: int | None = field(default=None)
 
 
 @runtime_checkable

@@ -245,3 +245,28 @@ class TestPickMode:
         )
         overlay.mousePressEvent(ev)
         assert fired == []
+
+
+class TestHighlight:
+    """Selecting an identity highlights just its box (the nearest detection)."""
+
+    def test_highlight_index_picks_nearest_box(self, qtbot):
+        overlay = QFaceDetectionOverlay()
+        qtbot.addWidget(overlay)
+        overlay.set_detections(
+            [FaceDetection(bbox=(0, 0, 10, 10)),
+             FaceDetection(bbox=(100, 100, 110, 110))],
+            200, 200,
+        )
+        assert overlay._highlight_index() == -1  # noqa: SLF001 — no highlight set
+        overlay.set_highlight((98, 98, 112, 112))  # near the 2nd box
+        assert overlay._highlight_index() == 1  # noqa: SLF001
+        overlay.set_highlight(None)
+        assert overlay._highlight_index() == -1  # noqa: SLF001
+
+    def test_clear_drops_highlight(self, qtbot):
+        overlay = QFaceDetectionOverlay()
+        qtbot.addWidget(overlay)
+        overlay.set_highlight((0, 0, 10, 10))
+        overlay.clear()
+        assert overlay._highlight is None  # noqa: SLF001

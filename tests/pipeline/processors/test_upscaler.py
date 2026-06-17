@@ -91,6 +91,38 @@ class _StubOnnxUpscaleSession:
         return [up]
 
 
+class TestGlobalOnnxProviders:
+    """Stage 1: ONNX upscalers honor the global ONNX provider list when given,
+    else derive EPs from the torch device (back-compat)."""
+
+    def test_constructor_stores_providers(self):
+        assert Upscaler(providers=["CPUExecutionProvider"])._req_providers == [  # noqa: SLF001
+            "CPUExecutionProvider"
+        ]
+        assert Upscaler(providers=None)._req_providers is None  # noqa: SLF001
+
+    def test_onnx_setup_uses_global_providers(self, monkeypatch):
+        captured: dict = {}
+
+        def _stub_session(filename, providers=None):
+            captured["providers"] = providers
+            return SimpleNamespace(
+                get_inputs=lambda: [SimpleNamespace(name="input", shape=[1, 3, 64, 64])],
+                get_outputs=lambda: [SimpleNamespace(name="output")],
+            )
+
+        monkeypatch.setattr(upscaler, "get_onnx_session", _stub_session)
+        # An ONNX-runtime model + an explicit global list → that list is used,
+        # NOT the device-derived default.
+        up = Upscaler(
+            params=UpscalerParams(model=UpscalerModel.HAT_X4),
+            device="cpu",
+            providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+        )
+        up.setup()
+        assert captured["providers"] == ["CUDAExecutionProvider", "CPUExecutionProvider"]
+
+
 class TestModelRegistry:
     def test_every_model_has_a_spec_and_filename(self):
         for model in UpscalerModel:

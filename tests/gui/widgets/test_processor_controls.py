@@ -17,19 +17,83 @@ def widget(qtbot):
     return w
 
 
-class TestFileOnlyVisibility:
-    """Live mode hides the file-only groups (Execution, Cache, Cache storage);
-    the per-processor groups + providers/devices stay (they apply to live)."""
+class TestUseFaceMapSwitch:
+    """D6: the 'Use face map' routing switch in the Face detector group."""
 
-    def test_set_file_only_visible_toggles_execution_and_cache(self, widget):
+    def test_starts_disabled_and_unchecked(self, widget):
+        assert widget._use_face_map.isEnabled() is False  # noqa: SLF001
+        assert widget.use_face_map() is False
+
+    def test_available_only_toggles_enabled(self, widget):
+        # The owner (main_window) is the single source of truth for the CHECK;
+        # the widget setter only enables/disables.
+        widget.set_face_map_available(True)
+        assert widget._use_face_map.isEnabled() is True  # noqa: SLF001
+        widget.set_use_face_map(True)
+        widget.set_face_map_available(False)  # disable only — check NOT cleared
+        assert widget._use_face_map.isEnabled() is False  # noqa: SLF001
+        assert widget.use_face_map() is True
+
+    def test_toggle_emits_signal(self, widget, qtbot):
+        widget.set_face_map_available(True)
+        fired = []
+        widget.useFaceMapToggled.connect(fired.append)
+        widget._use_face_map.setChecked(True)  # noqa: SLF001 — user click
+        assert fired == [True]
+
+    def test_set_use_face_map_does_not_emit(self, widget, qtbot):
+        widget.set_face_map_available(True)
+        fired = []
+        widget.useFaceMapToggled.connect(fired.append)
+        widget.set_use_face_map(True)  # restore reflection — silent
+        assert fired == [] and widget.use_face_map() is True
+
+    def test_open_button_emits_request(self, widget, qtbot):
+        fired = []
+        widget.openFaceMapRequested.connect(lambda: fired.append(1))
+        widget._open_face_map.click()  # noqa: SLF001
+        assert fired == [1]
+
+    def test_routing_active_locks_superseded_controls(self, widget):
+        # The map decides what swaps with what → many-faces / gender / detector
+        # are grayed while routing is active, restored when it ends.
+        widget.set_face_map_routing_active(True)
+        assert widget._many_faces.isEnabled() is False  # noqa: SLF001
+        assert widget._detector.isEnabled() is False  # noqa: SLF001
+        assert widget._target_sex.isEnabled() is False  # noqa: SLF001
+        widget.set_face_map_routing_active(False)
+        assert widget._many_faces.isEnabled() is True  # noqa: SLF001
+        assert widget._detector.isEnabled() is True  # noqa: SLF001
+        # target_sex returns to being gated on the (buffalo_l) detector
+        assert widget._target_sex.isEnabled() is True  # noqa: SLF001
+
+
+class TestFileOnlyVisibility:
+    """Live mode hides the file-only surface (Execution group + the Cache-settings
+    button); the per-processor groups + providers/devices stay (apply to live)."""
+
+    def test_set_file_only_visible_toggles_execution_and_cache_button(self, widget):
         widget.set_file_only_visible(False)
-        assert not widget._execution_box.isVisibleTo(widget)      # noqa: SLF001
-        assert not widget._cache_box.isVisibleTo(widget)          # noqa: SLF001
-        assert not widget._cache_storage_box.isVisibleTo(widget)  # noqa: SLF001
+        assert not widget._execution_box.isVisibleTo(widget)         # noqa: SLF001
+        assert not widget._cache_settings_btn.isVisibleTo(widget)    # noqa: SLF001
+        assert widget._cache_dialog.isHidden()                       # noqa: SLF001
         widget.set_file_only_visible(True)
-        assert widget._execution_box.isVisibleTo(widget)          # noqa: SLF001
-        assert widget._cache_box.isVisibleTo(widget)              # noqa: SLF001
-        assert widget._cache_storage_box.isVisibleTo(widget)      # noqa: SLF001
+        assert widget._execution_box.isVisibleTo(widget)             # noqa: SLF001
+        assert widget._cache_settings_btn.isVisibleTo(widget)        # noqa: SLF001
+
+    def test_cache_groups_live_in_the_dialog(self, widget):
+        # Cache + Cache storage moved OFF the main panel into the cache-settings
+        # dialog (opened by the button) — not the inner scroll.
+        assert widget._cache_dialog.isAncestorOf(widget._cache_box)  # noqa: SLF001
+        assert widget._cache_dialog.isAncestorOf(  # noqa: SLF001
+            widget._cache_storage_box  # noqa: SLF001
+        )
+
+    def test_cache_settings_button_opens_dialog(self, widget, qtbot):
+        assert widget._cache_dialog.isVisible() is False  # noqa: SLF001
+        widget._open_cache_settings()  # noqa: SLF001
+        assert widget._cache_dialog.isVisible() is True  # noqa: SLF001
+        widget._cache_dialog.hide()  # noqa: SLF001 — don't leak a shown window
 
 
 class TestProviderFloor:
@@ -37,18 +101,19 @@ class TestProviderFloor:
     (the floor), so the swapper provider selection is never empty."""
 
     def test_unchecking_all_forces_cpu(self, widget):
-        for cb in list(widget._provider_checkboxes.values()):  # noqa: SLF001
+        cbs = widget._swapper_providers_row.checkboxes()  # noqa: SLF001
+        for cb in list(cbs.values()):
             cb.setChecked(False)
-        cpu = widget._provider_checkboxes["CPUExecutionProvider"]  # noqa: SLF001
-        assert cpu.isChecked()
+        assert cbs["CPUExecutionProvider"].isChecked()
         assert widget.swapper_providers() == ["CPUExecutionProvider"]
 
     def test_cuda_only_selection_is_left_alone(self, widget):
         # Only when EVERYTHING is unchecked does CPU get forced — a non-empty
         # selection (e.g. CUDA only) is respected.
-        for name, cb in widget._provider_checkboxes.items():  # noqa: SLF001
+        cbs = widget._swapper_providers_row.checkboxes()  # noqa: SLF001
+        for name, cb in cbs.items():
             cb.setChecked(name == "CUDAExecutionProvider")
-        if "CUDAExecutionProvider" in widget._provider_checkboxes:  # noqa: SLF001
+        if "CUDAExecutionProvider" in cbs:
             assert widget.swapper_providers() == ["CUDAExecutionProvider"]
 
     def test_restore_empty_selection_forces_cpu(self, widget):
@@ -635,38 +700,104 @@ class TestSettingsEndToEnd:
 
 
 class TestGroupOrganization:
-    """Detection and swapping options are split into separate group boxes, with
-    the Face detector group first (detection precedes the swap)."""
+    """Controls nest by dependency: a Faces group (face-map + detection + the
+    "Which to swap" sub-box) and a Face swap group (with Rotation + Occlusion
+    sub-boxes)."""
 
     def test_group_titles_are_consistent(self, widget):
-        assert widget._face_box.title() == "Face detector"  # noqa: SLF001
-        assert widget._swapper_box.title() == "Face swapper"  # noqa: SLF001
+        assert widget._face_box.title() == "Faces"  # noqa: SLF001
+        assert widget._which_to_swap_box.title() == "Which to swap"  # noqa: SLF001
+        assert widget._swapper_box.title() == "Face swap"  # noqa: SLF001
+        assert widget._rotation_box.title() == "Rotation"  # noqa: SLF001
+        assert widget._occlusion_box.title() == "Occlusion"  # noqa: SLF001
         assert widget._enhancer_box.title() == "Face enhancer"  # noqa: SLF001
 
-    def test_detection_knobs_live_in_detector_group(self, widget):
+    def test_faces_group_holds_detection_facemap_and_selection(self, widget):
+        # Face-map control + detection knobs + the selection sub-box all live in
+        # the one Faces group — so their dependencies are LOCAL.
         for w in (
+            widget._use_face_map,  # noqa: SLF001
+            widget._open_face_map,  # noqa: SLF001
             widget._detector,  # noqa: SLF001
             widget._detection_size,  # noqa: SLF001
-            widget._detection_interval,  # noqa: SLF001
+            widget._overlay_enabled,  # noqa: SLF001
+            widget._many_faces,  # noqa: SLF001 (via the sub-box)
+            widget._target_sex,  # noqa: SLF001
         ):
             assert widget._face_box.isAncestorOf(w)  # noqa: SLF001
-            assert not widget._swapper_box.isAncestorOf(w)  # noqa: SLF001
+        # The gender filter nests in the "Which to swap" sub-box, with the
+        # detector it depends on.
+        assert widget._which_to_swap_box.isAncestorOf(widget._target_sex)  # noqa: SLF001
 
-    def test_swap_knobs_stay_in_swapper_group(self, widget):
+    def test_swap_group_nests_rotation_and_occlusion(self, widget):
+        # Rotation/occlusion knobs nest in their own sub-boxes (dependencies
+        # local); they're NOT in the Faces group.
+        assert widget._rotation_box.isAncestorOf(widget._rotation_source)  # noqa: SLF001
+        assert widget._occlusion_box.isAncestorOf(widget._occlusion_mode)  # noqa: SLF001
         for w in (
             widget._swapper_model,  # noqa: SLF001
-            widget._many_faces,  # noqa: SLF001
-            widget._target_sex,  # noqa: SLF001
-            widget._occlusion_mask,  # noqa: SLF001
+            widget._landmark_refine,  # noqa: SLF001
+            widget._rotation_box,  # noqa: SLF001
+            widget._occlusion_box,  # noqa: SLF001
         ):
             assert widget._swapper_box.isAncestorOf(w)  # noqa: SLF001
+            assert not widget._face_box.isAncestorOf(w)  # noqa: SLF001
 
-    def test_detector_group_precedes_swapper(self, widget):
+    def test_per_model_provider_rows_live_in_their_groups(self, widget):
+        # No global providers group — each ONNX-using processor has its OWN
+        # inline ONNX-providers row, in its own group.
+        assert widget._swapper_box.isAncestorOf(  # noqa: SLF001
+            widget._swapper_providers_row  # noqa: SLF001
+        )
+        assert widget._enhancer_box.isAncestorOf(  # noqa: SLF001
+            widget._enhancer_providers_row  # noqa: SLF001
+        )
+        assert widget._upscaler_box.isAncestorOf(  # noqa: SLF001
+            widget._upscaler_providers_row  # noqa: SLF001
+        )
+        assert not hasattr(widget, "_providers_group_box")  # global group removed
+
+    def test_enhancer_providers_row_gated_on_onnx_model(self, widget):
+        from sinner2.pipeline.processors.face_enhancer import EnhancerModel
+
+        # GFPGAN (torch) → CUDA device on, ONNX providers off; an ONNX model
+        # flips them.
+        self._select_enhancer(widget, EnhancerModel.GFPGAN.value)
+        assert widget._enhancer_device.isEnabled() is True  # noqa: SLF001
+        assert widget._enhancer_providers_row.isEnabled() is False  # noqa: SLF001
+        self._select_enhancer(widget, EnhancerModel.CODEFORMER.value)
+        assert widget._enhancer_device.isEnabled() is False  # noqa: SLF001
+        assert widget._enhancer_providers_row.isEnabled() is True  # noqa: SLF001
+
+    @staticmethod
+    def _select_enhancer(widget, value):
+        combo = widget._enhancer_model  # noqa: SLF001
+        for i in range(combo.count()):
+            if combo.itemData(i) == value:
+                combo.setCurrentIndex(i)
+                return
+
+    def test_faces_group_precedes_swap(self, widget):
         inner = widget._face_box.parent()  # noqa: SLF001
         layout = inner.layout()
         assert layout.indexOf(widget._face_box) < layout.indexOf(  # noqa: SLF001
             widget._swapper_box  # noqa: SLF001
         )
+
+    def test_routing_active_grays_detection_and_selection_locally(self, widget):
+        # Face-map ON grays the WHOLE detection config (detector + size +
+        # interval) + the "Which to swap" sub-box — all INSIDE the Faces group.
+        # It leaves the overlay usable and does NOT touch the swap's angle source.
+        widget.set_face_map_routing_active(True)
+        assert widget._detector.isEnabled() is False  # noqa: SLF001
+        assert widget._detection_size.isEnabled() is False  # noqa: SLF001
+        assert widget._detection_interval.isEnabled() is False  # noqa: SLF001
+        assert widget._which_to_swap_box.isEnabled() is False  # noqa: SLF001
+        assert widget._overlay_enabled.isEnabled() is True  # noqa: SLF001 — shows mapped faces
+        assert widget._rotation_source.isEnabled() is True  # noqa: SLF001 — untouched
+        widget.set_face_map_routing_active(False)
+        assert widget._detector.isEnabled() is True  # noqa: SLF001
+        assert widget._detection_size.isEnabled() is True  # noqa: SLF001
 
 
 class TestUpscalerModels:
@@ -822,7 +953,7 @@ class TestFaceDetectorGroup:
         # non-failed checkbox's tooltip with generic text — clobbering the
         # TensorRT-specific tooltip on every launch (audit rank 42). Clearing
         # the marks must restore the construction-time tooltips verbatim.
-        cbs = widget._provider_checkboxes  # noqa: SLF001
+        cbs = widget._swapper_providers_row.checkboxes()  # noqa: SLF001
         original = {n: cb.toolTip() for n, cb in cbs.items()}
         widget.mark_providers_failed(set(cbs))  # everything failed → red text
         widget.mark_providers_failed(set())     # cleared

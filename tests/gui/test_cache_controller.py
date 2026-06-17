@@ -31,9 +31,9 @@ class _SpyManager:
         self.protect = list(protect)
         return 0, 0
 
-    def clear_all(self, protect=()) -> tuple[int, int]:
+    def clear_all(self, protect=()) -> int:
         self.cleared_protect = list(protect)
-        return 3, 1234
+        return 3
 
 
 def _cache(on_changed=lambda: None) -> CacheController:
@@ -104,7 +104,7 @@ def test_clear_all_passes_protect_and_signals(tmp_path, monkeypatch):
     monkeypatch.setattr(cache, "cache_manager", lambda: mgr)
     protect = [tmp_path / "active"]
     result = cache.clear_all(protect)
-    assert result == (3, 1234)
+    assert result == 3
     assert mgr.cleared_protect == protect
     assert fired == [True]
 

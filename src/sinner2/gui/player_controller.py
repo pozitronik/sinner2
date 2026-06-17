@@ -30,6 +30,7 @@ from sinner2.pipeline.buffer.store import FrameStore
 from sinner2.pipeline.cache_manager import CacheManager
 from sinner2.pipeline.chain_builder import build_chain
 from sinner2.pipeline.face_map import FaceMap
+from sinner2.pipeline.face_map_geometry import FrameGeometry
 from sinner2.pipeline.playback_mode import PlaybackMode
 from sinner2.pipeline.processor import Processor
 from sinner2.pipeline.processors.face_enhancer import (
@@ -109,12 +110,17 @@ class PlayerController(QObject):
         # AND hot-applied to the live swapper on change (no rebuild). Authority
         # held here; persisted per-target by the main window.
         self._face_map: FaceMap = FaceMap.empty()
+        # Precomputed per-frame geometry for detection-free mapping. None =
+        # detect live. Baked into chain builds + hot-applied like the face map.
+        self._geometry: FrameGeometry | None = None
         self._swapper_params = FaceSwapperParams()
         self._enhancer_params = FaceEnhancerParams()
         self._enhancer_enabled = True
+        self._enhancer_providers: tuple[str, ...] = ()
         self._upscaler_params = UpscalerParams()
         self._upscaler_enabled = False
         self._upscaler_device: str = "auto"
+        self._upscaler_providers: tuple[str, ...] = ()
         self._swapper_enabled = True
         self._strategy: FrameSkipStrategy = BestEffortStrategy()
         self._worker_count = 1
@@ -418,9 +424,11 @@ class PlayerController(QObject):
         swapper_enabled: bool = True,
         swapper_providers: tuple[str, ...] = (),
         enhancer_device: str = "auto",
+        enhancer_providers: tuple[str, ...] = (),
         upscaler_params: UpscalerParams | None = None,
         upscaler_enabled: bool = False,
         upscaler_device: str = "auto",
+        upscaler_providers: tuple[str, ...] = (),
     ) -> None:
         """Update stored params and propagate any changes to the live session.
 
@@ -443,6 +451,8 @@ class PlayerController(QObject):
         they were built with.
         """
         swapper_providers = tuple(swapper_providers)
+        enhancer_providers = tuple(enhancer_providers)
+        upscaler_providers = tuple(upscaler_providers)
         upscaler_params = upscaler_params or UpscalerParams()
         providers_changed = swapper_providers != self._swapper_providers
         # det_size is baked into the shared insightface detector at build time
@@ -459,9 +469,11 @@ class PlayerController(QObject):
             or swapper_enabled != self._swapper_enabled
             or providers_changed
             or enhancer_device != self._enhancer_device
+            or enhancer_providers != self._enhancer_providers
             or upscaler_params != self._upscaler_params
             or upscaler_enabled != self._upscaler_enabled
             or upscaler_device != self._upscaler_device
+            or upscaler_providers != self._upscaler_providers
         )
         strategy_changed = type(strategy) is not type(self._strategy)
         # Synced threshold changes don't change the type, but still need
@@ -489,9 +501,11 @@ class PlayerController(QObject):
         self._cache_settings = cache_settings
         self._swapper_providers = swapper_providers
         self._enhancer_device = enhancer_device
+        self._enhancer_providers = enhancer_providers
         self._upscaler_params = upscaler_params
         self._upscaler_enabled = upscaler_enabled
         self._upscaler_device = upscaler_device
+        self._upscaler_providers = upscaler_providers
 
         if self._executor is None or self._current_source is None:
             return
@@ -555,10 +569,13 @@ class PlayerController(QObject):
             enhancer_enabled=self._enhancer_enabled,
             enhancer_params=self._enhancer_params,
             enhancer_device=self._enhancer_device,
+            enhancer_providers=self._enhancer_providers,
             upscaler_enabled=self._upscaler_enabled,
             upscaler_params=self._upscaler_params,
             upscaler_device=self._upscaler_device,
+            upscaler_providers=self._upscaler_providers,
             face_map=self._face_map,
+            geometry=self._geometry,
         )
 
     def deactivate(self) -> None:
@@ -681,10 +698,10 @@ class PlayerController(QObject):
         if self._executor is not None:
             self._executor.rerender_from_current()
 
-    def clear_all_caches(self) -> tuple[int, int]:
-        """Wipe every cache entry under the current root. Spares the
-        currently-active session's directory. Returns (entries_deleted,
-        bytes_freed) for the UI to display."""
+    def clear_all_caches(self) -> int:
+        """Wipe every cache entry under the current root (just drops the
+        directories — no size walk). Spares the currently-active session's
+        directory. Returns the number of entries deleted."""
         protect: list[Path] = []
         if self._session_cache_dir is not None:
             protect.append(self._session_cache_dir)
@@ -834,6 +851,17 @@ class PlayerController(QObject):
 
     def face_map(self) -> FaceMap:
         return self._face_map
+
+    def set_geometry(self, geometry: FrameGeometry | None) -> None:
+        """Set (or clear) the precomputed per-frame geometry. Held as authority,
+        baked into future chain builds, and hot-applied to the live swapper now
+        (no rebuild). None reverts the swapper to live detection."""
+        self._geometry = geometry
+        if self._executor is not None:
+            self._executor.set_geometry(geometry)
+
+    def geometry(self) -> FrameGeometry | None:
+        return self._geometry
 
     def seek_to(self, frame: int) -> None:
         """Audio-aware seek. The arrow / Home / End shortcuts route through here

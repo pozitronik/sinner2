@@ -50,10 +50,12 @@ class ProcessorParamsSnapshot:
     enhancer_enabled: bool
     enhancer_params: FaceEnhancerParams
     enhancer_device: str
+    enhancer_providers: tuple[str, ...]
     # Upscaler
     upscaler_enabled: bool
     upscaler_params: UpscalerParams
     upscaler_device: str
+    upscaler_providers: tuple[str, ...]
     # Session / realtime
     strategy_name: str
     realtime_workers: int
@@ -101,9 +103,11 @@ class ProcessorParamsSnapshot:
             ),
             swapper_providers=self.swapper_providers,
             enhancer_device=self.enhancer_device,
+            enhancer_providers=self.enhancer_providers,
             upscaler_params=self.upscaler_params,
             upscaler_enabled=self.upscaler_enabled,
             upscaler_device=self.upscaler_device,
+            upscaler_providers=self.upscaler_providers,
         )
 
     def to_settings_kwargs(self) -> dict[str, Any]:
@@ -155,9 +159,11 @@ class ProcessorParamsSnapshot:
             synced_max_lag_frames=self.synced_max_lag_frames,
             swapper_providers=list(self.swapper_providers),
             enhancer_device=self.enhancer_device,
+            enhancer_providers=list(self.enhancer_providers),
             upscaler_enabled=self.upscaler_enabled,
             upscaler_model=up.model.value,
             upscaler_tile=up.tile,
             upscaler_fp16=up.fp16,
             upscaler_device=self.upscaler_device,
+            upscaler_providers=list(self.upscaler_providers),
         )

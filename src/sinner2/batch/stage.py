@@ -44,7 +44,7 @@ from typing import Protocol
 from sinner2.io.cv2_unicode import imread_unicode
 from sinner2.io.target_reader import TargetReader
 from sinner2.pipeline.image_writer import ImageWriter
-from sinner2.pipeline.processor import Processor
+from sinner2.pipeline.processor import ChainContext, Processor
 from sinner2.types import Frame, FrameIndex
 
 _log = logging.getLogger(__name__)
@@ -397,7 +397,9 @@ def _feed(
                 continue  # gap within the real range; integrity catches it
             out_path = output_dir / f"{idx:08d}.{ext}"
             inflight.append(
-                (idx, executor.submit(_process_write, pool, frame, out_path, writer))
+                (idx, executor.submit(
+                    _process_write, pool, frame, out_path, writer, idx
+                ))
             )
             if len(inflight) >= cap:
                 _drain_one(inflight, bump, maybe_preview, on_error)
@@ -430,12 +432,18 @@ def _drain_one(
 
 
 def _process_write(
-    pool: _ProcessorPool, frame: Frame, out_path: Path, writer: ImageWriter
+    pool: _ProcessorPool, frame: Frame, out_path: Path, writer: ImageWriter,
+    frame_index: int | None = None,
 ) -> Frame:
     # Hold the lease only across process(); the disk write doesn't touch the
     # processor, so release the instance back to the pool before writing to
     # keep non-thread-safe instances available to other workers sooner.
     with pool.lease() as processor:
-        result = processor.process(frame)
+        if getattr(processor, "accepts_context", False):
+            # Give context-aware processors the frame index (face-mapping reads
+            # its precomputed geometry by it) — same contract as the executor.
+            result = processor.process(frame, ChainContext(frame_index=frame_index))  # type: ignore[call-arg]
+        else:
+            result = processor.process(frame)
     writer.write(out_path, result)
     return result

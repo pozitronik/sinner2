@@ -342,10 +342,16 @@ class Upscaler:
     thread_safe = False  # torch model — each worker needs its own instance
 
     def __init__(
-        self, params: UpscalerParams | None = None, device: str = "auto"
+        self, params: UpscalerParams | None = None, device: str = "auto",
+        providers: list[str] | None = None,
     ) -> None:
         self._params = params or UpscalerParams()
         self._device_str = device
+        # GLOBAL ONNX providers for the ONNX-runtime upscalers (same list the
+        # swapper/detector/enhancer use). None = derive EPs from the torch device
+        # (back-compat). Torch upscalers (Real-ESRGAN) ignore this — they use
+        # _device_str.
+        self._req_providers = list(providers) if providers is not None else None
         self._model: Any = None
         self._session: Any = None  # ONNX runtime models
         self._in_name = "input"
@@ -376,12 +382,16 @@ class Upscaler:
         self._scale = spec.scale
         self._runtime = spec.runtime
         if spec.runtime == "onnx":
-            # ONNX models run through onnxruntime; map the torch device to EPs.
-            providers = (
-                ["CUDAExecutionProvider", "CPUExecutionProvider"]
-                if self._device_is_cuda
-                else ["CPUExecutionProvider"]
-            )
+            # ONNX models run through onnxruntime. Use the GLOBAL ONNX providers
+            # when given; otherwise derive EPs from the torch device (back-compat).
+            if self._req_providers is not None:
+                providers = list(self._req_providers)
+            else:
+                providers = (
+                    ["CUDAExecutionProvider", "CPUExecutionProvider"]
+                    if self._device_is_cuda
+                    else ["CPUExecutionProvider"]
+                )
             self._providers = providers
             self._session = get_onnx_session(spec.filename, providers=providers)
             inp = self._session.get_inputs()[0]

@@ -16,6 +16,7 @@ turning the feature on can never crash a render.
 from __future__ import annotations
 
 import math
+import numbers
 from types import SimpleNamespace
 from typing import Any
 
@@ -46,7 +47,14 @@ def compute_roll(
     steadiest on tilted faces) when they're supplied; POSE reads insightface's
     3D estimate (face.pose[2]); KEYPOINTS measures the detector eye-line. Each
     falls back to the detector eye keypoints when its source is unavailable.
-    Returns 0.0 when nothing usable is present (→ no compensation)."""
+    Returns 0.0 when nothing usable is present (→ no compensation).
+
+    A face carrying a precomputed ``baked_roll`` (a detection-free geometry face)
+    uses it directly, regardless of the source — there's no live pose estimate to
+    read, so the angle baked during the scan is the steadiest available."""
+    baked = getattr(face, "baked_roll", None)
+    if isinstance(baked, numbers.Real) and math.isfinite(float(baked)):
+        return float(baked)
     if source is RotationAngleSource.LANDMARK_68 and landmark_68 is not None:
         lm = np.asarray(landmark_68, np.float32)
         if len(lm) >= 48:

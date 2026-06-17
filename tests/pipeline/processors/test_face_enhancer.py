@@ -62,6 +62,43 @@ def _gfpgan(**overrides) -> FaceEnhancerParams:
     return FaceEnhancerParams(**overrides)
 
 
+class TestGlobalOnnxProviders:
+    """Stage 1: the global ONNX provider list reaches the enhancer's ONNX
+    restorer backends + its rotation detector (torch GFPGAN keeps its device)."""
+
+    def test_constructor_stores_and_preserves_providers(self):
+        assert FaceEnhancer(providers=["CPUExecutionProvider"])._providers == [  # noqa: SLF001
+            "CPUExecutionProvider"
+        ]
+        assert FaceEnhancer(providers=[])._providers == []  # noqa: SLF001 — empty kept
+        assert FaceEnhancer()._providers is None  # noqa: SLF001 — None = default
+
+    def test_onnx_backend_and_analyser_get_providers(self, models_dir, monkeypatch):
+        captured: dict = {}
+
+        class _StubCF:
+            def __init__(self, fidelity=0.7, providers=None):
+                captured["cf"] = providers
+
+            def setup(self):
+                pass
+
+        real_analyser = face_enhancer.FaceAnalyser
+
+        def _spy(*a, **k):
+            captured["an"] = k.get("providers")
+            return real_analyser(*a, **k)
+
+        monkeypatch.setattr(face_enhancer, "CodeFormerBackend", _StubCF)
+        monkeypatch.setattr(face_enhancer, "FaceAnalyser", _spy)
+        FaceEnhancer(
+            params=FaceEnhancerParams(model=EnhancerModel.CODEFORMER),
+            providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+        ).setup()
+        assert captured["cf"] == ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        assert captured["an"] == ["CUDAExecutionProvider", "CPUExecutionProvider"]
+
+
 class TestFaceEnhancerParams:
     def test_defaults(self):
         p = FaceEnhancerParams()

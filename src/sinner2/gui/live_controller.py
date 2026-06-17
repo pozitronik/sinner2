@@ -186,9 +186,11 @@ class LiveController(QObject):
             enhancer_enabled=snapshot.enhancer_enabled,
             enhancer_params=snapshot.enhancer_params,
             enhancer_device=snapshot.enhancer_device,
+            enhancer_providers=snapshot.enhancer_providers,
             upscaler_enabled=snapshot.upscaler_enabled,
             upscaler_params=snapshot.upscaler_params,
             upscaler_device=snapshot.upscaler_device,
+            upscaler_providers=snapshot.upscaler_providers,
         )
 
     def _check_camera(self) -> None:

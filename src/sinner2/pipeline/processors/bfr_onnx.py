@@ -66,7 +66,12 @@ class PlainBfrBackend:
 
     def __init__(self, model_file: str, providers: list[str] | None = None) -> None:
         self._model_file = model_file
-        self._providers = list(providers) if providers else list(DEFAULT_ONNX_PROVIDERS)
+        # None → platform default; an explicit [] is PRESERVED (user picked no
+        # providers → ORT's CPU last-resort), matching the swapper/analyser so the
+        # global ONNX provider list behaves the same everywhere.
+        self._providers = (
+            list(providers) if providers is not None else list(DEFAULT_ONNX_PROVIDERS)
+        )
         self._session: Any = None
         self._analyser: FaceAnalyser | None = None
         # Overwritten from the real session at setup(); the defaults match

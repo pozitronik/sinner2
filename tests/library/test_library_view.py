@@ -67,6 +67,15 @@ def _make_image(path: Path) -> Path:
     return path
 
 
+class TestLeadingControl:
+    def test_add_leading_control_inserts_before_filter(self, view):
+        from PySide6.QtWidgets import QPushButton
+
+        btn = QPushButton("Faces")
+        view.add_leading_control(btn)
+        assert view._controls.itemAt(0).widget() is btn  # noqa: SLF001
+
+
 class TestAddAndPaths:
     def test_initially_empty(self, view):
         assert view.paths() == []
