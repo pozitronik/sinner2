@@ -941,6 +941,11 @@ class RealtimeExecutor:
         # invalidate + re-render so the preview updates without a manual seek.
         self._buffer.invalidate_all()
         with self._state_lock:
+            # New routing/geometry → bump the generation like a reconfigure, so a
+            # worker still in-flight on the OLD state has its result DISCARDED
+            # (not published as a one-frame stale flash) when it lands after the
+            # re-render below. The chain isn't released here, so no inflight wait.
+            self._generation += 1
             current = self._timeline.current_frame()
             self._last_submitted = current - 1
             self._last_completed = min(self._last_completed, current - 1)
@@ -965,6 +970,11 @@ class RealtimeExecutor:
                 self.status.set(f"set_geometry error: {exc}")
         self._buffer.invalidate_all()
         with self._state_lock:
+            # New routing/geometry → bump the generation like a reconfigure, so a
+            # worker still in-flight on the OLD state has its result DISCARDED
+            # (not published as a one-frame stale flash) when it lands after the
+            # re-render below. The chain isn't released here, so no inflight wait.
+            self._generation += 1
             current = self._timeline.current_frame()
             self._last_submitted = current - 1
             self._last_completed = min(self._last_completed, current - 1)

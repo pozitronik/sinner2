@@ -2365,3 +2365,74 @@ class TestSetFaceMap:
         ex._buffer.invalidate_all.assert_called_once()  # noqa: SLF001
         assert ex._last_completed == 6  # noqa: SLF001 — min(8, 7-1)
         ex._reader_pool.read_async.assert_called_once_with(7)  # noqa: SLF001 — re-render
+        assert ex._generation == 1  # noqa: SLF001 — bumped → in-flight old-routing
+        #                                            results are discarded, not shown
+
+    def test_handler_bumps_generation_to_discard_inflight(self):
+        # A routing change must bump the generation so a worker still processing
+        # the OLD map can't publish its stale frame (its WorkItem is discarded).
+        from queue import Queue
+        from unittest.mock import MagicMock
+
+        from sinner2.pipeline.face_map import FaceMap
+
+        ex = object.__new__(RealtimeExecutor)
+        ex._state_lock = threading.RLock()  # noqa: SLF001
+        ex._playback_wake = threading.Event()  # noqa: SLF001
+        ex._work_queue = Queue()  # noqa: SLF001
+        ex._generation = 4  # noqa: SLF001
+        ex._last_submitted = 10  # noqa: SLF001
+        ex._last_completed = 8  # noqa: SLF001
+        ex._last_shown_frame_index = 5  # noqa: SLF001
+        ex.status = MagicMock()
+        ex._buffer = MagicMock()  # noqa: SLF001
+        ex._reader_pool = MagicMock()  # noqa: SLF001
+        ex._reader_pool.frame_count = 100  # noqa: SLF001
+        ex._timeline = MagicMock()  # noqa: SLF001
+        ex._timeline.current_frame.return_value = 7  # noqa: SLF001
+        ex._chain = ()  # noqa: SLF001
+        ex._handle_set_face_map(FaceMap.empty())  # noqa: SLF001
+        assert ex._generation == 5  # noqa: SLF001
+
+
+class TestSetGeometry:
+    def _bare(self):
+        from queue import Queue
+        from unittest.mock import MagicMock
+
+        ex = object.__new__(RealtimeExecutor)
+        ex._state_lock = threading.RLock()  # noqa: SLF001
+        ex._playback_wake = threading.Event()  # noqa: SLF001
+        ex._work_queue = Queue()  # noqa: SLF001
+        ex._generation = 2  # noqa: SLF001
+        ex._last_submitted = 10  # noqa: SLF001
+        ex._last_completed = 8  # noqa: SLF001
+        ex._last_shown_frame_index = 5  # noqa: SLF001
+        ex.status = MagicMock()
+        ex._buffer = MagicMock()  # noqa: SLF001
+        ex._reader_pool = MagicMock()  # noqa: SLF001
+        ex._reader_pool.frame_count = 100  # noqa: SLF001
+        ex._timeline = MagicMock()  # noqa: SLF001
+        ex._timeline.current_frame.return_value = 7  # noqa: SLF001
+        return ex
+
+    def test_handler_applies_to_chain_swapper_and_rerenders(self):
+        from unittest.mock import MagicMock
+
+        ex = self._bare()
+        swapper = MagicMock()  # has set_geometry
+        plain = object()       # no set_geometry → skipped
+        ex._chain = (swapper, plain)  # noqa: SLF001
+        geom = object()
+        ex._handle_set_geometry(geom)  # noqa: SLF001
+        swapper.set_geometry.assert_called_once_with(geom)
+        ex._buffer.invalidate_all.assert_called_once()  # noqa: SLF001
+        ex._reader_pool.read_async.assert_called_once_with(7)  # noqa: SLF001
+
+    def test_handler_bumps_generation_to_discard_inflight(self):
+        # Switching detection-free geometry on/off must discard any in-flight
+        # worker still rendering with the old geometry (one-frame stale flash).
+        ex = self._bare()
+        ex._chain = ()  # noqa: SLF001
+        ex._handle_set_geometry(None)  # noqa: SLF001
+        assert ex._generation == 3  # noqa: SLF001 — bumped from 2
