@@ -323,12 +323,26 @@ class QFaceMapPanel(QWidget):
         self._table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._table.setSortingEnabled(True)
+        # Polish: zebra rows (palette-driven, theme-aware), no grid lines or
+        # corner button, full-row hover/focus — a cleaner findings list.
+        self._table.setAlternatingRowColors(True)
+        self._table.setShowGrid(False)
+        self._table.setWordWrap(False)
+        self._table.setCornerButtonEnabled(False)
+        self._table.setFrameShape(QFrame.Shape.NoFrame)
         self._table.verticalHeader().setDefaultSectionSize(_THUMB + 8)
         self._table.verticalHeader().setVisible(False)
         header = self._table.horizontalHeader()
         # User-resizable columns: Interactive + sensible initial widths.
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         header.setStretchLastSection(False)
+        header.setHighlightSections(False)  # don't bold the sorted section oddly
+        header.setDefaultAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
+        _hfont = header.font()
+        _hfont.setBold(True)
+        header.setFont(_hfont)
         for col, width in _WIDTHS.items():
             self._table.setColumnWidth(col, width)
         # A single click both selects the row (→ selectionChanged → highlight the
