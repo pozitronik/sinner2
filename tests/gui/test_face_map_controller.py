@@ -89,6 +89,14 @@ class TestAnalyze:
         ctrl._on_analyze_requested(15)
         assert fired[0].compute_geometry is False  # catalog only, no phase 2
 
+    def test_request_carries_detector(self, ctrl):
+        from sinner2.pipeline.detectors import DetectorModel
+        ctrl._detector_choice = lambda: DetectorModel.YOLOFACE  # noqa: SLF001
+        fired = []
+        ctrl._requestAnalysis.connect(fired.append)
+        ctrl._on_analyze_requested(15)
+        assert fired[0].detector is DetectorModel.YOLOFACE  # threaded to the scan
+
     def test_analyze_emits_analyzing_active(self, ctrl):
         states = []
         ctrl.analyzingChanged.connect(states.append)

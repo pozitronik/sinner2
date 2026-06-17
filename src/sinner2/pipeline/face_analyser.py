@@ -251,13 +251,31 @@ class FaceAnalyser:
         a multi-face frame. The returned faces carry bbox/kps/det_score/embedding
         but NO sex/age/pose (use the full pack when you want those).
 
-        Same shared, thread-safe ORT sessions as `.get()`, so it parallelizes."""
+        Same shared, thread-safe ORT sessions as `.get()`, so it parallelizes.
+
+        When a standalone detector is set (yoloface / scrfd) it FINDS the faces
+        and ArcFace (from the shared pack) adds the embedding per face — so a
+        faster detection-only detector can still drive identity clustering. The
+        detector's 5 keypoints align the ArcFace crop, same as buffalo_l's."""
         from insightface.app.common import Face
 
         app = _get_shared_face_analysis(self._providers, self._detection_size)
-        bboxes, kpss = app.det_model.detect(frame, max_num=0, metric="default")
         rec = app.models.get("recognition")
-        faces: list[Any] = []
+        if self._detector is not None:
+            faces: list[Any] = []
+            for d in self._detector.detect(frame):
+                kps = getattr(d, "kps", None)
+                face = Face(
+                    bbox=np.asarray(d.bbox, np.float32),
+                    kps=None if kps is None else np.asarray(kps, np.float32),
+                    det_score=float(getattr(d, "det_score", 1.0)),
+                )
+                if rec is not None and face.kps is not None:
+                    rec.get(frame, face)  # → face.embedding / normed_embedding
+                faces.append(face)
+            return faces
+        bboxes, kpss = app.det_model.detect(frame, max_num=0, metric="default")
+        faces = []
         for i in range(len(bboxes)):
             face = Face(
                 bbox=bboxes[i][0:4],

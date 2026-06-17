@@ -209,6 +209,45 @@ class TestDetectionOnly:
         assert a.analyse(_blank_frame()) == []
 
 
+class TestScanDetectorChoice:
+    """analyse_det_rec with a chosen detector: the CUSTOM detector finds the
+    faces and ArcFace (from the shared pack) adds the embedding — so a faster
+    detection-only detector can still drive identity clustering."""
+
+    def test_custom_detector_plus_arcface(self, stub_insightface, monkeypatch):
+        from sinner2.pipeline import detectors as det_mod
+        from sinner2.pipeline.detectors import DetectorModel, FaceLite
+
+        stub_det = MagicMock()
+        stub_det.detect.return_value = [
+            FaceLite(
+                bbox=np.array([1.0, 2.0, 3.0, 4.0], np.float32),
+                kps=np.array([[3.0, 4.0]] * 5, np.float32),
+                det_score=0.8,
+            ),
+        ]
+        monkeypatch.setattr(det_mod, "build_detector", lambda *a, **k: stub_det)
+        rec = stub_insightface.models.get.return_value  # the recognition stub
+
+        a = FaceAnalyser(detector=DetectorModel.YOLOFACE)
+        faces = a.analyse_det_rec(_blank_frame())
+
+        # The CHOSEN detector found the faces — NOT buffalo_l's det_model…
+        stub_det.detect.assert_called_once()
+        stub_insightface.det_model.detect.assert_not_called()
+        # …and ArcFace ran per face to add the embedding.
+        assert rec.get.call_count == 1
+        assert len(faces) == 1 and faces[0].det_score == pytest.approx(0.8)
+
+    def test_buffalo_l_still_uses_det_model(self, stub_insightface):
+        # No custom detector → the existing buffalo_l det_model + ArcFace path.
+        rec = stub_insightface.models.get.return_value
+        a = FaceAnalyser()  # buffalo_l
+        a.analyse_det_rec(_blank_frame())
+        stub_insightface.det_model.detect.assert_called_once()
+        assert rec.get.call_count == 1
+
+
 class TestDetectionSize:
     """The face-detector input size (det_size) is configurable: smaller =
     faster detection (may miss small/distant faces). It threads from the

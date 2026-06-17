@@ -24,6 +24,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
+    QComboBox,
     QDoubleSpinBox,
     QGroupBox,
     QHBoxLayout,
@@ -38,7 +39,16 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sinner2.pipeline.detectors import DetectorModel
 from sinner2.pipeline.face_map import FaceMap, Identity
+
+# Scan detectors: buffalo_l (full pack → also gender/age) or a faster
+# detection-only model paired with ArcFace for the clustering embedding.
+_SCAN_DETECTORS: list[tuple[str, str]] = [
+    (DetectorModel.BUFFALO_L.value, "buffalo_l (full pack, gender + age)"),
+    (DetectorModel.YOLOFACE.value, "YOLOFace 8n (fast, detection-only)"),
+    (DetectorModel.SCRFD_2_5G.value, "SCRFD 2.5g (fast, detection-only)"),
+]
 
 _THUMB = 56
 # Columns: Face · Source · Age · Sex · Appears · Score · Roll · Yaw · Pitch.
@@ -162,13 +172,19 @@ class QFaceMapPanel(QWidget):
         det_group = QGroupBox("Detection")
         det_box = QVBoxLayout(det_group)
         det_row1 = QHBoxLayout()
-        det_label = QLabel("Detector: buffalo_l")
-        det_label.setToolTip(
-            "Analysis always uses buffalo_l — identity matching needs ArcFace "
-            "embeddings, which the detection-only detectors don't produce. "
-            "Execution providers follow the swapper's ONNX provider selection."
+        det_row1.addWidget(QLabel("Detector"))
+        self._detector = QComboBox()
+        for value, label in _SCAN_DETECTORS:
+            self._detector.addItem(label, value)
+        self._detector.setCurrentIndex(0)  # buffalo_l
+        self._detector.setToolTip(
+            "Face detector for the scan. buffalo_l (the full pack) also yields "
+            "gender/age. yoloface / scrfd are faster detection-only models — "
+            "ArcFace still adds the recognition embedding so clustering works, "
+            "but they can't produce age/sex (that needs buffalo_l). EPs follow "
+            "the swapper's ONNX provider selection. Downloads on first use."
         )
-        det_row1.addWidget(det_label)
+        det_row1.addWidget(self._detector)
         det_row1.addWidget(QLabel("Size"))
         self._det_size = QSpinBox()
         # Same range/step as the live swapper's detection size (multiples of 32),
@@ -232,10 +248,14 @@ class QFaceMapPanel(QWidget):
         self._refine_check.toggled.connect(self._on_settings_changed)
         self._refine_score.valueChanged.connect(self._on_settings_changed)
         self._bake_angle_check.toggled.connect(self._on_settings_changed)
+        self._detector.currentIndexChanged.connect(self._on_settings_changed)
         # "Refine min score" only matters when refinement is on — gray it with
-        # the checkbox so the dependency is visible.
+        # the checkbox so the dependency is visible. "Detect age/sex" needs
+        # buffalo_l, so it grays for the detection-only detectors.
         self._refine_check.toggled.connect(self._update_refine_rows)
+        self._detector.currentIndexChanged.connect(self._update_detector_dependent)
         self._update_refine_rows()
+        self._update_detector_dependent()
 
         analyze_row = QHBoxLayout()
         self._analyze_btn = QPushButton("Analyze faces")
@@ -310,6 +330,9 @@ class QFaceMapPanel(QWidget):
     def precompute_geometry(self) -> bool:
         return self._precompute_check.isChecked()
 
+    def detector(self) -> DetectorModel:
+        return DetectorModel(self._detector.currentData())
+
     def detection_size(self) -> int:
         return self._det_size.value()
 
@@ -333,6 +356,14 @@ class QFaceMapPanel(QWidget):
         self._refine_min_label.setEnabled(on)
         self._refine_score.setEnabled(on)
 
+    def _update_detector_dependent(self) -> None:
+        """Demographics (age/sex) need buffalo_l's genderage pack — gray + clear
+        'Detect age/sex' for the detection-only detectors."""
+        full = self._detector.currentData() == DetectorModel.BUFFALO_L.value
+        self._demographics_check.setEnabled(full)
+        if not full and self._demographics_check.isChecked():
+            self._demographics_check.setChecked(False)
+
     def restore_settings(
         self,
         *,
@@ -341,6 +372,7 @@ class QFaceMapPanel(QWidget):
         preview: bool | None = None,
         demographics: bool | None = None,
         precompute: bool | None = None,
+        detector: str | None = None,
         detection_size: int | None = None,
         landmark_refine: bool | None = None,
         landmark_min_score: float | None = None,
@@ -360,6 +392,10 @@ class QFaceMapPanel(QWidget):
                 self._demographics_check.setChecked(bool(demographics))
             if precompute is not None:
                 self._precompute_check.setChecked(bool(precompute))
+            if detector is not None:
+                idx = self._detector.findData(detector)
+                if idx >= 0:
+                    self._detector.setCurrentIndex(idx)
             if detection_size is not None:
                 self._det_size.setValue(int(detection_size))
             if landmark_refine is not None:
@@ -371,6 +407,7 @@ class QFaceMapPanel(QWidget):
         finally:
             self._restoring = False
         self._update_refine_rows()  # reflect the restored refine state
+        self._update_detector_dependent()  # …and the restored detector
 
     def face_map(self) -> FaceMap:
         return self._face_map
@@ -472,7 +509,7 @@ class QFaceMapPanel(QWidget):
         for w in (
             self._stride, self._workers, self._preview_check,
             self._demographics_check, self._precompute_check, self._reset_btn,
-            self._det_size, self._refine_check, self._refine_score,
+            self._detector, self._det_size, self._refine_check, self._refine_score,
             self._bake_angle_check,
         ):
             w.setEnabled(not on)
@@ -480,7 +517,9 @@ class QFaceMapPanel(QWidget):
         if on:
             self._progress.setRange(0, 0)
         else:
-            self._update_refine_rows()  # re-apply the refine dependency on unlock
+            # Re-apply the inter-control dependencies the blanket re-enable undid.
+            self._update_refine_rows()
+            self._update_detector_dependent()
 
     def set_progress(self, done: int, total: int) -> None:
         if total > 0:

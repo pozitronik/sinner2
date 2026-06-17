@@ -244,6 +244,7 @@ class SinnerMainWindow(QMainWindow):
             preview=self._settings.face_analyze_preview,
             demographics=self._settings.face_analyze_demographics,
             precompute=self._settings.face_analyze_precompute,
+            detector=self._settings.face_analyze_detector,
             detection_size=self._settings.face_analyze_detection_size,
             landmark_refine=self._settings.face_analyze_landmark_refine,
             landmark_min_score=self._settings.face_analyze_landmark_min_score,
@@ -507,6 +508,7 @@ class SinnerMainWindow(QMainWindow):
             # Detection-quality settings come from the Faces panel's own Detection
             # group (D1) — decoupled from the live swapper so the scan can use a
             # different size / refinement than playback.
+            detector=lambda: self._face_map_panel.detector(),
             detection_size=lambda: self._face_map_panel.detection_size(),
             current_frame=self._current_display_frame,
             sections=self._controller.sections,
@@ -2001,6 +2003,7 @@ class SinnerMainWindow(QMainWindow):
             face_analyze_preview=p.preview_enabled(),
             face_analyze_demographics=p.detect_demographics(),
             face_analyze_precompute=p.precompute_geometry(),
+            face_analyze_detector=p.detector().value,
             face_analyze_detection_size=p.detection_size(),
             face_analyze_landmark_refine=p.landmark_refine(),
             face_analyze_landmark_min_score=p.landmark_min_score(),

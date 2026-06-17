@@ -269,6 +269,25 @@ class TestAnalyzeControls:
         panel._refine_check.setChecked(False)  # noqa: SLF001
         assert panel._refine_score.isEnabled() is False  # noqa: SLF001
 
+    def test_detector_default_and_demographics_gate(self, panel):
+        from sinner2.pipeline.detectors import DetectorModel
+        # Default buffalo_l → demographics available.
+        assert panel.detector() is DetectorModel.BUFFALO_L
+        assert panel._demographics_check.isEnabled() is True  # noqa: SLF001
+        panel._demographics_check.setChecked(True)  # noqa: SLF001
+        # A detection-only detector can't do gender/age → gray + clear it.
+        idx = panel._detector.findData(DetectorModel.YOLOFACE.value)  # noqa: SLF001
+        panel._detector.setCurrentIndex(idx)  # noqa: SLF001
+        assert panel.detector() is DetectorModel.YOLOFACE
+        assert panel._demographics_check.isEnabled() is False  # noqa: SLF001
+        assert panel.detect_demographics() is False  # cleared
+
+    def test_restore_detector(self, panel):
+        from sinner2.pipeline.detectors import DetectorModel
+        panel.restore_settings(detector=DetectorModel.SCRFD_2_5G.value)
+        assert panel.detector() is DetectorModel.SCRFD_2_5G
+        assert panel._demographics_check.isEnabled() is False  # noqa: SLF001
+
     def test_refine_dependency_survives_restore_and_analyze(self, panel):
         # Restoring refine=on enables the min score; an analyze cycle re-applies it.
         panel.restore_settings(landmark_refine=True)

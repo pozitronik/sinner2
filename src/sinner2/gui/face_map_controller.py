@@ -66,6 +66,7 @@ class FaceMapController(QObject):
         detection_size: Callable[[], int],
         current_frame: Callable[[], int],
         sections: Callable[[], Any] | None = None,
+        detector: Callable[[], Any] | None = None,
         landmark_refine: Callable[[], bool] | None = None,
         landmark_min_score: Callable[[], float] | None = None,
         show_preview: Callable[[Any], None] | None = None,
@@ -87,6 +88,7 @@ class FaceMapController(QObject):
         self._detection_size = detection_size
         self._current_frame = current_frame
         self._sections = sections or (lambda: None)
+        self._detector_choice = detector or (lambda: None)
         self._landmark_refine = landmark_refine or (lambda: False)
         self._landmark_min_score = landmark_min_score or (lambda: 0.5)
         self._show_preview = show_preview
@@ -180,6 +182,7 @@ class FaceMapController(QObject):
             threshold=self._catalog.threshold,
             providers=self._providers(),
             detection_size=self._detection_size(),
+            detector=self._detector_choice(),
             sections=sections,
             preview=bool(
                 self._show_preview is not None and self._panel.preview_enabled()

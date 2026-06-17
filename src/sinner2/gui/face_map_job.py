@@ -26,7 +26,7 @@ from sinner2.pipeline.face_map_analyzer import (
 )
 
 ReaderFactory = Callable[[str], TargetReader]
-DetectFactory = Callable[[list[str] | None, int, bool], DetectFn]
+DetectFactory = Callable[[list[str] | None, int, bool, Any], DetectFn]
 LandmarkerFactory = Callable[[list[str] | None], Any]
 
 
@@ -40,6 +40,10 @@ class AnalysisRequest:
     threshold: float = 0.5
     providers: list[str] | None = None
     detection_size: int = 640
+    # The face DETECTOR for the scan (None = buffalo_l). A non-buffalo detector
+    # finds faces and ArcFace still adds the embedding for clustering; it can't
+    # produce gender/age, so `fast` is forced (no genderage pack) for it.
+    detector: Any = None  # DetectorModel | None
     sections: Any = None              # SectionSet | None
     preview: bool = False
     workers: int = 1
@@ -70,15 +74,22 @@ def _default_reader(target_path: str) -> TargetReader:
 
 
 def _default_detect(
-    providers: list[str] | None, detection_size: int, fast: bool
+    providers: list[str] | None, detection_size: int, fast: bool,
+    detector: Any = None,
 ) -> DetectFn:
-    """A detector closure over a fresh buffalo_l analyser. ``fast`` runs
-    detection + recognition only (no age/sex/landmark — much quicker); otherwise
-    the full pack, which also yields the demographics for the cards."""
+    """A detector closure over a fresh analyser. ``detector`` (None = buffalo_l)
+    finds the faces; ArcFace adds the embedding for clustering. ``fast`` runs
+    detection + recognition only (no age/sex/landmark — much quicker); the full
+    pack (demographics) is buffalo_l-only, so a custom detector always uses the
+    fast det+rec path regardless of ``fast``."""
+    from sinner2.pipeline.detectors import DetectorModel
     from sinner2.pipeline.face_analyser import FaceAnalyser
 
-    analyser = FaceAnalyser(providers=providers, detection_size=detection_size)
-    if fast:
+    analyser = FaceAnalyser(
+        providers=providers, detection_size=detection_size, detector=detector
+    )
+    custom = detector is not None and detector != DetectorModel.BUFFALO_L
+    if custom or fast:
         return lambda frame: analyser.analyse_det_rec(frame)
     return lambda frame: analyser.analyse_uncached(frame)
 
@@ -139,7 +150,7 @@ class FaceMapAnalysisJob(QObject):
         geometry: Any = None
         try:
             detect = self._detect_factory(
-                providers, request.detection_size, request.fast,
+                providers, request.detection_size, request.fast, request.detector,
             )
             catalog, scanned, total = analyze_target(
                 reader, detect,
@@ -182,7 +193,9 @@ class FaceMapAnalysisJob(QObject):
         # NOT the genderage pack the catalog scan may run. Build the fast det+rec
         # detector regardless of `fast`; it reuses the cached buffalo_l models, so
         # it's not a second load — just skips the per-frame age/sex inference.
-        geo_base = self._detect_factory(providers, request.detection_size, True)
+        geo_base = self._detect_factory(
+            providers, request.detection_size, True, request.detector
+        )
         geo_detect = self._geometry_detect(
             geo_base, landmarker, request.landmark_min_score,
             refine=request.landmark_refine, bake_angle=request.bake_angle,

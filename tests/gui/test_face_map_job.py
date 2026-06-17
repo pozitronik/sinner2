@@ -33,7 +33,7 @@ def _job(frames, *, detect=None):
     reader = _StubReader(frames)
     job = FaceMapAnalysisJob(
         reader_factory=lambda _path: reader,
-        detect_factory=lambda _prov, _size, _fast: (detect or (lambda f: f)),
+        detect_factory=lambda _prov, _size, _fast, _det: (detect or (lambda f: f)),
     )
     return job, reader
 
@@ -87,7 +87,7 @@ class TestRun:
         reader = _StubReader([[_Face(_emb(1, 0, 0))]])
         job = FaceMapAnalysisJob(
             reader_factory=lambda _p: reader,
-            detect_factory=lambda _prov, _size, fast: (
+            detect_factory=lambda _prov, _size, fast, _det: (
                 fasts.append(fast) or (lambda f: f)
             ),
         )
@@ -110,7 +110,7 @@ class TestRun:
 
         job = FaceMapAnalysisJob(
             reader_factory=lambda _p: reader,
-            detect_factory=lambda _prov, _size, _fast: (lambda f: f),
+            detect_factory=lambda _prov, _size, _fast, _det: (lambda f: f),
             landmarker_factory=lambda _prov: _StubLandmarker(),
         )
         with qtbot.waitSignal(job.finished, timeout=2000) as blocker:
@@ -152,7 +152,8 @@ class TestRun:
             raise OSError("no such file")
 
         job = FaceMapAnalysisJob(
-            reader_factory=boom, detect_factory=lambda _p, _s, _fast: (lambda f: f)
+            reader_factory=boom,
+            detect_factory=lambda _p, _s, _fast, _det: (lambda f: f),
         )
         with qtbot.waitSignal(job.failed, timeout=2000) as blocker:
             job.run(AnalysisRequest("missing.mp4", stride=1))
@@ -167,7 +168,7 @@ class TestRun:
 
         job = FaceMapAnalysisJob(
             reader_factory=lambda _p: reader,
-            detect_factory=lambda _prov, _size, _fast: bad_detect,
+            detect_factory=lambda _prov, _size, _fast, _det: bad_detect,
         )
         with qtbot.waitSignal(job.failed, timeout=2000) as blocker:
             job.run(AnalysisRequest("clip.mp4", stride=1))

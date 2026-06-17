@@ -55,6 +55,7 @@ class Settings(SinnerBaseModel):
     face_analyze_preview: bool | None = None
     face_analyze_demographics: bool | None = None  # also run the age/sex model
     face_analyze_precompute: bool | None = None     # build the per-frame geometry
+    face_analyze_detector: str | None = None        # scan detector (buffalo_l/yoloface/scrfd)
     face_analyze_detection_size: int | None = None  # detector input size for the scan
     face_analyze_landmark_refine: bool | None = None    # bake 2dfan4 kps
     face_analyze_landmark_min_score: float | None = None
