@@ -191,6 +191,10 @@ class LiveController(QObject):
             upscaler_params=snapshot.upscaler_params,
             upscaler_device=snapshot.upscaler_device,
             upscaler_providers=snapshot.upscaler_providers,
+            # >1 live worker → the swapper's cross-frame detection cache is unsafe.
+            worker_count=int(
+                (self._restart_args or {}).get("workers", 1)
+            ),
         )
 
     def _check_camera(self) -> None:

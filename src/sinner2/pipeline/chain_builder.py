@@ -35,18 +35,27 @@ def build_chain(
     upscaler_providers: tuple[str, ...] | list[str] = (),
     face_map: FaceMap | None = None,
     geometry: FrameGeometry | None = None,
+    worker_count: int = 1,
 ) -> list[Processor]:
     """Compose the chain for the given source + params. Every processor is
     optional; an empty chain is valid (raw passthrough). Each gets its
     framework-native execution param: ONNX providers for the swapper, a torch
     device for the enhancer/upscaler. ``face_map`` (when active) routes each
     detected face to a per-identity source; ``geometry`` (when set) lets the
-    swapper skip detection and rebuild faces from the precomputed table."""
+    swapper skip detection and rebuild faces from the precomputed table.
+
+    With ``worker_count`` > 1 the swapper's per-frame detection cache
+    (``detection_interval`` > 1) is unsafe — workers process frames out of order,
+    so a box cached on one frame could be reused for a non-adjacent one. Force
+    detection on every frame (interval 1) in that case."""
     chain: list[Processor] = []
     if swapper_enabled:
+        params = swapper_params
+        if worker_count > 1 and params.detection_interval > 1:
+            params = params.model_copy(update={"detection_interval": 1})
         swapper = FaceSwapper(
             source=source,
-            params=swapper_params,
+            params=params,
             # Pass the selection through verbatim — an EMPTY list means the user
             # unchecked everything ("no providers"); the swapper keeps it empty
             # (ORT → CPU) instead of substituting a GPU default.

@@ -19,6 +19,7 @@ class _MarkSwap:
         self, source, params, providers=None, detection_sink=None, face_map=None
     ):
         self.kind = "swap"
+        self.params = params
         self.providers = providers
         self.detection_sink = detection_sink
         self.face_map = face_map
@@ -79,6 +80,24 @@ def _kinds(chain):
 def test_full_chain_in_order(source):
     chain = _call(source, upscaler_enabled=True)
     assert _kinds(chain) == ["swap", "FaceEnhancer", "Upscaler"]
+
+
+def test_multiworker_forces_detection_interval_1(source):
+    # >1 worker → the swapper's cross-frame detection cache is unsafe, so the
+    # builder clamps detection_interval to 1 regardless of the requested value.
+    chain = _call(
+        source, swapper_params=FaceSwapperParams(detection_interval=5),
+        worker_count=4,
+    )
+    assert chain[0].params.detection_interval == 1
+
+
+def test_single_worker_keeps_detection_interval(source):
+    chain = _call(
+        source, swapper_params=FaceSwapperParams(detection_interval=5),
+        worker_count=1,
+    )
+    assert chain[0].params.detection_interval == 5  # sequential → cache is safe
 
 
 def test_swapper_only(source):

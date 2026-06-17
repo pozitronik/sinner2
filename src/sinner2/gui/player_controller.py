@@ -576,6 +576,8 @@ class PlayerController(QObject):
             upscaler_providers=self._upscaler_providers,
             face_map=self._face_map,
             geometry=self._geometry,
+            # >1 worker → the swapper's cross-frame detection cache is unsafe.
+            worker_count=self._effective_worker_count(),
         )
 
     def deactivate(self) -> None:
