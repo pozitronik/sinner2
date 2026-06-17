@@ -786,18 +786,21 @@ class TestGroupOrganization:
 
     def test_routing_active_grays_detection_and_selection_locally(self, widget):
         # Face-map ON grays the WHOLE detection config (detector + size +
-        # interval) + the "Which to swap" sub-box — all INSIDE the Faces group.
-        # It leaves the overlay usable and does NOT touch the swap's angle source.
+        # interval) + the "Which to swap" sub-box — all INSIDE the Faces group —
+        # AND the "Show detection overlay" + comparison toggles (the overlay is
+        # managed by the Faces panel then). It does NOT touch the swap's angle source.
         widget.set_face_map_routing_active(True)
         assert widget._detector.isEnabled() is False  # noqa: SLF001
         assert widget._detection_size.isEnabled() is False  # noqa: SLF001
         assert widget._detection_interval.isEnabled() is False  # noqa: SLF001
         assert widget._which_to_swap_box.isEnabled() is False  # noqa: SLF001
-        assert widget._overlay_enabled.isEnabled() is True  # noqa: SLF001 — shows mapped faces
+        assert widget._overlay_enabled.isEnabled() is False  # noqa: SLF001 — managed by Faces panel
+        assert widget._comparison_enabled.isEnabled() is False  # noqa: SLF001
         assert widget._rotation_source.isEnabled() is True  # noqa: SLF001 — untouched
         widget.set_face_map_routing_active(False)
         assert widget._detector.isEnabled() is True  # noqa: SLF001
         assert widget._detection_size.isEnabled() is True  # noqa: SLF001
+        assert widget._overlay_enabled.isEnabled() is True  # noqa: SLF001 — back under F8
 
 
 class TestUpscalerModels:

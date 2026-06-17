@@ -1402,14 +1402,17 @@ class QProcessorControls(QWidget):
         INSIDE the Faces group so the override stays local: the whole detection
         config (detector + size + interval — detection is skipped, read from the
         precomputed geometry) and the "Which to swap" sub-box (the map decides
-        what swaps with what). The detection OVERLAY stays usable — it shows the
-        mapped faces. The swap's Angle source stays too (it still applies on
-        frames the geometry didn't cover)."""
+        what swaps with what). The "Show detection overlay" + comparison toggles
+        gray out too — the overlay is now managed by the Faces panel (it shows the
+        selected identity), so F8 has nothing to control. The swap's Angle source
+        stays (it still applies on frames the geometry didn't cover)."""
         self._face_map_routing = bool(active)
         self._detector.setEnabled(not active)
         self._detection_size.setEnabled(not active)
         self._detection_interval.setEnabled(not active)
         self._which_to_swap_box.setEnabled(not active)
+        self._overlay_enabled.setEnabled(not active)
+        self._comparison_enabled.setEnabled(not active)
         self._update_detector_rows()  # target_sex also gates on the detector
 
     def _update_detector_rows(self) -> None:
