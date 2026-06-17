@@ -303,3 +303,36 @@ class TestAnalyzeControls:
         panel._stride.setValue(42)  # noqa: SLF001 — simulate a user edit
         panel._precompute_check.setChecked(False)  # noqa: SLF001
         assert len(fired) == 2
+
+
+class TestUseFaceMapToggle:
+    """The in-panel 'Use face map' checkbox: a SEPARATE switch (not the group
+    title) synced with the settings one; enabled only once a map exists; never
+    grays the scanner controls."""
+
+    def test_default_off_and_disabled(self, panel):
+        assert panel.use_face_map() is False
+        assert panel._use_face_map_check.isEnabled() is False  # noqa: SLF001 — no map
+
+    def test_available_gates_only_the_toggle(self, panel):
+        panel.set_face_map_available(True)
+        assert panel._use_face_map_check.isEnabled() is True  # noqa: SLF001
+        # The scanner controls stay usable regardless of availability.
+        assert panel._detector.isEnabled() is True  # noqa: SLF001
+        assert panel._analyze_btn.isEnabled() is True  # noqa: SLF001
+        panel.set_face_map_available(False)
+        assert panel._use_face_map_check.isEnabled() is False  # noqa: SLF001
+        assert panel._analyze_btn.isEnabled() is True  # noqa: SLF001 — still usable
+
+    def test_user_toggle_emits(self, panel, qtbot):
+        panel.set_face_map_available(True)
+        with qtbot.waitSignal(panel.useFaceMapToggled) as blocker:
+            panel._use_face_map_check.setChecked(True)  # noqa: SLF001
+        assert blocker.args == [True]
+
+    def test_set_use_face_map_is_silent(self, panel):
+        fired = []
+        panel.useFaceMapToggled.connect(fired.append)
+        panel.set_use_face_map(True)
+        assert panel.use_face_map() is True
+        assert fired == []  # synced from the owner — no echo

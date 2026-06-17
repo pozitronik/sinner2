@@ -529,6 +529,9 @@ class SinnerMainWindow(QMainWindow):
         self._face_map_panel.settingsChanged.connect(
             self._persist_face_analyze_settings
         )
+        # The in-panel "Use face map" toggle is the SAME routing switch as the one
+        # in the Face-recognition settings — same handler keeps them in sync.
+        self._face_map_panel.useFaceMapToggled.connect(self._on_use_face_map_toggled)
         # The Sources-tab "Faces" toggle drives face-mapping MODE: reveal the
         # panel, lock the global source picker, enable preview face-picking, and
         # route source-tile clicks to the selected face(s).
@@ -1726,8 +1729,9 @@ class SinnerMainWindow(QMainWindow):
     def _update_face_map_enabled(self) -> None:
         """The switch unlocks ONLY once a map is built for the target — never just
         because the editor is open (a switch you can flip with nothing to route is
-        confusing)."""
+        confusing). Both copies of the switch (settings + Face scanner panel)."""
         self._processors.set_face_map_available(self._map_available)
+        self._face_map_panel.set_face_map_available(self._map_available)
 
     def _set_use_face_map(self, on: bool, *, persist: bool = True) -> None:
         """SINGLE SOURCE OF TRUTH for face-map mode: set the switch state, reflect
@@ -1736,6 +1740,7 @@ class SinnerMainWindow(QMainWindow):
         between single-source and face-map — overlay included."""
         self._use_face_map = bool(on)
         self._processors.set_use_face_map(on)
+        self._face_map_panel.set_use_face_map(on)  # the linked in-panel copy
         if persist:
             self._face_map_ctl.set_use_for_playback(on)
         self._refresh_face_map_routing()

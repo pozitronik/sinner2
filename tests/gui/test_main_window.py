@@ -753,6 +753,27 @@ class TestFaceMappingWiring:
         assert window._use_face_map is False and routing[-1] is False  # noqa: SLF001
         assert window._processors._use_face_map.isEnabled() is False  # noqa: SLF001
 
+    def test_panel_use_face_map_syncs_with_settings(self, window, monkeypatch):
+        # The in-panel 'Use face map' checkbox and the settings one are the SAME
+        # switch — toggling either routes + reflects on both; availability gates
+        # both.
+        routing = []
+        monkeypatch.setattr(
+            window._face_map_ctl, "set_mode_active",  # noqa: SLF001
+            lambda on: routing.append(on),
+        )
+        monkeypatch.setattr(
+            window._face_map_ctl, "set_use_for_playback", lambda on: None  # noqa: SLF001
+        )
+        window._face_map_panel.useFaceMapToggled.emit(True)  # noqa: SLF001
+        assert window._use_face_map is True and routing[-1] is True  # noqa: SLF001
+        assert window._processors.use_face_map() is True  # noqa: SLF001 — settings copy
+        assert window._face_map_panel.use_face_map() is True  # noqa: SLF001 — panel copy
+        # A built map enables BOTH switches.
+        window._on_map_availability_changed(True)  # noqa: SLF001
+        assert window._processors._use_face_map.isEnabled() is True  # noqa: SLF001
+        assert window._face_map_panel._use_face_map_check.isEnabled() is True  # noqa: SLF001
+
     def test_fresh_analysis_turns_routing_on(self, window, monkeypatch):
         # Issue 1: after a scan builds a catalog the "Use face map" switch flips
         # ON by itself — the user shouldn't have to toggle it every analysis.

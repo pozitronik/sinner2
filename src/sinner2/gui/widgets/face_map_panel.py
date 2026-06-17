@@ -120,6 +120,7 @@ class QFaceMapPanel(QWidget):
     mergeIdentitiesRequested = Signal(list)    # ids to fold into one
     selectionChanged = Signal()                # table row selection changed
     settingsChanged = Signal()                 # a scan-settings control changed
+    useFaceMapToggled = Signal(bool)           # the in-panel routing toggle
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -147,6 +148,24 @@ class QFaceMapPanel(QWidget):
         form.setFieldGrowthPolicy(
             QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
         )
+
+        # "Use face map" routing toggle — the same switch as in the Face
+        # recognition settings (kept in sync), surfaced here where you build the
+        # map. Enabled once a map exists; doesn't gate the scanner controls.
+        self._use_face_map_check = QCheckBox("Use face map")
+        self._use_face_map_check.setEnabled(False)
+        self._use_face_map_check.setToolTip(
+            "Route playback through this target's face map — each person swapped "
+            "with their mapped source — instead of the single global source. "
+            "Enabled once a map exists; mirrors the 'Use face map' switch in the "
+            "Face recognition settings. Remembered per target."
+        )
+        self._use_face_map_check.toggled.connect(self.useFaceMapToggled)
+        form.addRow(self._use_face_map_check)
+        top_divider = QFrame()
+        top_divider.setFrameShape(QFrame.Shape.HLine)
+        top_divider.setFrameShadow(QFrame.Shadow.Sunken)
+        form.addRow(top_divider)
 
         self._detector = QComboBox()
         for value, label in _SCAN_DETECTORS:
@@ -417,6 +436,24 @@ class QFaceMapPanel(QWidget):
 
     def face_map(self) -> FaceMap:
         return self._face_map
+
+    # ---- "Use face map" routing toggle (synced with the settings switch) ----
+
+    def use_face_map(self) -> bool:
+        return self._use_face_map_check.isChecked()
+
+    def set_use_face_map(self, on: bool) -> None:
+        """Reflect the routing state WITHOUT emitting (the owner syncs it from the
+        settings switch / restore / auto-on)."""
+        self._use_face_map_check.blockSignals(True)
+        self._use_face_map_check.setChecked(bool(on))
+        self._use_face_map_check.blockSignals(False)
+
+    def set_face_map_available(self, available: bool) -> None:
+        """Enable the 'Use face map' toggle only once a map exists for the target
+        (you can't route through a map that isn't built). The scanner controls
+        stay usable regardless — this gates only the toggle."""
+        self._use_face_map_check.setEnabled(bool(available))
 
     # ---- Selection ----
 
