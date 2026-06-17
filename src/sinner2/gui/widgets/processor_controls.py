@@ -218,6 +218,18 @@ def _short_provider_label(prov: str) -> str:
     return "Tensor" if name == "Tensorrt" else name
 
 
+def _set_combo_silently(combo: QComboBox, value: object) -> None:
+    """Select the item whose data == ``value`` WITHOUT firing the combo's signals
+    — the shared 'reflect/revert a selection programmatically' helper (used to
+    revert a declined model download, etc.)."""
+    combo.blockSignals(True)
+    for i in range(combo.count()):
+        if combo.itemData(i) == value:
+            combo.setCurrentIndex(i)
+            break
+    combo.blockSignals(False)
+
+
 class _OnnxProvidersRow(QWidget):
     """The ``[ ]Tensor [ ]CUDA [ ]CPU`` checkbox strip for one ONNX-using
     processor — added to a QFormLayout with an "ONNX Providers" label so it sits
@@ -1247,22 +1259,12 @@ class QProcessorControls(QWidget):
     def set_swapper_model(self, value: str) -> None:
         """Set the swap model WITHOUT firing configChanged — used to revert the
         selection when the user declines the model download."""
-        self._swapper_model.blockSignals(True)
-        for i in range(self._swapper_model.count()):
-            if self._swapper_model.itemData(i) == value:
-                self._swapper_model.setCurrentIndex(i)
-                break
-        self._swapper_model.blockSignals(False)
+        _set_combo_silently(self._swapper_model, value)
 
     def set_swapper_detector(self, value: str) -> None:
         """Set the detector WITHOUT firing configChanged — used to revert the
         selection when the user declines the detector-model download."""
-        self._detector.blockSignals(True)
-        for i in range(self._detector.count()):
-            if self._detector.itemData(i) == value:
-                self._detector.setCurrentIndex(i)
-                break
-        self._detector.blockSignals(False)
+        _set_combo_silently(self._detector, value)
         self._update_detector_rows()
 
     def set_occlusion_checked(self, on: bool) -> None:
@@ -1281,12 +1283,7 @@ class QProcessorControls(QWidget):
         self._landmark_refine.setChecked(False)
         self._landmark_refine.blockSignals(False)
         if self._rotation_source.currentData() == RotationAngleSource.LANDMARK_68.value:
-            self._rotation_source.blockSignals(True)
-            for i in range(self._rotation_source.count()):
-                if self._rotation_source.itemData(i) == RotationAngleSource.POSE.value:
-                    self._rotation_source.setCurrentIndex(i)
-                    break
-            self._rotation_source.blockSignals(False)
+            _set_combo_silently(self._rotation_source, RotationAngleSource.POSE.value)
 
     def _update_enhancer_model_rows(self) -> None:
         """Enable only the knob that applies to the selected enhancer model —
@@ -1309,12 +1306,7 @@ class QProcessorControls(QWidget):
     def set_enhancer_model(self, value: str) -> None:
         """Set the enhancer model WITHOUT firing configChanged — used to revert
         the selection when the user declines the CodeFormer model download."""
-        self._enhancer_model.blockSignals(True)
-        for i in range(self._enhancer_model.count()):
-            if self._enhancer_model.itemData(i) == value:
-                self._enhancer_model.setCurrentIndex(i)
-                break
-        self._enhancer_model.blockSignals(False)
+        _set_combo_silently(self._enhancer_model, value)
         self._update_enhancer_model_rows()
 
     def enhancer_params(self) -> FaceEnhancerParams:

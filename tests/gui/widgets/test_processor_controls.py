@@ -201,6 +201,18 @@ class TestQProcessorControls:
         assert params.model is EnhancerModel.CODEFORMER
         assert params.codeformer_fidelity == 0.4
 
+    def test_reflect_setter_selects_without_firing_config_changed(self, widget):
+        # The shared _set_combo_silently helper must select the item WITHOUT
+        # emitting configChanged — reverting a declined download mustn't re-fire
+        # the rebuild that prompted the revert.
+        from sinner2.pipeline.processors.face_enhancer import EnhancerModel
+
+        fired: list[int] = []
+        widget.configChanged.connect(lambda: fired.append(1))
+        widget.set_enhancer_model(EnhancerModel.CODEFORMER.value)
+        assert widget.enhancer_model() == EnhancerModel.CODEFORMER.value  # selected
+        assert fired == []  # but silent
+
     def test_codeformer_disables_upscale_enables_fidelity(self, widget):
         from sinner2.pipeline.processors.face_enhancer import EnhancerModel
 
