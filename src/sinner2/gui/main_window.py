@@ -283,6 +283,10 @@ class SinnerMainWindow(QMainWindow):
         # detect the current frame immediately (e.g. while paused) instead of
         # waiting for the next rendered frame.
         self._last_displayed_frame: Frame | None = None
+        # The frame index of the detections the overlay last DREW (from the
+        # sink). A click-to-pick is validated against it: if the sink advanced
+        # since, the displayed boxes are stale and the pick is rejected.
+        self._overlay_drawn_frame: int | None = None
         self._face_overlay = QFaceDetectionOverlay(parent=self._display)
         self._display.set_face_overlay(self._face_overlay)
         # Auto-hiding playback bar for fullscreen. A child of the display so
@@ -523,7 +527,7 @@ class SinnerMainWindow(QMainWindow):
             status=self._status_bar.show_message,
             parent=self,
         )
-        self._face_overlay.faceClicked.connect(self._face_map_ctl.on_face_clicked)
+        self._face_overlay.faceClicked.connect(self._on_overlay_face_clicked)
         self._face_map_ctl.analyzingChanged.connect(self._on_face_analysis_active)
         self._face_map_panel.resetRequested.connect(self._on_face_map_reset)
         self._face_map_panel.selectionChanged.connect(self._on_face_selection_changed)
@@ -1783,6 +1787,15 @@ class SinnerMainWindow(QMainWindow):
         )
         self._face_overlay.set_highlight(bbox)
 
+    def _on_overlay_face_clicked(self, bbox: object) -> None:
+        """Route an overlay pick to the controller WITH the frame whose boxes are
+        on screen (the last drawn). A pick against a sink that has since advanced
+        is then rejected as stale instead of capturing a face off a frame the
+        user can't see."""
+        self._face_map_ctl.on_face_clicked(
+            bbox, self._overlay_drawn_frame  # type: ignore[arg-type]
+        )
+
     def _on_face_selection_changed(self) -> None:
         """A Faces-list selection changed: highlight the chosen identity's box
         now — and, with the swapper OFF, kick a fresh detection of the current
@@ -1898,6 +1911,8 @@ class SinnerMainWindow(QMainWindow):
         if latest is not None:
             detections, w, h = latest
             self._face_overlay.set_detections(detections, w, h)
+            raw = self._detection_sink.latest_raw()
+            self._overlay_drawn_frame = raw[3] if raw is not None else None
             self._refresh_face_highlight()  # follow the selected identity's box
         if self._comparison_on:
             crops = self._detection_sink.latest_crops()
@@ -2002,6 +2017,8 @@ class SinnerMainWindow(QMainWindow):
         if not self._overlay_active():
             return
         self._face_overlay.set_detections(detections, width, height)  # type: ignore[arg-type]
+        raw = self._detection_sink.latest_raw()
+        self._overlay_drawn_frame = raw[3] if raw is not None else None
         self._refresh_face_highlight()
 
     def _on_use_camera(self) -> None:

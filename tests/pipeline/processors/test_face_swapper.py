@@ -419,7 +419,30 @@ class TestModelDispatch:
         sink.publish.assert_called_once()
         args = sink.publish.call_args.args
         assert args[0] == [t1, t2]
-        assert args[1:] == (10, 10)  # width, height
+        assert args[1:3] == (10, 10)  # width, height
+        assert args[3] is None  # no ctx → no frame index tag
+
+    def test_publishes_detections_with_frame_index(
+        self,
+        source_image: Path,
+        models_dir: Path,
+        stub_insightface_app: MagicMock,
+        stub_inswapper: MagicMock,
+    ):
+        from types import SimpleNamespace
+
+        stub_insightface_app.get.side_effect = [
+            [MagicMock(name="src")], [MagicMock(name="t")],
+        ]
+        sink = MagicMock()
+        fs = FaceSwapper(
+            source=Source(path=source_image), params=_params(), detection_sink=sink
+        )
+        fs.setup()
+        # A ctx carries the frame index → the sink is tagged with it (so the GUI
+        # can reject a stale click).
+        fs.process(_blank(), SimpleNamespace(frame_index=42))
+        assert sink.publish.call_args.args[3] == 42
 
     def test_publishes_comparison_crops_when_wanted(
         self,

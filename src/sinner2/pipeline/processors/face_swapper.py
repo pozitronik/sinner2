@@ -702,7 +702,12 @@ class FaceSwapper:
         # won't be swapped. Best-effort; the overlay must never affect the swap.
         if self._detection_sink is not None:
             try:
-                self._detection_sink.publish(faces, frame.shape[1], frame.shape[0])
+                # Tag with the frame these faces were detected on so the GUI can
+                # reject a click against a stale (advanced-past) snapshot.
+                self._detection_sink.publish(
+                    faces, frame.shape[1], frame.shape[0],
+                    getattr(ctx, "frame_index", None),
+                )
             except Exception:
                 pass
         # Face mapping (snapshot for a consistent view across this frame): when

@@ -356,10 +356,29 @@ class FaceMapController(QObject):
         self._sync_face_map()
         self._player.set_geometry(self._geometry if on else None)
 
-    def on_face_clicked(self, bbox: tuple[float, float, float, float]) -> None:
+    def on_face_clicked(
+        self,
+        bbox: tuple[float, float, float, float],
+        expected_frame: int | None = None,
+    ) -> None:
         """A face box was clicked on the preview: select its catalogued identity,
-        or capture a new one (a face the scan missed) at the current frame."""
-        face = self._raw_face_at(bbox)
+        or capture a new one (a face the scan missed) at the current frame.
+
+        ``expected_frame`` is the frame whose boxes the user is looking at (what
+        the overlay last drew). If the sink has since advanced to a DIFFERENT
+        frame, the click is rejected as stale — capturing then would grab a face
+        from a frame that isn't on screen (the click vs sink cross-clock)."""
+        latest = self._sink.latest_raw()
+        if latest is None:
+            return
+        faces, _w, _h, frame_index = latest
+        if (
+            expected_frame is not None
+            and frame_index is not None
+            and frame_index != expected_frame
+        ):
+            return  # stale snapshot — the sink advanced past the displayed boxes
+        face = self._nearest_face(bbox, faces)
         if face is None:
             return
         embedding = getattr(face, "normed_embedding", None)
@@ -474,10 +493,10 @@ class FaceMapController(QObject):
         ident = next((i for i in face_map.identities if i.id == ids[0]), None)
         if ident is None:
             return None
-        latest = self._sink._latest  # noqa: SLF001 — raw faces (with embeddings)
+        latest = self._sink.latest_raw()  # raw faces (with embeddings) + index
         if latest is None:
             return None
-        faces, _w, _h = latest
+        faces, _w, _h, _idx = latest
         best: Any = None
         best_sim = -1.0
         for face in faces:
@@ -494,14 +513,12 @@ class FaceMapController(QObject):
             return None
         return (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3]))
 
-    def _raw_face_at(self, bbox: tuple[float, float, float, float]) -> Any:
-        """The detection-sink face whose box centre is nearest the clicked bbox
-        centre (the sink holds the raw faces WITH embeddings; the overlay only
-        carries the drawable bbox)."""
-        latest = self._sink._latest  # noqa: SLF001 — raw faces + size
-        if latest is None:
-            return None
-        faces, _w, _h = latest
+    def _nearest_face(
+        self, bbox: tuple[float, float, float, float], faces: list[Any]
+    ) -> Any:
+        """The ``faces`` entry whose box centre is nearest the clicked bbox centre
+        (the raw faces carry embeddings; the overlay only sends the drawable
+        bbox). Takes the faces snapshot so the caller validates freshness once."""
         cx = (bbox[0] + bbox[2]) / 2.0
         cy = (bbox[1] + bbox[3]) / 2.0
         best: Any = None

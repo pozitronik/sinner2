@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from sinner2.gui.face_detection_probe import FaceDetectionSink
 from sinner2.gui.face_map_controller import (
     FaceMapController,
     _carry_over_assignments,
@@ -29,7 +30,7 @@ def ctrl(qtbot, tmp_path):
     panel.precompute_geometry.return_value = True
     player = MagicMock()
     player.face_map.return_value = FaceMap.empty()
-    sink = SimpleNamespace(_latest=None)
+    sink = FaceDetectionSink()  # real sink: tests publish() raw faces into it
     c = FaceMapController(
         panel=panel,
         player=player,
@@ -367,7 +368,7 @@ class TestFaceClick:
         face = SimpleNamespace(
             normed_embedding=normalize([1, 0, 0]), bbox=(0, 0, 10, 10)
         )
-        ctrl._sink._latest = ([face], 100, 100)
+        ctrl._sink.publish([face], 100, 100)
         ctrl.on_face_clicked((1, 1, 9, 9))
         ctrl._panel.select_identity.assert_called_once_with("a")
         ctrl._player.set_face_map.assert_not_called()  # selection, not capture
@@ -379,7 +380,7 @@ class TestFaceClick:
         stranger = SimpleNamespace(
             normed_embedding=normalize([0, 0, 1]), bbox=(0, 0, 10, 10)
         )
-        ctrl._sink._latest = ([stranger], 100, 100)
+        ctrl._sink.publish([stranger], 100, 100)
         ctrl.on_face_clicked((1, 1, 9, 9))
         applied = ctrl._player.set_face_map.call_args.args[0]
         assert len(applied.identities) == 2  # captured the stranger
@@ -387,9 +388,42 @@ class TestFaceClick:
 
     def test_click_without_embedding_is_skipped(self, ctrl):
         face = SimpleNamespace(normed_embedding=None, bbox=(0, 0, 10, 10))
-        ctrl._sink._latest = ([face], 100, 100)
+        ctrl._sink.publish([face], 100, 100)
         ctrl.on_face_clicked((1, 1, 9, 9))
         ctrl._player.set_face_map.assert_not_called()
+
+    def test_stale_click_is_rejected(self, ctrl):
+        # The sink advanced to frame 7, but the boxes the user clicked were drawn
+        # at frame 5 → reject the pick (don't capture a face off an unseen frame).
+        ctrl._catalog = FaceMap(identities=(_ident("a", [1, 0, 0]),), threshold=0.5)
+        stranger = SimpleNamespace(
+            normed_embedding=normalize([0, 0, 1]), bbox=(0, 0, 10, 10)
+        )
+        ctrl._sink.publish([stranger], 100, 100, frame_index=7)
+        ctrl.on_face_clicked((1, 1, 9, 9), expected_frame=5)
+        ctrl._player.set_face_map.assert_not_called()  # stale → no capture
+        ctrl._panel.select_identity.assert_not_called()
+
+    def test_fresh_click_with_matching_frame_proceeds(self, ctrl):
+        # Sink frame == the frame whose boxes were drawn → the pick proceeds.
+        ctrl._catalog = FaceMap(identities=(_ident("a", [1, 0, 0]),), threshold=0.5)
+        face = SimpleNamespace(
+            normed_embedding=normalize([1, 0, 0]), bbox=(0, 0, 10, 10)
+        )
+        ctrl._sink.publish([face], 100, 100, frame_index=5)
+        ctrl.on_face_clicked((1, 1, 9, 9), expected_frame=5)
+        ctrl._panel.select_identity.assert_called_once_with("a")
+
+    def test_untagged_sink_is_not_gated(self, ctrl):
+        # No frame index on the sink (e.g. the probe path) → freshness can't be
+        # judged, so the pick proceeds rather than being silently dropped.
+        ctrl._catalog = FaceMap(identities=(_ident("a", [1, 0, 0]),), threshold=0.5)
+        face = SimpleNamespace(
+            normed_embedding=normalize([1, 0, 0]), bbox=(0, 0, 10, 10)
+        )
+        ctrl._sink.publish([face], 100, 100)  # frame_index defaults None
+        ctrl.on_face_clicked((1, 1, 9, 9), expected_frame=5)
+        ctrl._panel.select_identity.assert_called_once_with("a")
 
 
 class TestSelectedFaceBbox:
@@ -400,7 +434,7 @@ class TestSelectedFaceBbox:
         )
         match = SimpleNamespace(normed_embedding=normalize([1, 0, 0]), bbox=(1, 2, 3, 4))
         other = SimpleNamespace(normed_embedding=normalize([0, 1, 0]), bbox=(5, 6, 7, 8))
-        ctrl._sink._latest = ([other, match], 100, 100)
+        ctrl._sink.publish([other, match], 100, 100)
         assert ctrl.selected_face_bbox() == (1.0, 2.0, 3.0, 4.0)
 
     def test_none_unless_exactly_one_selected(self, ctrl):
@@ -415,7 +449,7 @@ class TestSelectedFaceBbox:
             identities=(_ident("a", [1, 0, 0]),), threshold=0.5
         )
         stranger = SimpleNamespace(normed_embedding=normalize([0, 0, 1]), bbox=(1, 2, 3, 4))
-        ctrl._sink._latest = ([stranger], 100, 100)
+        ctrl._sink.publish([stranger], 100, 100)
         assert ctrl.selected_face_bbox() is None  # below threshold
 
     def _geom(self, *faces):
@@ -437,7 +471,7 @@ class TestSelectedFaceBbox:
         ctrl._catalog = FaceMap(identities=(_ident("a", [1, 0, 0]),), threshold=0.5)
         ctrl._geometry = self._geom(self._gf("a", (10.0, 20.0, 30.0, 40.0)))
         sink_face = SimpleNamespace(normed_embedding=normalize([1, 0, 0]), bbox=(1, 2, 3, 4))
-        ctrl._sink._latest = ([sink_face], 100, 100)
+        ctrl._sink.publish([sink_face], 100, 100)
         assert ctrl.selected_face_bbox() == (1.0, 2.0, 3.0, 4.0)  # the drawn box
 
     def test_no_highlight_when_sink_empty_even_with_geometry(self, ctrl):
@@ -446,7 +480,7 @@ class TestSelectedFaceBbox:
         ctrl._panel.selected_identities.return_value = ["a"]
         ctrl._catalog = FaceMap(identities=(_ident("a", [1, 0, 0]),), threshold=0.5)
         ctrl._geometry = self._geom(self._gf("a", (10.0, 20.0, 30.0, 40.0)))
-        ctrl._sink._latest = None
+        ctrl._sink.clear()
         assert ctrl.selected_face_bbox() is None
 
 

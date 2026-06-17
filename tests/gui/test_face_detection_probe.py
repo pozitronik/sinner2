@@ -44,6 +44,21 @@ class TestFaceDetectionSink:
         sink.clear()
         assert sink.latest_detections() is None
 
+    def test_latest_raw_carries_faces_and_frame_index(self):
+        sink = FaceDetectionSink()
+        face = SimpleNamespace(bbox=np.array([0.0, 0.0, 1.0, 1.0]), normed=1)
+        sink.publish([face], 10, 20, frame_index=42)
+        raw = sink.latest_raw()
+        assert raw is not None
+        faces, w, h, idx = raw
+        assert faces[0] is face  # RAW face (embedding intact), not the drawable
+        assert (w, h, idx) == (10, 20, 42)
+
+    def test_latest_raw_frame_index_defaults_none(self):
+        sink = FaceDetectionSink()
+        sink.publish([SimpleNamespace(bbox=np.array([0.0, 0.0, 1.0, 1.0]))], 10, 10)
+        assert sink.latest_raw()[3] is None  # untagged producer → no index
+
     def test_wants_crops_toggle(self):
         sink = FaceDetectionSink()
         assert sink.wants_crops() is False
@@ -145,8 +160,9 @@ def test_publishes_raw_faces_to_sink(qtbot):
     sink = FaceDetectionSink()
     probe = FaceDetectionProbe(detect_fn=lambda frame: [face], sink=sink)
     probe.analyze(np.zeros((10, 10, 3), dtype=np.uint8), 10, 10)
-    assert sink._latest is not None  # noqa: SLF001
-    faces, w, h = sink._latest  # noqa: SLF001
+    raw = sink.latest_raw()
+    assert raw is not None
+    faces, w, h, _idx = raw
     assert (w, h) == (10, 10)
     assert faces[0] is face  # raw face, embedding preserved
 
@@ -158,4 +174,4 @@ def test_detect_error_leaves_sink_untouched(qtbot):
     sink = FaceDetectionSink()
     probe = FaceDetectionProbe(detect_fn=boom, sink=sink)
     probe.analyze(np.zeros((4, 4, 3), dtype=np.uint8), 4, 4)
-    assert sink._latest is None  # noqa: SLF001 — failed detect publishes nothing
+    assert sink.latest_raw() is None  # failed detect publishes nothing

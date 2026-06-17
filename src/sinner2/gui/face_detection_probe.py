@@ -39,23 +39,37 @@ class FaceDetectionSink:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._latest: tuple[list, int, int] | None = None  # faces, width, height
+        # faces, width, height, frame_index (the frame the faces were detected
+        # on; None when the producer didn't tag it). The index lets a consumer
+        # reject a click against a STALE snapshot — the boxes on screen are from
+        # frame N, but the sink may have advanced before the click landed.
+        self._latest: tuple[list, int, int, int | None] | None = None
         # Original/swapped crop pairs for the comparison overlay, and whether
         # the swapper should bother extracting them (false → zero cost).
         self._wants_crops = False
         self._latest_crops: tuple[list, int, int] | None = None
 
-    def publish(self, faces: list, width: int, height: int) -> None:
+    def publish(
+        self, faces: list, width: int, height: int, frame_index: int | None = None
+    ) -> None:
         with self._lock:
-            self._latest = (list(faces), width, height)
+            self._latest = (list(faces), width, height, frame_index)
 
     def latest_detections(self) -> tuple[list[FaceDetection], int, int] | None:
         with self._lock:
             latest = self._latest
         if latest is None:
             return None
-        faces, w, h = latest
+        faces, w, h, _idx = latest
         return [face_from_insightface(f) for f in faces], w, h
+
+    def latest_raw(self) -> tuple[list, int, int, int | None] | None:
+        """The RAW insightface faces (with embeddings) + dims + the frame index
+        they were detected on — for the highlight / click-to-pick path (which
+        needs the embedding and the index to check freshness). Public so
+        consumers stop reaching into ``_latest``."""
+        with self._lock:
+            return self._latest
 
     # ---- Comparison crops ----
 
