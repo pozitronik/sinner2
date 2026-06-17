@@ -148,11 +148,22 @@ class FaceMapController(QObject):
     # ---- Analysis ----
 
     def _scan_signature(self, stride: int, sections: Any) -> str:
+        """A fingerprint of everything that affects clustering, so a resume only
+        continues a scan of the SAME shape. Crucially includes the detector /
+        detection size / demographics(full-pack) / threshold — resuming after
+        changing any of those would seed the old catalog with embeddings from a
+        different pipeline and silently corrupt the identities."""
         pairs = (
             sections.to_pairs()
             if sections is not None and not sections.is_empty() else []
         )
-        return f"{int(stride)}|{pairs}"
+        detector = self._detector_choice()
+        det_tok = getattr(detector, "value", detector)
+        fast = not self._panel.detect_demographics()
+        return (
+            f"{int(stride)}|{det_tok}|{int(self._detection_size())}|"
+            f"{int(fast)}|{float(self._catalog.threshold):.4f}|{pairs}"
+        )
 
     def _on_analyze_requested(self, stride: int) -> None:
         target = self._target_path()

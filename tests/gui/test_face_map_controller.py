@@ -161,6 +161,30 @@ class TestResumeRequest:
         assert fired[0].start_index == 0
         assert ctrl._resuming is False
 
+    def test_scan_signature_includes_clustering_params(self, ctrl):
+        # The fingerprint must change when ANYTHING that shapes the embeddings
+        # changes — resuming across such a change would seed the old catalog
+        # with faces from a different pipeline and corrupt the identities.
+        from sinner2.pipeline.detectors import DetectorModel
+
+        base = ctrl._scan_signature(15, None)
+        assert ctrl._scan_signature(15, None) == base  # stable when unchanged
+
+        ctrl._detector_choice = lambda: DetectorModel.YOLOFACE  # noqa: SLF001
+        assert ctrl._scan_signature(15, None) != base  # different detector
+        ctrl._detector_choice = lambda: None  # noqa: SLF001
+
+        ctrl._detection_size = lambda: 320  # noqa: SLF001
+        assert ctrl._scan_signature(15, None) != base  # different det size
+        ctrl._detection_size = lambda: 640  # noqa: SLF001
+
+        ctrl._panel.detect_demographics.return_value = True  # full pack on
+        assert ctrl._scan_signature(15, None) != base  # different embed path
+        ctrl._panel.detect_demographics.return_value = False
+
+        ctrl._catalog = ctrl._catalog.with_threshold(0.8)
+        assert ctrl._scan_signature(15, None) != base  # different threshold
+
 
 class TestCancel:
     def test_cancel_is_direct_and_synchronous(self, qtbot, tmp_path):
