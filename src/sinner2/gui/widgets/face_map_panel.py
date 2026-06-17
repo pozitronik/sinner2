@@ -27,6 +27,8 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -50,6 +52,21 @@ _SCAN_DETECTORS: list[tuple[str, str]] = [
     (DetectorModel.YOLOFACE.value, "YOLOFace 8n (fast, detection-only)"),
     (DetectorModel.SCRFD_2_5G.value, "SCRFD 2.5g (fast, detection-only)"),
 ]
+
+
+def _field_row(*widgets: QWidget, grow: QWidget | None = None) -> QWidget:
+    """A tight horizontal strip of controls for ONE QFormLayout field column —
+    lets related controls pair on a row while the form keeps the labels aligned.
+    ``grow`` stretches that widget to fill; otherwise a trailing stretch
+    left-aligns the row."""
+    container = QWidget()
+    h = QHBoxLayout(container)
+    h.setContentsMargins(0, 0, 0, 0)
+    for w in widgets:
+        h.addWidget(w, 1 if w is grow else 0)
+    if grow is None:
+        h.addStretch(1)
+    return container
 
 _THUMB = 56
 # Columns: Face · Source · Age · Sex · Appears · Score · Roll · Yaw · Pitch.
@@ -120,15 +137,17 @@ class QFaceMapPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
 
-        # ---- One Scan group, laid out the way the user asked (related controls
-        # share a row): detector + size + preview / demographics / workers +
-        # stride / refine + its min score / precompute + bake angle / Analyze. ----
+        # ---- One Scan group, aligned like the settings tab: a QFormLayout puts
+        # every label in a right-aligned column with the fields lined up; related
+        # fields pair on a row (via _field_row), and the build options sit under a
+        # divider. ----
         scan_group = QGroupBox("Scan")
-        scan_box = QVBoxLayout(scan_group)
+        form = QFormLayout(scan_group)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
+        )
 
-        # Row 1: Detector + Size + Preview.
-        row1 = QHBoxLayout()
-        row1.addWidget(QLabel("Detector:"))
         self._detector = QComboBox()
         for value, label in _SCAN_DETECTORS:
             self._detector.addItem(label, value)
@@ -140,8 +159,8 @@ class QFaceMapPanel(QWidget):
             "but they can't produce age/sex (that needs buffalo_l). EPs follow "
             "the swapper's ONNX provider selection. Downloads on first use."
         )
-        row1.addWidget(self._detector, stretch=1)
-        row1.addWidget(QLabel("Size:"))
+        form.addRow("Detector", self._detector)
+
         self._det_size = QSpinBox()
         # Same range/step as the live swapper's detection size (multiples of 32),
         # but a SEPARATE setting: this one is the offline scan's detector input,
@@ -154,55 +173,45 @@ class QFaceMapPanel(QWidget):
             "from the swapper's live detection size. Larger finds smaller/distant "
             "faces but scans slower."
         )
-        row1.addWidget(self._det_size)
-        self._preview_check = QCheckBox("Preview")
-        self._preview_check.setChecked(True)
-        self._preview_check.setToolTip(
-            "Show the frames being scanned on the preview while analyzing."
-        )
-        row1.addWidget(self._preview_check)
-        scan_box.addLayout(row1)
-
-        # Row 2: Detect age/sex (demographics — buffalo_l only).
-        row2 = QHBoxLayout()
-        self._demographics_check = QCheckBox("Detect age/sex")
-        self._demographics_check.setToolTip(
-            "Also run the gender/age model (slower) to fill the Age/Sex columns. "
-            "Off = fast detection + recognition only. Needs buffalo_l."
-        )
-        row2.addWidget(self._demographics_check)
-        row2.addStretch(1)
-        scan_box.addLayout(row2)
-
-        # Row 3: Workers + Stride.
-        row3 = QHBoxLayout()
-        row3.addWidget(QLabel("Workers:"))
         self._workers = QSpinBox()
         self._workers.setRange(1, 16)
         self._workers.setValue(4)
         self._workers.setToolTip(
             "Parallel detection threads — more keeps the GPU busier."
         )
-        row3.addWidget(self._workers)
-        row3.addWidget(QLabel("Stride:"))
+        form.addRow("Size", _field_row(
+            self._det_size, QLabel("Workers"), self._workers
+        ))
+
         self._stride = QSpinBox()
         self._stride.setRange(1, 300)
         self._stride.setValue(15)
         self._stride.setToolTip("Sample every Nth frame. Larger = faster scan.")
-        row3.addWidget(self._stride)
-        row3.addStretch(1)
-        scan_box.addLayout(row3)
+        self._preview_check = QCheckBox("Preview")
+        self._preview_check.setChecked(True)
+        self._preview_check.setToolTip(
+            "Show the frames being scanned on the preview while analyzing."
+        )
+        form.addRow("Stride", _field_row(self._stride, self._preview_check))
 
-        # Row 4: Refine keypoints + its min score (grayed with the checkbox).
-        row4 = QHBoxLayout()
+        divider = QFrame()
+        divider.setFrameShape(QFrame.Shape.HLine)
+        divider.setFrameShadow(QFrame.Shadow.Sunken)
+        form.addRow(divider)
+
+        self._demographics_check = QCheckBox("Detect age/sex")
+        self._demographics_check.setToolTip(
+            "Also run the gender/age model (slower) to fill the Age/Sex columns. "
+            "Off = fast detection + recognition only. Needs buffalo_l."
+        )
+        form.addRow(self._demographics_check)
+
         self._refine_check = QCheckBox("Refine keypoints")
         self._refine_check.setToolTip(
             "Bake 2dfan4-refined keypoints into the per-frame map — steadier "
             "alignment on tilted faces. Adds time to the scan."
         )
-        row4.addWidget(self._refine_check)
-        self._refine_min_label = QLabel("min score:")
-        row4.addWidget(self._refine_min_label)
+        self._refine_min_label = QLabel("min")
         self._refine_score = QDoubleSpinBox()
         self._refine_score.setRange(0.0, 1.0)
         self._refine_score.setSingleStep(0.05)
@@ -213,12 +222,10 @@ class QFaceMapPanel(QWidget):
             "landmark-refinement threshold — NOT the face-detection 'Score' in "
             "the list, and it never drops a face from the list."
         )
-        row4.addWidget(self._refine_score)
-        row4.addStretch(1)
-        scan_box.addLayout(row4)
+        form.addRow(_field_row(
+            self._refine_check, self._refine_min_label, self._refine_score
+        ))
 
-        # Row 5: Precompute map + Bake face angle.
-        row5 = QHBoxLayout()
         self._precompute_check = QCheckBox("Precompute map")
         self._precompute_check.setChecked(True)
         self._precompute_check.setToolTip(
@@ -226,7 +233,6 @@ class QFaceMapPanel(QWidget):
             "SKIP detection (a full-frame pass — the slow part). Off = catalog "
             "only; playback detects live (per-identity routing still works)."
         )
-        row5.addWidget(self._precompute_check)
         self._bake_angle_check = QCheckBox("Bake face angle")
         self._bake_angle_check.setChecked(True)
         self._bake_angle_check.setToolTip(
@@ -235,23 +241,19 @@ class QFaceMapPanel(QWidget):
             "it, the Pose / Landmark-68 angle sources fall back to the noisier "
             "keypoint angle there (a rebuilt face has no pose estimate)."
         )
-        row5.addWidget(self._bake_angle_check)
-        row5.addStretch(1)
-        scan_box.addLayout(row5)
+        form.addRow(_field_row(self._precompute_check, self._bake_angle_check))
 
-        # Row 6: Analyze + Reset.
-        row6 = QHBoxLayout()
         self._analyze_btn = QPushButton("Analyze faces")
         self._analyze_btn.setToolTip("Scan the target to discover the people in it.")
         self._analyze_btn.clicked.connect(self._on_analyze_clicked)
-        row6.addWidget(self._analyze_btn, stretch=1)
         self._reset_btn = QPushButton("Reset")
         self._reset_btn.setToolTip(
             "Clear the catalog + scan progress so the next Analyze starts fresh."
         )
         self._reset_btn.clicked.connect(self.resetRequested)
-        row6.addWidget(self._reset_btn)
-        scan_box.addLayout(row6)
+        form.addRow(_field_row(
+            self._analyze_btn, self._reset_btn, grow=self._analyze_btn
+        ))
         layout.addWidget(scan_group)
 
         # Persist scan settings across restarts: any change emits settingsChanged
