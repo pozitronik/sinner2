@@ -480,7 +480,15 @@ class SinnerMainWindow(QMainWindow):
         # Face mapping: the Faces panel + the analysis job + per-target catalog,
         # coordinated by FaceMapController. The overlay's pick clicks and the
         # Sources-library clicks route in via the handlers below.
-        self._face_pick_active = False
+        #
+        # Two overlays share one widget, with SEPARATE logic (see
+        # _refresh_overlay_state): the FACE-MAP overlay (editor open → boxes +
+        # selected-identity highlight + click-to-pick, independent of F8/swapper)
+        # and the F8 DIAGNOSTIC overlay (boxes only, ONLY while the editor is
+        # closed). _faces_mode drives the former; _face_overlay_on (F8) the latter.
+        # _face_analyzing forces the overlay fully down while a scan owns the
+        # display.
+        self._face_analyzing = False
         # _faces_mode = the editor panel is open (pick faces, highlight).
         # _use_face_map = the routing switch in the Face detector group — the
         # SINGLE SOURCE OF TRUTH for whether the map routes playback. Opening the
@@ -515,7 +523,7 @@ class SinnerMainWindow(QMainWindow):
         self._face_overlay.faceClicked.connect(self._face_map_ctl.on_face_clicked)
         self._face_map_ctl.analyzingChanged.connect(self._on_face_analysis_active)
         self._face_map_panel.resetRequested.connect(self._on_face_map_reset)
-        self._face_map_panel.selectionChanged.connect(self._refresh_face_highlight)
+        self._face_map_panel.selectionChanged.connect(self._on_face_selection_changed)
         self._face_map_panel.settingsChanged.connect(
             self._persist_face_analyze_settings
         )
@@ -1654,9 +1662,16 @@ class SinnerMainWindow(QMainWindow):
     _PROBE_INTERVAL_S = 0.15  # ~6 Hz: enough to track, cheap enough to stay smooth
 
     def _overlay_active(self) -> bool:
-        """The overlay shows + detects when F8 enabled it OR the Faces tab needs
-        it for face-pick clicks."""
-        return self._face_overlay_on or self._face_pick_active
+        """The overlay widget is up (and the probe/poll run) when EITHER overlay
+        wants it — the face-map overlay (editor open) or the F8 diagnostic — and
+        no scan is driving the display."""
+        return (self._faces_mode or self._face_overlay_on) and not self._face_analyzing
+
+    def _diagnostic_overlay_on(self) -> bool:
+        """The F8 'Show detection overlay' diagnostic is shown ONLY while the
+        Faces editor is CLOSED; when it's open the face-map overlay owns the
+        surface (its own boxes + selected-identity highlight)."""
+        return self._face_overlay_on and not self._faces_mode
 
     def _current_display_frame(self) -> int:
         ex = self._controller.executor()
@@ -1669,7 +1684,7 @@ class SinnerMainWindow(QMainWindow):
         never sits enabled with nothing to route). Assigning a source flips the
         switch on (see _on_library_source_selected)."""
         self._faces_mode = on
-        self._set_face_pick_mode(on)
+        self._refresh_overlay_state()
         self._refresh_face_highlight()  # clears the highlight when the editor closes
 
     def _on_use_face_map_toggled(self, on: bool) -> None:
@@ -1728,72 +1743,82 @@ class SinnerMainWindow(QMainWindow):
         bbox = self._face_map_ctl.selected_face_bbox() if self._faces_mode else None
         self._face_overlay.set_highlight(bbox)
 
+    def _on_face_selection_changed(self) -> None:
+        """A Faces-list selection changed: highlight the chosen identity's box
+        now — and, with the swapper OFF, kick a fresh detection of the current
+        frame so the box is current even while paused (the highlight reads the
+        detection sink, which the probe fills in the swapper-off case)."""
+        self._refresh_face_highlight()
+        if (
+            self._faces_mode
+            and not self._face_analyzing
+            and not self._processors.swapper_enabled()
+            and self._last_displayed_frame is not None
+        ):
+            self._submit_to_probe(self._last_displayed_frame)
+
     def _on_face_analysis_active(self, active: bool) -> None:
         """Lock the editing surface while a face-map scan runs (like a batch
         render): pause live playback so the scan owns the device + the preview,
         and disable transport/settings/pickers. The Faces panel stays live so
-        Cancel works. On finish, unlock (unless a batch is still running)."""
+        Cancel works. On finish, unlock (unless a batch is still running). The
+        scan owns the display, so _face_analyzing forces the overlay down (no
+        boxes over the scan); finishing restores it via _refresh_overlay_state."""
+        self._face_analyzing = active
         if active:
             self._session.pause()
-            # The scan drives the display directly; stop the overlay polling +
-            # clear stale (paused-frame) boxes so they don't draw over the scan.
-            self._overlay_timer.stop()
-            self._face_overlay.clear()
         self._set_editing_locked(active or self._batch_active)
-        if not active:
-            # Restore the pick overlay if face-mapping mode is still on.
-            self._set_face_pick_mode(self._faces_mode)
+        self._refresh_overlay_state()
 
-    def _set_face_pick_mode(self, on: bool) -> None:
-        """Enable clicking faces on the preview to select/capture an identity.
-        Shows the detection overlay for picking even if F8 didn't, and hides it
-        again on leave (unless F8 has it on)."""
-        self._face_pick_active = on
-        self._face_overlay.set_pick_enabled(on)
-        if self._face_overlay_on:
-            return  # F8 already manages the overlay; only the pick-ability changed
-        if on:
-            self._face_overlay.setGeometry(self._display.rect())
-            self._face_overlay.show()
-            self._overlay_timer.start()
-            if self._processors.swapper_enabled():
-                self._overlay_tick()
-            elif self._last_displayed_frame is not None:
-                self._submit_to_probe(self._last_displayed_frame)
-        else:
-            self._overlay_timer.stop()
-            self._face_overlay.hide()
-            self._face_overlay.clear()
-
-    def _apply_face_overlay_visible(self, on: bool) -> None:
-        self._face_overlay_on = on
+    def _refresh_overlay_state(self) -> None:
+        """Single owner of overlay visibility + pick-ability + the poll timer.
+        Two overlays share the one widget, with SEPARATE rules:
+          • face-map overlay (Faces editor open): detected-face boxes + the
+            selected identity's highlight + click-to-pick — independent of F8
+            and the swapper.
+          • diagnostic overlay (F8, ONLY when the editor is closed): boxes only.
+        A running scan owns the display, so the overlay is fully down then."""
+        face_map = self._faces_mode and not self._face_analyzing
+        active = self._overlay_active()
+        # Click-to-pick belongs to the face-map overlay only.
+        self._face_overlay.set_pick_enabled(face_map)
         self._refresh_overlay_modes()
-        if on:
+        if active:
             self._face_overlay.setGeometry(self._display.rect())
             self._face_overlay.show()
-            self._overlay_timer.start()
-            # Show something immediately rather than waiting for a poll tick or
-            # the next rendered frame (key when paused). Swapper on → its
-            # published detections; swapper off → probe the current frame.
-            if self._processors.swapper_enabled():
-                self._overlay_tick()
-            elif self._last_displayed_frame is not None:
-                self._submit_to_probe(self._last_displayed_frame)
-        elif not self._face_pick_active:
-            # F8 off AND not picking → tear the overlay down.
+            if not self._overlay_timer.isActive():
+                self._overlay_timer.start()
+            self._refresh_overlay_now()
+        else:
             self._overlay_timer.stop()
             self._face_overlay.hide()
             self._face_overlay.clear()
             # Keep the sink's latest detection: the swapper keeps publishing
             # whether or not the overlay is shown, so re-enabling (even while
-            # paused) can display the current frame's boxes at once instead of
-            # waiting for the next rendered frame.
+            # paused) can display the current frame's boxes at once.
+
+    def _refresh_overlay_now(self) -> None:
+        """Paint the current frame's boxes immediately rather than waiting for a
+        poll tick or the next rendered frame (matters while paused). Swapper on →
+        its published detections; off → probe the last shown frame."""
+        if self._processors.swapper_enabled():
+            self._overlay_tick()
+        elif self._last_displayed_frame is not None:
+            self._submit_to_probe(self._last_displayed_frame)
+
+    def _apply_face_overlay_visible(self, on: bool) -> None:
+        """F8 'Show detection overlay'. It governs the DIAGNOSTIC overlay only —
+        while the Faces editor is open the face-map overlay owns the surface, so
+        flipping F8 there changes nothing visible (see _refresh_overlay_state)."""
+        self._face_overlay_on = on
+        self._refresh_overlay_state()
 
     def _refresh_overlay_modes(self) -> None:
-        """Comparison crops are only wanted (and drawn) when BOTH the face
-        overlay and the comparison toggle are on — so the swapper extracts
-        them only then (zero cost otherwise)."""
-        comparison = self._face_overlay_on and self._comparison_on
+        """Comparison crops are only wanted (and drawn) for the DIAGNOSTIC
+        overlay (F8 on, editor closed) with the comparison toggle on — so the
+        swapper extracts them only then (zero cost otherwise); the face-map
+        overlay never shows comparison crops."""
+        comparison = self._diagnostic_overlay_on() and self._comparison_on
         self._detection_sink.set_wants_crops(comparison)
         self._face_overlay.set_comparison(comparison)
 
@@ -1845,7 +1870,8 @@ class SinnerMainWindow(QMainWindow):
         sink_wh = latest[1:] if latest is not None else None
         ex = self._controller.executor()
         print(
-            f"[overlay] f8={self._face_overlay_on} pick={self._face_pick_active} "
+            f"[overlay] f8={self._face_overlay_on} facesMode={self._faces_mode} "
+            f"analyzing={self._face_analyzing} "
             f"swapper={self._processors.swapper_enabled()} "
             f"sinkFaces={sink_n} sinkWH={sink_wh} "
             f"shownFaces={len(self._face_overlay._detections)} "  # noqa: SLF001
@@ -1884,9 +1910,10 @@ class SinnerMainWindow(QMainWindow):
                 current = executor.current_frame.get()
                 if current >= 0:
                     executor.seek(current)
-            if not (self._face_overlay_on and self._processors.swapper_enabled()):
+            if not (self._diagnostic_overlay_on() and self._processors.swapper_enabled()):
                 self._status_bar.show_message(
-                    "Comparison needs the face overlay (F8) and the swapper on",
+                    "Comparison needs the face overlay (F8, Faces editor closed) "
+                    "and the swapper on",
                     4000,
                 )
         self._update_settings(face_comparison_visible=on)
@@ -1922,8 +1949,14 @@ class SinnerMainWindow(QMainWindow):
         self._requestDetection.emit(frame.copy(), w, h)
 
     def _on_detections(self, detections: object, width: int, height: int) -> None:
-        if self._overlay_active():
-            self._face_overlay.set_detections(detections, width, height)  # type: ignore[arg-type]
+        # The probe result (swapper-off path). Draw the boxes and, in face-map
+        # mode, re-apply the selected identity's highlight — the probe also fed
+        # the sink the highlight matches against, so this is the swapper-off
+        # counterpart to _overlay_tick's highlight refresh.
+        if not self._overlay_active():
+            return
+        self._face_overlay.set_detections(detections, width, height)  # type: ignore[arg-type]
+        self._refresh_face_highlight()
 
     def _on_use_camera(self) -> None:
         """Make the camera the active target (from the picker button or the Live

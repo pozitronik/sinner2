@@ -364,13 +364,38 @@ class TestStatusActionButtons:
         seeks = []
         monkeypatch.setattr(window._session, "seek_to", seeks.append)  # noqa: SLF001
         window._face_overlay_on = False  # noqa: SLF001
-        window._face_pick_active = False  # noqa: SLF001
+        window._faces_mode = False  # noqa: SLF001 — editor closed → overlay down
         window._detection_sink.publish(  # noqa: SLF001
             [SimpleNamespace(bbox=np.array([0.0, 0.0, 10.0, 10.0]))], 20, 10
         )
         window._on_seek_requested(3)  # noqa: SLF001
         assert window._detection_sink.latest_detections() is not None  # noqa: SLF001
         assert seeks == [3]
+
+    def test_face_map_overlay_owns_surface_over_f8(self, window):
+        # Split: with the Faces editor open, the overlay is the FACE-MAP overlay
+        # (pick + highlight) regardless of F8 — the F8 diagnostic is suppressed.
+        window._face_overlay_on = True  # noqa: SLF001 — F8 on
+        window._on_faces_mode_toggled(True)  # noqa: SLF001 — editor open
+        # isHidden (not isVisible) — headless, ancestors aren't shown.
+        assert window._face_overlay.isHidden() is False  # noqa: SLF001
+        assert window._face_overlay._pick_enabled is True  # noqa: SLF001 — face-map pick
+        assert window._diagnostic_overlay_on() is False  # noqa: SLF001 — F8 yields
+        # Closing the editor hands the surface back to the F8 diagnostic.
+        window._on_faces_mode_toggled(False)  # noqa: SLF001
+        assert window._diagnostic_overlay_on() is True  # noqa: SLF001
+        assert window._face_overlay._pick_enabled is False  # noqa: SLF001
+
+    def test_analysis_forces_overlay_down(self, window):
+        # A scan owns the display: the overlay is fully down regardless of F8 /
+        # editor, and comes back when it finishes.
+        window._on_faces_mode_toggled(True)  # noqa: SLF001 — editor open
+        window._on_face_analysis_active(True)  # noqa: SLF001 — scan starts
+        assert window._face_overlay.isHidden() is True  # noqa: SLF001
+        assert window._overlay_timer.isActive() is False  # noqa: SLF001
+        window._on_face_analysis_active(False)  # noqa: SLF001 — scan done
+        assert window._face_overlay.isHidden() is False  # noqa: SLF001 — editor still open
+        assert window._overlay_timer.isActive() is True  # noqa: SLF001
 
     def test_comparison_checkbox_drives_wants_crops(self, window):
         window._processors._overlay_enabled.toggle()  # noqa: SLF001  # overlay on
@@ -832,6 +857,32 @@ class TestFaceMappingWiring:
         window._faces_mode = False  # noqa: SLF001 — mode off → highlight cleared
         window._refresh_face_highlight()  # noqa: SLF001
         assert calls[-1] is None
+
+    def test_selection_kicks_probe_when_swapper_off(self, window, monkeypatch):
+        # Point 2: selecting a face must highlight it reliably even with the
+        # swapper OFF — so the selection kicks a fresh detection of the current
+        # frame (the highlight reads the sink the probe fills). Swapper ON uses
+        # the swapper's published detections, so no probe is needed.
+        import numpy as np
+
+        monkeypatch.setattr(window._processors, "swapper_enabled", lambda: False)
+        monkeypatch.setattr(
+            window._face_map_ctl, "selected_face_bbox", lambda: None  # noqa: SLF001
+        )
+        window._faces_mode = True  # noqa: SLF001
+        window._face_analyzing = False  # noqa: SLF001
+        window._last_displayed_frame = np.zeros((10, 20, 3), np.uint8)  # noqa: SLF001
+        probed = []
+        window._requestDetection.connect(  # noqa: SLF001
+            lambda _f, w, h: probed.append((w, h))
+        )
+        window._on_face_selection_changed()  # noqa: SLF001
+        assert probed == [(20, 10)]  # fresh detection kicked
+        # Swapper ON → rely on the published sink, no probe.
+        monkeypatch.setattr(window._processors, "swapper_enabled", lambda: True)
+        probed.clear()
+        window._on_face_selection_changed()  # noqa: SLF001
+        assert probed == []
 
     def test_live_running_disables_faces_toggle(self, window):
         window._on_live_running(True)  # noqa: SLF001
