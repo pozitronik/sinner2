@@ -79,6 +79,21 @@ class TestMatching:
         # orthogonal third axis pushes it below — a clear stranger.
         assert m.best_match(_unit(0, 0, 1)) is None
 
+    def test_best_match_exact_tie_keeps_first(self):
+        # Identical centroids → an exact tie; the FIRST (catalog order) wins, not
+        # the last (the >= last-wins quirk the docstring contradicted).
+        m = FaceMap(
+            identities=(Identity("x", _unit(1, 0)), Identity("y", _unit(1, 0))),
+            threshold=0.5,
+        )
+        assert m.best_match(_unit(1, 0)).id == "x"
+
+    def test_best_match_threshold_is_inclusive(self):
+        # A similarity EXACTLY at the threshold still matches (the tie-break fix
+        # must not turn the threshold gate strict). sim == 1.0 == threshold.
+        m = FaceMap(identities=(Identity("a", _unit(1, 0)),), threshold=1.0)
+        assert m.best_match(_unit(1, 0)).id == "a"
+
     def test_source_for_matched_identity(self):
         m = self._map()
         assert m.source_for(_unit(0.95, 0.05, 0)) == "/src/alice.png"

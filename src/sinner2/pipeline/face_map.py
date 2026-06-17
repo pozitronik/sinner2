@@ -164,13 +164,14 @@ class FaceMap:
 
     def best_match(self, embedding: Embedding) -> Identity | None:
         """The identity whose centroid is nearest to ``embedding`` and at least
-        ``threshold`` similar, or None. Ties go to the higher similarity."""
+        ``threshold`` similar, or None. An exact tie keeps the FIRST such identity
+        (deterministic by catalog order; the threshold is still inclusive)."""
         ne = normalize(embedding)
         best: Identity | None = None
-        best_sim = self.threshold
+        best_sim = -2.0  # below any cosine, so the inclusive threshold is the bar
         for ident in self.identities:
             sim = cosine(ne, ident.centroid)
-            if sim >= best_sim:
+            if sim >= self.threshold and sim > best_sim:  # strict: first wins ties
                 best, best_sim = ident, sim
         return best
 

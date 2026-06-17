@@ -1058,11 +1058,11 @@ class TestCatalogMatcher:
         q = normalize([1, 2, 3])
         assert m.source_for(q) == fm.source_for(q) == "/d.png"
 
-    def test_tie_goes_to_later_identity_like_pure(self):
+    def test_tie_goes_to_first_identity_like_pure(self):
         from sinner2.pipeline.face_map import FaceMap, Identity, normalize
 
-        # Identical centroids, different sources: the pure >= scan keeps the
-        # LATER one; the matcher's >= loop must agree.
+        # Identical centroids, different sources: best_match keeps the FIRST on an
+        # exact tie (deterministic by catalog order); the matcher must agree.
         fm = FaceMap(
             identities=(
                 Identity("x", normalize([1, 0, 0]), source_path="/x.png"),
@@ -1072,7 +1072,7 @@ class TestCatalogMatcher:
         )
         m = _CatalogMatcher(fm)
         q = normalize([1, 0, 0])
-        assert m.source_for(q) == fm.source_for(q) == "/y.png"
+        assert m.source_for(q) == fm.source_for(q) == "/x.png"
 
 
 class TestGeometryMappingPath:

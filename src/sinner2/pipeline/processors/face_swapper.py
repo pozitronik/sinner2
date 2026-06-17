@@ -322,9 +322,9 @@ class _CatalogMatcher:
             and self._matrix.shape[1] == e.shape[0]
         ):
             sims = self._matrix @ e  # GEMV: cosine to every centroid at once
-            best_i, best_sim = -1, self._threshold
+            best_i, best_sim = -1, -2.0  # mirror FaceMap.best_match (first wins ties)
             for i in range(sims.shape[0]):
-                if sims[i] >= best_sim:  # >= : on a tie the later identity wins
+                if sims[i] >= self._threshold and sims[i] > best_sim:
                     best_i, best_sim = i, float(sims[i])
             if best_i >= 0:
                 return self._sources[best_i]  # matched (source may be None → skip)
