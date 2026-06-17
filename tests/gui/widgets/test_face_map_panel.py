@@ -257,6 +257,27 @@ class TestAnalyzeControls:
         panel.set_analyzing(False)
         assert panel._det_size.isEnabled() is True  # noqa: SLF001
 
+    def test_refine_min_score_grays_with_refine(self, panel):
+        # 'Refine min score' is gated by 'Refine keypoints' (it does nothing
+        # otherwise) — the dependency is shown by graying.
+        assert panel.landmark_refine() is False  # default off
+        assert panel._refine_score.isEnabled() is False  # noqa: SLF001 — grayed
+        assert panel._refine_min_label.isEnabled() is False  # noqa: SLF001
+        panel._refine_check.setChecked(True)  # noqa: SLF001
+        assert panel._refine_score.isEnabled() is True  # noqa: SLF001
+        assert panel._refine_min_label.isEnabled() is True  # noqa: SLF001
+        panel._refine_check.setChecked(False)  # noqa: SLF001
+        assert panel._refine_score.isEnabled() is False  # noqa: SLF001
+
+    def test_refine_dependency_survives_restore_and_analyze(self, panel):
+        # Restoring refine=on enables the min score; an analyze cycle re-applies it.
+        panel.restore_settings(landmark_refine=True)
+        assert panel._refine_score.isEnabled() is True  # noqa: SLF001
+        panel.set_analyzing(True)
+        assert panel._refine_score.isEnabled() is False  # noqa: SLF001 — locked
+        panel.set_analyzing(False)
+        assert panel._refine_score.isEnabled() is True  # noqa: SLF001 — refine still on
+
     def test_user_change_emits_settings_changed(self, panel, qtbot):
         fired = []
         panel.settingsChanged.connect(lambda: fired.append(1))

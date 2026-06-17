@@ -192,13 +192,17 @@ class QFaceMapPanel(QWidget):
             "alignment on tilted faces. Adds time to the scan."
         )
         det_row2.addWidget(self._refine_check)
-        det_row2.addWidget(QLabel("Min score"))
+        self._refine_min_label = QLabel("Refine min score")
+        det_row2.addWidget(self._refine_min_label)
         self._refine_score = QDoubleSpinBox()
         self._refine_score.setRange(0.0, 1.0)
         self._refine_score.setSingleStep(0.05)
         self._refine_score.setValue(0.5)
         self._refine_score.setToolTip(
-            "Skip refinement when 2dfan4's confidence is below this."
+            "Only with 'Refine keypoints' on: skip the 2dfan4 refinement for a "
+            "face when 2dfan4's landmark confidence is below this. This is the "
+            "landmark-refinement threshold — NOT the face-detection 'Score' in "
+            "the list, and it never drops a face from the list."
         )
         det_row2.addWidget(self._refine_score)
         det_row2.addStretch(1)
@@ -228,6 +232,10 @@ class QFaceMapPanel(QWidget):
         self._refine_check.toggled.connect(self._on_settings_changed)
         self._refine_score.valueChanged.connect(self._on_settings_changed)
         self._bake_angle_check.toggled.connect(self._on_settings_changed)
+        # "Refine min score" only matters when refinement is on — gray it with
+        # the checkbox so the dependency is visible.
+        self._refine_check.toggled.connect(self._update_refine_rows)
+        self._update_refine_rows()
 
         analyze_row = QHBoxLayout()
         self._analyze_btn = QPushButton("Analyze faces")
@@ -318,6 +326,13 @@ class QFaceMapPanel(QWidget):
         if not self._restoring:
             self.settingsChanged.emit()
 
+    def _update_refine_rows(self) -> None:
+        """Gray 'Refine min score' (label + box) unless 'Refine keypoints' is on —
+        it does nothing otherwise, so the dependency is visible."""
+        on = self._refine_check.isChecked()
+        self._refine_min_label.setEnabled(on)
+        self._refine_score.setEnabled(on)
+
     def restore_settings(
         self,
         *,
@@ -355,6 +370,7 @@ class QFaceMapPanel(QWidget):
                 self._bake_angle_check.setChecked(bool(bake_angle))
         finally:
             self._restoring = False
+        self._update_refine_rows()  # reflect the restored refine state
 
     def face_map(self) -> FaceMap:
         return self._face_map
@@ -463,6 +479,8 @@ class QFaceMapPanel(QWidget):
         self._progress.setVisible(on)
         if on:
             self._progress.setRange(0, 0)
+        else:
+            self._update_refine_rows()  # re-apply the refine dependency on unlock
 
     def set_progress(self, done: int, total: int) -> None:
         if total > 0:
