@@ -776,3 +776,35 @@ class TestCarryOver:
     def test_empty_old_is_passthrough(self):
         fresh = FaceMap(identities=(_ident("a", [1, 0]),))
         assert _carry_over_assignments(FaceMap.empty(), fresh) == fresh
+
+
+class TestShutdownJoin:
+    """Shutdown must JOIN the scan thread in bounded retries: a single wait() can
+    return mid-geometry-pass, and destroying a running QThread crashes on exit."""
+
+    def _bare(self, thread):
+        c = FaceMapController.__new__(FaceMapController)  # QObject: object.__new__ unsafe
+        c._job = MagicMock()
+        c._thread = thread
+        return c
+
+    def test_retries_the_join_until_the_thread_stops(self):
+        thread = MagicMock()
+        # Running for two checks, then stopped (plus the final post-loop check).
+        thread.isRunning.side_effect = [True, True, False, False]
+        c = self._bare(thread)
+        c.shutdown()
+        c._job.cancel.assert_called_once()
+        thread.quit.assert_called_once()
+        assert thread.wait.call_count == 2  # retried until it stopped
+
+    def test_gives_up_after_max_waits_and_logs(self, caplog):
+        from sinner2.gui import face_map_controller as fmc
+
+        thread = MagicMock()
+        thread.isRunning.return_value = True  # never stops
+        c = self._bare(thread)
+        with caplog.at_level("WARNING"):
+            c.shutdown()
+        assert thread.wait.call_count == fmc._SCAN_JOIN_MAX_WAITS  # bounded, not ∞
+        assert "did not stop" in caplog.text

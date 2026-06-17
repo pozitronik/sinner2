@@ -12,6 +12,7 @@ cv2, or real models.
 """
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -38,6 +39,15 @@ from sinner2.pipeline.face_map_store import (
     save_use_map,
     use_map_path,
 )
+
+_log = logging.getLogger(__name__)
+
+# Bounded join on shutdown: a long geometry pass may not honour cancel instantly,
+# so retry the wait a few times (≈30s worst case) rather than destroying a still-
+# running QThread (which crashes on exit). Mirrors main_window's detection-thread
+# join.
+_SCAN_JOIN_WAIT_MS = 2000
+_SCAN_JOIN_MAX_WAITS = 15
 
 # (identity_id) -> a target thumbnail object (a QPixmap in the app; anything in
 # tests). Returns None when the crop can't be extracted.
@@ -545,9 +555,21 @@ class FaceMapController(QObject):
         return best
 
     def shutdown(self) -> None:
+        """Cancel the scan and JOIN the thread in bounded increments. A single
+        wait() can return while a long geometry pass is still mid-frame, leaving
+        Qt to destroy a running QThread (crash on exit) — retry the join, and log
+        if it never stops rather than tearing it down underneath itself."""
         self._job.cancel()
         self._thread.quit()
-        self._thread.wait(2000)
+        waits = 0
+        while self._thread.isRunning() and waits < _SCAN_JOIN_MAX_WAITS:
+            self._thread.wait(_SCAN_JOIN_WAIT_MS)
+            waits += 1
+        if self._thread.isRunning():
+            _log.warning(
+                "face-map scan thread did not stop after %d×%dms; leaving it",
+                _SCAN_JOIN_MAX_WAITS, _SCAN_JOIN_WAIT_MS,
+            )
 
 
 def _carry_over_assignments(old: FaceMap, fresh: FaceMap) -> FaceMap:
