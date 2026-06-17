@@ -19,6 +19,7 @@ from PySide6.QtCore import QObject, Signal, Slot
 from sinner2.config.target import Target, TargetKind
 from sinner2.io.cv2_video_target_reader import CV2VideoTargetReader
 from sinner2.io.target_reader import ImageTargetReader, TargetReader
+from sinner2.pipeline.face_analyser import pin_shared_face_analysis
 from sinner2.pipeline.face_map_analyzer import (
     DetectFn,
     analyze_target,
@@ -177,20 +178,26 @@ class FaceMapAnalysisJob(QObject):
             detect = self._detect_factory(
                 providers, request.detection_size, request.fast, request.detector,
             )
-            catalog, scanned, total = analyze_target(
-                reader, detect,
-                stride=request.stride, threshold=request.threshold,
-                sections=request.sections, workers=request.workers,
-                start_index=request.start_index, initial=request.initial,
-                cancel_event=self._cancel,
-                on_progress=lambda done, tot: self.progress.emit(done, tot),
-                on_preview=on_preview,
-                on_position=lambda idx: self.position.emit(idx),
-            )
-            # Phase 2 — the detection-free runtime artifact. Reuses the open
-            # reader; matches every frame's faces to the catalog just built.
-            if request.compute_geometry and not self._cancel.is_set():
-                geometry = self._build_geometry(reader, catalog, providers, request)
+            # Pin the shared buffalo_l pack across BOTH phases: a concurrent
+            # providers/det-size change must not null + finalize its ORT sessions
+            # under these scan workers (the teardown defers to the scan's end).
+            with pin_shared_face_analysis():
+                catalog, scanned, total = analyze_target(
+                    reader, detect,
+                    stride=request.stride, threshold=request.threshold,
+                    sections=request.sections, workers=request.workers,
+                    start_index=request.start_index, initial=request.initial,
+                    cancel_event=self._cancel,
+                    on_progress=lambda done, tot: self.progress.emit(done, tot),
+                    on_preview=on_preview,
+                    on_position=lambda idx: self.position.emit(idx),
+                )
+                # Phase 2 — the detection-free runtime artifact. Reuses the open
+                # reader; matches every frame's faces to the catalog just built.
+                if request.compute_geometry and not self._cancel.is_set():
+                    geometry = self._build_geometry(
+                        reader, catalog, providers, request
+                    )
         except Exception as exc:  # noqa: BLE001
             self.failed.emit(str(exc))
             return

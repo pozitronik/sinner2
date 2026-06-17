@@ -531,3 +531,52 @@ class TestModelDownloadRoot:
         captured = self._capture_root(monkeypatch)
         face_analyser._get_shared_face_analysis(None)
         assert captured["root"] == str(tmp_path)
+
+
+class TestSharedTeardownGuard:
+    """A providers/det-size change tears down the shared buffalo_l pack; while a
+    scan is mid-inference on it the teardown must be DEFERRED (gate on
+    quiescence), else an ORT session is finalized under a running scan worker."""
+
+    def test_reset_is_immediate_when_unpinned(self):
+        face_analyser._shared_app = object()  # noqa: SLF001
+        face_analyser.reset_shared_face_analysis()
+        assert face_analyser._shared_app is None  # noqa: SLF001  # live path: now
+
+    def test_reset_defers_while_pinned_then_fires_on_release(self):
+        sentinel = object()
+        face_analyser._shared_app = sentinel  # noqa: SLF001
+        with face_analyser.pin_shared_face_analysis():
+            face_analyser.reset_shared_face_analysis()
+            # NOT torn down under the scan — the session stays alive.
+            assert face_analyser._shared_app is sentinel  # noqa: SLF001
+        # The deferred drop applies once the scan releases the pin.
+        assert face_analyser._shared_app is None  # noqa: SLF001
+
+    def test_nested_pins_defer_until_the_last_release(self):
+        sentinel = object()
+        face_analyser._shared_app = sentinel  # noqa: SLF001
+        with face_analyser.pin_shared_face_analysis():
+            with face_analyser.pin_shared_face_analysis():
+                face_analyser.reset_shared_face_analysis()
+                assert face_analyser._shared_app is sentinel  # noqa: SLF001
+            # One pin still held → still deferred.
+            assert face_analyser._shared_app is sentinel  # noqa: SLF001
+        assert face_analyser._shared_app is None  # noqa: SLF001
+
+    def test_pin_release_without_a_reset_leaves_the_pack(self):
+        sentinel = object()
+        face_analyser._shared_app = sentinel  # noqa: SLF001
+        with face_analyser.pin_shared_face_analysis():
+            pass
+        assert face_analyser._shared_app is sentinel  # noqa: SLF001  # no drop
+
+    def test_pin_balances_on_exception(self):
+        face_analyser._shared_app = object()  # noqa: SLF001
+        with pytest.raises(RuntimeError):
+            with face_analyser.pin_shared_face_analysis():
+                raise RuntimeError("scan blew up")
+        # The pin released despite the error → a later reset is immediate again.
+        assert face_analyser._shared_pins == 0  # noqa: SLF001
+        face_analyser.reset_shared_face_analysis()
+        assert face_analyser._shared_app is None  # noqa: SLF001

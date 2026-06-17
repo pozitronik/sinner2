@@ -218,3 +218,24 @@ class TestDetectorRelease:
         with qtbot.waitSignal(job.finished, timeout=2000):
             job.run(AnalysisRequest("clip.mp4", stride=1, compute_geometry=False))
         assert released == [1]  # the catalog detector was released
+
+
+class TestSharedPackPin:
+    def test_scan_pins_the_shared_pack_during_inference(self, qtbot):
+        # While the scan infers, the shared buffalo_l pack is pinned so a
+        # concurrent providers/det-size change can't tear it down under the scan
+        # workers (the teardown defers); the pin releases once the scan ends.
+        from sinner2.pipeline import face_analyser
+
+        seen: list[int] = []
+
+        def detect(frame):
+            seen.append(face_analyser._shared_pins)  # noqa: SLF001
+            return frame
+
+        frames = [[_Face(_emb(1, 0, 0))], [_Face(_emb(0, 1, 0))]]
+        job, _ = _job(frames, detect=detect)
+        with qtbot.waitSignal(job.finished, timeout=2000):
+            job.run(AnalysisRequest("clip.mp4", stride=1, compute_geometry=False))
+        assert seen and all(p >= 1 for p in seen)  # pinned during every detect
+        assert face_analyser._shared_pins == 0  # noqa: SLF001  # released after

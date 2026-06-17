@@ -1,5 +1,6 @@
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from typing import Any
 
 import numpy as np
@@ -56,6 +57,11 @@ def _buffalo_root_and_pack(models_dir: Any) -> tuple[Any, Any]:
 
 _shared_app: Any = None
 _shared_lock = threading.RLock()
+# A catalog scan pins the shared pack while it infers (pin_shared_face_analysis):
+# a providers/det-size teardown landing mid-scan is DEFERRED to the last unpin so
+# it can't null + finalize an ORT session under a running scan worker.
+_shared_pins = 0
+_reset_pending = False
 
 
 def _get_shared_face_analysis(
@@ -133,10 +139,49 @@ def _get_shared_face_analysis(
 
 
 def reset_shared_face_analysis() -> None:
-    """Test-only — drop the cached insightface model."""
-    global _shared_app
+    """Drop the cached insightface model so the next call rebuilds it — used on a
+    providers / det-size change (player_controller) and by tests.
+
+    If a catalog scan is PINNING the pack (mid-inference on its ORT sessions via
+    ``pin_shared_face_analysis``), the drop is DEFERRED until the last pin
+    releases: nulling + finalizing an ORT session under a running scan worker is
+    a use-after-free. Quiescent (the live chain / detection probe path) → drops
+    immediately, exactly as before."""
+    global _reset_pending
     with _shared_lock:
-        _shared_app = None
+        if _shared_pins > 0:
+            _reset_pending = True
+            return
+        _drop_shared_app_locked()
+
+
+def _drop_shared_app_locked() -> None:
+    """Null the singleton and clear any deferred-drop flag. Caller holds the lock
+    (RLock, so reentry from a pin release is fine)."""
+    global _shared_app, _reset_pending
+    _shared_app = None
+    _reset_pending = False
+
+
+@contextmanager
+def pin_shared_face_analysis() -> Iterator[None]:
+    """Pin the shared buffalo_l pack for the duration of a catalog scan so a
+    concurrent providers/det-size change can't null + finalize its ORT sessions
+    under the scan's worker threads. A teardown requested while pinned is
+    deferred and applied when the last pin releases — which also keeps the scan
+    on ONE consistent detector (the premise the resume signature relies on). The
+    live chain and detection probe do NOT pin: they re-fetch the singleton per
+    frame and want a providers change to take effect at once."""
+    global _shared_pins
+    with _shared_lock:
+        _shared_pins += 1
+    try:
+        yield
+    finally:
+        with _shared_lock:
+            _shared_pins -= 1
+            if _shared_pins == 0 and _reset_pending:
+                _drop_shared_app_locked()
 
 
 class FaceAnalyser:
