@@ -63,6 +63,13 @@ class TestYoloParse:
         np.testing.assert_allclose(f.kps, s.planted_kps, atol=1.0)
         assert abs(f.det_score - 0.9) < 1e-5
 
+    def test_degenerate_frame_returns_empty_not_div_by_zero(self):
+        # A 0-height (or 0-width) frame must not crash on `size / h` — it has no
+        # faces, so return [] instead of raising ZeroDivisionError.
+        s = _PlantedYoloSession()
+        assert _yolo_detect(s, _frame(640, 0), "input", "output", 0.5, 0.4, 640) == []
+        assert _yolo_detect(s, _frame(0, 640), "input", "output", 0.5, 0.4, 640) == []
+
     def test_scales_boxes_to_original_resolution(self):
         # A 1280x1280 frame is fit to 640 (ratio 2): the planted 640-space box
         # maps back ×2.

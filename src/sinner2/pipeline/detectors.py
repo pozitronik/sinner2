@@ -77,6 +77,8 @@ def _yolo_detect(
     size: int,
 ) -> list[FaceLite]:
     h, w = frame.shape[:2]
+    if h == 0 or w == 0:
+        return []  # degenerate (empty) frame → no faces; avoids the /scale div-by-0
     scale = min(size / h, size / w)
     rh, rw = int(round(h * scale)), int(round(w * scale))
     canvas = np.zeros((size, size, 3), np.float32)
