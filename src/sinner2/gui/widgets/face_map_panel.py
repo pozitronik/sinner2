@@ -255,7 +255,11 @@ class QFaceMapPanel(QWidget):
         header.setStretchLastSection(False)
         for col, width in _WIDTHS.items():
             self._table.setColumnWidth(col, width)
-        self._table.clicked.connect(self._on_cell_clicked)
+        # Single click only SELECTS (→ selectionChanged → highlight, no frame
+        # jump); DOUBLE click jumps the preview to that person's first frame.
+        # Keeping them separate stops the preview from lurching every time you
+        # click a row to inspect someone.
+        self._table.doubleClicked.connect(self._on_cell_double_clicked)
         self._table.selectionModel().selectionChanged.connect(
             lambda *_: self.selectionChanged.emit()
         )
@@ -469,7 +473,7 @@ class QFaceMapPanel(QWidget):
         item = self._model.item(row, _C_FACE)
         return str(item.data(_ID_ROLE)) if item is not None else None
 
-    def _on_cell_clicked(self, index) -> None:  # type: ignore[no-untyped-def]
+    def _on_cell_double_clicked(self, index) -> None:  # type: ignore[no-untyped-def]
         ident_id = self._row_id(index.row())
         if ident_id is None:
             return

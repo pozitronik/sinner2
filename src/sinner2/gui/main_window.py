@@ -1663,15 +1663,23 @@ class SinnerMainWindow(QMainWindow):
 
     def _overlay_active(self) -> bool:
         """The overlay widget is up (and the probe/poll run) when EITHER overlay
-        wants it — the face-map overlay (editor open) or the F8 diagnostic — and
-        no scan is driving the display."""
-        return (self._faces_mode or self._face_overlay_on) and not self._face_analyzing
+        wants it — the face-map overlay or the F8 diagnostic — and no scan owns
+        the display."""
+        return (
+            self._face_map_overlay_on() or self._diagnostic_overlay_on()
+        ) and not self._face_analyzing
+
+    def _face_map_overlay_on(self) -> bool:
+        """The face-map overlay (selected-identity highlight + click-to-pick) is
+        gated by the 'Use face map' TOGGLE — the single gate for face-map mode —
+        AND the editor being open (so there's a selection). With the toggle OFF
+        the preview is pure single-source: no face-map overlay at all."""
+        return self._use_face_map and self._faces_mode
 
     def _diagnostic_overlay_on(self) -> bool:
-        """The F8 'Show detection overlay' diagnostic is shown ONLY while the
-        Faces editor is CLOSED; when it's open the face-map overlay owns the
-        surface (its own boxes + selected-identity highlight)."""
-        return self._face_overlay_on and not self._faces_mode
+        """The F8 'Show detection overlay' diagnostic boxes — shown whenever the
+        face-map overlay isn't owning the surface (toggle off, or editor closed)."""
+        return self._face_overlay_on and not self._face_map_overlay_on()
 
     def _current_display_frame(self) -> int:
         ex = self._controller.executor()
@@ -1720,13 +1728,17 @@ class SinnerMainWindow(QMainWindow):
         self._processors.set_face_map_available(self._map_available)
 
     def _set_use_face_map(self, on: bool, *, persist: bool = True) -> None:
-        """SINGLE SOURCE OF TRUTH for routing: set the switch state, reflect it on
-        the checkbox, (optionally) persist per target, and apply routing."""
+        """SINGLE SOURCE OF TRUTH for face-map mode: set the switch state, reflect
+        it on the checkbox, (optionally) persist per target, apply swap routing,
+        AND flip the overlay (face-map ↔ diagnostic). This toggle is the one gate
+        between single-source and face-map — overlay included."""
         self._use_face_map = bool(on)
         self._processors.set_use_face_map(on)
         if persist:
             self._face_map_ctl.set_use_for_playback(on)
         self._refresh_face_map_routing()
+        self._refresh_overlay_state()
+        self._refresh_face_highlight()
 
     def _refresh_face_map_routing(self) -> None:
         """Routing is active ⟺ the "Use face map" switch is on. When active the
@@ -1738,9 +1750,13 @@ class SinnerMainWindow(QMainWindow):
         self._face_map_ctl.set_mode_active(active)
 
     def _refresh_face_highlight(self) -> None:
-        """Highlight the selected identity's box on the overlay (only in
-        face-mapping mode); nothing selected / mode off → all boxes normal."""
-        bbox = self._face_map_ctl.selected_face_bbox() if self._faces_mode else None
+        """Highlight the selected identity's box on the overlay — only when the
+        face-map overlay is active (toggle ON + editor open); otherwise all boxes
+        normal."""
+        bbox = (
+            self._face_map_ctl.selected_face_bbox()
+            if self._face_map_overlay_on() else None
+        )
         self._face_overlay.set_highlight(bbox)
 
     def _on_face_selection_changed(self) -> None:
@@ -1750,7 +1766,7 @@ class SinnerMainWindow(QMainWindow):
         detection sink, which the probe fills in the swapper-off case)."""
         self._refresh_face_highlight()
         if (
-            self._faces_mode
+            self._face_map_overlay_on()
             and not self._face_analyzing
             and not self._processors.swapper_enabled()
             and self._last_displayed_frame is not None
@@ -1773,12 +1789,13 @@ class SinnerMainWindow(QMainWindow):
     def _refresh_overlay_state(self) -> None:
         """Single owner of overlay visibility + pick-ability + the poll timer.
         Two overlays share the one widget, with SEPARATE rules:
-          • face-map overlay (Faces editor open): detected-face boxes + the
-            selected identity's highlight + click-to-pick — independent of F8
-            and the swapper.
-          • diagnostic overlay (F8, ONLY when the editor is closed): boxes only.
+          • face-map overlay (face-map MODE = 'Use face map' ON + editor open):
+            detected-face boxes + the selected identity's highlight +
+            click-to-pick.
+          • diagnostic overlay (F8, whenever the face-map overlay isn't owning
+            the surface): boxes only.
         A running scan owns the display, so the overlay is fully down then."""
-        face_map = self._faces_mode and not self._face_analyzing
+        face_map = self._face_map_overlay_on() and not self._face_analyzing
         active = self._overlay_active()
         # Click-to-pick belongs to the face-map overlay only.
         self._face_overlay.set_pick_enabled(face_map)

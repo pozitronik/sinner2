@@ -372,29 +372,45 @@ class TestStatusActionButtons:
         assert window._detection_sink.latest_detections() is not None  # noqa: SLF001
         assert seeks == [3]
 
-    def test_face_map_overlay_owns_surface_over_f8(self, window):
-        # Split: with the Faces editor open, the overlay is the FACE-MAP overlay
-        # (pick + highlight) regardless of F8 — the F8 diagnostic is suppressed.
+    def test_face_map_overlay_gated_by_toggle(self, window, monkeypatch):
+        # The "Use face map" toggle is the gate: only with it ON (+ editor open)
+        # is the overlay the FACE-MAP overlay (pick + highlight) and the F8
+        # diagnostic suppressed. With it OFF, F8 owns the surface (no pick).
+        monkeypatch.setattr(
+            window._face_map_ctl, "set_mode_active", lambda on: None  # noqa: SLF001
+        )
+        monkeypatch.setattr(
+            window._face_map_ctl, "set_use_for_playback", lambda on: None  # noqa: SLF001
+        )
         window._face_overlay_on = True  # noqa: SLF001 — F8 on
-        window._on_faces_mode_toggled(True)  # noqa: SLF001 — editor open
+        window._on_faces_mode_toggled(True)  # noqa: SLF001 — editor open, toggle still OFF
+        assert window._face_map_overlay_on() is False  # noqa: SLF001 — OFF = no face-map overlay
+        assert window._diagnostic_overlay_on() is True  # noqa: SLF001 — F8 diagnostic
+        assert window._face_overlay._pick_enabled is False  # noqa: SLF001 — no pick when OFF
+        window._set_use_face_map(True)  # noqa: SLF001 — flip the gate ON
         # isHidden (not isVisible) — headless, ancestors aren't shown.
         assert window._face_overlay.isHidden() is False  # noqa: SLF001
-        assert window._face_overlay._pick_enabled is True  # noqa: SLF001 — face-map pick
+        assert window._face_map_overlay_on() is True  # noqa: SLF001
         assert window._diagnostic_overlay_on() is False  # noqa: SLF001 — F8 yields
-        # Closing the editor hands the surface back to the F8 diagnostic.
-        window._on_faces_mode_toggled(False)  # noqa: SLF001
-        assert window._diagnostic_overlay_on() is True  # noqa: SLF001
-        assert window._face_overlay._pick_enabled is False  # noqa: SLF001
+        assert window._face_overlay._pick_enabled is True  # noqa: SLF001 — face-map pick
 
-    def test_analysis_forces_overlay_down(self, window):
-        # A scan owns the display: the overlay is fully down regardless of F8 /
-        # editor, and comes back when it finishes.
+    def test_analysis_forces_overlay_down(self, window, monkeypatch):
+        # A scan owns the display: the overlay is fully down regardless of mode,
+        # and comes back when it finishes.
+        monkeypatch.setattr(
+            window._face_map_ctl, "set_mode_active", lambda on: None  # noqa: SLF001
+        )
+        monkeypatch.setattr(
+            window._face_map_ctl, "set_use_for_playback", lambda on: None  # noqa: SLF001
+        )
         window._on_faces_mode_toggled(True)  # noqa: SLF001 — editor open
+        window._set_use_face_map(True)  # noqa: SLF001 — face-map mode → overlay up
+        assert window._face_overlay.isHidden() is False  # noqa: SLF001
         window._on_face_analysis_active(True)  # noqa: SLF001 — scan starts
         assert window._face_overlay.isHidden() is True  # noqa: SLF001
         assert window._overlay_timer.isActive() is False  # noqa: SLF001
         window._on_face_analysis_active(False)  # noqa: SLF001 — scan done
-        assert window._face_overlay.isHidden() is False  # noqa: SLF001 — editor still open
+        assert window._face_overlay.isHidden() is False  # noqa: SLF001 — mode still on
         assert window._overlay_timer.isActive() is True  # noqa: SLF001
 
     def test_comparison_checkbox_drives_wants_crops(self, window):
@@ -671,17 +687,16 @@ class TestSectionShortcuts:
 
 
 class TestFaceMappingWiring:
-    def test_faces_toggle_opens_editor_and_enables_pick(self, window):
-        # The Sources-tab "Face map" toggle opens the EDITOR (preview face-picking
-        # + highlight). It does NOT lock the source picker — that follows ROUTING
-        # (the "Use face map" switch), which needs a built map.
+    def test_faces_toggle_opens_editor(self, window):
+        # The Sources-tab "Face map" toggle opens the EDITOR. It does NOT lock the
+        # source picker or enable picking on its own — pick/highlight need the
+        # "Use face map" gate ON (the editor alone is just single-source + panel).
         window._on_faces_mode_toggled(True)  # noqa: SLF001
         assert window._faces_mode is True  # noqa: SLF001
-        assert window._face_overlay._pick_enabled is True  # noqa: SLF001
+        assert window._face_overlay._pick_enabled is False  # noqa: SLF001 — gate still off
         assert window._pickers._source.isEnabled() is True  # noqa: SLF001 — not locked
         window._on_faces_mode_toggled(False)  # noqa: SLF001
         assert window._faces_mode is False  # noqa: SLF001
-        assert window._face_overlay._pick_enabled is False  # noqa: SLF001
 
     def test_use_face_map_switch_drives_routing(self, window, monkeypatch):
         # D6: the Face-detector "Use face map" switch routes playback with the
@@ -843,7 +858,9 @@ class TestFaceMappingWiring:
         assert calls == [] and src == []  # editing locked → nothing happens
 
     def test_selecting_face_highlights_only_its_box(self, window, monkeypatch):
+        # Highlight needs the face-map overlay active = toggle ON + editor open.
         window._faces_mode = True  # noqa: SLF001
+        window._use_face_map = True  # noqa: SLF001 — gate on
         monkeypatch.setattr(
             window._face_map_ctl, "selected_face_bbox",  # noqa: SLF001
             lambda: (1.0, 2.0, 3.0, 4.0),
@@ -854,7 +871,7 @@ class TestFaceMappingWiring:
         )
         window._refresh_face_highlight()  # noqa: SLF001
         assert calls == [(1.0, 2.0, 3.0, 4.0)]
-        window._faces_mode = False  # noqa: SLF001 — mode off → highlight cleared
+        window._use_face_map = False  # noqa: SLF001 — gate off → highlight cleared
         window._refresh_face_highlight()  # noqa: SLF001
         assert calls[-1] is None
 
@@ -870,6 +887,7 @@ class TestFaceMappingWiring:
             window._face_map_ctl, "selected_face_bbox", lambda: None  # noqa: SLF001
         )
         window._faces_mode = True  # noqa: SLF001
+        window._use_face_map = True  # noqa: SLF001 — face-map overlay active
         window._face_analyzing = False  # noqa: SLF001
         window._last_displayed_frame = np.zeros((10, 20, 3), np.uint8)  # noqa: SLF001
         probed = []

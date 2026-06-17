@@ -115,10 +115,12 @@ class TestSelection:
 
 
 class TestNavigate:
-    def test_row_click_navigates_to_first_frame(self, panel, qtbot):
+    def test_row_double_click_navigates_to_first_frame(self, panel, qtbot):
+        # DOUBLE click jumps the preview; a single click only selects (so
+        # inspecting people in the list doesn't lurch the playhead).
         panel.set_face_map(_map(("a", 1, None, None, 77)))
         with qtbot.waitSignal(panel.navigateRequested) as blocker:
-            panel._on_cell_clicked(panel._model.index(0, _C_FACE))  # noqa: SLF001
+            panel._on_cell_double_clicked(panel._model.index(0, _C_FACE))  # noqa: SLF001
         assert blocker.args == [77]
 
 
