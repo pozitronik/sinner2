@@ -841,6 +841,7 @@ class TestFaceMappingWiring:
         window._face_map_panel.set_face_map(fm)  # noqa: SLF001
         window._face_map_panel._table.selectAll()  # noqa: SLF001 — both rows
         window._faces_mode = True  # noqa: SLF001
+        window._map_available = True  # noqa: SLF001 — a map exists → assign mode
         window._on_library_source_selected(Path("/src/alice.png"))  # noqa: SLF001
         by_id = {
             i.id: i.source_path
@@ -850,18 +851,35 @@ class TestFaceMappingWiring:
         assert by_id["b"] == str(Path("/src/alice.png"))
 
     def test_library_click_in_mode_without_selection_nudges(self, window, monkeypatch):
-        from sinner2.pipeline.face_map import FaceMap
+        # A map EXISTS but no face is selected → nudge (ambiguous which to assign).
+        from sinner2.pipeline.face_map import FaceMap, Identity, normalize
 
         calls = []
         monkeypatch.setattr(
             window._face_map_ctl, "assign_source",  # noqa: SLF001
             lambda ids, p: calls.append((ids, p)),
         )
-        window._face_map_panel.set_face_map(FaceMap.empty())  # noqa: SLF001
+        window._face_map_panel.set_face_map(  # noqa: SLF001
+            FaceMap(identities=(Identity("a", normalize([1, 0, 0])),))
+        )
+        window._face_map_panel._table.clearSelection()  # noqa: SLF001
         window._faces_mode = True  # noqa: SLF001
+        window._map_available = True  # noqa: SLF001 — a map exists
         window._on_library_source_selected(Path("/src/x.png"))  # noqa: SLF001
         assert calls == []  # nothing selected → no assignment
         assert "Select one or more faces" in window._status_bar.current_message()  # noqa: SLF001
+
+    def test_library_click_no_faces_scanned_sets_global_source(self, window, monkeypatch):
+        # Editor open but NOTHING scanned (no map) → a source click must behave
+        # like single-source mode and set the global source, not go nowhere.
+        src_calls = []
+        monkeypatch.setattr(
+            window._pickers, "set_source", lambda p: src_calls.append(p)  # noqa: SLF001
+        )
+        window._faces_mode = True  # noqa: SLF001 — Face scanner open
+        window._map_available = False  # noqa: SLF001 — no faces scanned
+        window._on_library_source_selected(Path("/src/x.png"))  # noqa: SLF001
+        assert src_calls == [Path("/src/x.png")]  # global source set
 
     def test_library_click_locked_during_batch(self, window, monkeypatch):
         calls = []

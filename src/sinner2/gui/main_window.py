@@ -2459,12 +2459,14 @@ class SinnerMainWindow(QMainWindow):
             self._batch_view.reload_from_store()
 
     def _on_library_source_selected(self, path: Path) -> None:
-        """A Sources-library tile click. In face-mapping MODE it assigns to the
-        selected face(s) (a nudge if none selected); otherwise it sets the
-        GLOBAL source. The mode toggle keeps the two unambiguous."""
+        """A Sources-library tile click. It assigns to the selected face(s) ONLY
+        when the editor is open AND a map has actually been built (there's
+        something to assign to); otherwise it sets the GLOBAL source like
+        single-source mode. So with the Face scanner open but nothing scanned
+        yet, a click still picks the global source instead of going nowhere."""
         if self._batch_active:
             return  # editing locked during a render
-        if self._faces_mode:
+        if self._faces_mode and self._map_available:
             ids = self._face_map_panel.selected_identities()
             if ids:
                 self._face_map_ctl.assign_source(ids, path)
