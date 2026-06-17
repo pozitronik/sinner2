@@ -31,6 +31,15 @@ from sinner2.types import Frame
 
 _KPS = 5  # insightface 5-point keypoints; geometry needs exactly these
 
+# Bake geometry against a PERMISSIVE floor (not the catalog's current threshold):
+# any face within this cosine of an identity is recorded with its real embedding.
+# The runtime re-routes each baked face by embedding against the LIVE catalog, so
+# LOWERING the threshold later recovers these borderline faces in detection-free
+# mode too — without the floor, geometry (baked at the old threshold) and live
+# detection would disagree after a threshold drop. Below this, matches are noise
+# (ArcFace impostor pairs rarely exceed it), so it doesn't bloat the table.
+_GEOMETRY_BAKE_FLOOR = 0.3
+
 # (frames_scanned, frames_to_scan)
 ProgressFn = Callable[[int, int], None]
 # frame -> faces, each with normed_embedding / det_score / bbox (buffalo_l)
@@ -145,7 +154,12 @@ class _GeometryCollector:
     dropped — the runtime simply skips anything not in this table."""
 
     def __init__(self, catalog: FaceMap) -> None:
-        self._catalog = catalog
+        # Match permissively (the lower of the catalog threshold and the floor) so
+        # borderline faces are baked WITH their embedding; the runtime then routes
+        # by embedding at the live threshold. See _GEOMETRY_BAKE_FLOOR.
+        self._catalog = catalog.with_threshold(
+            min(catalog.threshold, _GEOMETRY_BAKE_FLOOR)
+        )
         self.faces: dict[int, list[GeomFace]] = {}
 
     def ingest(self, frame_idx: int, faces: list) -> None:
@@ -201,7 +215,9 @@ def precompute_geometry(
     on_position: PositionFn | None = None,
 ) -> tuple[FrameGeometry, int, int]:
     """Full-frame pass (stride 1) recording per-frame geometry for every face
-    that matches ``catalog`` — the artifact that lets the runtime skip detection.
+    within the permissive bake floor of ``catalog`` (see _GEOMETRY_BAKE_FLOOR, so
+    lowering the threshold later still routes them) — the artifact that lets the
+    runtime skip detection.
 
     With ``sections`` non-empty only the selected frames are covered (others get
     no geometry, hence no swap there). Reads stay single-threaded; ``workers`` >

@@ -385,11 +385,40 @@ class TestPrecomputeGeometry:
     def test_skips_unmatched_and_embeddingless(self):
         from sinner2.pipeline.face_map_analyzer import precompute_geometry
 
-        stranger = self._face((0, 0, 1))      # orthogonal → below threshold
+        stranger = self._face((0, 0, 1))      # orthogonal → below the bake floor
         noemb = _Face(None)
         noemb.kps = [(0.0, 0.0)] * 5
         geom, *_ = precompute_geometry(
             _StubReader([[stranger, noemb]]), lambda f: f, self._catalog2()
+        )
+        assert geom.is_empty()
+
+    def test_bakes_below_threshold_but_above_floor(self):
+        # #13: a face matching BELOW the catalog threshold but within the
+        # permissive bake floor is still recorded (with its embedding) — so
+        # LOWERING the threshold later recovers it in detection-free mode, instead
+        # of geometry and live detection disagreeing across the change.
+        from sinner2.pipeline.face_map import FaceMap, Identity
+        from sinner2.pipeline.face_map_analyzer import precompute_geometry
+
+        cat = FaceMap(identities=(Identity("a", _emb(1, 0, 0)),), threshold=0.5)
+        borderline = self._face((0.4, 0.917, 0))  # cosine ~0.4 to "a": <0.5, >floor
+        geom, *_ = precompute_geometry(
+            _StubReader([[borderline]]), lambda f: f, cat
+        )
+        assert not geom.is_empty()  # baked despite being below the 0.5 threshold
+        assert geom.faces_at(0)[0].identity_id == "a"
+
+    def test_below_floor_is_still_dropped(self):
+        # The floor isn't a free-for-all: a near-orthogonal face (below the floor)
+        # is NOT baked, so the table doesn't bloat with impostor detections.
+        from sinner2.pipeline.face_map import FaceMap, Identity
+        from sinner2.pipeline.face_map_analyzer import precompute_geometry
+
+        cat = FaceMap(identities=(Identity("a", _emb(1, 0, 0)),), threshold=0.5)
+        impostor = self._face((0.2, 0.98, 0))  # cosine ~0.2 to "a": below the floor
+        geom, *_ = precompute_geometry(
+            _StubReader([[impostor]]), lambda f: f, cat
         )
         assert geom.is_empty()
 
