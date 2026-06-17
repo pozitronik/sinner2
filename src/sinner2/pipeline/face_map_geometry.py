@@ -133,9 +133,22 @@ def save_geometry(path: Path, geometry: FrameGeometry) -> None:
     # (a ragged array would be object-dtype → can't save without pickle). float16
     # halves the (potentially large) array; cosine matching tolerates it easily.
     if have_embeddings and embeddings:
-        emb_arr = np.asarray(embeddings, dtype=np.float16)
-        if emb_arr.ndim == 2 and emb_arr.shape[0] == len(frames):
+        try:
+            emb_arr: np.ndarray | None = np.asarray(embeddings, dtype=np.float16)
+        except ValueError:
+            emb_arr = None  # ragged (mixed lengths, e.g. two detectors)
+        if emb_arr is not None and emb_arr.ndim == 2 and emb_arr.shape[0] == len(frames):
             arrays["embeddings"] = emb_arr
+        else:
+            # Dropping the embeddings silently degrades the runtime to ID-only
+            # routing — a merge / source reassignment then won't re-route the
+            # baked faces. Warn loudly; the user can re-precompute with one
+            # detector to restore embedding routing.
+            _log.warning(
+                "geometry embeddings dropped: %d faces have inconsistent-length "
+                "embeddings — detection-free routing falls back to identity ids",
+                len(frames),
+            )
     # Baked roll (one float/face) — stored only when every face has one (the whole
     # scan either baked angles or didn't).
     if have_rolls and rolls and len(rolls) == len(frames):

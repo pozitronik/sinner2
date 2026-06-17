@@ -96,6 +96,30 @@ class TestSaveLoad:
         for got, want in zip(f0.embedding, emb_a):
             assert abs(got - want) < 1e-3
 
+    def test_ragged_embeddings_dropped_with_warning(self, tmp_path, caplog):
+        # Two faces with DIFFERENT-length embeddings (e.g. a buffalo_l scan mixed
+        # with another detector) can't be matrixified → embeddings are dropped
+        # and routing degrades to identity ids. That must WARN, not silently
+        # regress, and must not raise.
+        import logging
+
+        p = geometry_path(Path("/v/ragged.mp4"), tmp_path)
+        g = FrameGeometry(
+            faces={0: (
+                GeomFace("a", (0.0, 0.0, 4.0, 4.0), _kps(lambda i: (i, i)),
+                         (0.5, 0.25, -0.5)),    # 3-dim
+                GeomFace("b", (1.0, 1.0, 5.0, 5.0), _kps(lambda i: (0, i)),
+                         (0.5, 0.25)),           # 2-dim → ragged
+            )},
+            frame_count=1,
+        )
+        with caplog.at_level(logging.WARNING):
+            save_geometry(p, g)  # must not raise on the ragged array
+        loaded = load_geometry(p)
+        assert loaded is not None
+        assert all(not f.embedding for f in loaded.faces_at(0))  # dropped
+        assert "embeddings dropped" in caplog.text
+
     def test_bake_size_round_trips(self, tmp_path):
         # The bake resolution survives the round-trip so the runtime can rescale;
         # absent (old sidecar) → None.
