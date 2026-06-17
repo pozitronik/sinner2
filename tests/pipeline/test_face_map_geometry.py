@@ -54,6 +54,15 @@ class TestPath:
             Path("/v/b.mp4"), tmp_path
         )
 
+    def test_same_file_via_redundant_path_shares_one_sidecar(self, tmp_path):
+        import os
+
+        (tmp_path / "sub").mkdir()
+        real = tmp_path / "clip.mp4"
+        real.write_bytes(b"x")
+        detour = tmp_path / "sub" / os.pardir / "clip.mp4"
+        assert geometry_path(detour, tmp_path) == geometry_path(real, tmp_path)
+
 
 class TestSaveLoad:
     def test_round_trips(self, tmp_path):

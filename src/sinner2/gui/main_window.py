@@ -26,6 +26,7 @@ from sinner2.gui.face_map_controller import FaceMapController
 from sinner2.gui.icon import app_icon
 from sinner2.gui.model_download import ensure_models
 from sinner2.pipeline.detectors import DETECTOR_MODEL_FILES, DetectorModel
+from sinner2.pipeline.face_map_store import canonical_target
 from sinner2.pipeline.sections import SectionSet
 from sinner2.pipeline.processors.face_enhancer import (
     EnhancerModel,
@@ -746,7 +747,9 @@ class SinnerMainWindow(QMainWindow):
     def _persist_sections(self, target: Path, sections: SectionSet) -> None:
         """Remember (or forget) the selection for ``target`` in settings."""
         existing = dict(self._settings.sections_by_target or {})
-        key = str(target)
+        # Canonicalize the key like the face-map sidecars so the SAME file via a
+        # different path string maps to one entry (see canonical_target).
+        key = canonical_target(target)
         if sections.is_empty():
             existing.pop(key, None)
         else:
@@ -757,7 +760,7 @@ class SinnerMainWindow(QMainWindow):
         """Apply the selection remembered for ``target`` (empty if none) to the
         timeline AND the executor. set_sections on the transport is silent, so
         push to the controller explicitly."""
-        saved = (self._settings.sections_by_target or {}).get(str(target))
+        saved = (self._settings.sections_by_target or {}).get(canonical_target(target))
         sections = SectionSet.of(saved) if saved else SectionSet.empty()
         self._transport.set_sections(sections)
         self._controller.set_sections(sections)

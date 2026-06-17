@@ -18,11 +18,30 @@ from sinner2.pipeline.face_map import FaceMap
 _log = logging.getLogger(__name__)
 
 
+def canonical_target(target: Path) -> str:
+    """A canonical string for a target path so the SAME file keyed via a
+    different string — drive-case, slash direction, relative vs absolute, a
+    symlink — resolves to ONE sidecar. Without this, re-opening a target by a
+    different path (routine on Windows: ``c:\\`` vs ``C:\\``, ``/`` vs ``\\``)
+    misses the saved map and it appears to vanish. ``realpath`` resolves symlinks
+    + makes it absolute; ``normcase`` folds case and separators. Falls back to a
+    plain abspath if realpath can't stat the path."""
+    try:
+        canon = os.path.realpath(target)
+    except OSError:
+        canon = os.path.abspath(target)
+    return os.path.normcase(canon)
+
+
+def target_key(target: Path) -> str:
+    """A short, filesystem-safe sidecar key: the sha1 of the canonical path."""
+    return hashlib.sha1(canonical_target(target).encode()).hexdigest()[:16]
+
+
 def face_map_path(target: Path, root: Path) -> Path:
     """Sidecar path for ``target``'s catalog under ``root`` (the face-maps dir),
     keyed by a hash of the target path so a different target gets its own file."""
-    digest = hashlib.sha1(str(target).encode()).hexdigest()[:16]
-    return root / f"{digest}.json"
+    return root / f"{target_key(target)}.json"
 
 
 def load_face_map(path: Path) -> FaceMap | None:
@@ -59,8 +78,7 @@ def delete_face_map(path: Path) -> bool:
 def use_map_path(target: Path, root: Path) -> Path:
     """Marker sidecar recording that the user chose to ROUTE playback through
     this target's map (independent of the editor panel being open)."""
-    digest = hashlib.sha1(str(target).encode()).hexdigest()[:16]
-    return root / f"{digest}.usemap"
+    return root / f"{target_key(target)}.usemap"
 
 
 def save_use_map(path: Path, on: bool) -> None:
@@ -83,8 +101,7 @@ def load_use_map(path: Path) -> bool:
 def progress_path(target: Path, root: Path) -> Path:
     """Sidecar holding how far the last scan got (separate from the catalog so
     the catalog stays a clean value object)."""
-    digest = hashlib.sha1(str(target).encode()).hexdigest()[:16]
-    return root / f"{digest}.progress.json"
+    return root / f"{target_key(target)}.progress.json"
 
 
 def load_progress(path: Path) -> dict | None:

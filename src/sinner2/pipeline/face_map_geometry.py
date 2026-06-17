@@ -14,7 +14,6 @@ corrupt-safe / atomic-write pattern of the JSON catalog store.
 """
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 from dataclasses import dataclass, field
@@ -85,8 +84,9 @@ class FrameGeometry:
 def geometry_path(target: Path, root: Path) -> Path:
     """Sidecar path for ``target``'s per-frame geometry under ``root``, keyed by
     a hash of the target path (distinct from the catalog + progress sidecars)."""
-    digest = hashlib.sha1(str(target).encode()).hexdigest()[:16]
-    return root / f"{digest}.geometry.npz"
+    from sinner2.pipeline.face_map_store import target_key
+
+    return root / f"{target_key(target)}.geometry.npz"
 
 
 def save_geometry(path: Path, geometry: FrameGeometry) -> None:

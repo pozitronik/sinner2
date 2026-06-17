@@ -117,3 +117,39 @@ class TestProgress:
         from sinner2.pipeline.face_map_store import load_progress
 
         assert load_progress(tmp_path / "nope.progress.json") is None
+
+
+class TestCanonicalKey:
+    """The sidecar key is canonicalized so the SAME file reached by a different
+    path string maps to ONE sidecar — else the saved map appears to vanish when
+    a target is re-opened by another path (routine on Windows)."""
+
+    def test_same_file_via_redundant_path_shares_one_sidecar(self, tmp_path):
+        import os
+
+        (tmp_path / "sub").mkdir()
+        real = tmp_path / "clip.mp4"
+        real.write_bytes(b"x")
+        detour = tmp_path / "sub" / os.pardir / "clip.mp4"  # ..-detour, same file
+        assert face_map_path(detour, tmp_path) == face_map_path(real, tmp_path)
+        assert use_map_path(detour, tmp_path) == use_map_path(real, tmp_path)
+
+    def test_distinct_files_keep_distinct_keys(self):
+        from sinner2.pipeline.face_map_store import target_key
+
+        assert target_key(Path("/v/a.mp4")) != target_key(Path("/v/b.mp4"))
+
+    def test_case_insensitive_key_on_windows(self):
+        import os
+
+        import pytest
+
+        from sinner2.pipeline.face_map_store import target_key
+
+        if os.name != "nt":
+            pytest.skip("paths are case-insensitive only on Windows")
+        # Non-existent paths: realpath can't query the on-disk case, so normcase
+        # is what folds the drive + case here.
+        assert target_key(Path("C:/Videos/Clip.MP4")) == target_key(
+            Path("c:/videos/clip.mp4")
+        )

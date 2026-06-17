@@ -618,13 +618,16 @@ class TestSectionShortcuts:
     def test_sections_persist_and_restore_per_target(self, window, monkeypatch):
         from sinner2.pipeline.sections import SectionSet
 
+        from sinner2.pipeline.face_map_store import canonical_target
+
         self._stub_executor(window, monkeypatch, frame=0)
         tgt = Path("clip.mp4")
         monkeypatch.setattr(window._pickers, "target_path", lambda: tgt)  # noqa: SLF001
-        # An edit persists under the target...
+        # An edit persists under the target, keyed by its canonical path (so the
+        # same file via a different string round-trips — see canonical_target).
         window._on_sections_changed(SectionSet.of([(30, 90)]))  # noqa: SLF001
         assert window._settings.sections_by_target == {  # noqa: SLF001
-            "clip.mp4": [[30, 90]]
+            canonical_target(tgt): [[30, 90]]
         }
         # ...and reloading that target restores it.
         window._transport.set_sections(SectionSet.empty())  # noqa: SLF001
