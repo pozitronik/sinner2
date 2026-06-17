@@ -841,13 +841,32 @@ class TestFaceMappingWiring:
         locks = []
         monkeypatch.setattr(window._session, "pause", lambda: paused.append(1))  # noqa: SLF001
         monkeypatch.setattr(
-            window, "_set_editing_locked", lambda on: locks.append(on)  # noqa: SLF001
+            window, "_set_editing_locked",  # noqa: SLF001
+            lambda on, **kw: locks.append((on, kw.get("lock_faces", True))),
         )
         window._on_face_analysis_active(True)  # noqa: SLF001
         assert paused == [1]
-        assert locks == [True]
+        # A scan locks the surface but keeps the Faces panel live (Cancel).
+        assert locks == [(True, False)]
         window._on_face_analysis_active(False)  # noqa: SLF001
-        assert locks == [True, False]  # no batch running → unlocks
+        assert locks == [(True, False), (False, True)]  # no batch → unlocks
+
+    def test_scan_keeps_cancel_reachable(self, window):
+        # A scan must leave the Faces panel interactive so its Cancel button is
+        # reachable (the editing-lock used to disable the whole panel). The
+        # findings table is disabled mid-scan, but Cancel works.
+        window._face_map_panel.set_analyzing(True)  # noqa: SLF001 — button → Cancel
+        window._on_face_analysis_active(True)  # noqa: SLF001 — lock the surface
+        btn = window._face_map_panel._analyze_btn  # noqa: SLF001
+        assert btn.text() == "Cancel" and btn.isEnabled() is True
+        assert window._face_map_panel.isEnabled() is True  # noqa: SLF001 — panel live
+        assert window._face_map_panel._table.isEnabled() is False  # noqa: SLF001
+
+    def test_batch_locks_the_faces_panel(self, window):
+        # A BATCH render (unlike a scan) locks the whole Faces panel.
+        window._batch_active = True  # noqa: SLF001
+        window._set_editing_locked(True)  # noqa: SLF001 — lock_faces defaults True
+        assert window._face_map_panel.isEnabled() is False  # noqa: SLF001
 
     def test_library_click_off_mode_sets_global_source(self, window, monkeypatch):
         window._faces_mode = False  # noqa: SLF001

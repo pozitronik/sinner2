@@ -1804,7 +1804,12 @@ class SinnerMainWindow(QMainWindow):
         self._face_analyzing = active
         if active:
             self._session.pause()
-        self._set_editing_locked(active or self._batch_active)
+        # A SCAN keeps the Faces panel interactive (lock_faces=False) so its
+        # Cancel button is reachable; a BATCH render locks everything. (Scan and
+        # batch don't co-occur, so active=True ⇒ not a batch.)
+        self._set_editing_locked(
+            active or self._batch_active, lock_faces=not active
+        )
         self._refresh_overlay_state()
 
     def _refresh_overlay_state(self) -> None:
@@ -2377,10 +2382,12 @@ class SinnerMainWindow(QMainWindow):
         else:
             self._status_bar.show_message("Batch settings saved.", 3000)
 
-    def _set_editing_locked(self, locked: bool) -> None:
+    def _set_editing_locked(self, locked: bool, *, lock_faces: bool = True) -> None:
         """Lock/unlock the whole live-editing surface (transport, pickers,
         settings + libraries). The Batch tab stays interactive so the queue
-        can still be driven; the display becomes a read-only render preview."""
+        can still be driven; the display becomes a read-only render preview.
+        ``lock_faces=False`` (a scan, not a batch) keeps the Faces panel live so
+        its Cancel button works."""
         # Transport also depends on source+target presence, so route through
         # the refresh (which honours both the lock and the picker state).
         self._refresh_transport_enabled()
@@ -2390,7 +2397,7 @@ class SinnerMainWindow(QMainWindow):
             # picker above would otherwise unlock the source the map owns) —
             # the lock follows ROUTING (the "Use face map" switch), not the editor.
             self._pickers.set_source_enabled(not self._use_face_map)
-        self._side_panel.set_editing_locked(locked)
+        self._side_panel.set_editing_locked(locked, lock_faces=lock_faces)
 
     def _on_batch_task_started(self, _task_id: str) -> None:
         # DaVinci-style: while a batch renders, pause the live executor and

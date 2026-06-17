@@ -172,15 +172,17 @@ class QSidePanel(QTabWidget):
     def face_map_panel(self) -> QWidget | None:
         return self._face_map_panel
 
-    def set_editing_locked(self, locked: bool) -> None:
+    def set_editing_locked(self, locked: bool, *, lock_faces: bool = True) -> None:
         """Lock the editing tabs (Settings + both libraries) during a batch
         render, leaving the Batch tab interactive — DaVinci-style: you can't
-        edit while rendering."""
+        edit while rendering. ``lock_faces=False`` keeps the Faces panel
+        interactive (a scan disables its own settings but must leave its Cancel
+        button reachable)."""
         self._processors.setEnabled(not locked)
         self._sources_library.setEnabled(not locked)
         self._targets_library.setEnabled(not locked)
         if self._face_map_panel is not None:
-            self._face_map_panel.setEnabled(not locked)
+            self._face_map_panel.setEnabled(not (locked and lock_faces))
 
     def set_mode(self, mode: str) -> None:
         """Show only the tabs relevant to the active mode. Live hides Targets +

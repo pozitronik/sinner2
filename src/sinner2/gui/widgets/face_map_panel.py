@@ -586,11 +586,15 @@ class QFaceMapPanel(QWidget):
         self._analyze_btn.setText("Cancel" if on else "Scan for faces")
         # Reset is disabled mid-scan: clearing the catalog while the job runs
         # would be overwritten by its finishing `finished` apply (cancel first).
+        # The findings table is disabled too — a merge/delete mid-scan would be
+        # overwritten by the finishing apply. The Analyze/Cancel button stays
+        # enabled (the panel itself isn't disabled during a scan, see
+        # main_window._on_face_analysis_active) so Cancel is reachable.
         for w in (
             self._stride, self._workers, self._preview_check,
             self._demographics_check, self._precompute_check, self._reset_btn,
             self._detector, self._det_size, self._refine_check, self._refine_score,
-            self._bake_angle_check,
+            self._bake_angle_check, self._table,
         ):
             w.setEnabled(not on)
         self._progress.setVisible(on)
