@@ -57,6 +57,17 @@ from sinner2.io.video_backend import VideoBackend, build_video_target_reader
 from sinner2.io.video_encoder import FfmpegMissingError, encode_frames_to_mp4
 from sinner2.pipeline.detectors import DetectorModel
 from sinner2.pipeline.face_map import FaceMap
+from sinner2.pipeline.face_map_geometry import (
+    FrameGeometry,
+    geometry_path,
+    load_geometry,
+)
+from sinner2.pipeline.face_map_store import (
+    face_map_path,
+    load_face_map,
+    load_use_map,
+    use_map_path,
+)
 from sinner2.pipeline.image_writer import build_image_writer
 from sinner2.pipeline.sections import SectionSet
 from sinner2.pipeline.processor import Processor
@@ -93,6 +104,45 @@ ProgressCallback = Callable[[BatchProgress], None]
 # Preview callback: a recently-processed frame (throttled by the stage) so
 # the GUI can show what the batch is producing. Same marshalling caveat.
 PreviewCallback = Callable[[Frame], None]
+
+
+def _resolve_face_map(
+    task: "BatchTask",
+) -> tuple[FaceMap | None, FrameGeometry | None]:
+    """Resolve a task's face map at RENDER time. The GUI stamps the per-target
+    sidecar store dir, so the driver loads the CURRENT catalog + geometry + the
+    'use the map' preference — a re-scan/edit of the target's map is reflected in
+    already-queued renders (the user picked live-at-render over a snapshot).
+    Falls back to the legacy by-value ``task.face_map`` (no geometry) for
+    programmatically-built tasks. Returns (None, None) when routing is off for
+    the target or no map exists → the single global source."""
+    if task.face_map_store_dir:
+        store = Path(task.face_map_store_dir)
+        target = task.target_path
+        if not load_use_map(use_map_path(target, store)):
+            return None, None
+        fm = load_face_map(face_map_path(target, store))
+        if fm is None or fm.is_empty():
+            return None, None
+        return fm, load_geometry(geometry_path(target, store))
+    fm = FaceMap.from_dict(task.face_map) if task.face_map else None
+    return fm, None
+
+
+def _build_swapper(
+    source: Source,
+    params: "FaceSwapperParams",
+    providers: list[str],
+    face_map: FaceMap | None,
+    geometry: FrameGeometry | None,
+) -> "FaceSwapper":
+    """Build the batch swapper and apply the precomputed geometry (detection-free
+    routing), mirroring the live chain (chain_builder.build_chain)."""
+    swapper = FaceSwapper(
+        source=source, params=params, providers=providers, face_map=face_map
+    )
+    swapper.set_geometry(geometry)
+    return swapper
 
 
 @dataclass(frozen=True)
@@ -404,11 +454,12 @@ class BatchDriver:
                 occluder_model=OccluderModel(task.swapper_occluder_model),
             )
             providers = list(task.swapper_execution.providers)
-            face_map = FaceMap.from_dict(task.face_map) if task.face_map else None
+            # Load the target's face map + geometry live at render time.
+            face_map, geometry = _resolve_face_map(task)
             stages.append(StageSpec(
                 name="faceswapper",
-                factory=lambda p=swapper_params, eps=providers, fm=face_map: (
-                    FaceSwapper(source=source, params=p, providers=eps, face_map=fm)
+                factory=lambda p=swapper_params, eps=providers, fm=face_map, g=geometry: (
+                    _build_swapper(source, p, eps, fm, g)
                 ),
                 thread_safe=FaceSwapper.thread_safe,
                 workers=task.swapper_execution.workers,

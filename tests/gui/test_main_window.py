@@ -699,6 +699,24 @@ class TestSectionShortcuts:
         window._on_add_to_batch()  # noqa: SLF001
         assert window._batch_store.list()[0].sections is None  # noqa: SLF001
 
+    def test_add_to_batch_stamps_face_map_store_dir(self, window, tmp_path, monkeypatch):
+        # The task must carry the sidecar store dir so the driver loads the
+        # target's face map live at render time (without it, batch ignores it).
+        from sinner2.gui.cache_controller import default_cache_root
+
+        monkeypatch.setattr(
+            window._controller, "set_source_and_target", lambda *a, **k: None  # noqa: SLF001
+        )
+        src = tmp_path / "s.png"
+        src.write_bytes(b"x")
+        tgt = tmp_path / "t.mp4"
+        tgt.write_bytes(b"x")
+        window._pickers.set_source(src)  # noqa: SLF001
+        window._pickers.set_target(tgt)  # noqa: SLF001
+        window._on_add_to_batch()  # noqa: SLF001
+        task = window._batch_store.list()[0]  # noqa: SLF001
+        assert task.face_map_store_dir == str(default_cache_root() / "face_maps")
+
 
 class TestFaceMappingWiring:
     def test_faces_toggle_opens_editor(self, window):

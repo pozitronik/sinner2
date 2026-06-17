@@ -127,10 +127,14 @@ class BatchTask(SinnerBaseModel):
     swapper_fast_paste: bool = True  # ROI feather paste vs insightface blend
     swapper_landmark_refine: bool = False  # refine kps with 2dfan4
     swapper_target_sex: str = "B"  # M/F/B/I (matches FaceSwapperParams)
-    # Face mapping: per-identity source routing (FaceMap.to_dict()). None = the
-    # single global source. When set, each detected face is matched to a
-    # catalogued identity and swapped with its assigned source.
+    # Face mapping: per-identity source routing. The GUI stamps the per-target
+    # sidecar store dir below; the driver loads the CURRENT catalog + geometry +
+    # 'use the map' preference at render time, so a re-scan/edit of the target's
+    # map is reflected in queued renders. face_map (a verbatim FaceMap.to_dict())
+    # is a legacy by-value fallback for programmatically-built tasks; None = the
+    # single global source.
     face_map: dict | None = None
+    face_map_store_dir: str | None = None  # per-target sidecar root (live load)
     # Rotation compensation (shared by the swapper AND the enhancer stages).
     swapper_rotation_compensation: bool = True
     swapper_rotation_threshold_deg: int = 15

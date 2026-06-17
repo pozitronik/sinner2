@@ -891,3 +891,77 @@ class TestSectionSelection:
         fp = BatchDriver._chain_fingerprint  # noqa: SLF001
         assert fp(a, "16x16") != fp(b, "16x16")
         assert fp(a, "16x16") != fp(c, "16x16")
+
+
+class TestResolveFaceMap:
+    """The face map is loaded LIVE at render time from the per-target sidecars
+    (the GUI stamps the store dir), so a re-scan/edit is reflected in queued
+    renders. Routing-off / no-map / no-store degrade to the global source."""
+
+    @staticmethod
+    def _task(tmp_path, store=None, face_map=None):
+        return BatchTask(
+            source_path=tmp_path / "s.png",
+            target_path=tmp_path / "t.mp4",
+            face_map_store_dir=str(store) if store else None,
+            face_map=face_map,
+        )
+
+    @staticmethod
+    def _save_catalog(tmp_path, store, *, use):
+        from sinner2.pipeline.face_map import FaceMap, Identity, normalize
+        from sinner2.pipeline.face_map_store import (
+            face_map_path, save_face_map, save_use_map, use_map_path,
+        )
+        fm = FaceMap(identities=(
+            Identity("a", normalize([1.0, 0.0, 0.0]), source_path="/s.png"),
+        ))
+        save_face_map(face_map_path(tmp_path / "t.mp4", store), fm)
+        save_use_map(use_map_path(tmp_path / "t.mp4", store), use)
+        return fm
+
+    def test_live_load_when_routing_on(self, tmp_path):
+        from sinner2.batch.driver import _resolve_face_map  # noqa: SLF001
+        store = tmp_path / "face_maps"
+        self._save_catalog(tmp_path, store, use=True)
+        fm, geom = _resolve_face_map(self._task(tmp_path, store=store))
+        assert fm is not None and len(fm.identities) == 1
+        assert geom is None  # no geometry NPZ saved
+
+    def test_loads_geometry_when_present(self, tmp_path):
+        from sinner2.batch.driver import _resolve_face_map  # noqa: SLF001
+        from sinner2.pipeline.face_map_geometry import (
+            FrameGeometry, GeomFace, geometry_path, save_geometry,
+        )
+        store = tmp_path / "face_maps"
+        self._save_catalog(tmp_path, store, use=True)
+        kps = tuple((float(i), 0.0) for i in range(5))
+        save_geometry(
+            geometry_path(tmp_path / "t.mp4", store),
+            FrameGeometry(faces={0: (GeomFace("a", (0., 0., 4., 4.), kps),)},
+                          frame_count=1),
+        )
+        fm, geom = _resolve_face_map(self._task(tmp_path, store=store))
+        assert fm is not None and geom is not None and not geom.is_empty()
+
+    def test_routing_off_uses_global_source(self, tmp_path):
+        from sinner2.batch.driver import _resolve_face_map  # noqa: SLF001
+        store = tmp_path / "face_maps"
+        self._save_catalog(tmp_path, store, use=False)  # pref off
+        assert _resolve_face_map(self._task(tmp_path, store=store)) == (None, None)
+
+    def test_no_catalog_uses_global_source(self, tmp_path):
+        from sinner2.batch.driver import _resolve_face_map  # noqa: SLF001
+        from sinner2.pipeline.face_map_store import save_use_map, use_map_path
+        store = tmp_path / "face_maps"
+        save_use_map(use_map_path(tmp_path / "t.mp4", store), True)  # pref on, no map
+        assert _resolve_face_map(self._task(tmp_path, store=store)) == (None, None)
+
+    def test_legacy_by_value_fallback_without_store(self, tmp_path):
+        from sinner2.batch.driver import _resolve_face_map  # noqa: SLF001
+        from sinner2.pipeline.face_map import FaceMap, Identity, normalize
+        fm = FaceMap(identities=(Identity("a", normalize([1.0, 0.0, 0.0])),))
+        loaded, geom = _resolve_face_map(
+            self._task(tmp_path, store=None, face_map=fm.to_dict())
+        )
+        assert loaded is not None and len(loaded.identities) == 1 and geom is None

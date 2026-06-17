@@ -2325,6 +2325,12 @@ class SinnerMainWindow(QMainWindow):
         if source is None or target is None:
             return
         task = batch_defaults.mint_task(self._batch_defaults, source, target)
+        # Point the task at the per-target face-map sidecar store so the driver
+        # loads the CURRENT catalog + geometry + 'use the map' preference live at
+        # render time (no map / routing-off for the target → single source).
+        task = task.model_copy(update={
+            "face_map_store_dir": str(default_cache_root() / "face_maps"),
+        })
         # Carry the live timeline selection (like source/target, it's specific to
         # THIS target — not part of the reusable defaults template). Empty → the
         # whole video, which is BatchTask's own default.
