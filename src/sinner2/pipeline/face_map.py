@@ -11,9 +11,11 @@ value-comparable so a FaceMap diffs for change detection and round-trips to JSON
 (a list of identities, each carrying a 512-float centroid).
 
 The domain is intentionally numpy-free — pure Python keeps it trivially testable
-and dependency-light. The swapper builds its own (numpy) matcher from these
-centroids for the per-frame hot path; the analysis pass (a background job) uses
-the pure helpers here.
+and dependency-light. For the per-frame hot path the swapper builds a numpy
+matcher from these centroids (``face_swapper._CatalogMatcher`` — one GEMV instead
+of this per-identity loop, with a cached id index) that mirrors ``source_for``
+exactly; ``best_match``/``source_for`` here remain the reference semantics, used
+by the analysis pass (a background job) and tests.
 """
 from __future__ import annotations
 

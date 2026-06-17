@@ -13,6 +13,7 @@ from sinner2.pipeline.processors.face_swapper import (
     FaceSwapper,
     FaceSwapperParams,
     TargetSex,
+    _CatalogMatcher,
     _face_matches,
 )
 from sinner2.types import Frame
@@ -970,6 +971,87 @@ class TestFaceMapping:
         assert fs._face_map_is_routable() is True  # noqa: SLF001
 
 
+class TestCatalogMatcher:
+    """The numpy hot-path matcher must route IDENTICALLY to FaceMap.source_for
+    (the pure reference) — just via one GEMV. Verified across match / no-match /
+    unassigned / every unmatched policy, on normalized queries (the runtime
+    contract), and on the >= tie-break."""
+
+    def _fm(self, **kw):
+        from sinner2.pipeline.face_map import FaceMap, Identity, normalize
+
+        idents = (
+            Identity("a", normalize([1, 0, 0]), source_path="/a.png"),
+            Identity("b", normalize([0, 1, 0]), source_path="/b.png"),
+            Identity("c", normalize([0, 0, 1])),  # tracked but unassigned
+        )
+        return FaceMap(identities=idents, threshold=0.5, **kw)
+
+    def _queries(self):
+        from sinner2.pipeline.face_map import normalize
+
+        # Clear winners + an unassigned hit + a stranger; kept off the exact
+        # threshold boundary so float32-vs-float64 can't flip a decision.
+        return [
+            normalize([1, 0, 0]), normalize([0, 1, 0]), normalize([0, 0, 1]),
+            normalize([1, 1, 0]), normalize([3, 1, 0]), normalize([1, 0, 5]),
+            normalize([-1, -1, -1]),
+        ]
+
+    def _assert_parity(self, fm):
+        m = _CatalogMatcher(fm)
+        for q in self._queries():
+            assert m.source_for(q) == fm.source_for(q)
+
+    def test_parity_skip_policy(self):
+        self._assert_parity(self._fm())  # SKIP is the default
+
+    def test_parity_default_policy(self):
+        from sinner2.pipeline.face_map import UnmatchedPolicy
+
+        self._assert_parity(
+            self._fm(unmatched=UnmatchedPolicy.DEFAULT, default_source="/def.png")
+        )
+
+    def test_parity_first_policy(self):
+        from sinner2.pipeline.face_map import UnmatchedPolicy
+
+        self._assert_parity(self._fm(unmatched=UnmatchedPolicy.FIRST))
+
+    def test_by_id_indexes_every_identity(self):
+        m = _CatalogMatcher(self._fm())
+        assert set(m.by_id) == {"a", "b", "c"}
+        assert m.by_id["a"].source_path == "/a.png"
+
+    def test_empty_map_routes_via_policy(self):
+        from sinner2.pipeline.face_map import (
+            FaceMap,
+            UnmatchedPolicy,
+            normalize,
+        )
+
+        fm = FaceMap.empty().with_unmatched(UnmatchedPolicy.DEFAULT, "/d.png")
+        m = _CatalogMatcher(fm)
+        q = normalize([1, 2, 3])
+        assert m.source_for(q) == fm.source_for(q) == "/d.png"
+
+    def test_tie_goes_to_later_identity_like_pure(self):
+        from sinner2.pipeline.face_map import FaceMap, Identity, normalize
+
+        # Identical centroids, different sources: the pure >= scan keeps the
+        # LATER one; the matcher's >= loop must agree.
+        fm = FaceMap(
+            identities=(
+                Identity("x", normalize([1, 0, 0]), source_path="/x.png"),
+                Identity("y", normalize([1, 0, 0]), source_path="/y.png"),
+            ),
+            threshold=0.5,
+        )
+        m = _CatalogMatcher(fm)
+        q = normalize([1, 0, 0])
+        assert m.source_for(q) == fm.source_for(q) == "/y.png"
+
+
 class TestGeometryMappingPath:
     """Detection-free runtime: with precomputed geometry loaded, process()
     rebuilds the frame's faces from it (no detection) and routes each by its
@@ -979,6 +1061,9 @@ class TestGeometryMappingPath:
         fs = object.__new__(FaceSwapper)
         fs._supports_multi_source = True  # noqa: SLF001
         fs._face_map = face_map  # noqa: SLF001
+        fs._matcher = (  # noqa: SLF001  # matcher rides with the map (cached by_id)
+            _CatalogMatcher(face_map) if face_map is not None else None
+        )
         fs._geometry = None  # noqa: SLF001
         return fs
 

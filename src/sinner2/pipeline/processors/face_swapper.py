@@ -14,7 +14,7 @@ from sinner2.config.source import Source
 from sinner2.io.cv2_unicode import imread_unicode
 from sinner2.pipeline.detectors import DetectorModel
 from sinner2.pipeline.face_analyser import FaceAnalyser
-from sinner2.pipeline.face_map import FaceMap
+from sinner2.pipeline.face_map import FaceMap, UnmatchedPolicy
 from sinner2.pipeline.face_map_geometry import FrameGeometry
 from sinner2.pipeline.model_cache import (
     get_insightface_swap_model,
@@ -282,6 +282,59 @@ def _mapped_meta(ident: Any, baked_roll: float | None) -> dict[str, Any]:
     }
 
 
+class _CatalogMatcher:
+    """Numpy-backed per-frame router, built once per FaceMap (cached on
+    ``set_face_map``). One GEMV — the (N, dim) centroid matrix times the face
+    embedding — replaces ``FaceMap.best_match``'s per-identity Python cosine
+    loop, and ``by_id`` lets the detection-free geometry path skip rebuilding its
+    id index every frame.
+
+    Mirrors ``FaceMap.source_for`` exactly (nearest centroid ≥ threshold wins;
+    ties go to the later identity like the pure ``>=`` scan; a matched-but-
+    unassigned identity routes to None; no match → the unmatched policy). It
+    assumes the query embedding is ALREADY L2-normalized — the runtime always
+    passes ``normed_embedding`` / baked normalized centroids — so it drops the
+    per-call renormalize ``best_match`` does."""
+
+    def __init__(self, face_map: FaceMap) -> None:
+        idents = face_map.identities
+        self.by_id: dict[str, Any] = {i.id: i for i in idents}
+        self._sources: list[str | None] = [i.source_path for i in idents]
+        # Uniform-dim centroids → a real matrix; empty or ragged (never happens
+        # with real ArcFace catalogs) → a 0×0 stub so routing falls through to
+        # the unmatched policy, matching cosine()'s -1 for a length mismatch.
+        dims = {len(i.centroid) for i in idents}
+        self._matrix = (
+            np.asarray([i.centroid for i in idents], dtype=np.float32)
+            if len(dims) == 1 else np.zeros((0, 0), dtype=np.float32)
+        )
+        self._threshold = float(face_map.threshold)
+        self._unmatched = face_map.unmatched
+        self._default_source = face_map.default_source
+        self._has_identities = bool(idents)
+        self._first_source = idents[0].source_path if idents else None
+
+    def source_for(self, embedding: Any) -> str | None:
+        e = np.asarray(embedding, dtype=np.float32)
+        if (
+            self._matrix.shape[0]
+            and e.ndim == 1
+            and self._matrix.shape[1] == e.shape[0]
+        ):
+            sims = self._matrix @ e  # GEMV: cosine to every centroid at once
+            best_i, best_sim = -1, self._threshold
+            for i in range(sims.shape[0]):
+                if sims[i] >= best_sim:  # >= : on a tie the later identity wins
+                    best_i, best_sim = i, float(sims[i])
+            if best_i >= 0:
+                return self._sources[best_i]  # matched (source may be None → skip)
+        if self._unmatched is UnmatchedPolicy.DEFAULT:
+            return self._default_source
+        if self._unmatched is UnmatchedPolicy.FIRST and self._has_identities:
+            return self._first_source
+        return None
+
+
 class FaceSwapper:
     name = "FaceSwapper"
     thread_safe = True  # one ORT session, called concurrently by N workers
@@ -306,6 +359,9 @@ class FaceSwapper:
         # per-call source, so multi-source is gated to them; generic backends
         # keep the single-source path (deferred). Needs buffalo_l embeddings.
         self._face_map = face_map
+        # Numpy matcher over the catalog's centroids (GEMV routing + cached id
+        # index) — rebuilt in lock-step with _face_map; see _CatalogMatcher.
+        self._matcher = _CatalogMatcher(face_map) if face_map is not None else None
         self._geometry: FrameGeometry | None = None
         self._mapped_sources: dict[str, Any] = {}
         self._supports_multi_source = False
@@ -451,6 +507,9 @@ class FaceSwapper:
         set_source). Single assignments so concurrent workers never see a
         half-updated map."""
         self._face_map = face_map
+        # Rebuild the numpy matcher alongside the map (single assignment, so a
+        # concurrent worker sees either the whole old or whole new matcher).
+        self._matcher = _CatalogMatcher(face_map) if face_map is not None else None
         if self._face_map_is_routable():
             self._prepare_mapped_sources(face_map)  # type: ignore[arg-type]
         else:
@@ -491,7 +550,13 @@ class FaceSwapper:
             fh, fw = frame.shape[:2]
             sx, sy = fw / bake[0], fh / bake[1]
         rescale = sx != 1.0 or sy != 1.0
-        by_id = {ident.id: ident for ident in face_map.identities}
+        # Cached id index from the matcher (built with this map); fall back to a
+        # per-frame build if the map was set without one (direct field set).
+        matcher = self._matcher
+        by_id = (
+            matcher.by_id if matcher is not None
+            else {ident.id: ident for ident in face_map.identities}
+        )
         faces: list[Any] = []
         for gf in geometry.faces_at(ctx.frame_index):
             ident = by_id.get(gf.identity_id)
@@ -542,7 +607,7 @@ class FaceSwapper:
                 if (face_map is not None and emb is not None)
                 else None
             )
-            src = self._mapped_source_face(f, face_map)
+            src = self._mapped_source_face(f, self._matcher)
             rows.append(
                 f"match={match.id[:8] if match is not None else None}"
                 f"/srcAssigned={'Y' if (match is not None and match.source_path) else 'n'}"
@@ -558,15 +623,16 @@ class FaceSwapper:
             flush=True,
         )
 
-    def _mapped_source_face(self, face: Any, face_map: FaceMap | None) -> Any:
+    def _mapped_source_face(self, face: Any, matcher: "_CatalogMatcher | None") -> Any:
         """The prepared source face this detected face routes to, or None to skip
-        it (no embedding, no match, or its identity has no assigned source)."""
-        if face_map is None:
+        it (no embedding, no match, or its identity has no assigned source). The
+        numpy ``matcher`` does the routing (GEMV); see ``_CatalogMatcher``."""
+        if matcher is None:
             return None
         embedding = getattr(face, "normed_embedding", None)
         if embedding is None:
             return None  # standalone/detection-only detector → can't match
-        path = face_map.source_for(embedding)
+        path = matcher.source_for(embedding)
         if path is None:
             return None
         return self._mapped_sources.get(path)
@@ -643,6 +709,7 @@ class FaceSwapper:
         # active it ROUTES each face to a per-identity source and supersedes the
         # sex / many-faces selectors (the map decides what swaps with what).
         face_map = self._face_map
+        matcher = self._matcher  # snapshot alongside the map for routing
         multi = (
             face_map is not None
             and face_map.is_active()
@@ -657,7 +724,7 @@ class FaceSwapper:
         swapped_faces: list[Any] = []
         for face in faces:
             if multi:
-                face_source = self._mapped_source_face(face, face_map)
+                face_source = self._mapped_source_face(face, matcher)
                 if face_source is None:
                     continue  # no embedding / no match / identity unassigned
             else:
