@@ -602,10 +602,10 @@ class QProcessorControls(QWidget):
         upscaler_form.addRow("ONNX Providers", self._upscaler_providers_row)
         self._upscaler_box = upscaler_box
 
-        # ---- Faces group: detection + selection + the face-map routing mode,
-        # together because they depend on each other (gender needs the detector;
-        # the face-map mode overrides the detector + selection). ----
-        face_box = QGroupBox("Faces")
+        # ---- Faces recognition group: detection + selection + the face-map
+        # routing mode, together because they depend on each other (gender needs
+        # the detector; the face-map mode overrides the detector + selection). ----
+        face_box = QGroupBox("Faces recognition")
         face_form = QFormLayout(face_box)
         # Face-mapping routing switch at the TOP of the Faces group (decoupled
         # from the Sources-tab editor): always shown so the feature is
@@ -1095,9 +1095,14 @@ class QProcessorControls(QWidget):
         # All caption|control groups share one responsive layout: a common
         # caption-column width, and a single width breakpoint that flips them
         # ALL between side-by-side and stacked together (no per-row jank).
+        # Include the NESTED subgroup forms too (Which to swap / Rotation /
+        # Occlusion) so their caption column lines up at the same width as the
+        # top-level groups — otherwise they size to their own short labels and
+        # read as a different column width.
         self._forms = [
             swapper_form, enhancer_form, upscaler_form, face_form,
             execution_form, cache_form,
+            which_to_swap_form, rotation_form, occlusion_form,
         ]
         self._uniform_label_width = self._compute_uniform_label_width()
         self._apply_form_density()

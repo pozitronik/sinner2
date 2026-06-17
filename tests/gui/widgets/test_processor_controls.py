@@ -705,12 +705,24 @@ class TestGroupOrganization:
     sub-boxes)."""
 
     def test_group_titles_are_consistent(self, widget):
-        assert widget._face_box.title() == "Faces"  # noqa: SLF001
+        assert widget._face_box.title() == "Faces recognition"  # noqa: SLF001
         assert widget._which_to_swap_box.title() == "Which to swap"  # noqa: SLF001
         assert widget._swapper_box.title() == "Face swap"  # noqa: SLF001
         assert widget._rotation_box.title() == "Rotation"  # noqa: SLF001
         assert widget._occlusion_box.title() == "Occlusion"  # noqa: SLF001
         assert widget._enhancer_box.title() == "Face enhancer"  # noqa: SLF001
+
+    def test_subgroup_forms_share_the_aligned_label_column(self, widget):
+        # The nested subgroups (Which to swap / Rotation / Occlusion) must be in
+        # the shared-width set so their caption column lines up at the same width
+        # as the top-level groups — not sized to their own short labels.
+        forms = widget._forms  # noqa: SLF001
+        for box in (
+            widget._which_to_swap_box,  # noqa: SLF001
+            widget._rotation_box,       # noqa: SLF001
+            widget._occlusion_box,      # noqa: SLF001
+        ):
+            assert box.layout() in forms
 
     def test_faces_group_holds_detection_facemap_and_selection(self, widget):
         # Face-map control + detection knobs + the selection sub-box all live in

@@ -141,7 +141,7 @@ class QFaceMapPanel(QWidget):
         # every label in a right-aligned column with the fields lined up; related
         # fields pair on a row (via _field_row), and the build options sit under a
         # divider. ----
-        scan_group = QGroupBox("Scan")
+        scan_group = QGroupBox("Face scanner")
         form = QFormLayout(scan_group)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         form.setFieldGrowthPolicy(
@@ -243,7 +243,7 @@ class QFaceMapPanel(QWidget):
         )
         form.addRow(_field_row(self._precompute_check, self._bake_angle_check))
 
-        self._analyze_btn = QPushButton("Analyze faces")
+        self._analyze_btn = QPushButton("Scan for faces")
         self._analyze_btn.setToolTip("Scan the target to discover the people in it.")
         self._analyze_btn.clicked.connect(self._on_analyze_clicked)
         self._reset_btn = QPushButton("Reset")
@@ -509,7 +509,7 @@ class QFaceMapPanel(QWidget):
 
     def set_analyzing(self, on: bool) -> None:
         self._analyzing = on
-        self._analyze_btn.setText("Cancel" if on else "Analyze faces")
+        self._analyze_btn.setText("Cancel" if on else "Scan for faces")
         # Reset is disabled mid-scan: clearing the catalog while the job runs
         # would be overwritten by its finishing `finished` apply (cancel first).
         for w in (
