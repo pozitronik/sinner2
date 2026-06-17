@@ -427,35 +427,27 @@ class TestSelectedFaceBbox:
         kps = tuple((0.0, 0.0) for _ in range(5))
         return GeomFace(ident_id, bbox, kps, embedding=tuple(emb))
 
-    def test_prefers_geometry_box(self, ctrl):
-        # The precomputed geometry's box for the identity at the current frame is
-        # used directly — deterministic, even though the sink would match a
-        # DIFFERENT box (no live re-detection race).
+    def test_highlight_comes_from_sink_not_geometry(self, ctrl):
+        # The overlay draws the SINK's boxes; the highlight must come from those
+        # same detections — NOT geometry@current_frame, which is a different
+        # clock and floats the highlight off the boxes under playhead lag. Here
+        # geometry points at a DIFFERENT box than the sink; the sink box (the one
+        # actually drawn) must win.
         ctrl._panel.selected_identities.return_value = ["a"]
         ctrl._catalog = FaceMap(identities=(_ident("a", [1, 0, 0]),), threshold=0.5)
         ctrl._geometry = self._geom(self._gf("a", (10.0, 20.0, 30.0, 40.0)))
         sink_face = SimpleNamespace(normed_embedding=normalize([1, 0, 0]), bbox=(1, 2, 3, 4))
         ctrl._sink._latest = ([sink_face], 100, 100)
-        assert ctrl.selected_face_bbox() == (10.0, 20.0, 30.0, 40.0)
+        assert ctrl.selected_face_bbox() == (1.0, 2.0, 3.0, 4.0)  # the drawn box
 
-    def test_geometry_routes_by_embedding_after_merge(self, ctrl):
-        # A baked face whose stored id is a merged-away FRAGMENT still highlights:
-        # it routes by embedding (best_match) to the selected survivor.
-        ctrl._panel.selected_identities.return_value = ["surv"]
-        ctrl._catalog = FaceMap(identities=(_ident("surv", [1, 0, 0]),), threshold=0.5)
-        ctrl._geometry = self._geom(
-            self._gf("frag", (5.0, 6.0, 7.0, 8.0), emb=normalize([1, 0, 0]))
-        )
-        assert ctrl.selected_face_bbox() == (5.0, 6.0, 7.0, 8.0)
-
-    def test_geometry_miss_falls_back_to_sink(self, ctrl):
-        # No geometry face for the identity at this frame → use the live sink.
+    def test_no_highlight_when_sink_empty_even_with_geometry(self, ctrl):
+        # No drawn boxes (sink empty) → no highlight, even though geometry has a
+        # box for the identity — highlighting it would float over nothing.
         ctrl._panel.selected_identities.return_value = ["a"]
         ctrl._catalog = FaceMap(identities=(_ident("a", [1, 0, 0]),), threshold=0.5)
-        ctrl._geometry = self._geom()  # empty at frame 100
-        match = SimpleNamespace(normed_embedding=normalize([1, 0, 0]), bbox=(1, 2, 3, 4))
-        ctrl._sink._latest = ([match], 100, 100)
-        assert ctrl.selected_face_bbox() == (1.0, 2.0, 3.0, 4.0)
+        ctrl._geometry = self._geom(self._gf("a", (10.0, 20.0, 30.0, 40.0)))
+        ctrl._sink._latest = None
+        assert ctrl.selected_face_bbox() is None
 
 
 class TestRestore:

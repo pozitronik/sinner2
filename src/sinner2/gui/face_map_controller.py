@@ -458,13 +458,15 @@ class FaceMapController(QObject):
                 self._status(f"could not save face map: {exc}", 4000)
 
     def selected_face_bbox(self) -> tuple[float, float, float, float] | None:
-        """The box of the SINGLE selected identity in the CURRENT frame, for the
-        overlay to highlight just it. Prefers the PRECOMPUTED GEOMETRY — the scan
-        already located this identity at this frame, so the highlight is
-        deterministic (no live re-detection race, which was the source of the
-        flicker); falls back to the live detection sink (cosine-nearest embedding)
-        only when no geometry covers the frame. None when 0/many rows are selected
-        or the identity isn't visible here."""
+        """The box of the SINGLE selected identity to highlight on the overlay —
+        taken from the SAME published detections the overlay drew its boxes from
+        (the detection sink), matched cosine-nearest to the identity's centroid.
+        The highlight then always lands on a real, drawn box. Matching the
+        precomputed geometry at the CURRENT frame instead floated the highlight
+        off the boxes whenever the displayed/published frame lagged the playhead
+        (load / seek-settle) — the sink is the published frame, geometry@current
+        is a different clock. None when 0/many rows are selected or the identity
+        isn't in this frame."""
         ids = self._panel.selected_identities()
         if len(ids) != 1:
             return None
@@ -472,23 +474,6 @@ class FaceMapController(QObject):
         ident = next((i for i in face_map.identities if i.id == ids[0]), None)
         if ident is None:
             return None
-        # 1) Geometry: the scan's own box for this identity at the current frame.
-        # Route each baked face to a catalog identity the SAME way the swapper
-        # does (best_match on the baked embedding), so a merged/reassigned
-        # identity still highlights; fall back to the stored id for old sidecars.
-        geom = self._geometry
-        if geom is not None:
-            frame = self._current_frame()
-            for gf in geom.faces_at(frame):
-                if gf.embedding:
-                    m = face_map.best_match(gf.embedding)
-                    matched = m.id if m is not None else None
-                else:
-                    matched = gf.identity_id
-                if matched == ident.id:
-                    b = gf.bbox
-                    return (float(b[0]), float(b[1]), float(b[2]), float(b[3]))
-        # 2) Fall back to the live detection sink (embedding-nearest).
         latest = self._sink._latest  # noqa: SLF001 — raw faces (with embeddings)
         if latest is None:
             return None
