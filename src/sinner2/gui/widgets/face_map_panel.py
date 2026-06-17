@@ -1,8 +1,9 @@
 """The Faces panel: discover and map people in a multi-face target.
 
-A subpanel of the Sources tab (revealed by its "Face map" toggle). Top: the
-Scan settings (stride, workers, preview, age/sex, precompute) and the Detection
-settings, then Analyze + progress. Below: the discovered people as a SORTABLE
+A subpanel of the Sources tab (revealed by its "Face map" toggle). Top: one
+Scan group — detector + size + preview, age/sex, workers + stride, refine +
+min score, precompute + bake angle, and Analyze / Reset — then a progress bar.
+Below: the discovered people as a SORTABLE
 TABLE — face thumbnail, source, age, sex, appearances, score, pose. Click a row
 to jump the preview to that person's first frame and highlight their face;
 Delete (or right-click) removes rows, Ctrl+M merges them. With a face row
@@ -119,60 +120,15 @@ class QFaceMapPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
 
-        # ---- Scan settings group (Analyze comes AFTER, per the redesign) ----
+        # ---- One Scan group, laid out the way the user asked (related controls
+        # share a row): detector + size + preview / demographics / workers +
+        # stride / refine + its min score / precompute + bake angle / Analyze. ----
         scan_group = QGroupBox("Scan")
         scan_box = QVBoxLayout(scan_group)
+
+        # Row 1: Detector + Size + Preview.
         row1 = QHBoxLayout()
-        row1.addWidget(QLabel("Stride"))
-        self._stride = QSpinBox()
-        self._stride.setRange(1, 300)
-        self._stride.setValue(15)
-        self._stride.setToolTip("Sample every Nth frame. Larger = faster scan.")
-        row1.addWidget(self._stride)
-        row1.addWidget(QLabel("Workers"))
-        self._workers = QSpinBox()
-        self._workers.setRange(1, 16)
-        self._workers.setValue(4)
-        self._workers.setToolTip(
-            "Parallel detection threads — more keeps the GPU busier."
-        )
-        row1.addWidget(self._workers)
-        row1.addStretch(1)
-        scan_box.addLayout(row1)
-
-        row2 = QHBoxLayout()
-        self._preview_check = QCheckBox("Preview")
-        self._preview_check.setChecked(True)
-        self._preview_check.setToolTip(
-            "Show the frames being scanned on the preview while analyzing."
-        )
-        row2.addWidget(self._preview_check)
-        self._demographics_check = QCheckBox("Detect age/sex")
-        self._demographics_check.setToolTip(
-            "Also run the gender/age model (slower) to fill the Age/Sex columns. "
-            "Off = fast detection + recognition only."
-        )
-        row2.addWidget(self._demographics_check)
-        self._precompute_check = QCheckBox("Precompute map")
-        self._precompute_check.setChecked(True)
-        self._precompute_check.setToolTip(
-            "After the scan, build the per-frame map so live playback + render "
-            "SKIP detection (a full-frame pass — the slow part). Off = catalog "
-            "only; playback detects live (per-identity routing still works)."
-        )
-        row2.addWidget(self._precompute_check)
-        row2.addStretch(1)
-        scan_box.addLayout(row2)
-        layout.addWidget(scan_group)
-
-        # ---- Detection (the scan's OWN settings, independent of the live
-        # swapper). The detector is fixed to buffalo_l: identity matching needs
-        # ArcFace embeddings, which the faster detection-only detectors can't
-        # produce — so this is shown, not chosen. ----
-        det_group = QGroupBox("Detection")
-        det_box = QVBoxLayout(det_group)
-        det_row1 = QHBoxLayout()
-        det_row1.addWidget(QLabel("Detector"))
+        row1.addWidget(QLabel("Detector:"))
         self._detector = QComboBox()
         for value, label in _SCAN_DETECTORS:
             self._detector.addItem(label, value)
@@ -184,8 +140,8 @@ class QFaceMapPanel(QWidget):
             "but they can't produce age/sex (that needs buffalo_l). EPs follow "
             "the swapper's ONNX provider selection. Downloads on first use."
         )
-        det_row1.addWidget(self._detector)
-        det_row1.addWidget(QLabel("Size"))
+        row1.addWidget(self._detector, stretch=1)
+        row1.addWidget(QLabel("Size:"))
         self._det_size = QSpinBox()
         # Same range/step as the live swapper's detection size (multiples of 32),
         # but a SEPARATE setting: this one is the offline scan's detector input,
@@ -198,18 +154,55 @@ class QFaceMapPanel(QWidget):
             "from the swapper's live detection size. Larger finds smaller/distant "
             "faces but scans slower."
         )
-        det_row1.addWidget(self._det_size)
-        det_row1.addStretch(1)
-        det_box.addLayout(det_row1)
-        det_row2 = QHBoxLayout()
-        self._refine_check = QCheckBox("Refine keypoints (2dfan4)")
+        row1.addWidget(self._det_size)
+        self._preview_check = QCheckBox("Preview")
+        self._preview_check.setChecked(True)
+        self._preview_check.setToolTip(
+            "Show the frames being scanned on the preview while analyzing."
+        )
+        row1.addWidget(self._preview_check)
+        scan_box.addLayout(row1)
+
+        # Row 2: Detect age/sex (demographics — buffalo_l only).
+        row2 = QHBoxLayout()
+        self._demographics_check = QCheckBox("Detect age/sex")
+        self._demographics_check.setToolTip(
+            "Also run the gender/age model (slower) to fill the Age/Sex columns. "
+            "Off = fast detection + recognition only. Needs buffalo_l."
+        )
+        row2.addWidget(self._demographics_check)
+        row2.addStretch(1)
+        scan_box.addLayout(row2)
+
+        # Row 3: Workers + Stride.
+        row3 = QHBoxLayout()
+        row3.addWidget(QLabel("Workers:"))
+        self._workers = QSpinBox()
+        self._workers.setRange(1, 16)
+        self._workers.setValue(4)
+        self._workers.setToolTip(
+            "Parallel detection threads — more keeps the GPU busier."
+        )
+        row3.addWidget(self._workers)
+        row3.addWidget(QLabel("Stride:"))
+        self._stride = QSpinBox()
+        self._stride.setRange(1, 300)
+        self._stride.setValue(15)
+        self._stride.setToolTip("Sample every Nth frame. Larger = faster scan.")
+        row3.addWidget(self._stride)
+        row3.addStretch(1)
+        scan_box.addLayout(row3)
+
+        # Row 4: Refine keypoints + its min score (grayed with the checkbox).
+        row4 = QHBoxLayout()
+        self._refine_check = QCheckBox("Refine keypoints")
         self._refine_check.setToolTip(
             "Bake 2dfan4-refined keypoints into the per-frame map — steadier "
             "alignment on tilted faces. Adds time to the scan."
         )
-        det_row2.addWidget(self._refine_check)
-        self._refine_min_label = QLabel("Refine min score")
-        det_row2.addWidget(self._refine_min_label)
+        row4.addWidget(self._refine_check)
+        self._refine_min_label = QLabel("min score:")
+        row4.addWidget(self._refine_min_label)
         self._refine_score = QDoubleSpinBox()
         self._refine_score.setRange(0.0, 1.0)
         self._refine_score.setSingleStep(0.05)
@@ -220,22 +213,46 @@ class QFaceMapPanel(QWidget):
             "landmark-refinement threshold — NOT the face-detection 'Score' in "
             "the list, and it never drops a face from the list."
         )
-        det_row2.addWidget(self._refine_score)
-        det_row2.addStretch(1)
-        det_box.addLayout(det_row2)
-        det_row3 = QHBoxLayout()
-        self._bake_angle_check = QCheckBox("Bake face angle (2dfan4)")
+        row4.addWidget(self._refine_score)
+        row4.addStretch(1)
+        scan_box.addLayout(row4)
+
+        # Row 5: Precompute map + Bake face angle.
+        row5 = QHBoxLayout()
+        self._precompute_check = QCheckBox("Precompute map")
+        self._precompute_check.setChecked(True)
+        self._precompute_check.setToolTip(
+            "After the scan, build the per-frame map so live playback + render "
+            "SKIP detection (a full-frame pass — the slow part). Off = catalog "
+            "only; playback detects live (per-identity routing still works)."
+        )
+        row5.addWidget(self._precompute_check)
+        self._bake_angle_check = QCheckBox("Bake face angle")
         self._bake_angle_check.setChecked(True)
         self._bake_angle_check.setToolTip(
-            "Bake a steady per-face tilt angle into the per-frame map so rotation "
-            "compensation works during detection-free playback. Without it, the "
-            "Pose / Landmark-68 angle sources fall back to the noisier keypoint "
-            "angle there (a rebuilt face has no pose estimate)."
+            "Bake a steady per-face tilt angle (2dfan4) into the per-frame map so "
+            "rotation compensation works during detection-free playback. Without "
+            "it, the Pose / Landmark-68 angle sources fall back to the noisier "
+            "keypoint angle there (a rebuilt face has no pose estimate)."
         )
-        det_row3.addWidget(self._bake_angle_check)
-        det_row3.addStretch(1)
-        det_box.addLayout(det_row3)
-        layout.addWidget(det_group)
+        row5.addWidget(self._bake_angle_check)
+        row5.addStretch(1)
+        scan_box.addLayout(row5)
+
+        # Row 6: Analyze + Reset.
+        row6 = QHBoxLayout()
+        self._analyze_btn = QPushButton("Analyze faces")
+        self._analyze_btn.setToolTip("Scan the target to discover the people in it.")
+        self._analyze_btn.clicked.connect(self._on_analyze_clicked)
+        row6.addWidget(self._analyze_btn, stretch=1)
+        self._reset_btn = QPushButton("Reset")
+        self._reset_btn.setToolTip(
+            "Clear the catalog + scan progress so the next Analyze starts fresh."
+        )
+        self._reset_btn.clicked.connect(self.resetRequested)
+        row6.addWidget(self._reset_btn)
+        scan_box.addLayout(row6)
+        layout.addWidget(scan_group)
 
         # Persist scan settings across restarts: any change emits settingsChanged
         # (the owner saves them); restore_settings() seeds them on startup.
@@ -249,26 +266,13 @@ class QFaceMapPanel(QWidget):
         self._refine_score.valueChanged.connect(self._on_settings_changed)
         self._bake_angle_check.toggled.connect(self._on_settings_changed)
         self._detector.currentIndexChanged.connect(self._on_settings_changed)
-        # "Refine min score" only matters when refinement is on — gray it with
-        # the checkbox so the dependency is visible. "Detect age/sex" needs
-        # buffalo_l, so it grays for the detection-only detectors.
+        # "min score" only matters when refinement is on — gray it with the
+        # checkbox so the dependency is visible. "Detect age/sex" needs buffalo_l,
+        # so it grays for the detection-only detectors.
         self._refine_check.toggled.connect(self._update_refine_rows)
         self._detector.currentIndexChanged.connect(self._update_detector_dependent)
         self._update_refine_rows()
         self._update_detector_dependent()
-
-        analyze_row = QHBoxLayout()
-        self._analyze_btn = QPushButton("Analyze faces")
-        self._analyze_btn.setToolTip("Scan the target to discover the people in it.")
-        self._analyze_btn.clicked.connect(self._on_analyze_clicked)
-        analyze_row.addWidget(self._analyze_btn, stretch=1)
-        self._reset_btn = QPushButton("Reset")
-        self._reset_btn.setToolTip(
-            "Clear the catalog + scan progress so the next Analyze starts fresh."
-        )
-        self._reset_btn.clicked.connect(self.resetRequested)
-        analyze_row.addWidget(self._reset_btn)
-        layout.addLayout(analyze_row)
 
         self._progress = QProgressBar()
         self._progress.setVisible(False)
