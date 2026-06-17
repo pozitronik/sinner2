@@ -161,3 +161,35 @@ class TestYoloStaticInput:
         d = YoloFaceDetector(size=320)
         d.setup()
         assert d._size == 640  # noqa: SLF001
+
+
+class TestDetectorRelease:
+    """The scan builds a detector per run; release() must free its ONNX session
+    or the CUDA session leaks across repeated scans."""
+
+    def test_yoloface_release_drops_session_refcount(self, monkeypatch):
+        from sinner2.pipeline import detectors as det_mod
+        from sinner2.pipeline.detectors import YoloFaceDetector
+
+        released = []
+        monkeypatch.setattr(
+            det_mod, "release_onnx_session",
+            lambda name, providers=None: released.append((name, providers)),
+        )
+        d = YoloFaceDetector(
+            model_file="yoloface_8n.onnx", providers=["CPUExecutionProvider"]
+        )
+        d._session = object()  # noqa: SLF001 — pretend setup() ran
+        d.release()
+        assert released == [("yoloface_8n.onnx", ["CPUExecutionProvider"])]
+        assert d._session is None  # noqa: SLF001
+        d.release()  # idempotent — no double-release
+        assert len(released) == 1
+
+    def test_scrfd_release_drops_model(self):
+        from sinner2.pipeline.detectors import ScrfdDetector
+
+        d = ScrfdDetector()
+        d._det = object()  # noqa: SLF001
+        d.release()
+        assert d._det is None  # noqa: SLF001

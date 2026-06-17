@@ -26,7 +26,11 @@ import cv2
 import numpy as np
 
 from sinner2.config.execution import DEFAULT_ONNX_PROVIDERS
-from sinner2.pipeline.model_cache import get_model_path, get_onnx_session
+from sinner2.pipeline.model_cache import (
+    get_model_path,
+    get_onnx_session,
+    release_onnx_session,
+)
 from sinner2.types import Frame
 
 _DET_SIZE = 640
@@ -157,6 +161,13 @@ class YoloFaceDetector:
             self._score, self._nms, self._size,
         )
 
+    def release(self) -> None:
+        """Drop the shared ONNX session refcount so the cache can evict it — the
+        scan builds a detector per run, so without this the CUDA session leaks."""
+        if self._session is not None:
+            release_onnx_session(self._model_file, self._providers)
+            self._session = None
+
 
 class ScrfdDetector:
     """scrfd_2.5g via insightface's reference SCRFD model class → FaceLite list."""
@@ -200,6 +211,11 @@ class ScrfdDetector:
                 )
             )
         return faces
+
+    def release(self) -> None:
+        """Drop the insightface SCRFD model so its ORT session can be reclaimed
+        (insightface manages the session itself; we just release our reference)."""
+        self._det = None
 
 
 def build_detector(

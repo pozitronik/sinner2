@@ -89,9 +89,33 @@ def _default_detect(
         providers=providers, detection_size=detection_size, detector=detector
     )
     custom = detector is not None and detector != DetectorModel.BUFFALO_L
-    if custom or fast:
-        return lambda frame: analyser.analyse_det_rec(frame)
-    return lambda frame: analyser.analyse_uncached(frame)
+    return _AnalyserDetect(analyser, det_rec=(custom or fast))
+
+
+class _AnalyserDetect:
+    """A ``DetectFn`` that OWNS its FaceAnalyser so the scan can release it when
+    done — a standalone yoloface/scrfd detector's ONNX session would otherwise
+    leak (a fresh analyser is built per scan). buffalo_l's release is a no-op
+    (shared singleton)."""
+
+    def __init__(self, analyser: Any, *, det_rec: bool) -> None:
+        self._analyser = analyser
+        self._fn = (
+            analyser.analyse_det_rec if det_rec else analyser.analyse_uncached
+        )
+
+    def __call__(self, frame: Any) -> list:
+        return self._fn(frame)
+
+    def release(self) -> None:
+        self._analyser.release()
+
+
+def _release_detect(detect: Any) -> None:
+    """Release a detect fn's analyser if it owns one (test stubs don't)."""
+    rel = getattr(detect, "release", None)
+    if callable(rel):
+        rel()
 
 
 def _default_landmarker(providers: list[str] | None) -> Any:
@@ -148,6 +172,7 @@ class FaceMapAnalysisJob(QObject):
         )
         providers = list(request.providers) if request.providers else None
         geometry: Any = None
+        detect: Any = None
         try:
             detect = self._detect_factory(
                 providers, request.detection_size, request.fast, request.detector,
@@ -170,6 +195,7 @@ class FaceMapAnalysisJob(QObject):
             self.failed.emit(str(exc))
             return
         finally:
+            _release_detect(detect)  # free the scan detector's ONNX session
             try:
                 reader.release()
             except Exception:  # noqa: BLE001 — best-effort
@@ -214,6 +240,7 @@ class FaceMapAnalysisJob(QObject):
             )
             return geometry
         finally:
+            _release_detect(geo_base)  # free the geometry detector's ONNX session
             if landmarker is not None:
                 try:
                     landmarker.release()

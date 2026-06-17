@@ -304,3 +304,12 @@ class FaceAnalyser:
         with self._lock:
             self._cached_faces = None
             self._frame_counter = 0
+
+    def release(self) -> None:
+        """Release the STANDALONE detector's ONNX session (yoloface / scrfd) —
+        each scan builds a fresh analyser, so without this its CUDA session
+        leaks. The shared buffalo_l pack is a process-wide singleton (not owned
+        here, ``_detector`` is None for it), so it's left alone."""
+        if self._detector is not None:
+            self._detector.release()
+            self._detector = None

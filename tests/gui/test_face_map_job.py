@@ -196,3 +196,25 @@ class TestRun:
         with qtbot.waitSignal(job.finished, timeout=2000) as blocker:
             job.run(AnalysisRequest("clip.mp4", stride=1))
         assert len(blocker.args[0].identities) == 1  # second frame not scanned
+
+
+class TestDetectorRelease:
+    def test_scan_releases_the_detector(self, qtbot):
+        # The scan's detect fn owns a FaceAnalyser whose standalone detector
+        # holds an ONNX session — the job must release it (no per-scan leak).
+        reader = _StubReader([[_Face(_emb(1, 0, 0))]])
+        released = []
+
+        class _Det:
+            def __call__(self, f):
+                return f
+            def release(self):
+                released.append(1)
+
+        job = FaceMapAnalysisJob(
+            reader_factory=lambda _p: reader,
+            detect_factory=lambda *_a: _Det(),
+        )
+        with qtbot.waitSignal(job.finished, timeout=2000):
+            job.run(AnalysisRequest("clip.mp4", stride=1, compute_geometry=False))
+        assert released == [1]  # the catalog detector was released

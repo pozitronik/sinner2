@@ -247,6 +247,25 @@ class TestScanDetectorChoice:
         stub_insightface.det_model.detect.assert_called_once()
         assert rec.get.call_count == 1
 
+    def test_release_releases_standalone_detector(self, stub_insightface, monkeypatch):
+        from sinner2.pipeline import detectors as det_mod
+        from sinner2.pipeline.detectors import DetectorModel
+
+        stub_det = MagicMock()
+        monkeypatch.setattr(det_mod, "build_detector", lambda *a, **k: stub_det)
+        a = FaceAnalyser(detector=DetectorModel.YOLOFACE)
+        a.release()
+        stub_det.release.assert_called_once()  # the detector's session is freed
+        assert a._detector is None  # noqa: SLF001
+        a.release()  # idempotent
+
+    def test_release_is_noop_for_buffalo_l(self, stub_insightface):
+        # buffalo_l is a shared singleton (no standalone detector) — release()
+        # must NOT touch it.
+        a = FaceAnalyser()
+        a.release()
+        assert a._detector is None  # noqa: SLF001
+
 
 class TestDetectionSize:
     """The face-detector input size (det_size) is configurable: smaller =
