@@ -6,6 +6,7 @@ from sinner2.pipeline.buffer.metrics import BufferMetrics
 from sinner2.pipeline.skip_strategy import (
     BestEffortStrategy,
     FrameSkipStrategy,
+    PredictiveStrategy,
     SkipDecision,
     SyncedStrategy,
 )
@@ -452,3 +453,154 @@ class TestCurrentMode:
             metrics=_zero_metrics(),
         )
         assert s.current_mode() == "synced"
+
+
+class TestPredictiveStrategy:
+    """Predict-ahead: keep the pipeline shallow (no slow-motion backlog) and aim
+    a frame at where the playhead will be when it finishes (near-zero lag)."""
+
+    def _timeline(self, target, fps=30.0):
+        tl = MagicMock()
+        tl.current_frame.return_value = target
+        tl.fps = fps
+        return tl
+
+    def test_compliant_with_protocol(self):
+        assert isinstance(PredictiveStrategy(), FrameSkipStrategy)
+
+    def test_initial_mode(self):
+        assert PredictiveStrategy().current_mode() == "predictive"
+
+    # ---- cold-start warm-up (same rationale as SyncedStrategy) ----
+
+    def test_warmup_submits_sequentially(self):
+        s = PredictiveStrategy()
+        d = s.decide(last_submitted=-1, last_completed=-1,
+                     timeline=self._timeline(999), metrics=_zero_metrics())
+        assert d.next_frame == 0  # sequential, NOT a jump to the climbing clock
+
+    def test_seek_to_zero_after_completion_is_not_warmup(self):
+        s = PredictiveStrategy()
+        tl = self._timeline(50)
+        s.decide(last_submitted=50, last_completed=50, timeline=tl,
+                 metrics=_zero_metrics())  # a frame completed this session
+        tl.current_frame.return_value = 10
+        d = s.decide(last_submitted=-1, last_completed=-1, timeline=tl,
+                     metrics=_zero_metrics())
+        assert d.next_frame == 10  # skip to wall-clock (lead 0 w/o throughput)
+
+    # ---- shallow-pipeline gate (the slow-motion cure) ----
+
+    def test_idle_when_pipeline_full(self):
+        # outstanding (2) >= cap (1 worker * factor 2) → idle, don't deepen the queue.
+        s = PredictiveStrategy()
+        d = s.decide(last_submitted=50, last_completed=49,
+                     timeline=self._timeline(100), metrics=_zero_metrics(),
+                     process_fps=10.0, worker_count=1, outstanding=2)
+        assert d.next_frame is None
+
+    def test_submits_when_pipeline_has_room(self):
+        s = PredictiveStrategy()
+        d = s.decide(last_submitted=50, last_completed=49,
+                     timeline=self._timeline(100), metrics=_zero_metrics(),
+                     process_fps=10.0, worker_count=1, outstanding=1)
+        assert d.next_frame is not None
+
+    def test_gate_scales_with_worker_count(self):
+        # 4 workers, factor 2 → cap 8: 7 outstanding submits, 8 idles.
+        s = PredictiveStrategy()
+        kw = dict(last_submitted=50, last_completed=49,
+                  timeline=self._timeline(100), metrics=_zero_metrics(),
+                  process_fps=10.0, worker_count=4)
+        assert s.decide(outstanding=7, **kw).next_frame is not None
+        assert s.decide(outstanding=8, **kw).next_frame is None
+
+    def test_custom_outstanding_factor(self):
+        # factor 1 → cap == worker_count: 1 worker idles at outstanding 1.
+        s = PredictiveStrategy(outstanding_factor=1)
+        kw = dict(last_submitted=50, last_completed=49,
+                  timeline=self._timeline(100), metrics=_zero_metrics(),
+                  process_fps=10.0, worker_count=1)
+        assert s.decide(outstanding=0, **kw).next_frame is not None
+        assert s.decide(outstanding=1, **kw).next_frame is None
+
+    # ---- predict-ahead lead ----
+
+    def test_aims_ahead_by_measured_lead(self):
+        # fps 30, throughput 10, 1 worker, factor 2 → cap 2 → lead=ceil(2*30/10)=6.
+        s = PredictiveStrategy()
+        d = s.decide(last_submitted=50, last_completed=40,
+                     timeline=self._timeline(100), metrics=_zero_metrics(),
+                     process_fps=10.0, worker_count=1, outstanding=0)
+        assert d.next_frame == 106  # target 100 + lead 6
+
+    def test_lead_scales_with_worker_count(self):
+        # 4 workers, factor 2 → cap 8 → lead=ceil(8*30/10)=24.
+        s = PredictiveStrategy()
+        d = s.decide(last_submitted=50, last_completed=49,
+                     timeline=self._timeline(100), metrics=_zero_metrics(),
+                     process_fps=10.0, worker_count=4, outstanding=0)
+        assert d.next_frame == 124
+
+    def test_lead_capped_by_max_lead_seconds(self):
+        # max_lead 0.1s, fps 30 → cap 3 frames; computed lead 6 clamps to 3.
+        s = PredictiveStrategy(max_lead_seconds=0.1)
+        d = s.decide(last_submitted=50, last_completed=49,
+                     timeline=self._timeline(100), metrics=_zero_metrics(),
+                     process_fps=10.0, worker_count=1, outstanding=0)
+        assert d.next_frame == 103  # target 100 + clamped lead 3
+
+    def test_no_throughput_yet_aims_at_present_target(self):
+        # process_fps unknown → lead 0 → skip-to-now (like Synced, but shallow).
+        s = PredictiveStrategy()
+        d = s.decide(last_submitted=50, last_completed=49,
+                     timeline=self._timeline(100), metrics=_zero_metrics(),
+                     process_fps=None, worker_count=1, outstanding=0)
+        assert d.next_frame == 100
+
+    def test_never_goes_backward(self):
+        # target (50) < last_submitted (60), within the lookahead window → still
+        # advances forward, never resubmits an already-sent frame.
+        s = PredictiveStrategy()
+        d = s.decide(last_submitted=60, last_completed=59,
+                     timeline=self._timeline(50), metrics=_zero_metrics(),
+                     process_fps=10.0, worker_count=1, outstanding=0)
+        assert d.next_frame == 61  # max(last_submitted+1, target+lead)
+
+    # ---- I/O-bound fallback (inherited from Synced's rationale) ----
+
+    def test_io_bound_far_behind_falls_back_to_sequential(self):
+        s = PredictiveStrategy(max_lag_frames=10, io_bound_read_ms=50)
+        d = s.decide(last_submitted=4, last_completed=5,
+                     timeline=self._timeline(100), metrics=_zero_metrics(),
+                     read_latency_ms=150.0, process_fps=10.0, worker_count=1,
+                     outstanding=0)
+        assert d.next_frame == 5  # sequential
+        assert s.current_mode() == "predictive (lagging)"
+
+    def test_compute_bound_far_behind_keeps_predicting(self):
+        s = PredictiveStrategy(max_lag_frames=10, io_bound_read_ms=50)
+        d = s.decide(last_submitted=4, last_completed=5,
+                     timeline=self._timeline(100), metrics=_zero_metrics(),
+                     read_latency_ms=2.0, process_fps=10.0, worker_count=1,
+                     outstanding=0)
+        assert d.next_frame == 106  # fast reads → predict ahead, not slow-motion
+        assert s.current_mode() == "predictive"
+
+    # ---- lookahead backstop + public properties ----
+
+    def test_lookahead_backstop_idles(self):
+        # Submitted far beyond the playhead + lookahead → idle (backstop).
+        s = PredictiveStrategy(lookahead_frames=120, max_lead_seconds=10.0)
+        d = s.decide(last_submitted=250, last_completed=10,
+                     timeline=self._timeline(10), metrics=_zero_metrics(),
+                     process_fps=1000.0, worker_count=1, outstanding=0)
+        assert d.next_frame is None
+
+    def test_max_lead_seconds_property(self):
+        assert PredictiveStrategy(max_lead_seconds=2.5).max_lead_seconds == 2.5
+        assert PredictiveStrategy().max_lead_seconds == 1.0
+
+    def test_max_lag_frames_property(self):
+        assert PredictiveStrategy(max_lag_frames=120).max_lag_frames == 120
+        assert PredictiveStrategy().max_lag_frames == 60

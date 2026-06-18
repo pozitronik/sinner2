@@ -1061,6 +1061,12 @@ class RealtimeExecutor:
                 # an I/O-bound source (skip → thrash) from a compute-bound one
                 # (skip → free, stay synced).
                 read_latency_ms=self._reader_pool.recent_read_latency_ms(),
+                # Throughput + parallelism + in-flight depth, so PredictiveStrategy
+                # can aim a frame at where the playhead WILL be when it finishes
+                # and keep the in-flight queue shallow (no slow-motion backlog).
+                process_fps=self.processing_fps.get(),
+                worker_count=len(self._workers),
+                outstanding=self._work_queue.qsize() + self._inflight_count,
             )
             # Read strategy mode right after decide so the value reflects
             # this exact tick's behaviour (SyncedStrategy sets _in_fallback

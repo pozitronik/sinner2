@@ -2208,6 +2208,10 @@ class TestSectionPlayback:
         ex._generation = 0  # noqa: SLF001
         ex._last_shown_frame_index = None  # noqa: SLF001
         ex._inflight_count = 0  # noqa: SLF001
+        # The dispatcher now feeds the strategy throughput + parallelism + depth;
+        # the mocked strategy ignores them, so any stand-ins suffice here.
+        ex.processing_fps = MagicMock()
+        ex._workers = []  # noqa: SLF001
         ex._strategy = MagicMock()  # noqa: SLF001
         ex._strategy.current_mode.return_value = "seq"  # noqa: SLF001
         ex._strategy.decide.return_value = SimpleNamespace(  # noqa: SLF001

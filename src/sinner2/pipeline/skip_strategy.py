@@ -1,3 +1,4 @@
+import math
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
@@ -21,6 +22,12 @@ class FrameSkipStrategy(Protocol):
     (last submitted, last completed, current timeline position, lag metrics)
     to choose between submitting the next sequential frame, skipping ahead
     to catch up with wall-clock, or returning None to wait.
+
+    The last three arguments are optional context a predictive strategy needs
+    and simpler ones ignore: ``process_fps`` (current pipeline throughput),
+    ``worker_count`` (parallelism), and ``outstanding`` (queued + in-flight
+    work) — enough to aim a frame at where the playhead WILL be when it
+    finishes, and to keep the in-flight depth shallow.
     """
 
     def decide(
@@ -30,6 +37,9 @@ class FrameSkipStrategy(Protocol):
         timeline: Timeline,
         metrics: BufferMetrics,
         read_latency_ms: float | None = None,
+        process_fps: float | None = None,
+        worker_count: int = 1,
+        outstanding: int = 0,
     ) -> SkipDecision: ...
 
     def current_mode(self) -> str:
@@ -59,6 +69,9 @@ class BestEffortStrategy:
         timeline: Timeline,
         metrics: BufferMetrics,
         read_latency_ms: float | None = None,
+        process_fps: float | None = None,
+        worker_count: int = 1,
+        outstanding: int = 0,
     ) -> SkipDecision:
         return SkipDecision(next_frame=last_submitted + 1)
 
@@ -169,6 +182,9 @@ class SyncedStrategy:
         timeline: Timeline,
         metrics: BufferMetrics,
         read_latency_ms: float | None = None,
+        process_fps: float | None = None,
+        worker_count: int = 1,
+        outstanding: int = 0,
     ) -> SkipDecision:
         target = timeline.current_frame()
         if last_completed >= 0:
@@ -213,3 +229,175 @@ class SyncedStrategy:
 
     def current_mode(self) -> str:
         return "synced (lagging)" if self._in_fallback else "synced"
+
+
+class PredictiveStrategy:
+    """Predict-ahead viewing strategy — real-time playback under a slow pipeline.
+
+    SyncedStrategy submits the frame that is current *at submit time* and lets a
+    deep work queue build up. Both hurt when processing can't keep up: the deep
+    FIFO fills with sequential frames during warm-up, so later skip-to-target
+    submissions land BEHIND that backlog and the worker crawls through stale
+    frames in order — the display plays in slow-motion. This strategy fixes both:
+
+    1. Shallow pipeline. Idle (next_frame=None) once outstanding work
+       (queued + in-flight) reaches ``outstanding_factor * worker_count``. With
+       only a couple of frames per worker in flight, a submitted frame starts
+       processing almost immediately, so "what we submit" is "what shows next" —
+       there is no backlog to crawl through.
+
+    2. Predict-ahead lead. Aim at ``target + lead``, where ``lead`` is how many
+       frames the wall-clock advances while this frame is processed. By Little's
+       law the in-pipeline latency is ``outstanding_cap / processing_fps``
+       seconds, so:
+
+           lead = ceil(outstanding_cap * fps / processing_fps)
+
+       A frame submitted now then finishes just as the playhead reaches it →
+       near-zero display lag, showing every Nth frame in real time instead of
+       every frame in slow-motion. ``lead`` is clamped to
+       ``[0, min(lookahead, max_lead_seconds * fps)]`` so a momentary throughput
+       dip can't fling the playhead far down the clip (a wasted random-access
+       read on a slow source); ``max_lead_seconds`` is the user-facing cap.
+
+    Inherits SyncedStrategy's safeguards: cold-start warm-up (submit sequentially
+    until the first completion so the opening isn't skipped) and the I/O-bound →
+    sequential fallback with hysteresis (on a slow source, skipping forces random
+    reads it can't sustain → fall back so reads stay sequential).
+    """
+
+    # How far ahead (seconds of wall-clock) the lead may reach. Bounds the skip
+    # so a throughput dip can't aim at the end of the clip. User-tunable.
+    _DEFAULT_MAX_LEAD_SECONDS = 1.0
+    # Outstanding work cap = this * worker_count. 2 = one frame computing + one
+    # queued per worker: keeps workers fed (no refill stall) while staying
+    # shallow enough that submit-to-show latency is ~2 frame-computes, which the
+    # lead compensates for exactly (Little's law uses this same cap).
+    _DEFAULT_OUTSTANDING_FACTOR = 2
+    # Catastrophic-lag + recovery thresholds and the I/O-bound read cutoff —
+    # identical rationale to SyncedStrategy (see its docstring).
+    _DEFAULT_MAX_LAG_FRAMES = 60
+    _DEFAULT_LOOKAHEAD_FRAMES = 120
+    _DEFAULT_IO_BOUND_READ_MS = 50.0
+
+    def __init__(
+        self,
+        max_lead_seconds: float | None = None,
+        outstanding_factor: int | None = None,
+        max_lag_frames: int | None = None,
+        recover_lag_frames: int | None = None,
+        lookahead_frames: int | None = None,
+        io_bound_read_ms: float | None = None,
+    ) -> None:
+        self._max_lead_seconds = (
+            max_lead_seconds
+            if max_lead_seconds is not None
+            else self._DEFAULT_MAX_LEAD_SECONDS
+        )
+        self._outstanding_factor = (
+            outstanding_factor
+            if outstanding_factor is not None
+            else self._DEFAULT_OUTSTANDING_FACTOR
+        )
+        self._max_lag_frames = (
+            max_lag_frames
+            if max_lag_frames is not None
+            else self._DEFAULT_MAX_LAG_FRAMES
+        )
+        self._lookahead_frames = (
+            lookahead_frames
+            if lookahead_frames is not None
+            else self._DEFAULT_LOOKAHEAD_FRAMES
+        )
+        self._io_bound_read_ms = (
+            io_bound_read_ms
+            if io_bound_read_ms is not None
+            else self._DEFAULT_IO_BOUND_READ_MS
+        )
+        self._recover_lag_frames = (
+            recover_lag_frames
+            if recover_lag_frames is not None
+            else self._max_lag_frames // 2
+        )
+        self._recover_lag_frames = min(self._recover_lag_frames, self._max_lag_frames)
+        # See SyncedStrategy: report keeping-up vs the sequential fallback, and
+        # distinguish a cold start from a mid-session seek-to-0.
+        self._in_fallback = False
+        self._ever_completed = False
+
+    @property
+    def max_lead_seconds(self) -> float:
+        return self._max_lead_seconds
+
+    @property
+    def max_lag_frames(self) -> int:
+        return self._max_lag_frames
+
+    def decide(
+        self,
+        last_submitted: FrameIndex,
+        last_completed: FrameIndex,
+        timeline: Timeline,
+        metrics: BufferMetrics,
+        read_latency_ms: float | None = None,
+        process_fps: float | None = None,
+        worker_count: int = 1,
+        outstanding: int = 0,
+    ) -> SkipDecision:
+        target = timeline.current_frame()
+        if last_completed >= 0:
+            self._ever_completed = True
+        cap = max(1, worker_count) * self._outstanding_factor
+        # (1) Shallow pipeline: keep only ~a couple of frames per worker in
+        # flight. A deep FIFO is what turns a slow pipeline into slow-motion —
+        # skip-ahead submissions queue behind a sequential backlog the worker
+        # drains in order. Idle once enough is in flight to keep workers busy.
+        if outstanding >= cap:
+            return SkipDecision(next_frame=None)
+        # Cold-start warm-up: nothing has completed yet (first frame still
+        # loading models / running its first inference). Submit sequentially so
+        # the opening is processed rather than skipped while the clock climbs.
+        # Gated on _ever_completed so a mid-session seek-to-0 isn't misread.
+        if last_completed < 0 and not self._ever_completed:
+            self._in_fallback = False
+            return SkipDecision(next_frame=last_submitted + 1)
+        # I/O-bound catastrophic-lag fallback (mirrors SyncedStrategy): far
+        # behind AND reads are the bottleneck → skipping forces random reads a
+        # slow source can't sustain, so go sequential and let prefetch absorb
+        # them. Hysteresis (enter above max_lag, leave below recover_lag) keeps
+        # a lag parked at the boundary from flapping the mode.
+        lag = target - last_completed
+        io_bound = (
+            read_latency_ms is not None and read_latency_ms > self._io_bound_read_ms
+        )
+        if self._in_fallback:
+            if lag <= self._recover_lag_frames:
+                self._in_fallback = False
+        elif lag > self._max_lag_frames and io_bound:
+            self._in_fallback = True
+        if self._in_fallback:
+            return SkipDecision(next_frame=last_submitted + 1)
+        # (2) Predict-ahead: aim where the playhead will be when this frame
+        # finishes, so it lands on time instead of one pipeline-latency late.
+        lead = self._compute_lead(cap, timeline.fps, process_fps)
+        nxt = max(last_submitted + 1, target + lead)
+        if nxt > target + self._lookahead_frames:
+            # Already rendered the full look-ahead window — idle (a backstop;
+            # the outstanding gate above usually bounds the depth first).
+            return SkipDecision(next_frame=None)
+        return SkipDecision(next_frame=nxt)
+
+    def _compute_lead(
+        self, cap: int, fps: float, process_fps: float | None
+    ) -> int:
+        """Frames the wall-clock advances during one frame's time in the
+        pipeline. 0 until throughput is known (warm-up) → aim at the present
+        target (skip-to-now). Clamped by the user's max-lead cap + lookahead."""
+        if not process_fps or process_fps <= 0:
+            return 0
+        lead = math.ceil(cap * fps / process_fps)
+        max_lead = int(self._max_lead_seconds * fps)
+        return max(0, min(lead, max_lead, self._lookahead_frames))
+
+    def current_mode(self) -> str:
+        return "predictive (lagging)" if self._in_fallback else "predictive"
