@@ -252,6 +252,31 @@ class TestStatusActionButtons:
         window.keyPressEvent(evt)
         assert window._status_bar.stats_button.isChecked() is True  # noqa: SLF001
 
+    def test_visualiser_button_toggles_bar_and_persists(self, window):
+        assert not window._transport.visualiser_visible()  # noqa: SLF001
+        window._status_bar.visualiser_button.toggle()  # noqa: SLF001
+        assert window._transport.visualiser_visible()  # noqa: SLF001
+        assert window._visualiser_timer.isActive()  # noqa: SLF001
+        assert window._settings.visualiser_visible is True  # noqa: SLF001
+        window._status_bar.visualiser_button.toggle()  # noqa: SLF001
+        assert not window._transport.visualiser_visible()  # noqa: SLF001
+        assert not window._visualiser_timer.isActive()  # noqa: SLF001
+
+    def test_f6_toggles_visualiser_button(self, window):
+        from PySide6.QtCore import QEvent, Qt
+        from PySide6.QtGui import QKeyEvent
+
+        evt = QKeyEvent(
+            QEvent.Type.KeyPress, Qt.Key.Key_F6, Qt.KeyboardModifier.NoModifier
+        )
+        window.keyPressEvent(evt)
+        assert window._status_bar.visualiser_button.isChecked() is True  # noqa: SLF001
+
+    def test_visualiser_tick_no_session_is_safe(self, window):
+        # No executor (no session) → tick is a harmless no-op.
+        assert window._controller.executor() is None  # noqa: SLF001
+        window._visualiser_tick()  # noqa: SLF001 — must not raise
+
     def test_overlay_checkbox_toggles_overlay(self, window):
         initial_hidden = window._face_overlay.isHidden()  # noqa: SLF001
         initial_on = window._face_overlay_on  # noqa: SLF001

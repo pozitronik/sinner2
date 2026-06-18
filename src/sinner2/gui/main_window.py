@@ -309,6 +309,11 @@ class SinnerMainWindow(QMainWindow):
         self._overlay_timer = QTimer(self)
         self._overlay_timer.setInterval(int(self._PROBE_INTERVAL_S * 1000))
         self._overlay_timer.timeout.connect(self._overlay_tick)
+        # Processing visualiser: polls the live executor's per-frame state and
+        # feeds the transport's heatmap bar while the bar is shown (~20 Hz).
+        self._visualiser_timer = QTimer(self)
+        self._visualiser_timer.setInterval(50)
+        self._visualiser_timer.timeout.connect(self._visualiser_tick)
         self._detection_probe = FaceDetectionProbe(
             providers=self._settings.swapper_providers,
             detection_size=self._settings.swapper_detection_size or 640,
@@ -361,6 +366,9 @@ class SinnerMainWindow(QMainWindow):
 
         self._status_bar.on_top_button.toggled.connect(self._set_stays_on_top)
         self._status_bar.stats_button.toggled.connect(self._set_stats_visible)
+        self._status_bar.visualiser_button.toggled.connect(
+            self._set_visualiser_visible
+        )
         self._status_bar.rotate_button.clicked.connect(self._cycle_rotation)
         self._status_bar.fullscreen_button.toggled.connect(self._set_fullscreen)
         self._status_bar.side_panel_button.toggled.connect(
@@ -686,6 +694,7 @@ class SinnerMainWindow(QMainWindow):
         self._restore_side_panel_state()
         self._restore_top_splitter_from_settings()
         self._restore_metrics_overlay_state()
+        self._restore_visualiser_state()
         self._restore_face_overlay_state()
         self._restore_comparison_state()
         self._restore_stays_on_top()
@@ -1342,6 +1351,9 @@ class SinnerMainWindow(QMainWindow):
         if key == Qt.Key.Key_F4:
             self._status_bar.stats_button.toggle()
             return
+        if key == Qt.Key.Key_F6:
+            self._status_bar.visualiser_button.toggle()
+            return
         if key == Qt.Key.Key_F11:
             self._status_bar.fullscreen_button.toggle()
             return
@@ -1613,6 +1625,32 @@ class SinnerMainWindow(QMainWindow):
             self._reposition_metrics_overlay()
         self._metrics_overlay.setVisible(visible)
         self._set_button_checked(self._status_bar.stats_button, visible)
+
+    def _set_visualiser_visible(self, on: bool) -> None:
+        self._transport.set_visualiser_visible(on)
+        if on:
+            self._visualiser_timer.start()
+            self._visualiser_tick()  # paint at once rather than after a tick
+        else:
+            self._visualiser_timer.stop()
+        self._update_settings(visualiser_visible=on)
+
+    def _visualiser_tick(self) -> None:
+        """Feed the transport's heatmap the live executor's per-frame state.
+        No-op when no file session is active (e.g. camera mode / mid-swap)."""
+        executor = self._controller.executor()
+        if executor is None:
+            return
+        self._transport.set_frame_states(
+            executor.frame_states_snapshot(), executor.frame_count()
+        )
+
+    def _restore_visualiser_state(self) -> None:
+        visible = bool(self._settings.visualiser_visible)
+        self._transport.set_visualiser_visible(visible)
+        if visible:
+            self._visualiser_timer.start()
+        self._set_button_checked(self._status_bar.visualiser_button, visible)
 
     def _reposition_metrics_overlay(self) -> None:
         # Anchor top-left of the frame display with an 8 px margin.
