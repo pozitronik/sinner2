@@ -13,6 +13,8 @@ a settings change or new target restores the user's choices on the next rebuild.
 """
 from __future__ import annotations
 
+import os
+import sys
 from collections.abc import Callable
 
 from PySide6.QtCore import QObject, QTimer, Signal
@@ -21,6 +23,19 @@ from sinner2.pipeline.cache_mode import CacheMode
 from sinner2.pipeline.realtime.executor import RealtimeExecutor
 from sinner2.pipeline.realtime.preprocess import required_prefill
 from sinner2.pipeline.skip_strategy import BestEffortStrategy
+
+# Opt-in diagnostic: set SINNER2_PREPROCESS_TRACE=1 before launch to print the
+# play-path decision + buffering progress to stderr (helps debug "preprocessing
+# didn't engage"). Read once at import — set it before starting the app.
+_TRACE_ON = os.environ.get("SINNER2_PREPROCESS_TRACE", "").strip().lower() in {
+    "1", "true", "yes", "on",
+}
+
+
+def trace(message: str) -> None:
+    if _TRACE_ON:
+        print(f"[preprocess] {message}", file=sys.stderr, flush=True)
+
 
 _POLL_INTERVAL_MS = 100
 # Frames to complete before trusting the throughput estimate (a cold first
@@ -53,6 +68,7 @@ class PreprocessController(QObject):
         self._frame_count = 0
         self._start_frame = 0
         self._head_start: int | None = None
+        self._tick_count = 0
 
     def is_active(self) -> bool:
         return self._active
@@ -61,19 +77,27 @@ class PreprocessController(QObject):
         """Begin buffering ahead FROM THE CURRENT PLAYHEAD for smooth playback at
         ``target_fps`` (the source/native fps), then release to play."""
         if self._active:
+            trace("start() ignored — already active")
             return
         executor = self._get_executor()
         if executor is None:
+            trace("start() FAILED — no executor")
             self.failed.emit("no active session to preprocess")
             return
         self._frame_count = executor.frame_count()
         if self._frame_count <= 0:
+            trace(f"start() FAILED — frame_count={self._frame_count}")
             self.failed.emit("nothing to preprocess")
             return
         self._target_fps = max(0.0, float(target_fps))
         self._start_frame = max(0, executor.current_frame.get())
         self._head_start = None
+        self._tick_count = 0
         self._active = True
+        trace(
+            f"start() OK — from frame {self._start_frame}, "
+            f"frame_count={self._frame_count}, target_fps={self._target_fps}"
+        )
         # Sequential + disk-backed fill: every frame in order, not RAM-bound. No
         # seek — the dispatcher already fills ahead of the playhead (last_submitted
         # >= current), so it reuses any frames already buffered there.
@@ -114,6 +138,14 @@ class PreprocessController(QObject):
         self.progressChanged.emit(min(done_ahead, target), max(1, target))
         reached = self._head_start is not None and done_ahead >= self._head_start
         all_done = completed >= self._frame_count - 1
+        self._tick_count += 1
+        if self._tick_count % 10 == 0 or reached or all_done:
+            trace(
+                f"tick: completed={completed} done_ahead={done_ahead} "
+                f"face_fps={executor.face_processing_fps():.2f} "
+                f"proc_fps={executor.processing_fps.get():.2f} "
+                f"head_start={self._head_start} target={target}"
+            )
         if reached or all_done:
             self._release(play=True)
 
@@ -122,6 +154,7 @@ class PreprocessController(QObject):
         if not self._active:
             return
         self._active = False
+        trace(f"release(play={play})")
         executor = self._get_executor()
         if executor is not None:
             executor.release_buffering(play=play)

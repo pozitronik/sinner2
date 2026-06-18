@@ -69,3 +69,36 @@ class TestAdoptRestoresPosition:
         # Slider must show the restored position, NOT the set_frame_count reset.
         assert transport._slider.value() == 50  # noqa: SLF001
         ctrl.shutdown()
+
+
+class TestInstallReappliesSections:
+    """A freshly built executor must inherit the current section selection — the
+    target's sections are restored BEFORE the session is built, so otherwise the
+    new executor ignores them and plays the whole clip."""
+
+    def test_sections_pushed_to_new_executor(self, widgets):
+        from unittest.mock import MagicMock
+
+        from sinner2.pipeline.sections import SectionSet
+
+        ctrl = _controller(widgets)
+        sections = SectionSet.of([(10, 20)])
+        ctrl._sections = sections  # noqa: SLF001 — selection set before this build
+        bundle = _bundle(frame_count=100)
+        bundle.executor = MagicMock()
+        ctrl._install_session(bundle)  # noqa: SLF001
+        bundle.executor.set_sections.assert_called_once_with(sections)
+        ctrl.shutdown()
+
+    def test_no_sections_no_call(self, widgets):
+        from unittest.mock import MagicMock
+
+        from sinner2.pipeline.sections import SectionSet
+
+        ctrl = _controller(widgets)
+        ctrl._sections = SectionSet.empty()  # noqa: SLF001
+        bundle = _bundle(frame_count=100)
+        bundle.executor = MagicMock()
+        ctrl._install_session(bundle)  # noqa: SLF001
+        bundle.executor.set_sections.assert_not_called()
+        ctrl.shutdown()

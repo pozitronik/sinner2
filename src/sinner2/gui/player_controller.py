@@ -253,6 +253,13 @@ class PlayerController(QObject):
         self._current_source_path = bundle.source_path
         self._current_target_path = bundle.target_path
         self._executor = executor
+        # Re-apply the current section selection: set_sections() only reaches the
+        # executor that existed when it was called, but the target's sections are
+        # restored BEFORE this fresh executor is built (and a settings rebuild
+        # makes a new one), so without this a freshly built session would ignore
+        # the selection and play the whole clip.
+        if not self._sections.is_empty():
+            executor.set_sections(self._sections)
         self._write_executor = bundle.write_executor
         self._session_store = bundle.session_store
         self._session_cache_dir = bundle.cache_dir

@@ -57,7 +57,7 @@ from sinner2.gui.confirm import (
 )
 from sinner2.gui.live_controller import LiveController
 from sinner2.gui.player_controller import PlayerController
-from sinner2.gui.preprocess_controller import PreprocessController
+from sinner2.gui.preprocess_controller import PreprocessController, trace as _pp_trace
 from sinner2.gui.session_capabilities import (
     CameraConfig,
     FileTarget,
@@ -1678,11 +1678,18 @@ class SinnerMainWindow(QMainWindow):
     def _on_play_requested(self) -> None:
         # While buffering, Play releases the head-start early. With the option on,
         # Play buffers a head-start first; otherwise it's the normal session play.
+        _pp_trace(
+            f"play requested: option={self._processors.preprocess_before_play()} "
+            f"executor={self._controller.executor() is not None} "
+            f"kind={self._session.active_kind()} "
+            f"buffering={self._preprocess.is_active()}"
+        )
         if self._preprocess.is_active():
             self._preprocess.play_now()
         elif self._preprocess_on_play_eligible():
             self._preprocess.start(self._controller.target_fps())
         else:
+            _pp_trace("→ normal play (option off or not a file session)")
             self._session.play()
 
     def _on_pause_requested(self) -> None:
