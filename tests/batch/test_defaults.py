@@ -3,8 +3,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from sinner2.batch import defaults as batch_defaults
 from sinner2.batch.task import (
     BatchCleanupMode,
