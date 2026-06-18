@@ -1,0 +1,108 @@
+"""Tests for the processing-visualiser heatmap bar (QFrameStateBar)."""
+from __future__ import annotations
+
+from PySide6.QtCore import QPoint, Qt
+
+from sinner2.gui.widgets.frame_state_bar import QFrameStateBar
+from sinner2.pipeline.realtime.frame_state import FrameState
+
+
+def _states(*values: FrameState) -> bytes:
+    return bytes(int(v) for v in values)
+
+
+class TestFrameAt:
+    def test_maps_x_to_frame(self, qtbot):
+        bar = QFrameStateBar()
+        qtbot.addWidget(bar)
+        bar.resize(100, 16)
+        bar.set_data(_states(*([FrameState.NOT_REACHED] * 200)), 200)
+        assert bar._frame_at(0) == 0       # noqa: SLF001
+        assert bar._frame_at(50) == 100    # noqa: SLF001 — halfway
+        assert bar._frame_at(99) == 198    # noqa: SLF001
+
+    def test_clamps_within_bounds(self, qtbot):
+        bar = QFrameStateBar()
+        qtbot.addWidget(bar)
+        bar.resize(100, 16)
+        bar.set_data(_states(*([FrameState.NOT_REACHED] * 10)), 10)
+        assert bar._frame_at(99999) == 9   # noqa: SLF001 — last frame
+        assert bar._frame_at(-5) == 0      # noqa: SLF001
+
+    def test_zero_frames_is_zero(self, qtbot):
+        bar = QFrameStateBar()
+        qtbot.addWidget(bar)
+        assert bar._frame_at(50) == 0      # noqa: SLF001
+
+
+class TestClickToSeek:
+    def test_left_click_emits_seek_for_frame(self, qtbot):
+        bar = QFrameStateBar()
+        qtbot.addWidget(bar)
+        bar.resize(100, 16)
+        bar.set_data(_states(*([FrameState.READY_MEM] * 200)), 200)
+        with qtbot.waitSignal(bar.seekRequested, timeout=1000) as blocker:
+            qtbot.mouseClick(bar, Qt.MouseButton.LeftButton, pos=QPoint(50, 8))
+        assert blocker.args[0] == 100
+
+    def test_no_emit_without_frames(self, qtbot):
+        bar = QFrameStateBar()
+        qtbot.addWidget(bar)
+        bar.resize(100, 16)
+        fired: list[int] = []
+        bar.seekRequested.connect(fired.append)
+        qtbot.mouseClick(bar, Qt.MouseButton.LeftButton, pos=QPoint(50, 8))
+        assert fired == []  # nothing loaded → no seek
+
+
+class TestPaint:
+    def test_paints_mixed_states_without_crashing(self, qtbot):
+        bar = QFrameStateBar()
+        qtbot.addWidget(bar)
+        bar.resize(120, 16)
+        bar.set_data(
+            _states(
+                FrameState.READY_MEM, FrameState.READY_DISK, FrameState.PROCESSING,
+                FrameState.QUEUED, FrameState.SKIPPED, FrameState.INVALID,
+                FrameState.NOT_REACHED,
+            ),
+            7,
+        )
+        bar.set_playhead(2)
+        assert not bar.grab().isNull()  # forces paintEvent; must not raise
+
+    def test_paints_long_clip_binned_without_crashing(self, qtbot):
+        # More frames than pixels → proportional binning path.
+        bar = QFrameStateBar()
+        qtbot.addWidget(bar)
+        bar.resize(80, 16)
+        pattern = [FrameState.READY_MEM, FrameState.SKIPPED, FrameState.PROCESSING]
+        bar.set_data(_states(*[pattern[i % 3] for i in range(5000)]), 5000)
+        assert not bar.grab().isNull()
+
+    def test_paints_empty_without_crashing(self, qtbot):
+        bar = QFrameStateBar()
+        qtbot.addWidget(bar)
+        bar.resize(80, 16)
+        assert not bar.grab().isNull()  # no data → just background
+
+    def test_ignores_out_of_range_state_bytes(self, qtbot):
+        bar = QFrameStateBar()
+        qtbot.addWidget(bar)
+        bar.resize(40, 16)
+        bar.set_data(bytes([99, 250, int(FrameState.READY_MEM)]), 3)  # bad bytes
+        assert not bar.grab().isNull()
+
+
+class TestClear:
+    def test_clear_resets(self, qtbot):
+        bar = QFrameStateBar()
+        qtbot.addWidget(bar)
+        bar.resize(40, 16)
+        bar.set_data(_states(FrameState.READY_MEM), 1)
+        bar.set_playhead(0)
+        bar.clear()
+        assert bar._frame_count == 0       # noqa: SLF001
+        assert bar._states == b""          # noqa: SLF001
+        assert bar._playhead == -1         # noqa: SLF001
+        assert not bar.grab().isNull()
