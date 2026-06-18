@@ -1714,9 +1714,10 @@ class SinnerMainWindow(QMainWindow):
 
     def _on_preprocess_started(self) -> None:
         # Show the visualiser so its filling green bar IS the progress display,
-        # and silence audio while the display is frozen at frame 0.
+        # silence audio while buffering, and mark the play button "Buffering…".
         self._set_button_checked(self._status_bar.visualiser_button, True)
         self._set_visualiser_visible(True)
+        self._transport.set_buffering(True)
         self._controller.preprocess_audio_start()
         self._status_bar.show_message("Preprocessing…")
 
@@ -1727,6 +1728,7 @@ class SinnerMainWindow(QMainWindow):
         )
 
     def _on_preprocess_finished(self, played: bool) -> None:
+        self._transport.set_buffering(False)
         if played:
             self._controller.preprocess_audio_release()
             self._status_bar.show_message("Playing (preprocessed)", 3000)

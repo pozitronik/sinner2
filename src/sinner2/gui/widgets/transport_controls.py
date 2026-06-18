@@ -160,6 +160,9 @@ class QTransportControls(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._is_playing = False
+        # True while a preprocess pass is pre-rendering the head-start — the play
+        # button shows "Buffering…" then (a click still releases playback early).
+        self._buffering = False
         self._frame_count = 0
         # Target fps for the time readout; 0 → no timeline fps known, so the
         # label shows frames only (e.g. a camera, or before a session loads).
@@ -294,7 +297,19 @@ class QTransportControls(QWidget):
     @Slot(bool)
     def set_is_playing(self, is_playing: bool) -> None:
         self._is_playing = bool(is_playing)
-        self._play_button.setText("Pause" if self._is_playing else "Play")
+        self._update_play_button()
+
+    def set_buffering(self, buffering: bool) -> None:
+        """Reflect a preprocess pass on the play button (text only — a click
+        still routes through play/pause to release the buffered head-start)."""
+        self._buffering = bool(buffering)
+        self._update_play_button()
+
+    def _update_play_button(self) -> None:
+        if self._buffering:
+            self._play_button.setText("Buffering…")
+        else:
+            self._play_button.setText("Pause" if self._is_playing else "Play")
 
     def _on_play_clicked(self) -> None:
         if self._is_playing:

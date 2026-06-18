@@ -94,6 +94,19 @@ class TestTimeReadout:
         widget.set_is_playing(False)
         assert widget._play_button.text() == "Play"  # noqa: SLF001
 
+    def test_buffering_shows_on_play_button(self, widget):
+        widget.set_buffering(True)
+        assert widget._play_button.text() == "Buffering…"  # noqa: SLF001
+        widget.set_buffering(False)
+        assert widget._play_button.text() == "Play"  # noqa: SLF001
+
+    def test_buffering_overrides_play_state_then_restores(self, widget):
+        widget.set_is_playing(True)
+        widget.set_buffering(True)
+        assert widget._play_button.text() == "Buffering…"  # noqa: SLF001 — overrides
+        widget.set_buffering(False)
+        assert widget._play_button.text() == "Pause"  # noqa: SLF001 — restores
+
     def test_play_click_emits_play_when_stopped(self, widget, qtbot):
         with qtbot.waitSignal(widget.playRequested, timeout=1000):
             widget._play_button.click()  # noqa: SLF001

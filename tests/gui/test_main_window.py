@@ -320,6 +320,13 @@ class TestStatusActionButtons:
         window._on_preprocess_started()  # noqa: SLF001
         assert window._transport.visualiser_visible()  # noqa: SLF001
         assert "Preprocessing" in window._status_bar.current_message()  # noqa: SLF001
+        # The play button reflects buffering (a click still releases early).
+        assert window._transport._play_button.text() == "Buffering…"  # noqa: SLF001
+
+    def test_preprocess_finished_clears_buffering_button(self, window):
+        window._on_preprocess_started()  # noqa: SLF001
+        window._on_preprocess_finished(False)  # noqa: SLF001
+        assert window._transport._play_button.text() != "Buffering…"  # noqa: SLF001
 
     def test_preprocess_progress_shows_percent(self, window):
         window._on_preprocess_progress(50, 200)  # noqa: SLF001

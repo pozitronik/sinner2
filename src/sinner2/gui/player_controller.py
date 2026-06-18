@@ -831,9 +831,12 @@ class PlayerController(QObject):
         self._audio.pause_if_loaded()
 
     def preprocess_audio_release(self) -> None:
-        """Start audio from the beginning when a preprocess pass releases to
-        playback (which begins at frame 0)."""
-        self._audio.seek_if_loaded(0.0)
+        """Start audio AT THE PLAYHEAD when a preprocess pass releases to
+        playback — which may begin at a section, not frame 0, so seeking to 0
+        would desync the sound to the start of the clip."""
+        if self._executor is not None and self._target_fps > 0:
+            frame = max(0, self._executor.current_frame.get())
+            self._audio.seek_if_loaded(frame / self._target_fps)
         self._audio.play_if_loaded()
 
     def play(self) -> None:

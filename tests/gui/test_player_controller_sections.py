@@ -25,6 +25,29 @@ def test_set_sections_without_executor_is_safe():
     assert pc.sections() == s
 
 
+def test_preprocess_audio_release_seeks_to_playhead():
+    # Releasing a preprocess pass may begin at a SECTION, not frame 0 — audio
+    # must start at the playhead, not the start of the clip.
+    pc = PlayerController.__new__(PlayerController)
+    pc._audio = MagicMock()  # noqa: SLF001
+    pc._target_fps = 30.0  # noqa: SLF001
+    pc._executor = MagicMock()  # noqa: SLF001
+    pc._executor.current_frame.get.return_value = 900  # noqa: SLF001 — section start
+    pc.preprocess_audio_release()
+    pc._audio.seek_if_loaded.assert_called_once_with(30.0)  # noqa: SLF001  900/30 s
+    pc._audio.play_if_loaded.assert_called_once_with()  # noqa: SLF001
+
+
+def test_preprocess_audio_release_without_executor_just_plays():
+    pc = PlayerController.__new__(PlayerController)
+    pc._audio = MagicMock()  # noqa: SLF001
+    pc._target_fps = 0.0  # noqa: SLF001
+    pc._executor = None  # noqa: SLF001
+    pc.preprocess_audio_release()
+    pc._audio.seek_if_loaded.assert_not_called()  # noqa: SLF001
+    pc._audio.play_if_loaded.assert_called_once_with()  # noqa: SLF001
+
+
 def test_playhead_jump_reseeks_audio():
     pc = PlayerController.__new__(PlayerController)
     pc._audio = MagicMock()  # noqa: SLF001
