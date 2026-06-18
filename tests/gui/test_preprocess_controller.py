@@ -10,15 +10,26 @@ from sinner2.pipeline.cache_mode import CacheMode
 class _FakeExecutor:
     """Records the orchestration calls; exposes the pollable state."""
 
-    def __init__(self, frame_count: int, fps: float = 0.0, completed: int = -1):
+    def __init__(
+        self, frame_count: int, fps: float = 0.0, face_fps: float = 0.0,
+        completed: int = -1, current: int = 0,
+    ):
         self._frame_count = frame_count
         self._fps = fps
+        self._face_fps = face_fps
         self.completed = completed
         self.calls: list = []
         self.processing_fps = SimpleNamespace(get=lambda: self._fps)
+        self.current_frame = SimpleNamespace(get=lambda: current)
 
     def set_fps(self, fps: float) -> None:
         self._fps = fps
+
+    def set_face_fps(self, fps: float) -> None:
+        self._face_fps = fps
+
+    def face_processing_fps(self) -> float:
+        return self._face_fps
 
     def frame_count(self) -> int:
         return self._frame_count
@@ -58,8 +69,9 @@ class TestStart:
         ctrl._timer.stop()  # noqa: SLF001
         assert ("strategy", "BestEffortStrategy") in ex.calls
         assert ("cache", CacheMode.WRITE_READ) in ex.calls
-        assert ("seek", 0) in ex.calls
         assert ("start_buffering",) in ex.calls
+        # Buffers from the current playhead — no seek to 0.
+        assert not any(c[0] == "seek" for c in ex.calls)
         assert ctrl.is_active()
 
     def test_no_executor_fails(self, qtbot):
@@ -87,44 +99,71 @@ class TestStart:
 
 class TestHeadStartRelease:
     def test_releases_when_head_start_reached(self, qtbot):
-        # R=10, F=30, N=300 → B=200. Release once 200 frames are done.
-        ex = _FakeExecutor(frame_count=300, fps=10.0)
+        # Face R=10, F=30, M=300 → B=300-floor(300*10/30)=200.
+        ex = _FakeExecutor(frame_count=300, face_fps=10.0)
         ctrl = _controller(ex, qtbot)
         ctrl.start(target_fps=30.0)
         ctrl._timer.stop()  # noqa: SLF001
 
-        ex.completed = 100  # done=101 < 200 → keep buffering
+        ex.completed = 100  # done_ahead=101 < 200 → keep buffering
         with qtbot.waitSignal(ctrl.progressChanged, timeout=1000) as blocker:
             ctrl._tick()  # noqa: SLF001
         assert blocker.args == [101, 200]
         assert ctrl.is_active()
         assert ("release", True) not in ex.calls
 
-        ex.completed = 199  # done=200 >= 200 → release to play
+        ex.completed = 199  # done_ahead=200 >= 200 → release to play
         with qtbot.waitSignal(ctrl.finished, timeout=1000) as blocker:
             ctrl._tick()  # noqa: SLF001
         assert blocker.args == [True]
         assert ("release", True) in ex.calls
         assert not ctrl.is_active()
 
-    def test_fast_pipeline_releases_early(self, qtbot):
-        # R>=F → B=0 → release right after the warm-up frames.
-        ex = _FakeExecutor(frame_count=300, fps=60.0)
+    def test_buffers_from_current_playhead(self, qtbot):
+        # Start at frame 100 → M=200, face R=10, F=30 → B=200-floor(2000/30)=134.
+        ex = _FakeExecutor(frame_count=300, face_fps=10.0, current=100)
         ctrl = _controller(ex, qtbot)
         ctrl.start(target_fps=30.0)
         ctrl._timer.stop()  # noqa: SLF001
-        ex.completed = 4  # done=5, past warm-up; B computes to 0
+        ex.completed = 150  # done_ahead = 150-100+1 = 51 < 134 → keep
+        with qtbot.waitSignal(ctrl.progressChanged, timeout=1000) as blocker:
+            ctrl._tick()  # noqa: SLF001
+        assert blocker.args == [51, 134]
+        ex.completed = 233  # done_ahead = 134 >= 134 → release
+        with qtbot.waitSignal(ctrl.finished, timeout=1000):
+            ctrl._tick()  # noqa: SLF001
+        assert ("release", True) in ex.calls
+
+    def test_sizes_off_face_rate_not_overall_rate(self, qtbot):
+        # Overall pipeline looks fast (100 fps) but FACE frames are slow (10) →
+        # must size off 10 (B=200), NOT release early on the inflated overall rate.
+        ex = _FakeExecutor(frame_count=300, fps=100.0, face_fps=10.0)
+        ctrl = _controller(ex, qtbot)
+        ctrl.start(target_fps=30.0)
+        ctrl._timer.stop()  # noqa: SLF001
+        ex.completed = 20  # done_ahead=21 << 200
+        ctrl._tick()  # noqa: SLF001
+        assert ctrl.is_active()  # still buffering — not fooled by the 100 fps
+        assert ("release", True) not in ex.calls
+
+    def test_fast_pipeline_releases_early(self, qtbot):
+        # Face R>=F → B=0 → release right after the warm-up frames.
+        ex = _FakeExecutor(frame_count=300, face_fps=60.0)
+        ctrl = _controller(ex, qtbot)
+        ctrl.start(target_fps=30.0)
+        ctrl._timer.stop()  # noqa: SLF001
+        ex.completed = 4  # done_ahead=5, past warm-up; B computes to 0
         with qtbot.waitSignal(ctrl.finished, timeout=1000):
             ctrl._tick()  # noqa: SLF001
         assert ("release", True) in ex.calls
 
     def test_releases_when_all_frames_done(self, qtbot):
         # Even with no throughput estimate, a fully-rendered clip releases.
-        ex = _FakeExecutor(frame_count=5, fps=0.0)
+        ex = _FakeExecutor(frame_count=5)
         ctrl = _controller(ex, qtbot)
         ctrl.start(target_fps=30.0)
         ctrl._timer.stop()  # noqa: SLF001
-        ex.completed = 4  # done=5 == N
+        ex.completed = 4  # completed >= N-1 → all done
         with qtbot.waitSignal(ctrl.finished, timeout=1000):
             ctrl._tick()  # noqa: SLF001
         assert ("release", True) in ex.calls

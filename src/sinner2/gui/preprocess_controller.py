@@ -51,14 +51,15 @@ class PreprocessController(QObject):
         self._active = False
         self._target_fps = 0.0
         self._frame_count = 0
+        self._start_frame = 0
         self._head_start: int | None = None
 
     def is_active(self) -> bool:
         return self._active
 
     def start(self, target_fps: float) -> None:
-        """Begin preprocessing the current session for smooth playback at
-        ``target_fps`` (the source/native fps)."""
+        """Begin buffering ahead FROM THE CURRENT PLAYHEAD for smooth playback at
+        ``target_fps`` (the source/native fps), then release to play."""
         if self._active:
             return
         executor = self._get_executor()
@@ -70,12 +71,14 @@ class PreprocessController(QObject):
             self.failed.emit("nothing to preprocess")
             return
         self._target_fps = max(0.0, float(target_fps))
+        self._start_frame = max(0, executor.current_frame.get())
         self._head_start = None
         self._active = True
-        # Sequential + disk-backed fill: every frame in order, not RAM-bound.
+        # Sequential + disk-backed fill: every frame in order, not RAM-bound. No
+        # seek — the dispatcher already fills ahead of the playhead (last_submitted
+        # >= current), so it reuses any frames already buffered there.
         executor.set_skip_strategy(BestEffortStrategy())
         executor.set_cache_mode(CacheMode.WRITE_READ)
-        executor.seek(0)
         executor.start_buffering()
         self.started.emit()
         self._timer.start()
@@ -95,16 +98,23 @@ class PreprocessController(QObject):
         if not self._active or executor is None:
             self._release(play=False)
             return
-        done = executor.last_completed_frame() + 1  # count of completed frames
-        n = self._frame_count
-        rate = executor.processing_fps.get()
-        # Refine the head-start once a few frames give a trustworthy rate.
-        if rate > 0 and done >= min(_WARMUP_FRAMES, n):
-            self._head_start = required_prefill(n, rate, self._target_fps)
-        target = self._head_start if self._head_start is not None else n
-        self.progressChanged.emit(max(0, min(done, target)), max(1, target))
-        head_start_reached = self._head_start is not None and done >= self._head_start
-        if head_start_reached or done >= n:
+        completed = executor.last_completed_frame()
+        # Frames rendered AT/AHEAD of where playback will start.
+        done_ahead = max(0, completed - self._start_frame + 1)
+        remaining = max(1, self._frame_count - self._start_frame)
+        # Size off the FACE-frame rate (the expensive frames, worst-case: assume
+        # every remaining frame could carry a face). Fall back to the overall
+        # rate only until a couple of face frames have been measured.
+        rate = executor.face_processing_fps()
+        if rate <= 0:
+            rate = executor.processing_fps.get()
+        if rate > 0 and done_ahead >= min(_WARMUP_FRAMES, remaining):
+            self._head_start = required_prefill(remaining, rate, self._target_fps)
+        target = self._head_start if self._head_start is not None else remaining
+        self.progressChanged.emit(min(done_ahead, target), max(1, target))
+        reached = self._head_start is not None and done_ahead >= self._head_start
+        all_done = completed >= self._frame_count - 1
+        if reached or all_done:
             self._release(play=True)
 
     def _release(self, play: bool) -> None:
