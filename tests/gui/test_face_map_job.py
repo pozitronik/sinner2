@@ -37,11 +37,27 @@ class _StubReader:
         self.released = True
 
 
+class _StubLandmarker:
+    """A 2dfan4 stand-in so geometry-phase tests stay hermetic — the real
+    landmarker's setup() loads 2dfan4.onnx, which isn't present on CI. Returns a
+    confident, all-zero 68-point set (callers gate on the score, not the coords)."""
+
+    def detect_68(self, frame, bbox):
+        import numpy as np
+        return np.zeros((68, 2), np.float32), 0.99
+
+    def release(self):
+        pass
+
+
 def _job(frames, *, detect=None):
     reader = _StubReader(frames)
+    # bake_angle defaults on, so the geometry phase builds a landmarker — stub it
+    # (the default factory would load the real 2dfan4 ONNX model).
     job = FaceMapAnalysisJob(
         reader_factory=lambda _path: reader,
         detect_factory=lambda _prov, _size, _fast, _det: (detect or (lambda f: f)),
+        landmarker_factory=lambda _prov: _StubLandmarker(),
     )
     return job, reader
 
@@ -98,6 +114,7 @@ class TestRun:
             detect_factory=lambda _prov, _size, fast, _det: (
                 fasts.append(fast) or (lambda f: f)
             ),
+            landmarker_factory=lambda _prov: _StubLandmarker(),  # bake_angle on
         )
         with qtbot.waitSignal(job.finished, timeout=2000):
             job.run(AnalysisRequest("clip.mp4", stride=1, fast=False))  # age/sex ON
@@ -107,15 +124,6 @@ class TestRun:
         # With landmark_refine on, the job builds a landmarker and stamps refined.
         frames = [[_Face(_emb(1, 0, 0))]]
         reader = _StubReader(frames)
-
-        class _StubLandmarker:
-            def detect_68(self, frame, bbox):
-                import numpy as np
-                return np.zeros((68, 2), np.float32), 0.99
-
-            def release(self):
-                pass
-
         job = FaceMapAnalysisJob(
             reader_factory=lambda _p: reader,
             detect_factory=lambda _prov, _size, _fast, _det: (lambda f: f),
