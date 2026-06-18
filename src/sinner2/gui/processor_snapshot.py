@@ -25,6 +25,7 @@ from sinner2.pipeline.processors.upscaler import UpscalerParams
 from sinner2.pipeline.skip_strategy import (
     BestEffortStrategy,
     FrameSkipStrategy,
+    PredictiveStrategy,
     SyncedStrategy,
 )
 
@@ -63,6 +64,7 @@ class ProcessorParamsSnapshot:
     reader_pool_size: int
     processing_scale: float
     synced_max_lag_frames: int
+    predictive_max_lead_seconds: float
     # Cache / output
     cache_mode: CacheMode
     image_format: ImageFormat
@@ -80,11 +82,16 @@ class ProcessorParamsSnapshot:
         to assemble inline."""
         from sinner2.gui.session_builder import CacheSettings
 
-        strategy: FrameSkipStrategy = (
-            SyncedStrategy(max_lag_frames=self.synced_max_lag_frames)
-            if self.strategy_name == SyncedStrategy.__name__
-            else BestEffortStrategy()
-        )
+        if self.strategy_name == SyncedStrategy.__name__:
+            strategy: FrameSkipStrategy = SyncedStrategy(
+                max_lag_frames=self.synced_max_lag_frames
+            )
+        elif self.strategy_name == BestEffortStrategy.__name__:
+            strategy = BestEffortStrategy()
+        else:  # PredictiveStrategy — the default for viewing
+            strategy = PredictiveStrategy(
+                max_lead_seconds=self.predictive_max_lead_seconds
+            )
         return dict(
             swapper_params=self.swapper_params,
             enhancer_params=self.enhancer_params,
@@ -157,6 +164,7 @@ class ProcessorParamsSnapshot:
             reader_pool_size=self.reader_pool_size,
             processing_scale=self.processing_scale,
             synced_max_lag_frames=self.synced_max_lag_frames,
+            predictive_max_lead_seconds=self.predictive_max_lead_seconds,
             swapper_providers=list(self.swapper_providers),
             enhancer_device=self.enhancer_device,
             enhancer_providers=list(self.enhancer_providers),

@@ -26,7 +26,11 @@ from PySide6.QtWidgets import (
 
 from sinner2.gui.processor_snapshot import ProcessorParamsSnapshot
 from sinner2.gui.widgets.processor_controls import QProcessorControls
-from sinner2.pipeline.skip_strategy import BestEffortStrategy, SyncedStrategy
+from sinner2.pipeline.skip_strategy import (
+    BestEffortStrategy,
+    PredictiveStrategy,
+    SyncedStrategy,
+)
 
 
 @pytest.fixture
@@ -51,6 +55,7 @@ _PERTURB_ATTRS = (
     "_playback_combo", "_cache_mode_combo", "_image_format_combo",
     "_image_quality", "_memory_cache_mb", "_write_workers", "_write_queue_size",
     "_video_backend_combo", "_reader_pool_size", "_synced_max_lag_frames",
+    "_predictive_max_lead_seconds",
 )
 
 
@@ -88,6 +93,7 @@ def test_snapshot_captures_each_getter(widget):
     assert s.reader_pool_size == widget.reader_pool_size()
     assert s.processing_scale == widget.processing_scale()
     assert s.synced_max_lag_frames == widget.synced_max_lag_frames()
+    assert s.predictive_max_lead_seconds == widget.predictive_max_lead_seconds()
     assert s.cache_mode == widget.cache_mode()
     assert s.image_format == widget.image_format()
     assert s.image_quality == widget.image_quality()
@@ -160,6 +166,26 @@ def test_to_session_config_best_effort_strategy(widget):
     assert isinstance(s.to_session_config()["strategy"], BestEffortStrategy)
 
 
+def test_to_session_config_predictive_strategy_with_lead(widget):
+    # Predictive rebuilds from the name + the max-lead cap.
+    s = dataclasses.replace(
+        widget.snapshot(),
+        strategy_name="PredictiveStrategy",
+        predictive_max_lead_seconds=2.5,
+    )
+    strat = s.to_session_config()["strategy"]
+    assert isinstance(strat, PredictiveStrategy)
+    assert strat.max_lead_seconds == 2.5
+
+
+def test_to_session_config_defaults_to_predictive(widget):
+    # The widget default (Predictive first in the combo) round-trips to a
+    # PredictiveStrategy — the default viewing strategy.
+    s = widget.snapshot()
+    assert s.strategy_name == "PredictiveStrategy"
+    assert isinstance(s.to_session_config()["strategy"], PredictiveStrategy)
+
+
 def test_to_settings_kwargs_flattens_with_value_tokens(widget):
     """Persist surface: str-Enum model fields become their stable .value tokens,
     providers serialize as a plain list, primitives + session enums pass through."""
@@ -182,6 +208,7 @@ def test_to_settings_kwargs_flattens_with_value_tokens(widget):
     assert kw["realtime_workers"] == s.realtime_workers
     assert kw["playback_mode"] == s.playback_mode
     assert kw["synced_max_lag_frames"] == s.synced_max_lag_frames
+    assert kw["predictive_max_lead_seconds"] == s.predictive_max_lead_seconds
     assert kw["memory_cache_mb"] == s.memory_cache_mb
 
 

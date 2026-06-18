@@ -2186,6 +2186,7 @@ class SinnerMainWindow(QMainWindow):
                 reader_pool_size=self._settings.reader_pool_size,
                 processing_scale=self._settings.processing_scale,
                 synced_max_lag_frames=self._settings.synced_max_lag_frames,
+                predictive_max_lead_seconds=self._settings.predictive_max_lead_seconds,
                 swapper_providers=self._settings.swapper_providers,
                 enhancer_device=self._settings.enhancer_device,
                 enhancer_providers=self._settings.enhancer_providers,

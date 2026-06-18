@@ -250,17 +250,43 @@ class TestQProcessorControls:
         widget.set_enhancer_model(EnhancerModel.CODEFORMER.value)
         assert spy == []
 
-    def test_default_strategy_is_best_effort(self, widget):
-        from sinner2.pipeline.skip_strategy import BestEffortStrategy
+    def test_default_strategy_is_predictive(self, widget):
+        from sinner2.pipeline.skip_strategy import PredictiveStrategy
 
-        assert isinstance(widget.skip_strategy(), BestEffortStrategy)
+        # Predictive is first in the combo → the startup default for viewing.
+        assert isinstance(widget.skip_strategy(), PredictiveStrategy)
 
     def test_changing_strategy_emits_config_changed(self, widget, qtbot):
-        with qtbot.waitSignal(widget.configChanged, timeout=1000):
-            widget._strategy_combo.setCurrentIndex(1)  # noqa: SLF001
         from sinner2.pipeline.skip_strategy import SyncedStrategy
 
+        with qtbot.waitSignal(widget.configChanged, timeout=1000):
+            widget._strategy_combo.setCurrentText(  # noqa: SLF001
+                "Synced (skip to match wall-clock)"
+            )
         assert isinstance(widget.skip_strategy(), SyncedStrategy)
+
+    def test_predictive_max_lead_getter_and_strategy(self, widget):
+        from sinner2.pipeline.skip_strategy import PredictiveStrategy
+
+        widget._predictive_max_lead_seconds.setValue(2.5)  # noqa: SLF001
+        assert widget.predictive_max_lead_seconds() == 2.5
+        s = widget.skip_strategy()
+        assert isinstance(s, PredictiveStrategy)
+        assert s.max_lead_seconds == 2.5
+
+    def test_strategy_param_rows_enable_with_active_strategy(self, widget):
+        # The predictive lead row is enabled only for Predictive; the synced
+        # threshold row only for Synced — they toggle as the combo changes.
+        widget._strategy_combo.setCurrentText(  # noqa: SLF001
+            "Predictive (real-time, skip ahead)"
+        )
+        assert widget._predictive_max_lead_seconds.isEnabled()  # noqa: SLF001
+        assert not widget._synced_max_lag_frames.isEnabled()  # noqa: SLF001
+        widget._strategy_combo.setCurrentText(  # noqa: SLF001
+            "Synced (skip to match wall-clock)"
+        )
+        assert not widget._predictive_max_lead_seconds.isEnabled()  # noqa: SLF001
+        assert widget._synced_max_lag_frames.isEnabled()  # noqa: SLF001
 
     def test_default_worker_count(self, widget):
         assert widget.realtime_workers() == 1
@@ -302,6 +328,7 @@ _FULL_RESTORE_KWARGS = dict(
     reader_pool_size=4,
     processing_scale=0.5,
     synced_max_lag_frames=120,
+    predictive_max_lead_seconds=2.0,
     swapper_providers=["CPUExecutionProvider"],
     enhancer_device="cpu",
 )
@@ -337,6 +364,7 @@ _NONE_RESTORE_KWARGS = dict(
     reader_pool_size=None,
     processing_scale=None,
     synced_max_lag_frames=None,
+    predictive_max_lead_seconds=None,
     swapper_providers=None,
     enhancer_device=None,
 )
@@ -376,6 +404,12 @@ class TestApplyRestoredSettings:
         )
         assert widget.strategy_name() == "SyncedStrategy"
         assert isinstance(widget.skip_strategy(), SyncedStrategy)
+
+    def test_applies_predictive_max_lead_seconds(self, widget):
+        widget.apply_restored_settings(
+            **{**_NONE_RESTORE_KWARGS, "predictive_max_lead_seconds": 3.5}
+        )
+        assert widget.predictive_max_lead_seconds() == 3.5
 
     def test_applies_enhancer_enabled(self, widget):
         widget.apply_restored_settings(

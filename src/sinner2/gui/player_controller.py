@@ -42,8 +42,8 @@ from sinner2.pipeline.processors.upscaler import UpscalerParams
 from sinner2.pipeline.realtime.executor import RealtimeExecutor
 from sinner2.pipeline.sections import SectionSet
 from sinner2.pipeline.skip_strategy import (
-    BestEffortStrategy,
     FrameSkipStrategy,
+    PredictiveStrategy,
     SyncedStrategy,
 )
 
@@ -122,7 +122,7 @@ class PlayerController(QObject):
         self._upscaler_device: str = "auto"
         self._upscaler_providers: tuple[str, ...] = ()
         self._swapper_enabled = True
-        self._strategy: FrameSkipStrategy = BestEffortStrategy()
+        self._strategy: FrameSkipStrategy = PredictiveStrategy()
         self._worker_count = 1
         # Effective worker count the live executor was last started/set with
         # (may be capped below _worker_count for a heavy enhancer — see
@@ -476,13 +476,21 @@ class PlayerController(QObject):
             or upscaler_providers != self._upscaler_providers
         )
         strategy_changed = type(strategy) is not type(self._strategy)
-        # Synced threshold changes don't change the type, but still need
-        # a hot-swap so the executor's strategy reflects the new threshold.
+        # A threshold-only change keeps the strategy TYPE but still needs a
+        # hot-swap so the executor's strategy reflects the new tuning value
+        # (Synced's lag threshold / Predictive's max-lead cap).
         if (
             not strategy_changed
             and isinstance(strategy, SyncedStrategy)
             and isinstance(self._strategy, SyncedStrategy)
             and strategy.max_lag_frames != self._strategy.max_lag_frames
+        ):
+            strategy_changed = True
+        if (
+            not strategy_changed
+            and isinstance(strategy, PredictiveStrategy)
+            and isinstance(self._strategy, PredictiveStrategy)
+            and strategy.max_lead_seconds != self._strategy.max_lead_seconds
         ):
             strategy_changed = True
         playback_mode_changed = playback_mode is not self._playback_mode

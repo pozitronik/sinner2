@@ -56,6 +56,7 @@ from sinner2.gui.processor_snapshot import ProcessorParamsSnapshot
 from sinner2.pipeline.skip_strategy import (
     BestEffortStrategy,
     FrameSkipStrategy,
+    PredictiveStrategy,
     SyncedStrategy,
 )
 
@@ -66,7 +67,10 @@ from sinner2.pipeline.skip_strategy import (
 _COMFORTABLE_CONTROL_PX = 160
 _FORM_OVERHEAD_PX = 40
 
+# Ordered so the user sees the default (predictive) first — its combo index 0 is
+# the startup selection when no strategy is persisted.
 _STRATEGIES: dict[str, type[FrameSkipStrategy]] = {
+    "Predictive (real-time, skip ahead)": PredictiveStrategy,
     "Best effort (process every frame, may lag)": BestEffortStrategy,
     "Synced (skip to match wall-clock)": SyncedStrategy,
 }
@@ -791,7 +795,7 @@ class QProcessorControls(QWidget):
         for label in _STRATEGIES:
             self._strategy_combo.addItem(label)
         self._strategy_combo.currentTextChanged.connect(
-            lambda _: (self._update_synced_threshold_enabled(), self.configChanged.emit())
+            lambda _: (self._update_strategy_param_enabled(), self.configChanged.emit())
         )
         execution_form.addRow("Frame-skip strategy", self._strategy_combo)
 
@@ -810,6 +814,24 @@ class QProcessorControls(QWidget):
         )
         self._synced_max_lag_frames.valueChanged.connect(self.configChanged)
         execution_form.addRow("Synced lag threshold", self._synced_max_lag_frames)
+
+        self._predictive_max_lead_seconds = QDoubleSpinBox()
+        self._predictive_max_lead_seconds.setRange(0.0, 10.0)
+        self._predictive_max_lead_seconds.setSingleStep(0.1)
+        self._predictive_max_lead_seconds.setValue(1.0)
+        self._predictive_max_lead_seconds.setSuffix(" s")
+        self._predictive_max_lead_seconds.setToolTip(
+            "Predictive strategy only. The strategy aims each frame at where the\n"
+            "playhead will be when it finishes processing, so a slow pipeline\n"
+            "plays in real time (showing every Nth frame) instead of slow-motion.\n"
+            "This caps how far ahead (seconds) that aim may reach: higher =\n"
+            "tighter sync on very slow pipelines, but more aggressive skipping\n"
+            "and random reads. Default 1.0 s."
+        )
+        self._predictive_max_lead_seconds.valueChanged.connect(self.configChanged)
+        execution_form.addRow(
+            "Predictive max lead", self._predictive_max_lead_seconds
+        )
 
         self._worker_count = QSpinBox()
         # Upper bound matches RealtimeExecutor.MAX_WORKERS; the executor's
@@ -975,7 +997,7 @@ class QProcessorControls(QWidget):
         cache_form.addRow("Write queue size", self._write_queue_size)
 
         self._update_quality_visibility()
-        self._update_synced_threshold_enabled()
+        self._update_strategy_param_enabled()
 
         cache_storage_box = QGroupBox("Cache storage")
         storage_layout = QVBoxLayout(cache_storage_box)
@@ -1180,10 +1202,11 @@ class QProcessorControls(QWidget):
         is_jpeg = self.image_format() is ImageFormat.JPEG
         self._image_quality.setEnabled(is_jpeg)
 
-    def _update_synced_threshold_enabled(self) -> None:
-        # Threshold only meaningful when Synced is the active strategy.
+    def _update_strategy_param_enabled(self) -> None:
+        # Each strategy's tuning row is only meaningful when it's the active one.
         cls = _STRATEGIES[self._strategy_combo.currentText()]
         self._synced_max_lag_frames.setEnabled(cls is SyncedStrategy)
+        self._predictive_max_lead_seconds.setEnabled(cls is PredictiveStrategy)
 
     def _on_size_cap_changed(self, *_: object) -> None:
         # Recompute the effective cap and notify. The cap is 0 (uncapped)
@@ -1468,10 +1491,15 @@ class QProcessorControls(QWidget):
         cls = _STRATEGIES[self._strategy_combo.currentText()]
         if cls is SyncedStrategy:
             return cls(max_lag_frames=self._synced_max_lag_frames.value())
+        if cls is PredictiveStrategy:
+            return cls(max_lead_seconds=self._predictive_max_lead_seconds.value())
         return cls()
 
     def synced_max_lag_frames(self) -> int:
         return self._synced_max_lag_frames.value()
+
+    def predictive_max_lead_seconds(self) -> float:
+        return self._predictive_max_lead_seconds.value()
 
     def realtime_workers(self) -> int:
         return self._worker_count.value()
@@ -1575,6 +1603,7 @@ class QProcessorControls(QWidget):
             reader_pool_size=self.reader_pool_size(),
             processing_scale=self.processing_scale(),
             synced_max_lag_frames=self.synced_max_lag_frames(),
+            predictive_max_lead_seconds=self.predictive_max_lead_seconds(),
             cache_mode=self.cache_mode(),
             image_format=self.image_format(),
             image_quality=self.image_quality(),
@@ -1632,6 +1661,7 @@ class QProcessorControls(QWidget):
         reader_pool_size: int | None,
         processing_scale: float | None,
         synced_max_lag_frames: int | None,
+        predictive_max_lead_seconds: float | None = None,
         swapper_providers: list[str] | None,
         enhancer_device: str | None,
         upscaler_enabled: bool | None = None,
@@ -1691,6 +1721,7 @@ class QProcessorControls(QWidget):
             self._reader_pool_size,
             self._scale_slider,
             self._synced_max_lag_frames,
+            self._predictive_max_lead_seconds,
         )
         for w in widgets:
             w.blockSignals(True)
@@ -1828,6 +1859,8 @@ class QProcessorControls(QWidget):
                 )
             if synced_max_lag_frames is not None:
                 self._synced_max_lag_frames.setValue(synced_max_lag_frames)
+            if predictive_max_lead_seconds is not None:
+                self._predictive_max_lead_seconds.setValue(predictive_max_lead_seconds)
             # Restore each per-model provider row's selection (set_selected
             # blocks signals + forces CPU on for an empty/all-unknown list).
             if swapper_providers is not None:
@@ -1841,7 +1874,7 @@ class QProcessorControls(QWidget):
                 w.blockSignals(False)
         # The format/strategy may have changed so refresh enabled states.
         self._update_quality_visibility()
-        self._update_synced_threshold_enabled()
+        self._update_strategy_param_enabled()
         self._update_scale_label()  # reflect a restored scale (set under blockSignals)
         self._update_enhancer_model_rows()  # reflect a restored enhancer model
         self._update_rotation_rows()  # reflect a restored rotation-compensation state
