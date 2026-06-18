@@ -607,6 +607,20 @@ class RealtimeExecutor:
         + paint. One byte per target frame; see FrameStateMap."""
         return self._frame_states.snapshot()
 
+    def preprocess_progress(self) -> tuple[int, int]:
+        """(frames rendered at/ahead of the playhead, frames remaining from the
+        playhead) — an ATOMIC snapshot for the preprocessing head-start.
+
+        Read together under the lock so the playhead and the completion mark
+        always agree: a seek / section fast-forward sets both to the new
+        position at once, so 'ahead' correctly reads 0 there instead of being
+        fooled by the seek's high-water reset of last_completed."""
+        with self._state_lock:
+            playhead = self._timeline.current_frame()
+            ahead = max(0, self._last_completed - playhead + 1)
+            remaining = max(1, self._reader_pool.frame_count - playhead)
+        return ahead, remaining
+
     def _mark(self, index: FrameIndex, state: FrameState) -> None:
         """Set one frame's visualiser state. getattr-guarded so bypass-init test
         executors (which don't build the map) no-op instead of erroring."""

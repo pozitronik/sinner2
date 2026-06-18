@@ -18,9 +18,10 @@ class _FakeExecutor:
         self._fps = fps
         self._face_fps = face_fps
         self.completed = completed
+        self.current = current  # the live playhead (moves on a section jump)
         self.calls: list = []
         self.processing_fps = SimpleNamespace(get=lambda: self._fps)
-        self.current_frame = SimpleNamespace(get=lambda: current)
+        self.current_frame = SimpleNamespace(get=lambda: self.current)
 
     def set_fps(self, fps: float) -> None:
         self._fps = fps
@@ -36,6 +37,11 @@ class _FakeExecutor:
 
     def last_completed_frame(self) -> int:
         return self.completed
+
+    def preprocess_progress(self) -> tuple[int, int]:
+        ahead = max(0, self.completed - self.current + 1)
+        remaining = max(1, self._frame_count - self.current)
+        return ahead, remaining
 
     def set_skip_strategy(self, strategy) -> None:
         self.calls.append(("strategy", type(strategy).__name__))
@@ -133,6 +139,21 @@ class TestHeadStartRelease:
         with qtbot.waitSignal(ctrl.finished, timeout=1000):
             ctrl._tick()  # noqa: SLF001
         assert ("release", True) in ex.calls
+
+    def test_section_jump_not_misread_as_buffered(self, qtbot):
+        # Regression: Play at frame 0, but the section fast-forward seeks to
+        # frame 24240 → last_completed=24239 (seek sentinel) AND playhead=24240.
+        # 'ahead' must read 0 (nothing actually rendered), NOT 24240 → must NOT
+        # release immediately (which left 1-FPS playback with no real buffer).
+        ex = _FakeExecutor(frame_count=59587, fps=21.74)
+        ctrl = _controller(ex, qtbot)
+        ctrl.start(target_fps=30.0)  # captured at frame 0
+        ctrl._timer.stop()  # noqa: SLF001
+        ex.current = 24240   # playhead jumped onto the first section
+        ex.completed = 24239  # seek high-water mark (section start - 1)
+        ctrl._tick()  # noqa: SLF001
+        assert ctrl.is_active()  # still buffering — not fooled into releasing
+        assert ("release", True) not in ex.calls
 
     def test_sizes_off_face_rate_not_overall_rate(self, qtbot):
         # Overall pipeline looks fast (100 fps) but FACE frames are slow (10) →

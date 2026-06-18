@@ -122,10 +122,11 @@ class PreprocessController(QObject):
         if not self._active or executor is None:
             self._release(play=False)
             return
-        completed = executor.last_completed_frame()
-        # Frames rendered AT/AHEAD of where playback will start.
-        done_ahead = max(0, completed - self._start_frame + 1)
-        remaining = max(1, self._frame_count - self._start_frame)
+        # Frames rendered ahead of the LIVE playhead + frames remaining from it,
+        # read atomically so a section fast-forward / seek (which moves the
+        # playhead AND resets last_completed to that point) reads 0 ahead rather
+        # than mistaking the seek's high-water mark for buffered frames.
+        done_ahead, remaining = executor.preprocess_progress()
         # Size off the FACE-frame rate (the expensive frames, worst-case: assume
         # every remaining frame could carry a face). Fall back to the overall
         # rate only until a couple of face frames have been measured.
@@ -137,11 +138,11 @@ class PreprocessController(QObject):
         target = self._head_start if self._head_start is not None else remaining
         self.progressChanged.emit(min(done_ahead, target), max(1, target))
         reached = self._head_start is not None and done_ahead >= self._head_start
-        all_done = completed >= self._frame_count - 1
+        all_done = done_ahead >= remaining
         self._tick_count += 1
         if self._tick_count % 10 == 0 or reached or all_done:
             trace(
-                f"tick: completed={completed} done_ahead={done_ahead} "
+                f"tick: done_ahead={done_ahead} remaining={remaining} "
                 f"face_fps={executor.face_processing_fps():.2f} "
                 f"proc_fps={executor.processing_fps.get():.2f} "
                 f"head_start={self._head_start} target={target}"
