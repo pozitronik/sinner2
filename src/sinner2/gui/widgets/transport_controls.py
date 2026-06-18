@@ -9,10 +9,12 @@ from PySide6.QtWidgets import (
     QStyle,
     QStyleOptionSlider,
     QToolButton,
+    QVBoxLayout,
     QWidget,
 )
 
 from sinner2.gui.session_capabilities import SessionCapabilities, SessionKind
+from sinner2.gui.widgets.frame_state_bar import QFrameStateBar
 from sinner2.pipeline.sections import SectionSet
 
 _SEEK_DEBOUNCE_MS = 100
@@ -226,13 +228,27 @@ class QTransportControls(QWidget):
         self._volume.setToolTip("Audio volume (0 = silent). Affects only the playback path.")
         self._volume.valueChanged.connect(self.volumeChanged)
 
+        # Processing visualiser: a per-frame state heatmap directly under the
+        # scrub slider (same column → same width, so its cells line up with the
+        # slider positions). Hidden until the user enables it. A click on it is
+        # a seek, forwarded through the transport's own seekRequested.
+        self._frame_state_bar = QFrameStateBar()
+        self._frame_state_bar.setVisible(False)
+        self._frame_state_bar.seekRequested.connect(self.seekRequested)
+
         layout = QHBoxLayout(self)
         # Zero horizontal margins so the controls line up with the display
         # above; tight vertical margins keep the row short.
         layout.setContentsMargins(0, 2, 0, 2)
         layout.addWidget(self._add_to_batch)
         layout.addWidget(self._play_button)
-        layout.addWidget(self._slider, stretch=1)
+        # Stack the slider over the visualiser bar in one stretching column.
+        slider_col = QVBoxLayout()
+        slider_col.setContentsMargins(0, 0, 0, 0)
+        slider_col.setSpacing(1)
+        slider_col.addWidget(self._slider)
+        slider_col.addWidget(self._frame_state_bar)
+        layout.addLayout(slider_col, stretch=1)
         layout.addWidget(self._label)
         layout.addWidget(self._volume)
 
@@ -243,6 +259,8 @@ class QTransportControls(QWidget):
         self._slider.setValue(0)
         self._slider.blockSignals(False)
         self._update_label(0)
+        # New target → drop stale heatmap; the poll feed repopulates it.
+        self._frame_state_bar.clear()
 
     def set_fps(self, fps: float) -> None:
         """Target frame rate for the time readout. 0 leaves the label showing
@@ -258,6 +276,20 @@ class QTransportControls(QWidget):
         self._slider.setValue(frame)
         self._slider.blockSignals(False)
         self._update_label(frame)
+        self._frame_state_bar.set_playhead(frame)
+
+    def set_frame_states(self, states: bytes, frame_count: int) -> None:
+        """Feed the processing visualiser a fresh per-frame state snapshot."""
+        self._frame_state_bar.set_data(states, frame_count)
+
+    def set_visualiser_visible(self, visible: bool) -> None:
+        """Show / hide the processing-visualiser bar under the slider."""
+        self._frame_state_bar.setVisible(visible)
+
+    def visualiser_visible(self) -> bool:
+        # isHidden() (not isVisible()) so this reflects the explicit toggle even
+        # when the transport itself isn't shown yet (e.g. under test).
+        return not self._frame_state_bar.isHidden()
 
     @Slot(bool)
     def set_is_playing(self, is_playing: bool) -> None:

@@ -315,3 +315,47 @@ class TestSectionPainting:
         widget.show()
         qtbot.waitExposed(widget)
         widget._slider.repaint()  # noqa: SLF001 — exercises paintEvent
+
+
+class TestProcessingVisualiser:
+    def test_bar_hidden_by_default(self, widget):
+        assert not widget.visualiser_visible()
+
+    def test_toggle_visibility(self, widget):
+        widget.set_visualiser_visible(True)
+        assert widget.visualiser_visible()
+        widget.set_visualiser_visible(False)
+        assert not widget.visualiser_visible()
+
+    def test_set_frame_states_feeds_the_bar(self, widget):
+        from sinner2.pipeline.realtime.frame_state import FrameState
+
+        states = bytes([int(FrameState.READY_MEM)] * 50)
+        widget.set_frame_states(states, 50)
+        assert widget._frame_state_bar._frame_count == 50  # noqa: SLF001
+        assert widget._frame_state_bar._states == states   # noqa: SLF001
+
+    def test_current_frame_drives_bar_playhead(self, widget):
+        widget.set_frame_count(100)
+        widget.set_current_frame(42)
+        assert widget._frame_state_bar._playhead == 42      # noqa: SLF001
+
+    def test_new_target_clears_the_bar(self, widget):
+        from sinner2.pipeline.realtime.frame_state import FrameState
+
+        widget.set_frame_states(bytes([int(FrameState.READY_MEM)] * 10), 10)
+        widget.set_frame_count(200)  # new target
+        assert widget._frame_state_bar._frame_count == 0    # noqa: SLF001
+
+    def test_bar_click_forwards_as_seek(self, widget, qtbot):
+        from PySide6.QtCore import QPoint, Qt
+
+        from sinner2.pipeline.realtime.frame_state import FrameState
+
+        widget.set_visualiser_visible(True)
+        widget.set_frame_states(bytes([int(FrameState.READY_MEM)] * 200), 200)
+        bar = widget._frame_state_bar  # noqa: SLF001
+        bar.resize(100, 16)
+        with qtbot.waitSignal(widget.seekRequested, timeout=1000) as blocker:
+            qtbot.mouseClick(bar, Qt.MouseButton.LeftButton, pos=QPoint(50, 8))
+        assert blocker.args[0] == 100  # halfway → frame 100 of 200
