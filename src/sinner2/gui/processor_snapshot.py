@@ -65,6 +65,7 @@ class ProcessorParamsSnapshot:
     processing_scale: float
     synced_max_lag_frames: int
     predictive_max_lead_seconds: float
+    preprocess_before_play: bool
     # Cache / output
     cache_mode: CacheMode
     image_format: ImageFormat
@@ -165,6 +166,7 @@ class ProcessorParamsSnapshot:
             processing_scale=self.processing_scale,
             synced_max_lag_frames=self.synced_max_lag_frames,
             predictive_max_lead_seconds=self.predictive_max_lead_seconds,
+            preprocess_before_play=self.preprocess_before_play,
             swapper_providers=list(self.swapper_providers),
             enhancer_device=self.enhancer_device,
             enhancer_providers=list(self.enhancer_providers),

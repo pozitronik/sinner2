@@ -277,11 +277,44 @@ class TestStatusActionButtons:
         assert window._controller.executor() is None  # noqa: SLF001
         window._visualiser_tick()  # noqa: SLF001 — must not raise
 
-    def test_preprocess_button_without_session_hints(self, window):
-        assert window._controller.executor() is None  # noqa: SLF001
-        window._status_bar.preprocess_button.click()  # noqa: SLF001
-        assert "Load a video" in window._status_bar.current_message()  # noqa: SLF001
+    def test_play_with_option_off_is_normal_play(self, window, monkeypatch):
+        monkeypatch.setattr(
+            window._processors, "preprocess_before_play", lambda: False  # noqa: SLF001
+        )
+        spy: list[int] = []
+        monkeypatch.setattr(window._session, "play", lambda: spy.append(1))  # noqa: SLF001
+        window._on_play_requested()  # noqa: SLF001
+        assert spy == [1]  # straight to session.play, no preprocess
         assert not window._preprocess.is_active()  # noqa: SLF001
+
+    def test_play_with_option_on_starts_preprocess(self, window, monkeypatch):
+        # Option on + a (faked) active file session → Play buffers a head-start.
+        from sinner2.gui.session_capabilities import SessionKind
+
+        monkeypatch.setattr(
+            window._processors, "preprocess_before_play", lambda: True  # noqa: SLF001
+        )
+        monkeypatch.setattr(
+            window._controller, "executor", lambda: object()  # noqa: SLF001
+        )
+        monkeypatch.setattr(
+            window._session, "active_kind", lambda: SessionKind.FILE  # noqa: SLF001
+        )
+        started: list[int] = []
+        monkeypatch.setattr(
+            window._preprocess, "start", lambda _fps: started.append(1)  # noqa: SLF001
+        )
+        window._on_play_requested()  # noqa: SLF001
+        assert started == [1]
+
+    def test_pause_while_buffering_cancels(self, window, monkeypatch):
+        monkeypatch.setattr(window._preprocess, "is_active", lambda: True)  # noqa: SLF001
+        spy: list[int] = []
+        monkeypatch.setattr(
+            window._preprocess, "cancel", lambda: spy.append(1)  # noqa: SLF001
+        )
+        window._on_pause_requested()  # noqa: SLF001
+        assert spy == [1]
 
     def test_preprocess_started_enables_visualiser_and_status(self, window):
         window._on_preprocess_started()  # noqa: SLF001

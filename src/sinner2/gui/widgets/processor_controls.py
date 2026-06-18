@@ -903,6 +903,18 @@ class QProcessorControls(QWidget):
         self._playback_combo.currentTextChanged.connect(lambda _: self.configChanged.emit())
         execution_form.addRow("Playback rate", self._playback_combo)
 
+        self._preprocess_before_play = QCheckBox()
+        self._preprocess_before_play.setToolTip(
+            "Before playing, render a head-start from the current position so a\n"
+            "slow pipeline plays back smoothly at the source framerate instead of\n"
+            "lagging. The display holds while the buffer fills (watch the\n"
+            "processing visualiser), then playback starts automatically. Press\n"
+            "play/Space to start sooner, or pause to cancel. Sized from the speed\n"
+            "of frames that actually contain faces."
+        )
+        self._preprocess_before_play.toggled.connect(self.configChanged)
+        execution_form.addRow("Buffer ahead before playback", self._preprocess_before_play)
+
         self._video_backend_combo = QComboBox()
         for label in _VIDEO_BACKENDS:
             self._video_backend_combo.addItem(label)
@@ -1501,6 +1513,9 @@ class QProcessorControls(QWidget):
     def predictive_max_lead_seconds(self) -> float:
         return self._predictive_max_lead_seconds.value()
 
+    def preprocess_before_play(self) -> bool:
+        return self._preprocess_before_play.isChecked()
+
     def realtime_workers(self) -> int:
         return self._worker_count.value()
 
@@ -1604,6 +1619,7 @@ class QProcessorControls(QWidget):
             processing_scale=self.processing_scale(),
             synced_max_lag_frames=self.synced_max_lag_frames(),
             predictive_max_lead_seconds=self.predictive_max_lead_seconds(),
+            preprocess_before_play=self.preprocess_before_play(),
             cache_mode=self.cache_mode(),
             image_format=self.image_format(),
             image_quality=self.image_quality(),
@@ -1662,6 +1678,7 @@ class QProcessorControls(QWidget):
         processing_scale: float | None,
         synced_max_lag_frames: int | None,
         predictive_max_lead_seconds: float | None = None,
+        preprocess_before_play: bool | None = None,
         swapper_providers: list[str] | None,
         enhancer_device: str | None,
         upscaler_enabled: bool | None = None,
@@ -1722,6 +1739,7 @@ class QProcessorControls(QWidget):
             self._scale_slider,
             self._synced_max_lag_frames,
             self._predictive_max_lead_seconds,
+            self._preprocess_before_play,
         )
         for w in widgets:
             w.blockSignals(True)
@@ -1861,6 +1879,8 @@ class QProcessorControls(QWidget):
                 self._synced_max_lag_frames.setValue(synced_max_lag_frames)
             if predictive_max_lead_seconds is not None:
                 self._predictive_max_lead_seconds.setValue(predictive_max_lead_seconds)
+            if preprocess_before_play is not None:
+                self._preprocess_before_play.setChecked(preprocess_before_play)
             # Restore each per-model provider row's selection (set_selected
             # blocks signals + forces CPU on for an empty/all-unknown list).
             if swapper_providers is not None:

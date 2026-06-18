@@ -586,10 +586,11 @@ class SinnerMainWindow(QMainWindow):
         self._preprocess.progressChanged.connect(self._on_preprocess_progress)
         self._preprocess.finished.connect(self._on_preprocess_finished)
         self._preprocess.failed.connect(self._on_preprocess_failed)
-        self._status_bar.preprocess_button.clicked.connect(self._on_preprocess_clicked)
-        # Play while preprocessing = release early ("play now"); otherwise normal.
+        # Play/pause are preprocess-aware: with the "Buffer ahead before playback"
+        # execution option on, Play buffers a head-start first; Play again while
+        # buffering releases early; Pause while buffering cancels.
         self._transport.playRequested.connect(self._on_play_requested)
-        self._transport.pauseRequested.connect(self._session.pause)
+        self._transport.pauseRequested.connect(self._on_pause_requested)
         # All user seeks funnel through _on_seek_requested so the overlay drops
         # its stale boxes before the playhead jumps (otherwise a box from the old
         # position lingers "stuck" over the new frame until a fresh detection).
@@ -1421,11 +1422,7 @@ class SinnerMainWindow(QMainWindow):
         # play/pause for any session; the seek keys apply only to seekable
         # (finite) targets.
         if key == Qt.Key.Key_Space:
-            # While a preprocess pass buffers, Space releases it early.
-            if self._preprocess.is_active():
-                self._preprocess.play_now()
-            else:
-                self._session.toggle_playback()
+            self._toggle_play()
             return
         executor = self._controller.executor()
         if not self._session.capabilities().seekable or executor is None:
@@ -1669,25 +1666,44 @@ class SinnerMainWindow(QMainWindow):
 
     # ---- Preprocessing ----
 
+    def _preprocess_on_play_eligible(self) -> bool:
+        """The 'buffer ahead before playback' option is on AND this is a file
+        session (preprocessing is meaningless for a live camera)."""
+        return (
+            self._processors.preprocess_before_play()
+            and self._controller.executor() is not None
+            and self._session.active_kind() is not SessionKind.CAMERA
+        )
+
     def _on_play_requested(self) -> None:
-        # Pressing play while a preprocess pass is buffering releases it early
-        # ("play now"); otherwise it's the normal session play.
+        # While buffering, Play releases the head-start early. With the option on,
+        # Play buffers a head-start first; otherwise it's the normal session play.
         if self._preprocess.is_active():
             self._preprocess.play_now()
+        elif self._preprocess_on_play_eligible():
+            self._preprocess.start(self._controller.target_fps())
         else:
             self._session.play()
 
-    def _on_preprocess_clicked(self) -> None:
+    def _on_pause_requested(self) -> None:
+        # Pause while buffering cancels the preprocess pass; otherwise normal.
         if self._preprocess.is_active():
             self._preprocess.cancel()
+        else:
+            self._session.pause()
+
+    def _toggle_play(self) -> None:
+        """Space: release early while buffering; start preprocessing on a paused
+        file session with the option on; otherwise the normal play/pause toggle."""
+        if self._preprocess.is_active():
+            self._preprocess.play_now()
             return
-        if (
-            self._controller.executor() is None
-            or self._session.active_kind() is SessionKind.CAMERA
-        ):
-            self._status_bar.show_message("Load a video to preprocess", 3000)
-            return
-        self._preprocess.start(self._controller.target_fps())
+        executor = self._controller.executor()
+        paused = executor is not None and not executor.is_playing.get()
+        if paused and self._preprocess_on_play_eligible():
+            self._preprocess.start(self._controller.target_fps())
+        else:
+            self._session.toggle_playback()
 
     def _on_preprocess_started(self) -> None:
         # Show the visualiser so its filling green bar IS the progress display,
@@ -2286,6 +2302,7 @@ class SinnerMainWindow(QMainWindow):
                 processing_scale=self._settings.processing_scale,
                 synced_max_lag_frames=self._settings.synced_max_lag_frames,
                 predictive_max_lead_seconds=self._settings.predictive_max_lead_seconds,
+                preprocess_before_play=self._settings.preprocess_before_play,
                 swapper_providers=self._settings.swapper_providers,
                 enhancer_device=self._settings.enhancer_device,
                 enhancer_providers=self._settings.enhancer_providers,

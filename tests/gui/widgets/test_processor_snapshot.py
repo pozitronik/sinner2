@@ -55,7 +55,7 @@ _PERTURB_ATTRS = (
     "_playback_combo", "_cache_mode_combo", "_image_format_combo",
     "_image_quality", "_memory_cache_mb", "_write_workers", "_write_queue_size",
     "_video_backend_combo", "_reader_pool_size", "_synced_max_lag_frames",
-    "_predictive_max_lead_seconds",
+    "_predictive_max_lead_seconds", "_preprocess_before_play",
 )
 
 
@@ -94,6 +94,7 @@ def test_snapshot_captures_each_getter(widget):
     assert s.processing_scale == widget.processing_scale()
     assert s.synced_max_lag_frames == widget.synced_max_lag_frames()
     assert s.predictive_max_lead_seconds == widget.predictive_max_lead_seconds()
+    assert s.preprocess_before_play == widget.preprocess_before_play()
     assert s.cache_mode == widget.cache_mode()
     assert s.image_format == widget.image_format()
     assert s.image_quality == widget.image_quality()
@@ -209,6 +210,7 @@ def test_to_settings_kwargs_flattens_with_value_tokens(widget):
     assert kw["playback_mode"] == s.playback_mode
     assert kw["synced_max_lag_frames"] == s.synced_max_lag_frames
     assert kw["predictive_max_lead_seconds"] == s.predictive_max_lead_seconds
+    assert kw["preprocess_before_play"] == s.preprocess_before_play
     assert kw["memory_cache_mb"] == s.memory_cache_mb
 
 

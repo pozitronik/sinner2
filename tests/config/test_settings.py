@@ -235,6 +235,10 @@ class TestExtendedFieldsRoundtrip:
         settings.save(settings.Settings(visualiser_visible=True))
         assert settings.load().visualiser_visible is True
 
+    def test_preprocess_before_play(self):
+        settings.save(settings.Settings(preprocess_before_play=True))
+        assert settings.load().preprocess_before_play is True
+
     def test_camera_config_roundtrip(self):
         settings.save(settings.Settings(
             camera_device=2, camera_width=640, camera_height=480,
@@ -358,6 +362,7 @@ class TestExtendedFieldsRoundtrip:
             synced_max_lag_frames=120,
             predictive_max_lead_seconds=2.0,
             visualiser_visible=True,
+            preprocess_before_play=True,
             side_panel_visible=False,
             metrics_overlay_visible=True,
             swapper_providers=["CUDAExecutionProvider"],
@@ -405,6 +410,7 @@ class TestExtendedFieldsRoundtrip:
         assert loaded.synced_max_lag_frames is None
         assert loaded.predictive_max_lead_seconds is None
         assert loaded.visualiser_visible is None
+        assert loaded.preprocess_before_play is None
         assert loaded.side_panel_visible is None
         assert loaded.metrics_overlay_visible is None
         assert loaded.swapper_providers is None

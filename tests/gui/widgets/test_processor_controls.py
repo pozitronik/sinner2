@@ -329,6 +329,7 @@ _FULL_RESTORE_KWARGS = dict(
     processing_scale=0.5,
     synced_max_lag_frames=120,
     predictive_max_lead_seconds=2.0,
+    preprocess_before_play=True,
     swapper_providers=["CPUExecutionProvider"],
     enhancer_device="cpu",
 )
@@ -365,6 +366,7 @@ _NONE_RESTORE_KWARGS = dict(
     processing_scale=None,
     synced_max_lag_frames=None,
     predictive_max_lead_seconds=None,
+    preprocess_before_play=None,
     swapper_providers=None,
     enhancer_device=None,
 )
@@ -410,6 +412,13 @@ class TestApplyRestoredSettings:
             **{**_NONE_RESTORE_KWARGS, "predictive_max_lead_seconds": 3.5}
         )
         assert widget.predictive_max_lead_seconds() == 3.5
+
+    def test_applies_preprocess_before_play(self, widget):
+        assert widget.preprocess_before_play() is False  # default off
+        widget.apply_restored_settings(
+            **{**_NONE_RESTORE_KWARGS, "preprocess_before_play": True}
+        )
+        assert widget.preprocess_before_play() is True
 
     def test_applies_enhancer_enabled(self, widget):
         widget.apply_restored_settings(

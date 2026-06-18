@@ -82,6 +82,7 @@ class Settings(SinnerBaseModel):
     synced_max_lag_frames: int | None = None
     predictive_max_lead_seconds: float | None = None  # PredictiveStrategy lead cap
     visualiser_visible: bool | None = None  # processing-visualiser bar toggle
+    preprocess_before_play: bool | None = None  # buffer head-start before playback
     # Live-camera target config (remembered across launches).
     camera_device: int | None = None
     camera_width: int | None = None
