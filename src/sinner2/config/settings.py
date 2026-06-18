@@ -80,6 +80,7 @@ class Settings(SinnerBaseModel):
     reader_pool_size: int | None = None
     processing_scale: float | None = None  # 0 < s <= 1; downscale frames before processing
     synced_max_lag_frames: int | None = None
+    predictive_max_lead_seconds: float | None = None  # PredictiveStrategy lead cap
     # Live-camera target config (remembered across launches).
     camera_device: int | None = None
     camera_width: int | None = None

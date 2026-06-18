@@ -227,6 +227,10 @@ class TestExtendedFieldsRoundtrip:
         settings.save(settings.Settings(synced_max_lag_frames=120))
         assert settings.load().synced_max_lag_frames == 120
 
+    def test_predictive_max_lead_seconds(self):
+        settings.save(settings.Settings(predictive_max_lead_seconds=2.5))
+        assert settings.load().predictive_max_lead_seconds == 2.5
+
     def test_camera_config_roundtrip(self):
         settings.save(settings.Settings(
             camera_device=2, camera_width=640, camera_height=480,
@@ -348,6 +352,7 @@ class TestExtendedFieldsRoundtrip:
             video_backend=VideoBackend.CV2,
             reader_pool_size=8,
             synced_max_lag_frames=120,
+            predictive_max_lead_seconds=2.0,
             side_panel_visible=False,
             metrics_overlay_visible=True,
             swapper_providers=["CUDAExecutionProvider"],
@@ -393,6 +398,7 @@ class TestExtendedFieldsRoundtrip:
         assert loaded.video_backend is None
         assert loaded.reader_pool_size is None
         assert loaded.synced_max_lag_frames is None
+        assert loaded.predictive_max_lead_seconds is None
         assert loaded.side_panel_visible is None
         assert loaded.metrics_overlay_visible is None
         assert loaded.swapper_providers is None
