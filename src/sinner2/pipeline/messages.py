@@ -9,6 +9,7 @@ from sinner2.types import FrameIndex
 if TYPE_CHECKING:
     from sinner2.io.reader_pool import ReaderPool
     from sinner2.pipeline.buffer.buffer import FrameBuffer
+    from sinner2.pipeline.buffer.store import FrameStore
     from sinner2.pipeline.buffer.timeline import Timeline
     from sinner2.pipeline.face_map import FaceMap
     from sinner2.pipeline.face_map_geometry import FrameGeometry
@@ -51,9 +52,15 @@ class SetChainMsg:
     inference, so multiple workers can call the same swapper.get() in
     parallel and let ORT schedule across the GPU efficiently. Processors
     that aren't thread-safe (e.g. GFPGAN) must serialize internally.
+
+    ``store`` re-keys the disk cache to the new chain's directory (so a chain
+    change REUSES a previously-processed cache instead of overwriting the old
+    chain's dir). None = no re-key: invalidate the current cache in place (the
+    old behaviour, used when caching is OFF).
     """
 
     chain: tuple["Processor", ...]
+    store: "FrameStore | None" = None
 
 
 @dataclass(frozen=True)

@@ -1660,6 +1660,39 @@ class TestSetChainSetupOrdering:
         assert ex._chain == (spy,)  # noqa: SLF001
         assert old.release_calls == 1  # dropped processor released
 
+    def test_set_chain_with_store_rekeys_cache(self, buffer_setup):
+        from unittest.mock import MagicMock
+
+        buffer, timeline, _ = buffer_setup
+        ex = RealtimeExecutor(
+            reader_pool=_pool_for(_MultiFrameReader(1)),
+            buffer=buffer, timeline=timeline, chain=[_CountingProcessor()],
+            strategy=BestEffortStrategy(),
+        )
+        ex._setup_done_event.set()  # noqa: SLF001
+        ex._buffer = MagicMock()  # noqa: SLF001 — spy the buffer
+        ex._buffer.has.return_value = False  # noqa: SLF001
+        new_store = MagicMock()
+        ex._handle_set_chain((_CountingProcessor(),), store=new_store)  # noqa: SLF001
+        ex._buffer.set_store.assert_called_once_with(new_store)  # noqa: SLF001
+        ex._buffer.invalidate_all.assert_not_called()  # noqa: SLF001 — re-key, don't wipe
+
+    def test_set_chain_without_store_invalidates_in_place(self, buffer_setup):
+        from unittest.mock import MagicMock
+
+        buffer, timeline, _ = buffer_setup
+        ex = RealtimeExecutor(
+            reader_pool=_pool_for(_MultiFrameReader(1)),
+            buffer=buffer, timeline=timeline, chain=[_CountingProcessor()],
+            strategy=BestEffortStrategy(),
+        )
+        ex._setup_done_event.set()  # noqa: SLF001
+        ex._buffer = MagicMock()  # noqa: SLF001
+        ex._buffer.has.return_value = False  # noqa: SLF001
+        ex._handle_set_chain((_CountingProcessor(),))  # noqa: SLF001 — no store
+        ex._buffer.invalidate_all.assert_called_once()  # noqa: SLF001
+        ex._buffer.set_store.assert_not_called()  # noqa: SLF001
+
 
 class _FailOnceProcessor:
     """Raises on the first process() call, then passes frames through."""

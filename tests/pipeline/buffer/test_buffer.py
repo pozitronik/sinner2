@@ -464,6 +464,56 @@ class TestFrameStateWiring:
         assert states.get(0) is FrameState.NOT_REACHED
 
 
+class TestSetStore:
+    """set_store re-keys the disk cache to a new chain's dir: clears memory,
+    swaps the store, leaves the OLD store intact, re-marks the visualiser."""
+
+    def test_swaps_store_clears_memory_and_remarks(self):
+        from sinner2.pipeline.realtime.frame_state import FrameState, FrameStateMap
+
+        old_store = MagicMock(spec=FrameStore)
+        old_store.cached_indices.return_value = []
+        cache = MemoryFrameCache(max_bytes=10 * 1024)
+        states = FrameStateMap(6)
+        buf = FrameBuffer(
+            old_store, cache, Timeline(fps=30.0),
+            MagicMock(spec=BoundedWriteExecutor),
+        )
+        buf.set_frame_states(states)
+        cache.put(0, _frame())  # something hot in memory
+
+        new_store = MagicMock(spec=FrameStore)
+        new_store.cached_indices.return_value = [2, 3]
+        new_store.read.return_value = _frame()
+        buf.set_store(new_store)
+
+        assert cache.get(0) is None  # memory cleared
+        assert buf.get(5) is not None  # reads now come from the NEW store
+        new_store.read.assert_called_with(5)
+        old_store.clear_from.assert_not_called()  # OLD dir left intact
+        assert states.get(2) is FrameState.READY_DISK  # re-marked from new store
+        assert states.get(3) is FrameState.READY_DISK
+        assert states.get(0) is FrameState.NOT_REACHED  # reset
+
+    def test_off_mode_skips_store_remark(self):
+        from sinner2.pipeline.realtime.frame_state import FrameStateMap
+
+        store = MagicMock(spec=FrameStore)
+        store.cached_indices.return_value = []
+        cache = MemoryFrameCache(max_bytes=10 * 1024)
+        states = FrameStateMap(4)
+        buf = FrameBuffer(
+            store, cache, Timeline(fps=30.0),
+            MagicMock(spec=BoundedWriteExecutor), cache_mode=CacheMode.OFF,
+        )
+        buf.set_frame_states(states)
+        new_store = MagicMock(spec=FrameStore)
+        new_store.cached_indices.return_value = [1, 2]
+        buf.set_store(new_store)
+        new_store.cached_indices.assert_not_called()  # OFF → no disk consult
+        assert states.snapshot() == bytes(4)  # nothing marked
+
+
 class TestCacheMode:
     """Cache mode gates which I/O paths the buffer takes:
        WRITE_READ: write submits to executor + cache misses fall back to store

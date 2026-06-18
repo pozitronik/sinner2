@@ -79,12 +79,36 @@ class FrameBuffer:
         setter = getattr(self._cache, "set_evict_listener", None)
         if setter is not None:
             setter(self._on_cache_evict if states is not None else None)
-        if states is not None and self._cache_mode is not CacheMode.OFF:
-            try:
-                for index in self._store.cached_indices():
-                    states.set(index, FrameState.READY_DISK)
-            except OSError:
-                pass
+        if states is not None:
+            self._mark_cached_frames(states)
+
+    def _mark_cached_frames(self, states: FrameStateMap) -> None:
+        """Mark every frame currently on disk READY_DISK (one glob). No-op when
+        caching is OFF (the store isn't consulted then)."""
+        if self._cache_mode is CacheMode.OFF:
+            return
+        try:
+            for index in self._store.cached_indices():
+                states.set(index, FrameState.READY_DISK)
+        except OSError:
+            pass
+
+    def set_store(self, store: FrameStore) -> None:
+        """Swap the disk store to RE-KEY the cache for a new chain. Clears the
+        in-memory cache + per-index bookkeeping (they belong to the old store)
+        and re-marks the visualiser from the NEW store's already-cached frames.
+        The OLD store is LEFT INTACT — its directory stays as that chain's cache
+        for future reuse; the caller owns its lifetime."""
+        self._cache.clear()
+        with self._lock:
+            self._store = store
+            self._last_written_index = None
+            self._last_displayed_index = None
+            self._invalidated.clear()
+            self._recent_indices.clear()
+        if self._frame_states is not None:
+            self._frame_states.reset()
+            self._mark_cached_frames(self._frame_states)
 
     def _on_cache_evict(self, index: FrameIndex) -> None:
         states = self._frame_states

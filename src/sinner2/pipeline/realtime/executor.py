@@ -12,6 +12,7 @@ from sinner2.io.reader_pool import ReaderPool
 from sinner2.observable import ObservableValue
 from sinner2.pipeline.buffer.buffer import FrameBuffer
 from sinner2.pipeline.buffer.metrics import BufferMetrics
+from sinner2.pipeline.buffer.store import FrameStore
 from sinner2.pipeline.buffer.timeline import Timeline
 from sinner2.pipeline.realtime.frame_state import FrameState, FrameStateMap
 from sinner2.pipeline.messages import (
@@ -495,8 +496,13 @@ class RealtimeExecutor:
     def set_params(self, processor_name: str, params: Mapping[str, Any]) -> None:
         self._command_queue.put(SetParamsMsg(processor_name=processor_name, params=params))
 
-    def set_chain(self, chain: list[Processor]) -> None:
-        self._command_queue.put(SetChainMsg(chain=tuple(chain)))
+    def set_chain(
+        self, chain: list[Processor], store: "FrameStore | None" = None
+    ) -> None:
+        """Hot-swap the chain. ``store`` re-keys the disk cache to the new
+        chain's directory (reuse a previously-processed cache); None invalidates
+        the current cache in place (used when caching is OFF)."""
+        self._command_queue.put(SetChainMsg(chain=tuple(chain), store=store))
 
     def set_skip_strategy(self, strategy: FrameSkipStrategy) -> None:
         self._command_queue.put(SetSkipStrategyMsg(strategy=strategy))
@@ -706,8 +712,8 @@ class RealtimeExecutor:
                 self._handle_seek(target)
             case RerenderMsg():
                 self._handle_rerender()
-            case SetChainMsg(chain=chain):
-                self._handle_set_chain(chain)
+            case SetChainMsg(chain=chain, store=store):
+                self._handle_set_chain(chain, store)
             case SetSkipStrategyMsg(strategy=strategy):
                 self._handle_set_strategy(strategy)
             case SetWorkerCountMsg(n=n):
@@ -874,7 +880,9 @@ class RealtimeExecutor:
             self._last_submitted = frame_index
         self._mark(frame_index, FrameState.QUEUED)
 
-    def _handle_set_chain(self, chain: tuple[Processor, ...]) -> None:
+    def _handle_set_chain(
+        self, chain: tuple[Processor, ...], store: FrameStore | None = None
+    ) -> None:
         # Don't race the initial setup: the setup thread is calling
         # p.setup() on the current chain. Swapping it here would call
         # setup() on the new chain and release() on the old in parallel
@@ -907,18 +915,20 @@ class RealtimeExecutor:
             self._wait_for_inflight()
             for p in to_release:
                 p.release()
-        # A chain swap makes EVERY cached frame stale: the cache + store are
-        # keyed by frame index, not by the chain that produced them, so a frame
-        # rendered with the OLD chain would otherwise be served unchanged on
-        # revisit — worse with a large memory cache, where nothing evicts, so the
-        # change appears not to apply at all. Drop them all and re-render the
-        # current frame so the new chain's output reaches the display at once,
-        # paused OR playing, every frame (not just the one a seek nudge touched).
+        # A chain swap makes the OLD chain's cached frames wrong for the NEW
+        # chain. Re-key the disk cache to the new chain's directory when a store
+        # is supplied (so a previously-processed config is REUSED and the old
+        # dir is left intact), else invalidate in place (cache OFF). Either way
+        # drop the in-memory frames and re-render the current frame so the new
+        # output reaches the display at once, paused OR playing.
         with self._state_lock:
             current = self._timeline.current_frame()
             self._last_submitted = current - 1
             self._last_completed = min(self._last_completed, current - 1)
-        self._buffer.invalidate_all()
+        if store is not None:
+            self._buffer.set_store(store)
+        else:
+            self._buffer.invalidate_all()
         self._last_shown_frame_index = None
         self._submit_specific_frame(current)
         self._playback_wake.set()
