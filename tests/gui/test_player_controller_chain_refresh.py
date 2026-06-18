@@ -211,6 +211,95 @@ class TestChainRefresh:
         ctrl.shutdown()
 
 
+class TestChainChangeRekeysCache:
+    """A chain/param change RE-KEYS the disk cache to the new chain's dir (so a
+    prior run's cache is reused) instead of wiping the current dir — except for
+    provider/det-size changes, which aren't in the cache key and so keep the old
+    invalidate-in-place behaviour (store=None) to avoid serving stale frames."""
+
+    def _attach_with_target(self, ctrl, fake, tmp_path):
+        tgt = tmp_path / "t.mp4"
+        tgt.write_bytes(b"x")
+        ctrl._current_target_path = tgt  # noqa: SLF001
+        fake.frame_count.return_value = 100
+        # Pin swapper state so the only change is the enhancer flip below —
+        # providers/det-size stay equal, so the re-key gate is open.
+        ctrl._swapper_providers = ()  # noqa: SLF001
+        ctrl._swapper_params = FaceSwapperParams()  # noqa: SLF001
+        return tgt
+
+    def test_param_change_passes_rekeyed_store_to_set_chain(
+        self, widgets, fake_source_path, tmp_path, monkeypatch
+    ):
+        ctrl = _make_controller(widgets)
+        fake = _attach_fake_session(
+            ctrl, playing=False, current_frame=5,
+            source_path=fake_source_path, monkeypatch=monkeypatch,
+        )
+        self._attach_with_target(ctrl, fake, tmp_path)
+        new_store = MagicMock()
+        new_dir = tmp_path / "newkey"
+        ctrl._session_builder = MagicMock()  # noqa: SLF001
+        ctrl._session_builder.build_store_for_chain.return_value = (  # noqa: SLF001
+            new_store, new_dir,
+        )
+        old_store = MagicMock()
+        ctrl._session_store = old_store  # noqa: SLF001
+        scratch: list = []
+        ctrl.sessionScratchDirChanged.connect(scratch.append)
+
+        _apply(ctrl, enhancer_enabled=False)  # flip enhancer → chain_changed
+
+        assert fake.set_chain.call_count == 1
+        assert fake.set_chain.call_args.kwargs["store"] is new_store
+        # builder asked for the NEW chain's store with the LIVE frame count
+        assert ctrl._session_builder.build_store_for_chain.call_args.args[4] == 100  # noqa: SLF001
+        # controller re-points at the new dir/store; old store closed (dir lives)
+        assert ctrl._session_store is new_store  # noqa: SLF001
+        assert ctrl._session_cache_dir == new_dir  # noqa: SLF001
+        old_store.close.assert_called_once()
+        assert scratch == [new_dir]
+        ctrl.shutdown()
+
+    def test_provider_change_invalidates_in_place_no_rekey(
+        self, widgets, fake_source_path, tmp_path, monkeypatch
+    ):
+        ctrl = _make_controller(widgets)
+        fake = _attach_fake_session(
+            ctrl, playing=False, current_frame=5,
+            source_path=fake_source_path, monkeypatch=monkeypatch,
+        )
+        self._attach_with_target(ctrl, fake, tmp_path)
+        ctrl._session_builder = MagicMock()  # noqa: SLF001
+        old_store = MagicMock()
+        ctrl._session_store = old_store  # noqa: SLF001
+        # Avoid touching real model/detector singletons on a providers change.
+        from sinner2.pipeline import face_analyser, model_cache
+        monkeypatch.setattr(model_cache, "clear_session_cache", lambda: None)
+        monkeypatch.setattr(
+            face_analyser, "reset_shared_face_analysis", lambda: None
+        )
+
+        ctrl.apply_session_config(
+            swapper_params=FaceSwapperParams(),
+            enhancer_params=FaceEnhancerParams(),
+            enhancer_enabled=ctrl._enhancer_enabled,  # noqa: SLF001
+            strategy=BestEffortStrategy(),
+            worker_count=1,
+            playback_mode=PlaybackMode.FIXED_30,
+            cache_settings=_DEFAULT_CACHE_SETTINGS,
+            swapper_providers=("CUDAExecutionProvider",),  # providers_changed
+        )
+
+        # Provider change rebuilds the chain but must NOT re-key (stale risk).
+        fake.set_chain.assert_called_once()
+        assert fake.set_chain.call_args.kwargs["store"] is None
+        ctrl._session_builder.build_store_for_chain.assert_not_called()  # noqa: SLF001
+        assert ctrl._session_store is old_store  # noqa: SLF001 — unchanged
+        old_store.close.assert_not_called()
+        ctrl.shutdown()
+
+
 class TestMemoryCacheHotResize:
     """A memory-cache-size change must hot-resize the LIVE buffer (so it takes
     effect without a restart / source change), and only when it actually

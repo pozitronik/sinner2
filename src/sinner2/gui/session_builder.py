@@ -278,6 +278,43 @@ class SessionBuilder:
             warnings=warnings,
         )
 
+    def build_store_for_chain(
+        self,
+        source: Source,
+        target: Target,
+        chain: list[Processor],
+        spec: SessionBuildSpec,
+        frame_count: int,
+    ) -> tuple[PersistentFrameStore, Path] | None:
+        """Open the persistent cache store for a NEW chain on an already-running
+        session, so a chain/settings change RE-KEYS the disk cache to that
+        chain's dir (reusing a prior run's cache for the same config) instead of
+        wiping the old chain's dir in place.
+
+        Returns (store, cache_dir), or None when caching is OFF or the cache root
+        is unavailable — the caller then invalidates the live cache in place (the
+        pre-existing behaviour). Mirrors build()'s store setup: same writer,
+        cache_dir_for key, cap enforcement (sparing the new dir), and session
+        metadata. Qt-free; safe to call off the GUI thread."""
+        if spec.cache_settings.mode is CacheMode.OFF:
+            return None
+        writer = build_image_writer(
+            spec.cache_settings.image_format,
+            spec.cache_settings.image_quality,
+        )
+        cache_dir = self._cache.cache_dir_for(
+            source, target, chain, writer, spec.processing_scale
+        )
+        manager = self._cache.cache_manager()
+        if not manager.is_available():
+            return None
+        self._cache.enforce_cap(manager, cache_dir)
+        store = PersistentFrameStore(cache_dir, writer=writer)
+        self._write_session_metadata(
+            manager, cache_dir, source, target, frame_count, chain, writer,
+        )
+        return store, cache_dir
+
     @staticmethod
     def _write_session_metadata(
         manager: CacheManager,

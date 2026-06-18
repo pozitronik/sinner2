@@ -540,11 +540,41 @@ class PlayerController(QObject):
             except Exception as exc:
                 self.errorOccurred.emit(f"chain rebuild failed: {exc}")
                 return
-            # set_chain invalidates the whole frame cache and re-renders the
-            # current frame itself (paused or playing), so no seek nudge here —
-            # and crucially it refreshes EVERY cached frame, not just the visible
-            # one, so a tweak applies across the clip even with a large cache.
-            self._executor.set_chain(new_chain)
+            # Re-key the disk cache to the NEW chain's dir so a previously-
+            # processed cache for this exact config is REUSED instantly, and the
+            # old chain's dir is left intact for its own future reuse — instead
+            # of wiping the current dir in place and re-rendering from scratch.
+            # set_chain re-renders the current frame itself (paused or playing),
+            # so no seek nudge here.
+            #
+            # Provider/det-size changes are NOT reflected in the cache key
+            # (cache_identity covers pixel-affecting params only), so re-keying
+            # across one could serve stale frames; for those keep the old
+            # behaviour (store=None → invalidate in place, force a clean rebuild).
+            new_store = None
+            new_cache_dir = None
+            if (
+                not (providers_changed or detection_size_changed)
+                and self._current_target_path is not None
+            ):
+                rekey = self._session_builder.build_store_for_chain(
+                    self._current_source,
+                    Target(path=self._current_target_path),
+                    new_chain,
+                    self._build_spec(),
+                    self._executor.frame_count(),
+                )
+                if rekey is not None:
+                    new_store, new_cache_dir = rekey
+            self._executor.set_chain(new_chain, store=new_store)
+            if new_store is not None and new_cache_dir is not None:
+                old_store = self._session_store
+                self._session_store = new_store
+                self._session_cache_dir = new_cache_dir
+                if old_store is not None:
+                    old_store.close()  # persistent dir survives for reuse
+                self.sessionScratchDirChanged.emit(new_cache_dir)
+                self.cacheStorageStatsChanged.emit()
         if strategy_changed:
             self._executor.set_skip_strategy(strategy)
         # Re-apply the EFFECTIVE worker count whenever it moves — that's the
