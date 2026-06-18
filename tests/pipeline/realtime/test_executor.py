@@ -2372,6 +2372,96 @@ class TestFrameStateTracking:
             ex.stop()
 
 
+class TestBuffering:
+    """Preprocessing's 'buffering': PLAYING state (dispatcher fills ahead) with
+    the timeline frozen, then release to start playback from the head-start."""
+
+    def _bare(self):
+        from sinner2.observable import ObservableValue
+        from sinner2.pipeline.realtime.executor import _State
+
+        ex = object.__new__(RealtimeExecutor)
+        ex._state_lock = threading.RLock()  # noqa: SLF001
+        ex._timeline = Timeline(fps=30.0)  # noqa: SLF001
+        ex._timeline.set_max_frame(99)  # noqa: SLF001
+        ex._state = _State.IDLE  # noqa: SLF001
+        ex.is_playing = ObservableValue(False)
+        ex._playback_wake = threading.Event()  # noqa: SLF001
+        return ex
+
+    def test_start_buffering_is_playing_state_but_not_playing(self):
+        from sinner2.pipeline.realtime.executor import _State
+
+        ex = self._bare()
+        ex._handle_start_buffering()  # noqa: SLF001
+        assert ex._state is _State.PLAYING  # noqa: SLF001 — dispatcher submits
+        assert ex.is_playing.get() is False  # but it's buffering, not playing
+        assert not ex._timeline.is_playing  # noqa: SLF001 — display frozen
+        assert ex._playback_wake.is_set()  # noqa: SLF001
+
+    def test_release_buffering_play_starts_the_timeline(self):
+        from sinner2.pipeline.realtime.executor import _State
+
+        ex = self._bare()
+        ex._handle_start_buffering()  # noqa: SLF001
+        ex._handle_release_buffering(True)  # noqa: SLF001
+        assert ex._state is _State.PLAYING  # noqa: SLF001
+        assert ex.is_playing.get() is True
+        assert ex._timeline.is_playing  # noqa: SLF001 — now advancing
+
+    def test_release_buffering_no_play_pauses(self):
+        from sinner2.pipeline.realtime.executor import _State
+
+        ex = self._bare()
+        ex._handle_start_buffering()  # noqa: SLF001
+        ex._handle_release_buffering(False)  # noqa: SLF001
+        assert ex._state is _State.PAUSED  # noqa: SLF001
+        assert ex.is_playing.get() is False
+        assert not ex._timeline.is_playing  # noqa: SLF001
+
+    def test_start_buffering_posts_message(self):
+        from queue import Queue
+
+        from sinner2.pipeline.messages import StartBufferingMsg
+
+        ex = object.__new__(RealtimeExecutor)
+        ex._command_queue = Queue()  # noqa: SLF001
+        ex.start_buffering()
+        assert isinstance(ex._command_queue.get_nowait(), StartBufferingMsg)  # noqa: SLF001
+
+    def test_release_buffering_posts_message_with_play_flag(self):
+        from queue import Queue
+
+        from sinner2.pipeline.messages import ReleaseBufferingMsg
+
+        ex = object.__new__(RealtimeExecutor)
+        ex._command_queue = Queue()  # noqa: SLF001
+        ex.release_buffering(play=False)
+        msg = ex._command_queue.get_nowait()  # noqa: SLF001
+        assert isinstance(msg, ReleaseBufferingMsg)
+        assert msg.play is False
+
+    def test_buffering_fills_without_advancing_then_releases(self, buffer_setup):
+        buffer, timeline, _ = buffer_setup
+        ex = RealtimeExecutor(
+            reader_pool=_pool_for(_MultiFrameReader(20)),
+            buffer=buffer, timeline=timeline, chain=[_CountingProcessor()],
+            strategy=BestEffortStrategy(),
+        )
+        try:
+            ex.start()
+            assert ex.wait_until_ready(timeout=2.0)
+            ex.start_buffering()
+            # The buffer fills ahead while the display stays frozen at frame 0.
+            assert _wait_until(lambda: ex.last_completed_frame() >= 3, timeout=2.0)
+            assert ex.is_playing.get() is False
+            assert ex.current_frame.get() == 0
+            ex.release_buffering(play=True)
+            assert _wait_until(lambda: ex.is_playing.get() is True, timeout=2.0)
+        finally:
+            ex.stop()
+
+
 class TestSetSections:
     def test_command_posts_message(self):
         from queue import Queue

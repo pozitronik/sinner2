@@ -19,6 +19,7 @@ from sinner2.pipeline.messages import (
     PauseMsg,
     PlayMsg,
     ReconfigureMsg,
+    ReleaseBufferingMsg,
     RerenderMsg,
     SeekMsg,
     SetChainMsg,
@@ -29,6 +30,7 @@ from sinner2.pipeline.messages import (
     SetSectionsMsg,
     SetSkipStrategyMsg,
     SetWorkerCountMsg,
+    StartBufferingMsg,
     StopMsg,
 )
 from sinner2.pipeline.cache_mode import CacheMode
@@ -466,6 +468,19 @@ class RealtimeExecutor:
     def seek(self, frame: FrameIndex) -> None:
         self._command_queue.put(SeekMsg(target_frame=frame))
 
+    def start_buffering(self) -> None:
+        """Pre-render ahead without advancing the display (preprocessing). The
+        dispatcher fills the buffer from the current frame while the timeline
+        stays frozen; release_buffering() then starts playback from the
+        pre-filled head-start. Use a sequential strategy (BestEffort) so the
+        fill is in order."""
+        self._command_queue.put(StartBufferingMsg())
+
+    def release_buffering(self, play: bool = True) -> None:
+        """Leave buffering — start the timeline (play) or pause — so the
+        pre-filled frames begin playing back."""
+        self._command_queue.put(ReleaseBufferingMsg(play=play))
+
     def rerender_from_current(self) -> None:
         """Reprocess from the playhead forward through the current chain
         (e.g. after a param change). Frames before the playhead keep their
@@ -649,6 +664,10 @@ class RealtimeExecutor:
                 self._handle_play()
             case PauseMsg():
                 self._handle_pause()
+            case StartBufferingMsg():
+                self._handle_start_buffering()
+            case ReleaseBufferingMsg(play=play):
+                self._handle_release_buffering(play)
             case StopMsg():
                 self._stop_event.set()
             case SeekMsg(target_frame=target):
@@ -682,6 +701,28 @@ class RealtimeExecutor:
             self._timeline.start(from_frame=from_frame)
             self._state = _State.PLAYING
         self.is_playing.set(True)
+        self._playback_wake.set()
+
+    def _handle_start_buffering(self) -> None:
+        with self._state_lock:
+            # PLAYING so the dispatcher submits, but the timeline is NOT started
+            # — it stays frozen at the current frame, so the display holds while
+            # the buffer pre-fills ahead. is_playing stays False: it's buffering,
+            # not playing (the transport button reflects that).
+            self._state = _State.PLAYING
+        self.is_playing.set(False)
+        self._playback_wake.set()
+
+    def _handle_release_buffering(self, play: bool) -> None:
+        with self._state_lock:
+            frame = self._timeline.current_frame()
+            if play:
+                self._timeline.start(from_frame=frame)
+                self._state = _State.PLAYING
+            else:
+                self._timeline.pause()
+                self._state = _State.PAUSED
+        self.is_playing.set(play)
         self._playback_wake.set()
 
     def _handle_pause(self) -> None:

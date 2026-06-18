@@ -109,6 +109,24 @@ class SetSectionsMsg:
 
 
 @dataclass(frozen=True)
+class StartBufferingMsg:
+    """Enter 'buffering': the dispatcher fills the buffer ahead (PLAYING state)
+    but the timeline stays FROZEN, so the display holds at the current frame
+    while frames pre-render. Preprocessing uses this to build a head-start
+    before releasing playback."""
+
+    pass
+
+
+@dataclass(frozen=True)
+class ReleaseBufferingMsg:
+    """Leave buffering: start the timeline (play=True) or pause it, so the
+    pre-filled frames begin playing back from the current position."""
+
+    play: bool = True
+
+
+@dataclass(frozen=True)
 class RerenderMsg:
     """Re-render from the current playhead forward: drop cached frames at and
     after the current frame so they reprocess through the (possibly newly
@@ -166,6 +184,8 @@ type Message = (
     | SetSectionsMsg
     | SetFaceMapMsg
     | SetGeometryMsg
+    | StartBufferingMsg
+    | ReleaseBufferingMsg
     | RerenderMsg
     | ReconfigureMsg
 )
