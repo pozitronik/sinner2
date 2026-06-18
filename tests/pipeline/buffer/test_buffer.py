@@ -347,6 +347,84 @@ class TestIntegrationWithRealComponents:
         assert not store.has(4)
 
 
+class TestFrameStateWiring:
+    """The buffer drives the visualiser's memory/disk/invalidation transitions
+    on the shared FrameStateMap (the executor sets the pre-buffer states)."""
+
+    def _buffer(self, *, max_bytes=650, cache_mode=CacheMode.WRITE_READ):
+        from sinner2.pipeline.realtime.frame_state import FrameStateMap
+
+        store = MagicMock(spec=FrameStore)
+        store.read.return_value = None
+        cache = MemoryFrameCache(max_bytes=max_bytes)  # ~2 frames of 300 B
+        timeline = Timeline(fps=30.0)
+        executor = MagicMock(spec=BoundedWriteExecutor)
+        buf = FrameBuffer(store, cache, timeline, executor, cache_mode=cache_mode)
+        states = FrameStateMap(6)
+        buf.set_frame_states(states)
+        return buf, states
+
+    def test_put_marks_ready_mem(self):
+        from sinner2.pipeline.realtime.frame_state import FrameState
+
+        buf, states = self._buffer()
+        buf.put(1, _frame())
+        assert states.get(1) is FrameState.READY_MEM
+
+    def test_memory_eviction_marks_ready_disk_when_persisted(self):
+        from sinner2.pipeline.realtime.frame_state import FrameState
+
+        buf, states = self._buffer(cache_mode=CacheMode.WRITE_READ)
+        buf.put(0, _frame())
+        buf.put(1, _frame())
+        buf.put(2, _frame())  # over budget → drop LRU (0); disk-backed
+        assert states.get(0) is FrameState.READY_DISK
+        assert states.get(2) is FrameState.READY_MEM
+
+    def test_memory_eviction_marks_not_reached_when_not_persisted(self):
+        from sinner2.pipeline.realtime.frame_state import FrameState
+
+        buf, states = self._buffer(cache_mode=CacheMode.OFF)
+        buf.put(0, _frame())
+        buf.put(1, _frame())
+        buf.put(2, _frame())  # drop LRU (0); not on disk → gone
+        assert states.get(0) is FrameState.NOT_REACHED
+
+    def test_invalidate_marks_invalid(self):
+        from sinner2.pipeline.realtime.frame_state import FrameState
+
+        buf, states = self._buffer()
+        buf.put(0, _frame())
+        buf.invalidate(0)
+        assert states.get(0) is FrameState.INVALID
+
+    def test_invalidate_from_marks_range_not_reached(self):
+        from sinner2.pipeline.realtime.frame_state import FrameState
+
+        buf, states = self._buffer(max_bytes=10 * 1024)
+        for i in range(4):
+            buf.put(i, _frame())
+        buf.invalidate_from(2)
+        assert states.get(1) is FrameState.READY_MEM
+        assert states.get(2) is FrameState.NOT_REACHED
+        assert states.get(3) is FrameState.NOT_REACHED
+
+    def test_invalidate_all_resets(self):
+        buf, states = self._buffer(max_bytes=10 * 1024)
+        for i in range(3):
+            buf.put(i, _frame())
+        buf.invalidate_all()
+        assert states.snapshot() == bytes(states.frame_count)
+
+    def test_set_frame_states_none_stops_writing(self):
+        from sinner2.pipeline.realtime.frame_state import FrameState
+
+        buf, states = self._buffer()
+        buf.set_frame_states(None)
+        buf.put(0, _frame())  # no map → no write, no crash
+        assert states.get(0) is FrameState.NOT_REACHED
+
+
 class TestCacheMode:
     """Cache mode gates which I/O paths the buffer takes:
        WRITE_READ: write submits to executor + cache misses fall back to store

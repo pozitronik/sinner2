@@ -7,6 +7,7 @@ from sinner2.pipeline.buffer.metrics import BufferMetrics
 from sinner2.pipeline.buffer.store import FrameStore
 from sinner2.pipeline.buffer.timeline import Timeline
 from sinner2.pipeline.cache_mode import CacheMode
+from sinner2.pipeline.realtime.frame_state import FrameState, FrameStateMap
 from sinner2.types import Frame, FrameIndex
 
 _RECENT_INDICES_CAP = 1024
@@ -63,6 +64,33 @@ class FrameBuffer:
         # frame to the same index it last emitted and skip the repaint,
         # leaving stale pixels on screen. Cleared atomically by put().
         self._invalidated: set[FrameIndex] = set()
+        # Optional per-frame state map for the processing visualiser. The buffer
+        # owns the memory/disk/invalidation transitions (it's the one place that
+        # knows them); the executor sets it + the pre-buffer states. None until
+        # the executor installs one, so plain buffer use is unaffected.
+        self._frame_states: FrameStateMap | None = None
+
+    def set_frame_states(self, states: FrameStateMap | None) -> None:
+        """Install (or clear) the visualiser state map and wire the cache's
+        memory-pressure eviction to it (in-memory → on-disk)."""
+        self._frame_states = states
+        setter = getattr(self._cache, "set_evict_listener", None)
+        if setter is not None:
+            setter(self._on_cache_evict if states is not None else None)
+
+    def _on_cache_evict(self, index: FrameIndex) -> None:
+        states = self._frame_states
+        if states is None:
+            return
+        # Memory pressure dropped a processed frame. A disk-backed cache still
+        # has the canonical copy on disk (ready, just slower); otherwise it's
+        # gone from the pipeline's reach until reprocessed.
+        states.set(
+            index,
+            FrameState.READY_DISK
+            if self._cache_mode is CacheMode.WRITE_READ
+            else FrameState.NOT_REACHED,
+        )
 
     @property
     def cache_mode(self) -> CacheMode:
@@ -84,6 +112,8 @@ class FrameBuffer:
             self._recent_indices.append(index)
             # A fresh put for an invalidated index supersedes the tombstone.
             self._invalidated.discard(index)
+        if self._frame_states is not None:
+            self._frame_states.set(index, FrameState.READY_MEM)
 
     def invalidate(self, index: FrameIndex) -> None:
         """Mark index's cached/stored data as logically invalid.
@@ -100,6 +130,8 @@ class FrameBuffer:
         self._cache.evict_at(index)
         with self._lock:
             self._invalidated.add(index)
+        if self._frame_states is not None:
+            self._frame_states.set(index, FrameState.INVALID)
 
     def get(self, index: FrameIndex) -> Frame | None:
         with self._lock:
@@ -167,6 +199,10 @@ class FrameBuffer:
         with self._lock:
             if self._last_written_index is not None and self._last_written_index >= index:
                 self._last_written_index = (index - 1) if index > 0 else None
+        if self._frame_states is not None:
+            self._frame_states.set_range(
+                index, self._frame_states.frame_count, FrameState.NOT_REACHED
+            )
 
     def invalidate_all(self) -> None:
         """Drop EVERY cached + stored frame.
@@ -184,6 +220,8 @@ class FrameBuffer:
             self._last_written_index = None
             self._invalidated.clear()
             self._recent_indices.clear()
+        if self._frame_states is not None:
+            self._frame_states.reset()
 
     def set_memory_max_bytes(self, max_bytes: int) -> None:
         """Resize the in-memory cache budget at runtime (evicts LRU down to fit).

@@ -1,5 +1,6 @@
 import threading
 from collections import OrderedDict
+from collections.abc import Callable
 from typing import Protocol, runtime_checkable
 
 from sinner2.types import Frame, FrameIndex
@@ -17,6 +18,9 @@ class FrameCache(Protocol):
     def clear(self) -> None: ...
     def set_max_bytes(self, max_bytes: int) -> None: ...
     def memory_used_bytes(self) -> int: ...
+    def set_evict_listener(
+        self, listener: Callable[[FrameIndex], None] | None
+    ) -> None: ...
 
 
 class MemoryFrameCache:
@@ -36,8 +40,26 @@ class MemoryFrameCache:
         self._sizes: dict[FrameIndex, int] = {}
         self._total_bytes = 0
         self._lock = threading.RLock()
+        # Fired (off the lock) for each frame dropped by MEMORY PRESSURE — the
+        # LRU/budget pops below. NOT for the explicit evict_*/clear paths (those
+        # are invalidation, which the buffer tracks separately). Lets the
+        # visualiser flip a frame from in-memory to on-disk.
+        self._on_evict: Callable[[FrameIndex], None] | None = None
+
+    def set_evict_listener(
+        self, listener: Callable[[FrameIndex], None] | None
+    ) -> None:
+        self._on_evict = listener
+
+    def _notify_evicted(self, indices: list[FrameIndex]) -> None:
+        cb = self._on_evict
+        if cb is None:
+            return
+        for i in indices:
+            cb(i)
 
     def put(self, index: FrameIndex, frame: Frame) -> None:
+        evicted: list[FrameIndex] = []
         size = int(frame.nbytes)
         with self._lock:
             if size > self._max_bytes:
@@ -52,6 +74,8 @@ class MemoryFrameCache:
                 lru_index, _ = self._frames.popitem(last=False)
                 self._total_bytes -= self._sizes[lru_index]
                 del self._sizes[lru_index]
+                evicted.append(lru_index)
+        self._notify_evicted(evicted)
 
     def get(self, index: FrameIndex) -> Frame | None:
         with self._lock:
@@ -100,12 +124,15 @@ class MemoryFrameCache:
         rebuilding the buffer (the budget was previously fixed at construction)."""
         if max_bytes <= 0:
             raise ValueError(f"max_bytes must be > 0; got {max_bytes}")
+        evicted: list[FrameIndex] = []
         with self._lock:
             self._max_bytes = max_bytes
             while self._total_bytes > self._max_bytes:
                 lru_index, _ = self._frames.popitem(last=False)
                 self._total_bytes -= self._sizes[lru_index]
                 del self._sizes[lru_index]
+                evicted.append(lru_index)
+        self._notify_evicted(evicted)
 
     def memory_used_bytes(self) -> int:
         with self._lock:

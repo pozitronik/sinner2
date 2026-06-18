@@ -16,6 +16,7 @@ from sinner2.io.reader_pool import ReaderPool
 from sinner2.pipeline.buffer.timeline import Timeline
 from sinner2.pipeline.playback_mode import PlaybackMode
 from sinner2.pipeline.realtime.executor import RealtimeExecutor
+from sinner2.pipeline.realtime.frame_state import FrameState, FrameStateMap
 from sinner2.pipeline.sections import SectionSet
 from sinner2.pipeline.skip_strategy import BestEffortStrategy, SyncedStrategy
 from sinner2.types import Frame
@@ -2212,6 +2213,7 @@ class TestSectionPlayback:
         # the mocked strategy ignores them, so any stand-ins suffice here.
         ex.processing_fps = MagicMock()
         ex._workers = []  # noqa: SLF001
+        ex._frame_states = FrameStateMap(frame_count)  # noqa: SLF001
         ex._strategy = MagicMock()  # noqa: SLF001
         ex._strategy.current_mode.return_value = "seq"  # noqa: SLF001
         ex._strategy.decide.return_value = SimpleNamespace(  # noqa: SLF001
@@ -2302,6 +2304,72 @@ class TestSectionPlayback:
         ex._try_submit_next_frame()  # noqa: SLF001
         ex._reader_pool.read_async.assert_called_once_with(60)  # noqa: SLF001
         ex.playhead_jumped.set.assert_not_called()  # noqa: SLF001
+
+    def test_forward_skip_marks_gap_as_skipped(self):
+        # Strategy jumps 10 → 20: frames 11..19 are never processed → SKIPPED in
+        # the visualiser map; the landed frame is QUEUED.
+        tl = Timeline(fps=30.0)
+        tl.set_max_frame(299)
+        tl.seek(20)
+        ex = self._executor(
+            SectionSet.empty(), timeline=tl, last_submitted=10, next_frame=20,
+        )
+        ex._try_submit_next_frame()  # noqa: SLF001
+        states = ex._frame_states  # noqa: SLF001
+        assert states.get(10) is FrameState.NOT_REACHED  # last_submitted untouched
+        assert states.get(15) is FrameState.SKIPPED
+        assert states.get(19) is FrameState.SKIPPED
+        assert states.get(20) is FrameState.QUEUED
+
+
+class TestFrameStateTracking:
+    """The executor records each frame's pipeline state for the visualiser."""
+
+    def test_snapshot_has_one_byte_per_frame(self, buffer_setup):
+        buffer, timeline, _ = buffer_setup
+        ex = RealtimeExecutor(
+            reader_pool=_pool_for(_MultiFrameReader(7)),
+            buffer=buffer, timeline=timeline, chain=[],
+            strategy=BestEffortStrategy(),
+        )
+        assert len(ex.frame_states_snapshot()) == 7
+
+    def test_submit_marks_queued(self):
+        from queue import Queue
+        from unittest.mock import MagicMock
+
+        ex = object.__new__(RealtimeExecutor)
+        ex._state_lock = threading.RLock()  # noqa: SLF001
+        ex._work_queue = Queue()  # noqa: SLF001
+        ex._generation = 0  # noqa: SLF001
+        ex._last_submitted = -1  # noqa: SLF001
+        ex._reader_pool = MagicMock()  # noqa: SLF001
+        ex._reader_pool.frame_count = 10  # noqa: SLF001
+        ex._reader_pool.read_async.return_value = MagicMock()  # noqa: SLF001
+        ex._frame_states = FrameStateMap(10)  # noqa: SLF001
+        ex._submit_specific_frame(3)  # noqa: SLF001
+        assert ex._frame_states.get(3) is FrameState.QUEUED  # noqa: SLF001
+
+    def test_processing_reaches_ready_mem_end_to_end(self, buffer_setup):
+        # A real run: a frame is processed on a worker and lands in the memory
+        # framebuffer (READY_MEM) — exercises the worker PROCESSING mark + the
+        # buffer's READY_MEM mark through the live pipeline.
+        buffer, timeline, _ = buffer_setup
+        ex = RealtimeExecutor(
+            reader_pool=_pool_for(_MultiFrameReader(3)),
+            buffer=buffer, timeline=timeline, chain=[_CountingProcessor()],
+            strategy=BestEffortStrategy(),
+        )
+        try:
+            ex.start()
+            assert ex.wait_until_ready(timeout=2.0)
+            ex.play()
+            assert _wait_until(
+                lambda: ex.frame_states_snapshot()[0] == FrameState.READY_MEM,
+                timeout=2.0,
+            )
+        finally:
+            ex.stop()
 
 
 class TestSetSections:

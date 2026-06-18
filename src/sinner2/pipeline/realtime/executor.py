@@ -13,6 +13,7 @@ from sinner2.observable import ObservableValue
 from sinner2.pipeline.buffer.buffer import FrameBuffer
 from sinner2.pipeline.buffer.metrics import BufferMetrics
 from sinner2.pipeline.buffer.timeline import Timeline
+from sinner2.pipeline.realtime.frame_state import FrameState, FrameStateMap
 from sinner2.pipeline.messages import (
     Message,
     PauseMsg,
@@ -151,6 +152,11 @@ class RealtimeExecutor:
         # Clamp the wall-clock playhead to the real last frame so it can't run
         # off the end of the media (see Timeline.set_max_frame).
         self._timeline.set_max_frame(max(0, reader_pool.frame_count - 1))
+        # Per-frame pipeline state for the processing visualiser. The executor
+        # writes the pre-buffer states (queued / processing / skipped); the
+        # buffer writes the memory/disk/invalidation ones via this shared map.
+        self._frame_states = FrameStateMap(reader_pool.frame_count)
+        self._buffer.set_frame_states(self._frame_states)
         self._strategy = strategy
         # Initial worker count; the live count is len(self._workers) and can
         # be changed via set_worker_count() at any point after start().
@@ -576,6 +582,23 @@ class RealtimeExecutor:
         """Total frames in the target — for jump-to-end seeks etc."""
         return self._reader_pool.frame_count
 
+    def frame_states_snapshot(self) -> bytes:
+        """Per-frame pipeline state (FrameState bytes) for the visualiser to bin
+        + paint. One byte per target frame; see FrameStateMap."""
+        return self._frame_states.snapshot()
+
+    def _mark(self, index: FrameIndex, state: FrameState) -> None:
+        """Set one frame's visualiser state. getattr-guarded so bypass-init test
+        executors (which don't build the map) no-op instead of erroring."""
+        fs = getattr(self, "_frame_states", None)
+        if fs is not None:
+            fs.set(index, state)
+
+    def _mark_range(self, lo: int, hi: int, state: FrameState) -> None:
+        fs = getattr(self, "_frame_states", None)
+        if fs is not None:
+            fs.set_range(lo, hi, state)
+
     @property
     def reader_pool(self) -> ReaderPool:
         """The live target ReaderPool — exposed so callers (e.g. discarding an
@@ -772,6 +795,7 @@ class RealtimeExecutor:
             return
         with self._state_lock:
             self._last_submitted = frame_index
+        self._mark(frame_index, FrameState.QUEUED)
 
     def _handle_set_chain(self, chain: tuple[Processor, ...]) -> None:
         # Don't race the initial setup: the setup thread is calling
@@ -862,6 +886,10 @@ class RealtimeExecutor:
             self._buffer = msg.buffer
             self._timeline = msg.timeline
             self._timeline.set_max_frame(max(0, msg.reader_pool.frame_count - 1))
+            # New target → a fresh per-frame state map sized to it, bound to the
+            # adopted buffer (the old buffer keeps its own; it's discarded).
+            self._frame_states = FrameStateMap(msg.reader_pool.frame_count)
+            self._buffer.set_frame_states(self._frame_states)
             self._chain = msg.chain
             # New world: bump the generation so any worker still parked on an
             # old-world source future discards its result instead of writing a
@@ -1139,6 +1167,11 @@ class RealtimeExecutor:
                     if not self._sections.is_empty()
                     else frame_index - self._last_submitted - 1
                 )
+                # The jumped-over frames are never processed — show them as
+                # skipped so the visualiser reveals the strategy's frame drops.
+                self._mark_range(
+                    self._last_submitted + 1, frame_index, FrameState.SKIPPED
+                )
             if frame_index > last_frame:
                 # decide wants a frame past the end (everything up to last_frame
                 # is already submitted). Nothing new to do this tick — idle and
@@ -1163,6 +1196,7 @@ class RealtimeExecutor:
         with self._state_lock:
             if frame_index > self._last_submitted:
                 self._last_submitted = frame_index
+        self._mark(frame_index, FrameState.QUEUED)
 
     # ---- Workers ----
 
@@ -1216,6 +1250,7 @@ class RealtimeExecutor:
             # even entered the chain yet.
             with self._inflight_cv:
                 self._inflight_count += 1
+            self._mark(item.frame_index, FrameState.PROCESSING)
             try:
                 # Re-read every iteration so set_chain's swap is picked up
                 # without restarting the worker thread. ORT InferenceSession

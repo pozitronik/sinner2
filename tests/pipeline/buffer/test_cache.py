@@ -123,3 +123,50 @@ class TestMemoryFrameCache:
         cache = MemoryFrameCache(max_bytes=1024)
         with pytest.raises(ValueError):
             cache.set_max_bytes(0)
+
+
+class TestEvictListener:
+    """The eviction listener fires only for MEMORY-PRESSURE drops (LRU / shrink)
+    — the signal the visualiser turns into in-memory → on-disk. The explicit
+    evict_*/clear paths are invalidation and must NOT fire it."""
+
+    def test_fires_on_lru_pressure(self):
+        evicted: list[int] = []
+        cache = MemoryFrameCache(max_bytes=600)  # holds 2 frames of 300 B
+        cache.set_evict_listener(evicted.append)
+        cache.put(0, _frame())
+        cache.put(1, _frame())
+        cache.put(2, _frame())  # over budget → drop LRU (0)
+        assert evicted == [0]
+
+    def test_fires_on_shrink(self):
+        evicted: list[int] = []
+        cache = MemoryFrameCache(max_bytes=10 * 1024)
+        cache.put(0, _frame())
+        cache.put(1, _frame())
+        cache.set_evict_listener(evicted.append)
+        cache.set_max_bytes(350)  # ~1 frame → drop LRU (0)
+        assert evicted == [0]
+
+    def test_not_fired_on_explicit_eviction(self):
+        evicted: list[int] = []
+        cache = MemoryFrameCache(max_bytes=10 * 1024)
+        cache.set_evict_listener(evicted.append)
+        cache.put(0, _frame())
+        cache.put(1, _frame())
+        cache.put(2, _frame())
+        cache.evict_at(0)
+        cache.evict_before(1)
+        cache.evict_from(2)
+        cache.clear()
+        assert evicted == []  # invalidation, not memory pressure
+
+    def test_listener_can_be_cleared(self):
+        evicted: list[int] = []
+        cache = MemoryFrameCache(max_bytes=600)
+        cache.set_evict_listener(evicted.append)
+        cache.set_evict_listener(None)
+        cache.put(0, _frame())
+        cache.put(1, _frame())
+        cache.put(2, _frame())  # would evict, but no listener
+        assert evicted == []
