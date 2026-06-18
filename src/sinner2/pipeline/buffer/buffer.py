@@ -72,11 +72,19 @@ class FrameBuffer:
 
     def set_frame_states(self, states: FrameStateMap | None) -> None:
         """Install (or clear) the visualiser state map and wire the cache's
-        memory-pressure eviction to it (in-memory → on-disk)."""
+        memory-pressure eviction to it (in-memory → on-disk). Also pre-marks
+        already-cached frames so the visualiser reflects the existing cache the
+        moment it's turned on, not just as playback reaches them."""
         self._frame_states = states
         setter = getattr(self._cache, "set_evict_listener", None)
         if setter is not None:
             setter(self._on_cache_evict if states is not None else None)
+        if states is not None and self._cache_mode is not CacheMode.OFF:
+            try:
+                for index in self._store.cached_indices():
+                    states.set(index, FrameState.READY_DISK)
+            except OSError:
+                pass
 
     def _on_cache_evict(self, index: FrameIndex) -> None:
         states = self._frame_states

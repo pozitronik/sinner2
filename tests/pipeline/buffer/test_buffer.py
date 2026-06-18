@@ -37,6 +37,7 @@ def _mock_buffer(
 ) -> tuple[FrameBuffer, MagicMock, MagicMock, MagicMock, MagicMock]:
     store = MagicMock(spec=FrameStore)
     store.read.return_value = store_read_returns
+    store.cached_indices.return_value = []
     cache = MagicMock(spec=FrameCache)
     cache.get.return_value = cache_get_returns
     cache.memory_used_bytes.return_value = 0
@@ -393,6 +394,7 @@ class TestFrameStateWiring:
 
         store = MagicMock(spec=FrameStore)
         store.read.return_value = None
+        store.cached_indices.return_value = []
         cache = MemoryFrameCache(max_bytes=max_bytes)  # ~2 frames of 300 B
         timeline = Timeline(fps=30.0)
         executor = MagicMock(spec=BoundedWriteExecutor)

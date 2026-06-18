@@ -38,6 +38,14 @@ class TestDiskFrameStore:
         store = DiskFrameStore(tmp_path)
         assert store.read(99) is None
 
+    def test_cached_indices_lists_written_frames(self, tmp_path: Path):
+        store = DiskFrameStore(tmp_path)
+        assert store.cached_indices() == []
+        store.write(0, _frame())
+        store.write(5, _frame())
+        store.write(42, _frame())
+        assert sorted(store.cached_indices()) == [0, 5, 42]
+
     def test_clear_from_drops_only_at_or_above(self, tmp_path: Path):
         store = DiskFrameStore(tmp_path)
         for i in [10, 20, 30, 40]:

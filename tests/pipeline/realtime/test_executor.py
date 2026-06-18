@@ -2508,6 +2508,43 @@ class TestCacheReuse:
         finally:
             ex.stop()
 
+    def test_existing_cache_shown_in_visualiser_at_session_start(self, buffer_setup):
+        # Q2: the state map reflects already-cached frames the moment the session
+        # is built — before any playback — so the visualiser shows them at once.
+        buffer, timeline, _ = buffer_setup
+        for i in (0, 2):  # 0 and 2 cached, 1 not
+            buffer._store.write(i, np.full((8, 8, 3), 200, np.uint8))  # noqa: SLF001
+        ex = RealtimeExecutor(
+            reader_pool=_pool_for(_MultiFrameReader(3)),
+            buffer=buffer, timeline=timeline, chain=[],
+            strategy=BestEffortStrategy(),
+        )
+        snap = ex.frame_states_snapshot()  # no start/play needed
+        assert snap[0] == FrameState.READY_DISK
+        assert snap[1] == FrameState.NOT_REACHED
+        assert snap[2] == FrameState.READY_DISK
+
+    def test_buffering_reuses_cache_without_reprocessing(self, buffer_setup):
+        # Q1: preprocessing/buffering over a cached region fast-completes the
+        # cached frames (last_completed climbs) without reprocessing any.
+        buffer, timeline, _ = buffer_setup
+        for i in range(3):
+            buffer._store.write(i, np.full((8, 8, 3), 200, np.uint8))  # noqa: SLF001
+        p = _CountingProcessor()
+        ex = RealtimeExecutor(
+            reader_pool=_pool_for(_MultiFrameReader(3)),
+            buffer=buffer, timeline=timeline, chain=[p],
+            strategy=BestEffortStrategy(),
+        )
+        try:
+            ex.start()
+            assert ex.wait_until_ready(timeout=2.0)
+            ex.start_buffering()  # buffer-ahead mode
+            assert _wait_until(lambda: ex.last_completed_frame() >= 2, timeout=2.0)
+            assert p.process_calls == 0  # cached → never reprocessed
+        finally:
+            ex.stop()
+
 
 class TestBuffering:
     """Preprocessing's 'buffering': PLAYING state (dispatcher fills ahead) with

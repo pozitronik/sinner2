@@ -20,6 +20,7 @@ class FrameStore(Protocol):
     def write(self, index: FrameIndex, frame: Frame) -> None: ...
     def read(self, index: FrameIndex) -> Frame | None: ...
     def has(self, index: FrameIndex) -> bool: ...
+    def cached_indices(self) -> list[FrameIndex]: ...
     def clear_from(self, index: FrameIndex) -> None: ...
     def close(self) -> None:
         """Release resources the store owns (temp dirs, handles). Idempotent;
@@ -54,6 +55,17 @@ class DiskFrameStore:
 
     def has(self, index: FrameIndex) -> bool:
         return self._path(index).is_file()
+
+    def cached_indices(self) -> list[FrameIndex]:
+        """Frame indices currently present on disk (one glob, no decode). Lets
+        the visualiser show already-cached frames the moment a session opens."""
+        out: list[FrameIndex] = []
+        for f in self._dir.glob(f"*.{self._writer.extension}"):
+            try:
+                out.append(int(f.stem))
+            except (ValueError, OSError):
+                continue
+        return out
 
     def clear_from(self, index: FrameIndex) -> None:
         for f in self._dir.glob(f"*.{self._writer.extension}"):
@@ -98,6 +110,9 @@ class PersistentFrameStore:
     def has(self, index: FrameIndex) -> bool:
         return self._inner.has(index)
 
+    def cached_indices(self) -> list[FrameIndex]:
+        return self._inner.cached_indices()
+
     def clear_from(self, index: FrameIndex) -> None:
         self._inner.clear_from(index)
 
@@ -140,6 +155,9 @@ class SessionFrameStore:
 
     def has(self, index: FrameIndex) -> bool:
         return self._inner.has(index)
+
+    def cached_indices(self) -> list[FrameIndex]:
+        return self._inner.cached_indices()
 
     def clear_from(self, index: FrameIndex) -> None:
         self._inner.clear_from(index)
