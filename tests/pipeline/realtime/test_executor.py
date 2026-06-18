@@ -2147,6 +2147,94 @@ class TestApplyChainContext:
         # The second frame's context starts clean — nothing leaks across frames.
         assert consumer.seen == [None, None]
 
+    def test_reports_had_faces_when_swapper_detected_some(self):
+        class _Producer:
+            name = "p"
+            thread_safe = True
+            accepts_context = True
+
+            def process(self, frame, ctx=None):
+                ctx.faces = ["FACE"]
+                return frame
+
+        ex = self._executor_shell()
+        frame = np.zeros((4, 4, 3), np.uint8)
+        _result, had_faces = ex._apply_chain(frame, (_Producer(),))
+        assert had_faces is True
+
+    def test_reports_no_faces_for_empty_detection(self):
+        class _Empty:
+            name = "p"
+            thread_safe = True
+            accepts_context = True
+
+            def process(self, frame, ctx=None):
+                ctx.faces = []  # detection ran, found nothing
+                return frame
+
+        ex = self._executor_shell()
+        frame = np.zeros((4, 4, 3), np.uint8)
+        _result, had_faces = ex._apply_chain(frame, (_Empty(),))
+        assert had_faces is False
+
+    def test_reports_no_faces_when_no_detection_ran(self):
+        class _Plain:
+            name = "p"
+            thread_safe = True
+
+            def process(self, frame):
+                return frame
+
+        ex = self._executor_shell()
+        frame = np.zeros((4, 4, 3), np.uint8)
+        _result, had_faces = ex._apply_chain(frame, (_Plain(),))
+        assert had_faces is False  # ctx.faces stays None
+
+
+class TestFaceProcessingFps:
+    """Throughput counting only FACE frames — the head-start sizes off these."""
+
+    def _shell(self):
+        from collections import deque
+
+        ex = object.__new__(RealtimeExecutor)
+        ex._fps_lock = threading.RLock()  # noqa: SLF001
+        ex._completion_times = deque()  # noqa: SLF001
+        ex._face_completion_times = deque()  # noqa: SLF001
+        ex._last_completion_time = None  # noqa: SLF001
+        return ex
+
+    def test_zero_with_fewer_than_two_face_frames(self):
+        ex = self._shell()
+        assert ex.face_processing_fps() == 0.0
+        ex._record_completion(had_faces=True)  # noqa: SLF001
+        assert ex.face_processing_fps() == 0.0  # only one — no rate yet
+
+    def test_records_only_face_frames(self):
+        ex = self._shell()
+        ex._record_completion(had_faces=True)  # noqa: SLF001
+        ex._record_completion(had_faces=False)  # noqa: SLF001 — empty frame
+        ex._record_completion(had_faces=True)  # noqa: SLF001
+        assert len(ex._face_completion_times) == 2  # noqa: SLF001 — faces only
+        assert len(ex._completion_times) == 3  # noqa: SLF001 — all frames
+
+    def test_computes_rate_from_face_timestamps(self):
+        ex = self._shell()
+        now = time.monotonic()
+        # 3 face frames spanning 0.2 s → (3-1)/0.2 = 10 fps.
+        ex._face_completion_times.extend([now - 0.2, now - 0.1, now])  # noqa: SLF001
+        assert abs(ex.face_processing_fps() - 10.0) < 0.5
+
+    def test_trims_outside_the_window(self):
+        ex = self._shell()
+        now = time.monotonic()
+        # Two stale (>3 s old) + two recent → only the recent pair counts.
+        ex._face_completion_times.extend(  # noqa: SLF001
+            [now - 10.0, now - 9.0, now - 0.1, now]
+        )
+        rate = ex.face_processing_fps()
+        assert abs(rate - 10.0) < 0.5  # (2-1)/0.1 from the recent pair
+
 
 class TestDisplayFps:
     """display_fps = distinct frames actually shown per second, computed over

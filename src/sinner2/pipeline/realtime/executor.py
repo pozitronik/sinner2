@@ -264,6 +264,11 @@ class RealtimeExecutor:
         # (~30 Hz) instead of per-completion (which scales with worker
         # count and serialises the whole pool on the observable's lock).
         self._completion_times: deque[float] = deque()
+        # Completion timestamps of FACE frames only (the swapper detected a face).
+        # The preprocessing head-start sizes off how fast these — the expensive
+        # frames — render, since empty frames are nearly free and would inflate
+        # the overall rate. Trimmed lazily in face_processing_fps().
+        self._face_completion_times: deque[float] = deque()
         # Most recent completion timestamp (never trimmed) + last windowed fps,
         # so a slow-but-alive pipeline reports a decaying estimate rather than 0.
         self._last_completion_time: float | None = None
@@ -1299,14 +1304,16 @@ class RealtimeExecutor:
                 # workers calling the same chain's swapper.get() in parallel
                 # is the intended fast path.
                 chain = self._chain
-                result = self._apply_chain(source_frame, chain, item.frame_index)
+                result, had_faces = self._apply_chain(
+                    source_frame, chain, item.frame_index
+                )
                 # Publish under the generation guard: a reconfigure may have
                 # swapped the world while this worker was parked on its source
                 # future (it's neither queued nor counted inflight), so discard a
                 # result that no longer belongs to the current world instead of
                 # writing a stale frame into the new buffer.
                 if self._publish_result(item, result):
-                    self._record_completion()
+                    self._record_completion(had_faces)
             except Exception as e:
                 # A per-frame chain/buffer error is RECOVERABLE — log it and
                 # skip this frame, exactly like a reader error above. Do NOT set
@@ -1368,7 +1375,7 @@ class RealtimeExecutor:
     def _apply_chain(
         self, frame: Frame, chain: tuple[Processor, ...],
         frame_index: int | None = None,
-    ) -> Frame:
+    ) -> tuple[Frame, bool]:
         # Wrap each processor with perf_counter so the metrics overlay
         # can attribute wall-clock to FaceSwapper vs FaceEnhancer. The
         # measurement excludes the chain-iteration overhead and the
@@ -1389,7 +1396,10 @@ class RealtimeExecutor:
             elapsed_ns = time.perf_counter_ns() - t0
             with self._timings_lock:
                 self._processor_timings.append((time.monotonic(), p.name, elapsed_ns))
-        return frame
+        # ctx.faces: None = no detection ran, [] = no faces, [..] = faces. The
+        # preprocessing head-start sizes off how fast FACE frames render (the
+        # expensive ones), so report whether this frame carried any.
+        return frame, bool(ctx.faces)
 
     def processor_timings(self) -> dict[str, float]:
         """Average milliseconds per process() call over the last
@@ -1413,14 +1423,34 @@ class RealtimeExecutor:
             for name, vals in sums.items()
         }
 
-    def _record_completion(self) -> None:
+    def _record_completion(self, had_faces: bool = False) -> None:
         """Append a completion timestamp. Cheap by design — no calculation
         and no observable publish in the worker hot path. The playback
-        thread reads these timestamps and publishes processing_fps."""
+        thread reads these timestamps and publishes processing_fps. Face frames
+        are tracked separately so preprocessing can size its head-start off the
+        expensive frames only."""
         with self._fps_lock:
             now = time.monotonic()
             self._completion_times.append(now)
             self._last_completion_time = now
+            if had_faces:
+                self._face_completion_times.append(now)
+
+    def face_processing_fps(self) -> float:
+        """Throughput counting FACE frames only, over the recent window. 0.0
+        when fewer than two face frames have completed (no reliable estimate —
+        preprocessing then falls back to the overall rate). Used to size the
+        head-start for the expensive frames."""
+        now = time.monotonic()
+        cutoff = now - _FPS_WINDOW_S
+        with self._fps_lock:
+            times = self._face_completion_times
+            while times and times[0] < cutoff:
+                times.popleft()
+            if len(times) < 2:
+                return 0.0
+            span = times[-1] - times[0]
+            return (len(times) - 1) / span if span > 0 else 0.0
 
     def _refresh_fps(self) -> None:
         """Trim timestamps older than _FPS_WINDOW_S and publish processing_fps.
