@@ -57,6 +57,7 @@ from sinner2.gui.confirm import (
 )
 from sinner2.gui.live_controller import LiveController
 from sinner2.gui.player_controller import PlayerController
+from sinner2.gui.preprocess_controller import PreprocessController
 from sinner2.gui.session_capabilities import (
     CameraConfig,
     FileTarget,
@@ -577,7 +578,17 @@ class SinnerMainWindow(QMainWindow):
         )
         self._session.capabilitiesChanged.connect(self._on_capabilities_changed)
         self._pickers.cameraRequested.connect(self._on_use_camera)
-        self._transport.playRequested.connect(self._session.play)
+        # Preprocessing: render a smart head-start before releasing playback.
+        self._preprocess = PreprocessController(
+            get_executor=self._controller.executor, parent=self
+        )
+        self._preprocess.started.connect(self._on_preprocess_started)
+        self._preprocess.progressChanged.connect(self._on_preprocess_progress)
+        self._preprocess.finished.connect(self._on_preprocess_finished)
+        self._preprocess.failed.connect(self._on_preprocess_failed)
+        self._status_bar.preprocess_button.clicked.connect(self._on_preprocess_clicked)
+        # Play while preprocessing = release early ("play now"); otherwise normal.
+        self._transport.playRequested.connect(self._on_play_requested)
         self._transport.pauseRequested.connect(self._session.pause)
         # All user seeks funnel through _on_seek_requested so the overlay drops
         # its stale boxes before the playhead jumps (otherwise a box from the old
@@ -1410,7 +1421,11 @@ class SinnerMainWindow(QMainWindow):
         # play/pause for any session; the seek keys apply only to seekable
         # (finite) targets.
         if key == Qt.Key.Key_Space:
-            self._session.toggle_playback()
+            # While a preprocess pass buffers, Space releases it early.
+            if self._preprocess.is_active():
+                self._preprocess.play_now()
+            else:
+                self._session.toggle_playback()
             return
         executor = self._controller.executor()
         if not self._session.capabilities().seekable or executor is None:
@@ -1651,6 +1666,52 @@ class SinnerMainWindow(QMainWindow):
         if visible:
             self._visualiser_timer.start()
         self._set_button_checked(self._status_bar.visualiser_button, visible)
+
+    # ---- Preprocessing ----
+
+    def _on_play_requested(self) -> None:
+        # Pressing play while a preprocess pass is buffering releases it early
+        # ("play now"); otherwise it's the normal session play.
+        if self._preprocess.is_active():
+            self._preprocess.play_now()
+        else:
+            self._session.play()
+
+    def _on_preprocess_clicked(self) -> None:
+        if self._preprocess.is_active():
+            self._preprocess.cancel()
+            return
+        if (
+            self._controller.executor() is None
+            or self._session.active_kind() is SessionKind.CAMERA
+        ):
+            self._status_bar.show_message("Load a video to preprocess", 3000)
+            return
+        self._preprocess.start(self._controller.target_fps())
+
+    def _on_preprocess_started(self) -> None:
+        # Show the visualiser so its filling green bar IS the progress display,
+        # and silence audio while the display is frozen at frame 0.
+        self._set_button_checked(self._status_bar.visualiser_button, True)
+        self._set_visualiser_visible(True)
+        self._controller.preprocess_audio_start()
+        self._status_bar.show_message("Preprocessing…")
+
+    def _on_preprocess_progress(self, done: int, target: int) -> None:
+        pct = int(100 * done / target) if target > 0 else 0
+        self._status_bar.show_message(
+            f"Preprocessing… {pct}%  ({done}/{target})"
+        )
+
+    def _on_preprocess_finished(self, played: bool) -> None:
+        if played:
+            self._controller.preprocess_audio_release()
+            self._status_bar.show_message("Playing (preprocessed)", 3000)
+        else:
+            self._status_bar.show_message("Preprocess cancelled", 3000)
+
+    def _on_preprocess_failed(self, message: object) -> None:
+        self._status_bar.show_message(f"Preprocess: {message}", 4000)
 
     def _reposition_metrics_overlay(self) -> None:
         # Anchor top-left of the frame display with an 8 px margin.

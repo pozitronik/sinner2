@@ -25,12 +25,14 @@ class TestStatusActionBar:
     def test_action_buttons_are_not_checkable(self, bar):
         assert not bar.rotate_button.isCheckable()
         assert not bar.save_button.isCheckable()
+        assert not bar.preprocess_button.isCheckable()
 
     def test_every_button_has_a_tooltip(self, bar):
         for button in (
             bar.on_top_button,
             bar.stats_button,
             bar.visualiser_button,
+            bar.preprocess_button,
             bar.rotate_button,
             bar.fullscreen_button,
             bar.side_panel_button,

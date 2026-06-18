@@ -122,6 +122,10 @@ class QStatusActionBar(QWidget):
         self.visualiser_button = self._toggle(
             "▦", "Show processing visualiser — per-frame pipeline state (F6)"
         )
+        self.preprocess_button = self._action(
+            "⏬", "Preprocess: buffer ahead for smooth playback "
+            "(click again to cancel)"
+        )
         self.rotate_button = self._action("🔄", "Rotate display (R)")
         self.fullscreen_button = self._toggle("⛶", "Fullscreen (F11)")
         self.side_panel_button = self._toggle("◧", "Toggle side panel (F9)")
@@ -136,6 +140,7 @@ class QStatusActionBar(QWidget):
             self.on_top_button,
             self.stats_button,
             self.visualiser_button,
+            self.preprocess_button,
             self.rotate_button,
             self.fullscreen_button,
             self.side_panel_button,

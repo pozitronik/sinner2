@@ -277,6 +277,44 @@ class TestStatusActionButtons:
         assert window._controller.executor() is None  # noqa: SLF001
         window._visualiser_tick()  # noqa: SLF001 — must not raise
 
+    def test_preprocess_button_without_session_hints(self, window):
+        assert window._controller.executor() is None  # noqa: SLF001
+        window._status_bar.preprocess_button.click()  # noqa: SLF001
+        assert "Load a video" in window._status_bar.current_message()  # noqa: SLF001
+        assert not window._preprocess.is_active()  # noqa: SLF001
+
+    def test_preprocess_started_enables_visualiser_and_status(self, window):
+        window._on_preprocess_started()  # noqa: SLF001
+        assert window._transport.visualiser_visible()  # noqa: SLF001
+        assert "Preprocessing" in window._status_bar.current_message()  # noqa: SLF001
+
+    def test_preprocess_progress_shows_percent(self, window):
+        window._on_preprocess_progress(50, 200)  # noqa: SLF001
+        assert "25%" in window._status_bar.current_message()  # noqa: SLF001
+
+    def test_preprocess_finished_played_releases_audio(self, window, monkeypatch):
+        called: list[int] = []
+        monkeypatch.setattr(
+            window._controller, "preprocess_audio_release",  # noqa: SLF001
+            lambda: called.append(1),
+        )
+        window._on_preprocess_finished(True)  # noqa: SLF001
+        assert called == [1]
+        assert "preprocessed" in window._status_bar.current_message().lower()  # noqa: SLF001
+
+    def test_preprocess_finished_cancelled_message(self, window):
+        window._on_preprocess_finished(False)  # noqa: SLF001
+        assert "cancelled" in window._status_bar.current_message().lower()  # noqa: SLF001
+
+    def test_play_while_preprocessing_releases_early(self, window, monkeypatch):
+        spy: list[int] = []
+        monkeypatch.setattr(window._preprocess, "is_active", lambda: True)  # noqa: SLF001
+        monkeypatch.setattr(
+            window._preprocess, "play_now", lambda: spy.append(1)  # noqa: SLF001
+        )
+        window._on_play_requested()  # noqa: SLF001
+        assert spy == [1]
+
     def test_overlay_checkbox_toggles_overlay(self, window):
         initial_hidden = window._face_overlay.isHidden()  # noqa: SLF001
         initial_on = window._face_overlay_on  # noqa: SLF001

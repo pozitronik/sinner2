@@ -818,6 +818,17 @@ class PlayerController(QObject):
         self._audio.pause_if_loaded()
         self._sync_tracer.stop()
 
+    def preprocess_audio_start(self) -> None:
+        """Silence audio while a preprocess pass buffers (the display is frozen
+        at frame 0, so any sound would be ahead of the picture)."""
+        self._audio.pause_if_loaded()
+
+    def preprocess_audio_release(self) -> None:
+        """Start audio from the beginning when a preprocess pass releases to
+        playback (which begins at frame 0)."""
+        self._audio.seek_if_loaded(0.0)
+        self._audio.play_if_loaded()
+
     def play(self) -> None:
         """Public play — symmetric with pause(); the session facade calls it for
         the transport's play request. No-op when no session is loaded."""
