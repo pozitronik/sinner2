@@ -18,6 +18,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 from zipfile import BadZipFile
 
 import numpy as np
@@ -119,7 +120,10 @@ def save_geometry(path: Path, geometry: FrameGeometry) -> None:
                 rolls.append(float(gf.roll))
             else:
                 have_rolls = False
-    arrays: dict[str, np.ndarray] = dict(
+    # dict[str, Any] (not np.ndarray): np.savez_compressed's stub declares a
+    # keyword-only `allow_pickle: bool` alongside **kwds, so mypy validates the
+    # unpacked **arrays values against bool too — Any clears that false positive.
+    arrays: dict[str, Any] = dict(
         frames=np.asarray(frames, dtype=np.int32),
         identity_idx=np.asarray(ident_idx, dtype=np.int32),
         bboxes=np.asarray(bboxes, dtype=np.float32).reshape(-1, 4),
