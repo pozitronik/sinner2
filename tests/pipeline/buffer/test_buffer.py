@@ -347,6 +347,43 @@ class TestIntegrationWithRealComponents:
         assert not store.has(4)
 
 
+class TestHas:
+    """buffer.has() — 'available without reprocessing?' for the dispatcher's
+    cross-session cache-reuse skip."""
+
+    def test_true_when_in_store(self):
+        buf, store, cache, _, _ = _mock_buffer()
+        cache.contains.return_value = False
+        store.has.return_value = True
+        assert buf.has(5) is True
+
+    def test_true_when_in_memory_cache(self):
+        buf, store, cache, _, _ = _mock_buffer()
+        cache.contains.return_value = True
+        assert buf.has(5) is True
+        store.has.assert_not_called()  # short-circuits before the disk stat
+
+    def test_false_when_off_ignores_store(self):
+        buf, store, cache, _, _ = _mock_buffer()
+        buf.set_cache_mode(CacheMode.OFF)
+        cache.contains.return_value = False
+        store.has.return_value = True
+        assert buf.has(5) is False  # OFF → memory only, no disk reuse
+
+    def test_false_when_invalidated(self):
+        buf, store, cache, _, _ = _mock_buffer()
+        cache.contains.return_value = True
+        store.has.return_value = True
+        buf.invalidate(5)
+        assert buf.has(5) is False  # tombstoned → must reprocess
+
+    def test_false_when_absent(self):
+        buf, store, cache, _, _ = _mock_buffer()
+        cache.contains.return_value = False
+        store.has.return_value = False
+        assert buf.has(5) is False
+
+
 class TestFrameStateWiring:
     """The buffer drives the visualiser's memory/disk/invalidation transitions
     on the shared FrameStateMap (the executor sets the pre-buffer states)."""

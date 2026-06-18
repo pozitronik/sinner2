@@ -27,6 +27,13 @@ class TestMemoryFrameCache:
         cache.put(5, f)
         assert cache.get(5) is f
 
+    def test_contains_without_loading(self):
+        cache = MemoryFrameCache(max_bytes=10 * 1024)
+        assert not cache.contains(0)
+        cache.put(0, _frame())
+        assert cache.contains(0)
+        assert not cache.contains(1)
+
     def test_get_missing_returns_none(self):
         cache = MemoryFrameCache(max_bytes=1024)
         assert cache.get(99) is None

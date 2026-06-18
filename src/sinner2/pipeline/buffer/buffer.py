@@ -133,6 +133,21 @@ class FrameBuffer:
         if self._frame_states is not None:
             self._frame_states.set(index, FrameState.INVALID)
 
+    def has(self, index: FrameIndex) -> bool:
+        """True if a CURRENT (non-invalidated) processed frame for index is
+        available without reprocessing — in the disk store (cross-session reuse)
+        or the memory cache. Lets the realtime dispatcher skip re-rendering a
+        frame already cached from this or a previous run with the same config.
+        Respects cache_mode (OFF → memory only, no disk reuse)."""
+        with self._lock:
+            if index in self._invalidated:
+                return False
+        if self._cache.contains(index):
+            return True
+        if self._cache_mode is CacheMode.OFF:
+            return False
+        return self._store.has(index)
+
     def get(self, index: FrameIndex) -> Frame | None:
         with self._lock:
             tombstoned = index in self._invalidated

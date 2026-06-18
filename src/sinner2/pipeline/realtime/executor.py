@@ -633,6 +633,19 @@ class RealtimeExecutor:
         if fs is not None:
             fs.set_range(lo, hi, state)
 
+    def _fast_complete_cached(self, frame_index: FrameIndex) -> None:
+        """Mark an already-cached frame done WITHOUT reprocessing it — the
+        display reads it from the store. Advances the submit/complete marks so
+        the strategy moves on; does NOT count it as a processing completion (it
+        wasn't processed, so processing_fps stays honest)."""
+        with self._state_lock:
+            if frame_index > self._last_submitted:
+                self._last_submitted = frame_index
+            if frame_index > self._last_completed:
+                self._last_completed = frame_index
+        self._mark(frame_index, FrameState.READY_DISK)
+        self._playback_wake.set()
+
     @property
     def reader_pool(self) -> ReaderPool:
         """The live target ReaderPool — exposed so callers (e.g. discarding an
@@ -841,6 +854,10 @@ class RealtimeExecutor:
     def _submit_specific_frame(self, frame_index: FrameIndex) -> None:
         """Enqueue a specific frame regardless of state. Must NOT be called while holding state_lock."""
         if frame_index < 0 or frame_index >= self._reader_pool.frame_count:
+            return
+        # Already cached for this config → reuse it instead of reprocessing.
+        if self._buffer.has(frame_index):
+            self._fast_complete_cached(frame_index)
             return
         # Submit the read non-blockingly — a reader thread will produce
         # the frame; the worker will await the future.
@@ -1242,6 +1259,12 @@ class RealtimeExecutor:
         # Lock RELEASED here. Publish mode outside the lock to avoid
         # serialising observable subscribers (the GUI bridge) on it.
         self.strategy_mode.set(mode)
+        # Already processed for this exact config (cache dir is keyed by it) and
+        # present on disk / in memory → REUSE it: don't reprocess, just mark it
+        # done so the strategy advances and the display reads it from the store.
+        if self._buffer.has(frame_index):
+            self._fast_complete_cached(frame_index)
+            return
         # Submit the read non-blockingly — a reader thread will produce
         # the frame; the worker awaits the future.
         future = self._reader_pool.read_async(frame_index)

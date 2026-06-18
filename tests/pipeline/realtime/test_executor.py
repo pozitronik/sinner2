@@ -1488,6 +1488,7 @@ class TestRerenderFromCurrent:
         ex._timeline = MagicMock()  # noqa: SLF001
         ex._timeline.current_frame.return_value = 50  # noqa: SLF001
         ex._buffer = MagicMock()  # noqa: SLF001
+        ex._buffer.has.return_value = False  # noqa: SLF001 — not cached → submits
         ex._reader_pool = MagicMock()  # noqa: SLF001
         ex._reader_pool.frame_count = 100  # noqa: SLF001
 
@@ -2288,6 +2289,7 @@ class TestSectionPlayback:
         ex._sections = sections  # noqa: SLF001
         ex._timeline = timeline  # noqa: SLF001
         ex._buffer = MagicMock()  # noqa: SLF001
+        ex._buffer.has.return_value = False  # noqa: SLF001 — not cached → submits
         ex._reader_pool = MagicMock()  # noqa: SLF001
         ex._reader_pool.frame_count = frame_count  # noqa: SLF001
         ex._reader_pool.recent_read_latency_ms.return_value = 1.0  # noqa: SLF001
@@ -2434,6 +2436,8 @@ class TestFrameStateTracking:
         ex._reader_pool = MagicMock()  # noqa: SLF001
         ex._reader_pool.frame_count = 10  # noqa: SLF001
         ex._reader_pool.read_async.return_value = MagicMock()  # noqa: SLF001
+        ex._buffer = MagicMock()  # noqa: SLF001
+        ex._buffer.has.return_value = False  # noqa: SLF001 — not cached → submits
         ex._frame_states = FrameStateMap(10)  # noqa: SLF001
         ex._submit_specific_frame(3)  # noqa: SLF001
         assert ex._frame_states.get(3) is FrameState.QUEUED  # noqa: SLF001
@@ -2456,6 +2460,51 @@ class TestFrameStateTracking:
                 lambda: ex.frame_states_snapshot()[0] == FrameState.READY_MEM,
                 timeout=2.0,
             )
+        finally:
+            ex.stop()
+
+
+class TestCacheReuse:
+    """Frames already on disk (same config / a prior run) are REUSED, not
+    reprocessed — the dispatcher fast-completes them (READY_DISK) and the display
+    reads them from the store. Fixes 'reopen reprocesses everything'."""
+
+    def test_fully_cached_clip_is_not_reprocessed(self, buffer_setup):
+        buffer, timeline, _ = buffer_setup
+        # Simulate a prior run: write every frame into the persistent store.
+        for i in range(3):
+            buffer._store.write(i, np.full((8, 8, 3), 200, np.uint8))  # noqa: SLF001
+        p = _CountingProcessor()
+        ex = RealtimeExecutor(
+            reader_pool=_pool_for(_MultiFrameReader(3)),
+            buffer=buffer, timeline=timeline, chain=[p],
+            strategy=BestEffortStrategy(),
+        )
+        try:
+            ex.start()
+            assert ex.wait_until_ready(timeout=2.0)
+            ex.play()
+            assert _wait_until(
+                lambda: ex.frame_states_snapshot()[2] == FrameState.READY_DISK,
+                timeout=2.0,
+            )
+            assert p.process_calls == 0  # nothing reprocessed
+        finally:
+            ex.stop()
+
+    def test_uncached_frames_still_process(self, buffer_setup):
+        buffer, timeline, _ = buffer_setup  # empty store
+        p = _CountingProcessor()
+        ex = RealtimeExecutor(
+            reader_pool=_pool_for(_MultiFrameReader(3)),
+            buffer=buffer, timeline=timeline, chain=[p],
+            strategy=BestEffortStrategy(),
+        )
+        try:
+            ex.start()
+            assert ex.wait_until_ready(timeout=2.0)
+            ex.play()
+            assert _wait_until(lambda: p.process_calls >= 1, timeout=2.0)
         finally:
             ex.stop()
 
@@ -2600,6 +2649,7 @@ class TestSetFaceMap:
         ex._last_shown_frame_index = 5  # noqa: SLF001
         ex.status = MagicMock()
         ex._buffer = MagicMock()  # noqa: SLF001
+        ex._buffer.has.return_value = False  # noqa: SLF001 — not cached → submits
         ex._reader_pool = MagicMock()  # noqa: SLF001
         ex._reader_pool.frame_count = 100  # noqa: SLF001
         ex._timeline = MagicMock()  # noqa: SLF001
@@ -2636,6 +2686,7 @@ class TestSetFaceMap:
         ex._last_shown_frame_index = 5  # noqa: SLF001
         ex.status = MagicMock()
         ex._buffer = MagicMock()  # noqa: SLF001
+        ex._buffer.has.return_value = False  # noqa: SLF001 — not cached → submits
         ex._reader_pool = MagicMock()  # noqa: SLF001
         ex._reader_pool.frame_count = 100  # noqa: SLF001
         ex._timeline = MagicMock()  # noqa: SLF001
@@ -2660,6 +2711,7 @@ class TestSetGeometry:
         ex._last_shown_frame_index = 5  # noqa: SLF001
         ex.status = MagicMock()
         ex._buffer = MagicMock()  # noqa: SLF001
+        ex._buffer.has.return_value = False  # noqa: SLF001 — not cached → submits
         ex._reader_pool = MagicMock()  # noqa: SLF001
         ex._reader_pool.frame_count = 100  # noqa: SLF001
         ex._timeline = MagicMock()  # noqa: SLF001

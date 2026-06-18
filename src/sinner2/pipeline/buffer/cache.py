@@ -12,6 +12,7 @@ class FrameCache(Protocol):
 
     def put(self, index: FrameIndex, frame: Frame) -> None: ...
     def get(self, index: FrameIndex) -> Frame | None: ...
+    def contains(self, index: FrameIndex) -> bool: ...
     def evict_at(self, index: FrameIndex) -> None: ...
     def evict_before(self, index: FrameIndex) -> None: ...
     def evict_from(self, index: FrameIndex) -> None: ...
@@ -83,6 +84,12 @@ class MemoryFrameCache:
             if frame is not None:
                 self._frames.move_to_end(index)
             return frame
+
+    def contains(self, index: FrameIndex) -> bool:
+        """Membership test WITHOUT loading the frame or touching LRU recency —
+        for the realtime dispatcher's 'already processed?' check."""
+        with self._lock:
+            return index in self._frames
 
     def evict_at(self, index: FrameIndex) -> None:
         with self._lock:
