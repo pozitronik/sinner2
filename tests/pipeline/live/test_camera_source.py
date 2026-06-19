@@ -112,3 +112,26 @@ def test_available_cameras_returns_working_indices():
         return _FakeCapture([frame] if usable else [], opened=usable)
 
     assert available_cameras(max_probe=4, capture_factory=factory) == [0, 2]
+
+
+def test_ready_property_reflects_open_resolution():
+    # `ready` is False until the open attempt resolves — so a slow open isn't
+    # mistaken for a failure by the controller's health check.
+    a = np.full((48, 64, 3), 10, np.uint8)
+    factory, _ = _factory_for([a])
+    src = CameraSource(0, width=64, height=48, capture_factory=factory)
+    assert src.ready is False  # not started yet
+    src.start()
+    assert src.wait_ready(timeout=5) is True
+    assert src.ready is True
+    src.stop()
+
+
+def test_ready_true_even_when_open_failed():
+    # The attempt RESOLVED (just as a failure) — ready is True, opened is False.
+    factory, _ = _factory_for([], opened=False)
+    src = CameraSource(7, capture_factory=factory)
+    src.start()
+    assert src.wait_ready(timeout=5) is False
+    assert src.ready is True and src.opened is False
+    src.stop()

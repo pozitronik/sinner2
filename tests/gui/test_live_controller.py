@@ -10,7 +10,7 @@ import dataclasses
 import numpy as np
 import pytest
 
-from sinner2.gui.live_controller import LiveController
+from sinner2.gui.live_controller import _HEALTH_DEADLINE_TICKS, LiveController
 from sinner2.gui.widgets.processor_controls import QProcessorControls
 
 
@@ -161,9 +161,12 @@ def test_camera_open_failure_surfaces_error(off_snapshot, source_file):
     assert not ctrl.is_running()
 
 
-def test_camera_opened_but_no_frames_surfaces_error(off_snapshot, source_file):
+def test_camera_opened_but_no_frames_surfaces_error_after_grace(
+    off_snapshot, source_file
+):
     class _NoFramesCam:
         opened = True
+        ready = True
         frames_seen = 0
 
         def start(self):
@@ -181,9 +184,50 @@ def test_camera_opened_but_no_frames_surfaces_error(off_snapshot, source_file):
     errors: list = []
     ctrl.errorOccurred.connect(errors.append)
     ctrl.start(source_path=source_file, snapshot=off_snapshot, mjpeg_port=0)
+    # Within the grace period: no error, still running.
     ctrl._check_camera()
+    assert errors == [] and ctrl.is_running()
+    # After the grace period lapses: error + stop.
+    for _ in range(_HEALTH_DEADLINE_TICKS):
+        ctrl._check_camera()
     assert errors and "no frames" in errors[0].lower()
     assert not ctrl.is_running()
+
+
+def test_slow_open_then_frames_does_not_false_error(off_snapshot, source_file):
+    # The reported bug: a slow-to-open / slow-first-frame camera was false-
+    # flagged as broken even though it was about to work.
+    class _SlowCam:
+        def __init__(self):
+            self.ready = False   # still opening (attempt not resolved)
+            self.opened = False
+            self.frames_seen = 0
+
+        def start(self):
+            pass
+
+        def read(self):
+            return None
+
+        def stop(self):
+            pass
+
+    cam = _SlowCam()
+    ctrl = LiveController(
+        camera_factory=lambda *a: cam, sink_factory=lambda *a: _SpySink()
+    )
+    errors: list = []
+    ctrl.errorOccurred.connect(errors.append)
+    ctrl.start(source_path=source_file, snapshot=off_snapshot, mjpeg_port=0)
+    # Polls while still opening → no false error (not a resolved failure).
+    for _ in range(3):
+        ctrl._check_camera()
+    assert errors == [] and ctrl.is_running()
+    # Camera finishes opening + delivers frames → no error; polling can stop.
+    cam.ready, cam.opened, cam.frames_seen = True, True, 5
+    ctrl._check_camera()
+    assert errors == [] and ctrl.is_running()
+    ctrl.stop()
 
 
 def test_update_hot_swaps_chain_while_running(

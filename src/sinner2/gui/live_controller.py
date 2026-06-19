@@ -27,6 +27,12 @@ from sinner2.types import Frame
 CameraFactory = Callable[[Any, int, int, int], Any]
 SinkFactory = Callable[[int, int], MjpegSink]
 
+# Camera startup health check: poll for the first frame, only failing after a
+# generous grace period. A single short timeout false-flagged a slow-to-open or
+# slow-first-frame camera as broken even though it was about to work.
+_HEALTH_INTERVAL_MS = 500
+_HEALTH_DEADLINE_TICKS = 12  # ~6 s of grace for camera init + first frame
+
 
 class LiveController(QObject):
     frameReady = Signal(object)   # processed Frame — queued to the GUI thread
@@ -62,6 +68,12 @@ class LiveController(QObject):
         self._fps_timer = QTimer(self)
         self._fps_timer.setInterval(200)
         self._fps_timer.timeout.connect(self._emit_fps)
+        # Startup health check: poll until the first frame arrives (success) or
+        # the grace period lapses (a genuinely dead camera).
+        self._health_timer = QTimer(self)
+        self._health_timer.setInterval(_HEALTH_INTERVAL_MS)
+        self._health_timer.timeout.connect(self._check_camera)
+        self._health_ticks = 0
 
     def set_detection_sink(self, sink: object | None) -> None:
         """Wire the shared detection sink (call before start). Mirrors
@@ -132,9 +144,11 @@ class LiveController(QObject):
         print(f"[live] MJPEG sink: {self._sink.describe()}", file=sys.stderr)
         self._fps_timer.start()
         self.runningChanged.emit(True)
-        # The device opens on the capture thread; surface a failure shortly after
-        # (non-blocking) so a bad camera shows an error instead of a blank panel.
-        QTimer.singleShot(1500, self._check_camera)
+        # The device opens on the capture thread; poll its health (non-blocking)
+        # so a bad camera shows an error instead of a blank panel — but only
+        # after a grace period, so a slow open / first frame isn't false-flagged.
+        self._health_ticks = 0
+        self._health_timer.start()
 
     def set_source(self, source_path: Path) -> None:
         """Fast source-face change on the running camera: re-point the swapper
@@ -198,20 +212,39 @@ class LiveController(QObject):
         )
 
     def _check_camera(self) -> None:
+        """Poll the camera's startup health. Stops polling the moment frames
+        flow (the camera works, even if open / first frame was slow); reports a
+        DEFINITIVE open failure as soon as the open resolves; only declares a
+        no-frames failure after the grace period — never on a still-initialising
+        device."""
         cam = self._camera
         if cam is None or self._loop is None:
+            self._health_timer.stop()
             return
-        if not getattr(cam, "opened", True):
+        ready = getattr(cam, "ready", True)  # open attempt resolved?
+        opened = getattr(cam, "opened", True)
+        if ready and not opened:  # resolved as a failure → report immediately
+            self._health_timer.stop()
             self.errorOccurred.emit(
                 getattr(cam, "error", None) or "camera failed to open"
             )
             self.stop()
-        elif getattr(cam, "frames_seen", 1) == 0:
-            self.errorOccurred.emit(
-                "camera opened but delivered no frames — try Refresh to pick a "
-                "working camera, or a lower resolution"
-            )
-            self.stop()
+            return
+        if getattr(cam, "frames_seen", 1) > 0:
+            self._health_timer.stop()  # working — done watching
+            return
+        # Opened (or still opening) but no frames yet — give it more time.
+        self._health_ticks += 1
+        if self._health_ticks < _HEALTH_DEADLINE_TICKS:
+            return
+        self._health_timer.stop()
+        self.errorOccurred.emit(
+            "camera opened but delivered no frames — try Refresh to pick a "
+            "working camera, or a lower resolution"
+            if opened
+            else getattr(cam, "error", None) or "camera failed to open"
+        )
+        self.stop()
 
     def _emit_frame(self, frame: Frame) -> None:
         # Called on the loop thread; the queued Signal hops it to the GUI thread.
@@ -221,6 +254,7 @@ class LiveController(QObject):
         if self._loop is None:
             return
         self._fps_timer.stop()
+        self._health_timer.stop()
         self._loop.stop()
         self._loop = None
         self._sink = None

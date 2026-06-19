@@ -84,6 +84,13 @@ class CameraSource:
         self._ready = threading.Event()  # set once the open attempt has resolved
 
     @property
+    def ready(self) -> bool:
+        """Whether the open ATTEMPT has resolved (opened or failed). Until then a
+        not-yet-`opened` device is still initialising, not a failure — the health
+        check waits on this so a slow open isn't reported as a dead camera."""
+        return self._ready.is_set()
+
+    @property
     def opened(self) -> bool:
         return self._opened
 
