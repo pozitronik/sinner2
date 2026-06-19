@@ -2486,9 +2486,14 @@ class SinnerMainWindow(QMainWindow):
         # flag (editable later in the task dialog). No map / routing-off → single
         # source.
         store_dir = default_cache_root() / "face_maps"
+        # Append to the end of the queue: one past the current max position.
+        next_order = max(
+            (t.order for t in self._batch_store.list()), default=-1
+        ) + 1
         task = task.model_copy(update={
             "face_map_store_dir": str(store_dir),
             "use_face_map": load_use_map(use_map_path(target, store_dir)),
+            "order": next_order,
         })
         # Carry the live timeline selection (like source/target, it's specific to
         # THIS target — not part of the reusable defaults template). Empty → the

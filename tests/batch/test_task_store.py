@@ -127,3 +127,35 @@ class TestAtomicSave:
         store.save(t)
         tmps = list(store.root.glob("*.tmp"))
         assert tmps == []
+
+
+class TestOrdering:
+    """list() honours the explicit `order` field (stable — ties keep their
+    filename order); set_order renumbers tasks densely by position."""
+
+    def test_list_sorted_by_order_field(self, store, tmp_path):
+        a = _task(tmp_path, order=2)
+        b = _task(tmp_path, order=0)
+        c = _task(tmp_path, order=1)
+        for t in (a, b, c):
+            store.save(t)
+        assert [t.id for t in store.list()] == [b.id, c.id, a.id]
+
+    def test_legacy_zero_order_keeps_filename_order(self, store, tmp_path):
+        # All-default (order 0) tasks must stay in their pre-existing order.
+        ids = []
+        for _ in range(3):
+            t = _task(tmp_path)  # order defaults to 0
+            store.save(t)
+            ids.append(t.id)
+        assert [t.id for t in store.list()] == sorted(ids)  # filename = id order
+
+    def test_set_order_renumbers_densely(self, store, tmp_path):
+        a, b, c = (_task(tmp_path) for _ in range(3))
+        for t in (a, b, c):
+            store.save(t)
+        store.set_order([c.id, a.id, b.id])
+        assert store.load(c.id).order == 0
+        assert store.load(a.id).order == 1
+        assert store.load(b.id).order == 2
+        assert [t.id for t in store.list()] == [c.id, a.id, b.id]

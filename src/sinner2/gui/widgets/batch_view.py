@@ -513,7 +513,19 @@ class QBatchView(QWidget):
         if task_id is None or not self._store.exists(task_id):
             return
         task = self._store.load(task_id)
+        row = idx.row()
         menu = QMenu(self._table)
+        # Queue position: shift this task earlier/later (only when it can move).
+        if row > 0:
+            self._add_action(
+                menu, "Move up", lambda: self._move_task(task_id, -1)
+            )
+        if row < self._model.rowCount() - 1:
+            self._add_action(
+                menu, "Move down", lambda: self._move_task(task_id, +1)
+            )
+        if menu.actions():
+            menu.addSeparator()
         # Per-task actions depend on status + whether it's the running one.
         is_running = task.id == self._queue.current_task_id
         if not is_running:
@@ -585,6 +597,27 @@ class QBatchView(QWidget):
             return
         self._queue.refresh_task(task_id)
         self._refresh_row(task_id)
+
+    def _move_task(self, task_id: str, delta: int) -> None:
+        """Shift a task's queue position by ``delta`` (-1 up / +1 down) and
+        persist the new order, then rebuild + reselect the moved row."""
+        ids = [
+            tid
+            for r in range(self._model.rowCount())
+            if (tid := self._task_id_at_row(r))
+        ]
+        if task_id not in ids:
+            return
+        i = ids.index(task_id)
+        j = i + delta
+        if not 0 <= j < len(ids):
+            return
+        ids[i], ids[j] = ids[j], ids[i]
+        self._store.set_order(ids)
+        self.reload_from_store()
+        moved = self._row_for_task_id(task_id)
+        if moved is not None:
+            self._table.selectRow(moved)
 
     def _delete_task_cache(self, task_id: str) -> None:
         """Free a task's cached intermediate frames (keeps the task + its

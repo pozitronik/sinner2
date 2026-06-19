@@ -195,6 +195,12 @@ class BatchTask(SinnerBaseModel):
     extraction_mode: BatchExtractionMode = BatchExtractionMode.STREAM
 
     # ---- Queue scheduling policy ----
+    # Explicit queue position (lower runs earlier). The store sorts by it, so
+    # the queue picks the next Pending task in this order and the GUI lists them
+    # the same way. Stamped at add time (appends to the end) and rewritten by
+    # the GUI's reorder actions; ties (e.g. legacy 0-default tasks) keep their
+    # prior file order.
+    order: int = 0
     # When True, a failure of THIS task does NOT halt the queue — the scheduler
     # records it and rolls on to the next pending task. Default False: a failure
     # stops the queue so the user sees the error and decides what to do.

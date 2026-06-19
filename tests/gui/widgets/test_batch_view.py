@@ -522,3 +522,29 @@ class TestTempColumn:
         )
         view._delete_task_cache(t.id)  # noqa: SLF001
         assert called == []
+
+
+class TestMoveTask:
+    """Move up / down reorders the queue (persists via store.set_order) and
+    keeps the moved row selected."""
+
+    def test_move_down_swaps_order(self, view, tmp_path, store):
+        a = _task(tmp_path, order=0)
+        b = _task(tmp_path, order=1)
+        store.save(a)
+        store.save(b)
+        view.reload_from_store()
+        view._move_task(a.id, +1)  # noqa: SLF001 — a moves below b
+        assert [t.id for t in store.list()] == [b.id, a.id]
+        # The moved task stays selected on its new row.
+        sel = view._table.currentIndex().row()  # noqa: SLF001
+        assert view._task_id_at_row(sel) == a.id  # noqa: SLF001
+
+    def test_move_up_at_top_is_noop(self, view, tmp_path, store):
+        a = _task(tmp_path, order=0)
+        b = _task(tmp_path, order=1)
+        store.save(a)
+        store.save(b)
+        view.reload_from_store()
+        view._move_task(a.id, -1)  # noqa: SLF001 — already first
+        assert [t.id for t in store.list()] == [a.id, b.id]

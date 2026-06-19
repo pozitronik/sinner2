@@ -20,6 +20,7 @@ import json
 import os
 import tempfile
 import time
+from collections.abc import Sequence
 from pathlib import Path
 
 from sinner2.batch.task import BatchTask
@@ -113,4 +114,18 @@ class BatchTaskStore:
                 )
             except (OSError, ValueError, json.JSONDecodeError):
                 continue
+        # Honour the explicit queue order; the sort is STABLE, so ties (legacy
+        # tasks all at order 0) keep their filename order — backward compatible.
+        out.sort(key=lambda t: t.order)
         return out
+
+    def set_order(self, ordered_ids: Sequence[str]) -> None:
+        """Rewrite tasks' queue positions to match ``ordered_ids`` (dense 0..N-1
+        by list position). Only re-saves tasks whose order actually changes."""
+        for position, task_id in enumerate(ordered_ids):
+            if not self.exists(task_id):
+                continue
+            task = self.load(task_id)
+            if task.order != position:
+                task.order = position
+                self.save(task)
