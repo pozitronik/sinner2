@@ -18,8 +18,11 @@ thread. Driver progress callbacks marshal back via queued signals.
 """
 from __future__ import annotations
 
+import os
 import shutil
+import threading
 import time
+import uuid
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QThread, Qt, Signal
@@ -63,6 +66,31 @@ class _DriverWorker(QObject):
             preview_callback=on_preview,
         )
         self.completed.emit(self._task.id, status.value)
+
+
+def _fast_delete_dir(path: Path) -> threading.Thread | None:
+    """Free a directory FAST: rename it aside (atomic + instant on the same
+    filesystem) then rmtree the renamed copy on a daemon thread.
+
+    ``shutil.rmtree`` is not an atomic drop — it unlinks every file one by one,
+    so on a stage dir of tens of thousands of frames it takes seconds and must
+    not block the caller (often the GUI thread). Returns the deletion thread
+    (None when there was nothing to delete) so callers/tests can join it."""
+    if not path.exists():
+        return None
+    aside = path.with_name(f".deleting-{path.name}-{uuid.uuid4().hex[:8]}")
+    try:
+        os.replace(path, aside)  # instant same-filesystem rename
+    except OSError:
+        # Cross-device / locked — can't rename; rmtree the original off-thread.
+        aside = path
+    thread = threading.Thread(
+        target=lambda: shutil.rmtree(aside, ignore_errors=True),
+        name="batch-cache-delete",
+        daemon=True,
+    )
+    thread.start()
+    return thread
 
 
 class BatchQueue(QObject):
@@ -226,7 +254,10 @@ class BatchQueue(QObject):
         — its cache is in active use. Returns True when the cache was cleared."""
         if self._current_task_id == task_id:
             return False
-        shutil.rmtree(self._cache_root / task_id, ignore_errors=True)
+        # Rename-aside + background rmtree: the dir is gone for the caller at
+        # once (so the UI frees instantly), the slow per-file unlink runs off
+        # the GUI thread.
+        _fast_delete_dir(self._cache_root / task_id)
         if self._store.exists(task_id):
             task = self._store.load(task_id)
             task.completed_stages = 0

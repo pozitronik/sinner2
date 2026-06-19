@@ -369,3 +369,31 @@ class TestDeleteTaskCache:
             assert q.delete_task_cache(t.id) is False
         finally:
             q.stop()
+
+
+class TestFastDeleteDir:
+    """_fast_delete_dir renames the dir aside (instant) then rmtree's it off the
+    GUI thread, so deleting a huge frame cache doesn't freeze the UI."""
+
+    def test_renames_aside_at_once_then_deletes_in_background(self, tmp_path):
+        from sinner2.batch.queue import _fast_delete_dir
+
+        d = tmp_path / "huge"
+        (d / "stage0").mkdir(parents=True)
+        for i in range(5):
+            (d / "stage0" / f"{i:08d}.jpg").write_bytes(b"x" * 100)
+
+        thread = _fast_delete_dir(d)
+        # The original path is gone immediately (the rename), before the slow
+        # per-file unlink the background thread performs.
+        assert not d.exists()
+        assert thread is not None
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+        # No leftover ".deleting-*" scratch dir once the background rmtree ran.
+        assert list(tmp_path.glob(".deleting-*")) == []
+
+    def test_missing_dir_is_a_noop(self, tmp_path):
+        from sinner2.batch.queue import _fast_delete_dir
+
+        assert _fast_delete_dir(tmp_path / "nope") is None
