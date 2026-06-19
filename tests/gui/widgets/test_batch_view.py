@@ -452,3 +452,73 @@ class TestStepTrackerReuse:
             t.id, BatchProgress(stage_completed=2, overall_completed=2, **prog)
         )
         assert count["n"] == 1  # ticks reuse the tracker, don't reallocate
+
+
+class TestTempColumn:
+    """The Temp column shows each task's cache size (computed off-thread) and a
+    context action frees it."""
+
+    def test_human_size_units(self):
+        from sinner2.gui.widgets.batch_view import _human_size
+
+        assert _human_size(0) == "—"
+        assert _human_size(512) == "512 B"
+        assert _human_size(2048) == "2 KB"
+        assert _human_size(5 * 1024 * 1024) == "5.0 MB"
+        assert _human_size(3 * 1024 ** 3) == "3.0 GB"
+
+    def test_dir_size_sums_files(self, tmp_path):
+        from sinner2.gui.widgets.batch_view import _dir_size
+
+        (tmp_path / "a").write_bytes(b"x" * 10)
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        (sub / "b").write_bytes(b"y" * 5)
+        assert _dir_size(tmp_path) == 15
+        assert _dir_size(tmp_path / "missing") == 0  # tolerant of absence
+
+    def test_temp_column_header(self, view):
+        from sinner2.gui.widgets.batch_view import _COL_TEMP
+
+        assert view._model.horizontalHeaderItem(_COL_TEMP).text() == "Temp"  # noqa: SLF001
+
+    def test_size_computed_updates_cell(self, view, tmp_path, store):
+        from sinner2.gui.widgets.batch_view import _COL_TEMP
+
+        t = _task(tmp_path)
+        store.save(t)
+        view.reload_from_store()
+        view._on_size_computed(t.id, 5 * 1024 * 1024)  # noqa: SLF001
+        assert view._model.item(0, _COL_TEMP).text() == "5.0 MB"  # noqa: SLF001
+
+    def test_delete_cache_confirmed_calls_queue(
+        self, view, tmp_path, store, queue, monkeypatch
+    ):
+        t = _task(tmp_path, status=BatchTaskStatus.COMPLETED)
+        store.save(t)
+        view.reload_from_store()
+        called: list[str] = []
+        monkeypatch.setattr(
+            queue, "delete_task_cache", lambda tid: called.append(tid)
+        )
+        monkeypatch.setattr(
+            "sinner2.gui.widgets.batch_view.confirm", lambda *a, **k: True
+        )
+        view._delete_task_cache(t.id)  # noqa: SLF001
+        assert called == [t.id]
+
+    def test_delete_cache_declined_is_noop(
+        self, view, tmp_path, store, queue, monkeypatch
+    ):
+        t = _task(tmp_path, status=BatchTaskStatus.COMPLETED)
+        store.save(t)
+        view.reload_from_store()
+        called: list[str] = []
+        monkeypatch.setattr(
+            queue, "delete_task_cache", lambda tid: called.append(tid)
+        )
+        monkeypatch.setattr(
+            "sinner2.gui.widgets.batch_view.confirm", lambda *a, **k: False
+        )
+        view._delete_task_cache(t.id)  # noqa: SLF001
+        assert called == []

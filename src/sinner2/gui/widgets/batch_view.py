@@ -14,12 +14,13 @@ resolve the underlying BatchTask from any row.
 """
 from __future__ import annotations
 
+import os
 import time
 from collections import deque
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, Qt, Signal
+from PySide6.QtCore import QObject, QPoint, QRunnable, Qt, QThreadPool, Signal
 from PySide6.QtGui import QAction, QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -148,7 +149,65 @@ _COL_TARGET = 2
 _COL_OUTPUT = 3
 _COL_FORMAT = 4
 _COL_STATUS = 5
-_COLUMN_HEADERS = ("Progress", "Source", "Target", "Output", "Format", "Status")
+_COL_TEMP = 6
+_COLUMN_HEADERS = (
+    "Progress", "Source", "Target", "Output", "Format", "Status", "Temp",
+)
+
+
+def _dir_size(path: Path) -> int:
+    """Total bytes under ``path`` (recursive), tolerant of races / missing
+    dirs — a task with no cache yet just sizes to 0."""
+    total = 0
+    try:
+        with os.scandir(path) as it:
+            for entry in it:
+                try:
+                    if entry.is_file(follow_symlinks=False):
+                        total += entry.stat(follow_symlinks=False).st_size
+                    elif entry.is_dir(follow_symlinks=False):
+                        total += _dir_size(Path(entry.path))
+                except OSError:
+                    continue
+    except OSError:
+        pass
+    return total
+
+
+def _human_size(n: int) -> str:
+    """Compact byte count: '—' for empty, else e.g. '512 KB' / '3.4 GB'."""
+    if n <= 0:
+        return "—"
+    size = float(n)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024:
+            return f"{size:.0f} {unit}" if unit in ("B", "KB") else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} TB"
+
+
+class _SizeSignals(QObject):
+    """Carrier so an off-thread size walk can hand results back on the GUI
+    thread (queued delivery to the connected slot)."""
+
+    sized = Signal(str, int)  # task_id, bytes
+
+
+class _SizeJob(QRunnable):
+    """Walks each task's cache dir off the GUI thread (stat-heavy) and emits
+    its size — the Temp column must not stall the UI on a big cache."""
+
+    def __init__(
+        self, cache_root: Path, task_ids: list[str], signals: _SizeSignals
+    ) -> None:
+        super().__init__()
+        self._cache_root = cache_root
+        self._task_ids = task_ids
+        self._signals = signals
+
+    def run(self) -> None:
+        for task_id in self._task_ids:
+            self._signals.sized.emit(task_id, _dir_size(self._cache_root / task_id))
 
 
 class QBatchView(QWidget):
@@ -247,6 +306,12 @@ class QBatchView(QWidget):
         # Progress carries the longest text ("[1/2] 15% (1500/10000, …) · …"),
         # so give it a roomy default; it stays user-resizable (Interactive).
         header.resizeSection(_COL_PROGRESS, 320)
+        header.resizeSection(_COL_TEMP, 80)
+
+        # Per-task cache size is computed off the GUI thread (stat-walk) and
+        # handed back via this signal carrier → the Temp cell.
+        self._size_signals = _SizeSignals(self)
+        self._size_signals.sized.connect(self._on_size_computed)
 
         layout = QVBoxLayout(self)
         layout.addLayout(toolbar)
@@ -271,11 +336,13 @@ class QBatchView(QWidget):
         self._model.removeRows(0, self._model.rowCount())
         for task in self._store.list():
             self._append_row(task)
+        self._recompute_sizes()
 
     def append_task(self, task: BatchTask) -> None:
         """Add a row for a task that's already been persisted via
         the store."""
         self._append_row(task)
+        self._recompute_sizes([task.id])
 
     # ---- Row plumbing ----
 
@@ -299,11 +366,37 @@ class QBatchView(QWidget):
         if task.error_message:
             items[_COL_STATUS].setToolTip(task.error_message)
         items[_COL_PROGRESS].setText(self._progress_text(task))
+        items[_COL_TEMP].setText("…")  # filled async by the size walk
+        items[_COL_TEMP].setTextAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
         # Stash the id on the Source column so we can resolve a row → task.
         items[_COL_SOURCE].setData(task.id, _ROLE_TASK_ID)
         for it in items:
             it.setEditable(False)
         return items
+
+    def _recompute_sizes(self, task_ids: list[str] | None = None) -> None:
+        """Kick an off-thread walk of the given tasks' cache dirs (all rows when
+        None) → updates the Temp cells as results arrive."""
+        if task_ids is None:
+            task_ids = [
+                tid
+                for r in range(self._model.rowCount())
+                if (tid := self._task_id_at_row(r))
+            ]
+        if task_ids:
+            QThreadPool.globalInstance().start(
+                _SizeJob(self._queue.cache_root, task_ids, self._size_signals)
+            )
+
+    def _on_size_computed(self, task_id: str, nbytes: int) -> None:
+        row = self._row_for_task_id(task_id)
+        if row is None:
+            return
+        item = self._model.item(row, _COL_TEMP)
+        if item is not None:
+            item.setText(_human_size(nbytes))
 
     @staticmethod
     def _progress_text(task: BatchTask) -> str:
@@ -398,9 +491,11 @@ class QBatchView(QWidget):
     def _on_task_completed(self, task_id: str) -> None:
         self._throughput.pop(task_id, None)
         self._refresh_row(task_id)
+        self._recompute_sizes([task_id])  # cache grew over the run
 
     def _on_task_failed(self, task_id: str, _message: str) -> None:
         self._throughput.pop(task_id, None)
+        self._recompute_sizes([task_id])
         # Flip the row to its failed state — Status reads "failed" with the
         # reason on hover (set in _refresh_row from the task's error_message).
         # The prominent, can't-miss surfacing of the message lives in
@@ -453,6 +548,11 @@ class QBatchView(QWidget):
                 menu, "Reset to Pending (discard cache)",
                 lambda: self._reset_task_to_pending(task_id),
             )
+        if not is_running:
+            self._add_action(
+                menu, "Delete cache (free temp space)",
+                lambda: self._delete_task_cache(task_id),
+            )
         menu.addSeparator()
         delete_action = QAction("Delete", menu)
         delete_action.triggered.connect(
@@ -485,6 +585,29 @@ class QBatchView(QWidget):
             return
         self._queue.refresh_task(task_id)
         self._refresh_row(task_id)
+
+    def _delete_task_cache(self, task_id: str) -> None:
+        """Free a task's cached intermediate frames (keeps the task + its
+        output); a re-run re-renders from scratch."""
+        if task_id == self._queue.current_task_id:
+            QMessageBox.warning(
+                self,
+                "Delete cache",
+                "Cannot clear a running task's cache. Cancel it first.",
+            )
+            return
+        if not confirm(
+            self,
+            "delete_task_cache",
+            "Delete cache",
+            "Delete this task's cached intermediate frames to free disk space?\n\n"
+            "The final output (if any) is kept. If the task is re-run it will "
+            "re-render from scratch.",
+        ):
+            return
+        self._queue.delete_task_cache(task_id)
+        self._refresh_row(task_id)
+        self._recompute_sizes([task_id])
 
     def _delete_task(self, task_id: str) -> None:
         if task_id == self._queue.current_task_id:

@@ -320,3 +320,52 @@ class TestPauseTaskDoesNotAutostartNext:
         queue._on_completed("abc", BatchTaskStatus.PAUSED.value)  # noqa: SLF001
         assert scheduled == []   # did NOT auto-start the next task
         assert idle == [True]    # went idle instead
+
+
+class TestDeleteTaskCache:
+    """delete_task_cache frees a task's intermediate frames without touching
+    its status/output, and resets the resume markers so a re-run is clean."""
+
+    def test_wipes_dir_and_resets_markers_keeps_status(self, tmp_path):
+        store = BatchTaskStore(tmp_path / "store")
+        cache_root = tmp_path / "cache"
+        q = BatchQueue(store=store, cache_root=cache_root)
+        try:
+            t = BatchTask(
+                source_path=tmp_path / "s.png",
+                target_path=tmp_path / "t.mp4",
+                status=BatchTaskStatus.COMPLETED,
+                completed_stages=2,
+                last_completed_frame=99,
+                total_frames=100,
+                cache_fingerprint="abc",
+            )
+            store.save(t)
+            cache_dir = cache_root / t.id
+            (cache_dir / "stage0").mkdir(parents=True)
+            (cache_dir / "stage0" / "00000000.jpg").write_bytes(b"x" * 10)
+
+            assert q.delete_task_cache(t.id) is True
+            assert not cache_dir.exists()
+            reloaded = store.load(t.id)
+            # Output-bearing status + total are kept; resume markers reset.
+            assert reloaded.status is BatchTaskStatus.COMPLETED
+            assert reloaded.total_frames == 100
+            assert reloaded.completed_stages == 0
+            assert reloaded.last_completed_frame == -1
+            assert reloaded.cache_fingerprint == ""
+        finally:
+            q.stop()
+
+    def test_noop_on_running_task(self, tmp_path):
+        store = BatchTaskStore(tmp_path / "store")
+        q = BatchQueue(store=store, cache_root=tmp_path / "cache")
+        try:
+            t = BatchTask(
+                source_path=tmp_path / "s.png", target_path=tmp_path / "t.mp4",
+            )
+            store.save(t)
+            q._current_task_id = t.id  # noqa: SLF001 — pretend it's running
+            assert q.delete_task_cache(t.id) is False
+        finally:
+            q.stop()

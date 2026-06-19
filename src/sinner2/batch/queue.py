@@ -209,6 +209,32 @@ class BatchQueue(QObject):
         self._store.save(task)
         # Don't auto-start the queue — user clicks Start when ready.
 
+    @property
+    def cache_root(self) -> Path:
+        """Root holding every task's processed-frame cache (one dir per id)."""
+        return self._cache_root
+
+    def task_cache_dir(self, task_id: str) -> Path:
+        """The per-task cache dir (intermediate stage frames)."""
+        return self._cache_root / task_id
+
+    def delete_task_cache(self, task_id: str) -> bool:
+        """Free a task's processed-frame cache to reclaim disk WITHOUT changing
+        its status — a COMPLETED task keeps its final output; the intermediate
+        frames just go. Resets the resume markers so a later re-run re-renders
+        cleanly (the frames are gone). No-op (returns False) on the running task
+        — its cache is in active use. Returns True when the cache was cleared."""
+        if self._current_task_id == task_id:
+            return False
+        shutil.rmtree(self._cache_root / task_id, ignore_errors=True)
+        if self._store.exists(task_id):
+            task = self._store.load(task_id)
+            task.completed_stages = 0
+            task.last_completed_frame = -1
+            task.cache_fingerprint = ""
+            self._store.save(task)
+        return True
+
     # ---- Scheduling ----
 
     def _schedule_next(self) -> None:
