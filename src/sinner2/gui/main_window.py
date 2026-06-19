@@ -84,6 +84,7 @@ from sinner2.gui.widgets.face_detection_overlay import QFaceDetectionOverlay
 from sinner2.gui.widgets.face_map_panel import QFaceMapPanel
 from sinner2.gui.widgets.frame_display import QFrameDisplayWidget
 from sinner2.gui.fullscreen_controller import FullscreenController
+from sinner2.gui.settings_binder import SettingsBinder
 from sinner2.gui.widgets.fullscreen_control_bar import FullscreenControlBar
 from sinner2.gui.widgets.live_view import QLiveView
 from sinner2.gui.widgets.metrics_overlay import (
@@ -175,7 +176,7 @@ class SinnerMainWindow(QMainWindow):
         super().__init__(parent)
         self.setWindowTitle("sinner2")
         self.setWindowIcon(app_icon())
-        self._settings = user_settings.load()
+        self._settings_binder = SettingsBinder(user_settings.load())
         # Install the process-wide store backing every "Don't ask me again"
         # checkbox. Reads/writes the persisted suppression map through the same
         # authoritative _update_settings path, so child widgets that show a
@@ -2913,18 +2914,25 @@ class SinnerMainWindow(QMainWindow):
             return
         self._pickers.set_target(path)
 
+    @property
+    def _settings(self) -> "user_settings.Settings":
+        # Backed by SettingsBinder. Kept as a window alias so the ~30 reads and
+        # the tests that seed `win._settings = Settings()` on a bare __new__
+        # window keep working (the setter lazily builds the binder there).
+        return self._settings_binder.settings
+
+    @_settings.setter
+    def _settings(self, value: "user_settings.Settings") -> None:
+        binder = getattr(self, "_settings_binder", None)
+        if binder is None:
+            self._settings_binder = SettingsBinder(value)
+        else:
+            binder.set_settings(value)
+
     def _update_settings(self, **fields: object) -> None:
-        # Keep the in-memory copy authoritative even if the disk write fails:
-        # assign BEFORE save() so a transient OSError (full / read-only disk)
-        # can't leave self._settings stale while the UI shows the new value —
-        # that stale base would silently corrupt every later model_copy. Log the
-        # failure instead of swallowing it.
-        updated = self._settings.model_copy(update=fields)
-        self._settings = updated
-        try:
-            user_settings.save(updated)
-        except Exception as exc:  # noqa: BLE001 - never crash the GUI on a settings write
-            _log.warning("failed to persist settings: %s", exc)
+        # Assign-before-save lives in the binder (a stale in-memory copy after a
+        # failed write would corrupt every later model_copy).
+        self._settings_binder.update(**fields)
 
     def _restore_geometry_from_settings(self) -> bool:
         hex_str = self._settings.window_geometry_hex
