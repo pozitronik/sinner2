@@ -85,15 +85,12 @@ from sinner2.gui.widgets.face_map_panel import QFaceMapPanel
 from sinner2.gui.widgets.frame_display import QFrameDisplayWidget
 from sinner2.gui.cache_management_controller import CacheManagementController
 from sinner2.gui.fullscreen_controller import FullscreenController
+from sinner2.gui.metrics_overlay_controller import MetricsOverlayController
 from sinner2.gui.provider_status_controller import ProviderStatusController
 from sinner2.gui.settings_binder import SettingsBinder
 from sinner2.gui.widgets.fullscreen_control_bar import FullscreenControlBar
 from sinner2.gui.widgets.live_view import QLiveView
-from sinner2.gui.widgets.metrics_overlay import (
-    CumulativeRateTracker,
-    MetricsSample,
-    QMetricsOverlay,
-)
+from sinner2.gui.widgets.metrics_overlay import QMetricsOverlay
 from sinner2.gui.widgets.processor_controls import QProcessorControls
 from sinner2.gui.widgets.settings_dialog import QSettingsDialog
 from sinner2.gui.widgets.side_panel import QSidePanel
@@ -273,12 +270,16 @@ class SinnerMainWindow(QMainWindow):
         # of the rendered frame and inherits its z-order. Position is
         # managed manually via resizeEvent (no layout takes child widgets
         # for QFrameDisplayWidget).
-        self._write_rate = CumulativeRateTracker()
-        self._drop_rate = CumulativeRateTracker()
+        self._metrics_overlay_ctl = MetricsOverlayController(
+            controller_getter=lambda: self._controller,
+            update_settings=self._update_settings,
+            settings_getter=lambda: self._settings,
+        )
         self._metrics_overlay = QMetricsOverlay(
-            snapshot_fn=self._sample_metrics,
+            snapshot_fn=self._metrics_overlay_ctl.sample,
             parent=self._display,
         )
+        self._metrics_overlay_ctl.set_overlay(self._metrics_overlay)
         # Face-detection debug overlay: a transparent full-cover child of the
         # display, fed by a detection probe running on its own thread (so the
         # live preview never stalls). Off by default; toggled with F8.
@@ -1590,28 +1591,11 @@ class SinnerMainWindow(QMainWindow):
 
     # ---- Metrics overlay ----
 
-    def _reset_metrics_rates(self) -> None:
-        # Reset the cumulative write/drop rate trackers so the first reading
-        # after the overlay is (re-)shown is a fresh baseline, not a delta
-        # smeared over the whole interval the overlay was hidden (its timer is
-        # stopped while hidden, freezing the trackers' prev count/timestamp).
-        self._write_rate.reset()
-        self._drop_rate.reset()
-
     def _set_stats_visible(self, on: bool) -> None:
-        if on:
-            self._reset_metrics_rates()
-        self._metrics_overlay.setVisible(on)
-        if on:
-            self._reposition_metrics_overlay()
-        self._update_settings(metrics_overlay_visible=on)
+        self._metrics_overlay_ctl.set_visible(on)
 
     def _restore_metrics_overlay_state(self) -> None:
-        visible = bool(self._settings.metrics_overlay_visible)
-        if visible:
-            self._reset_metrics_rates()
-            self._reposition_metrics_overlay()
-        self._metrics_overlay.setVisible(visible)
+        visible = self._metrics_overlay_ctl.restore_state()
         self._set_button_checked(self._status_bar.stats_button, visible)
 
     def _set_visualiser_visible(self, on: bool) -> None:
@@ -1717,50 +1701,7 @@ class SinnerMainWindow(QMainWindow):
         self._status_bar.show_message(f"Preprocess: {message}", 4000)
 
     def _reposition_metrics_overlay(self) -> None:
-        # Anchor top-left of the frame display with an 8 px margin.
-        # Called on toggle-on and whenever the display resizes.
-        hint = self._metrics_overlay.sizeHint()
-        margin = 8
-        self._metrics_overlay.setGeometry(
-            margin,
-            margin,
-            hint.width(),
-            hint.height(),
-        )
-
-    def _sample_metrics(self) -> "MetricsSample | None":
-        # Called by the overlay's QTimer (~10 Hz). Returns None when no
-        # session is active so the overlay shows the placeholder.
-        executor = self._controller.executor()
-        if executor is None:
-            self._write_rate.reset()
-            self._drop_rate.reset()
-            return None
-        import time as _time
-
-        now = _time.monotonic()
-        buf_metrics = executor.metrics.get()
-        write_fps = self._write_rate.update(buf_metrics.write_completed, now)
-        drop_fps = self._drop_rate.update(buf_metrics.write_dropped, now)
-        return MetricsSample(
-            timestamp=now,
-            read_fps=executor.reads_per_second(),
-            process_fps=executor.processing_fps.get(),
-            write_fps=write_fps,
-            drop_fps=drop_fps,
-            cache_hit_ratio=buf_metrics.cache_hit_ratio,
-            memory_used_mb=buf_metrics.memory_used_bytes / 1024 / 1024,
-            work_outstanding=0,  # not surfaced by executor today; placeholder
-            work_capacity=0,
-            write_outstanding=buf_metrics.write_outstanding,
-            write_capacity=buf_metrics.write_max_outstanding,
-            total_drops=buf_metrics.write_dropped,
-            last_completed=executor.last_completed_frame(),
-            # Per-processor average ms over the last few seconds —
-            # the overlay surfaces this in a "P:" row so the user can
-            # see which processor in the chain owns the wall-clock.
-            processor_timings=executor.processor_timings(),
-        )
+        self._metrics_overlay_ctl.reposition()
 
     def resizeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         # Keep the overlay anchored to the frame display's top-right

@@ -1764,12 +1764,24 @@ class TestMetricsRateResetOnShow:
         from sinner2.config.settings import Settings
         from sinner2.gui import main_window as mw
 
+        from sinner2.gui.metrics_overlay_controller import MetricsOverlayController
+
         win = mw.SinnerMainWindow.__new__(mw.SinnerMainWindow)
         win._settings = Settings()  # noqa: SLF001
         win._write_rate = MagicMock()  # noqa: SLF001
         win._drop_rate = MagicMock()  # noqa: SLF001
         win._metrics_overlay = MagicMock()  # noqa: SLF001
         monkeypatch.setattr(mw.user_settings, "save", lambda _s: None)
+        # The rate-reset behaviour now lives in MetricsOverlayController; inject
+        # the mock trackers + overlay so the assertions still hold.
+        win._metrics_overlay_ctl = MetricsOverlayController(  # noqa: SLF001
+            controller_getter=lambda: MagicMock(),
+            update_settings=win._update_settings,  # noqa: SLF001
+            settings_getter=lambda: win._settings,  # noqa: SLF001
+            write_rate=win._write_rate,  # noqa: SLF001
+            drop_rate=win._drop_rate,  # noqa: SLF001
+        )
+        win._metrics_overlay_ctl.set_overlay(win._metrics_overlay)  # noqa: SLF001
         return win
 
     def test_show_resets_rate_trackers(self, monkeypatch):
