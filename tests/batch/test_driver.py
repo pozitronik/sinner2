@@ -965,3 +965,55 @@ class TestResolveFaceMap:
             self._task(tmp_path, store=None, face_map=fm.to_dict())
         )
         assert loaded is not None and len(loaded.identities) == 1 and geom is None
+
+
+class TestStageProgressSourceMapping:
+    """_stage_progress reports the ORIGINAL source frame (mapped through the
+    section plan) + the full source length, so the GUI knob tracks real frames
+    inside the section band rather than the renumbered 0..N stage position."""
+
+    def test_maps_completed_frame_through_plan(self):
+        from sinner2.batch.driver import BatchDriver
+
+        captured = []
+        cb = BatchDriver._stage_progress(  # noqa: SLF001
+            captured.append, stage_index=1, stage_count=3, stage_name="enh",
+            total=3, plan=[100, 101, 102], source_total=500,
+        )
+        cb(2)  # two frames done → latest completed is plan[2-1] = 101
+        p = captured[-1]
+        assert p.source_frame == 101
+        assert p.source_total == 500
+        assert p.stage_completed == 2 and p.stage_total == 3
+
+    def test_start_maps_to_first_section_frame(self):
+        from sinner2.batch.driver import BatchDriver
+
+        captured = []
+        cb = BatchDriver._stage_progress(  # noqa: SLF001
+            captured.append, 0, 3, "swap", 3, [100, 101, 102], 500,
+        )
+        cb(0)  # nothing done yet → knob parks at the section's first frame
+        assert captured[-1].source_frame == 100
+
+    def test_clamps_index_into_plan(self):
+        # EOF can shrink `total` below len(plan); the mapped index must stay in
+        # range rather than IndexError.
+        from sinner2.batch.driver import BatchDriver
+
+        captured = []
+        cb = BatchDriver._stage_progress(  # noqa: SLF001
+            captured.append, 0, 2, "swap", 9, [10, 11], 50,
+        )
+        cb(9)  # 9-1 clamps to plan[-1]
+        assert captured[-1].source_frame == 11
+
+    def test_empty_plan_reports_no_source_frame(self):
+        from sinner2.batch.driver import BatchDriver
+
+        captured = []
+        cb = BatchDriver._stage_progress(  # noqa: SLF001
+            captured.append, 0, 1, "passthrough", 0, [], 0,
+        )
+        cb(0)
+        assert captured[-1].source_frame == -1

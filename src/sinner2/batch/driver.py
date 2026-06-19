@@ -282,6 +282,9 @@ class BatchDriver:
                 SectionSet.of(task.sections) if task.sections else SectionSet.empty()
             )
             plan = sections.frame_plan(reader.frame_count)
+            # Full un-trimmed source length — the slider range the batch knob
+            # maps original frame indices onto (so the section band aligns).
+            source_total = reader.frame_count
             # `total` is the OUTPUT length (len of the plan), the role the
             # container frame_count plays for an un-trimmed task.
             total = len(plan)
@@ -303,7 +306,8 @@ class BatchDriver:
             for i, spec in enumerate(stages):
                 name = spec.name
                 stage_cb = self._stage_progress(
-                    progress_callback, i, progress_stage_count, name, total
+                    progress_callback, i, progress_stage_count, name, total,
+                    plan, source_total,
                 )
                 trusted = (
                     task.cleanup_mode is BatchCleanupMode.AUTO
@@ -396,7 +400,7 @@ class BatchDriver:
             )
             combine_cb = self._stage_progress(
                 progress_callback, stage_count, progress_stage_count,
-                combine_name, total,
+                combine_name, total, plan, source_total,
             )
             self._package_output(task, stage_dirs[-1], fps, ext, combine_cb)
             if combine_cb is not None:
@@ -568,13 +572,28 @@ class BatchDriver:
         stage_count: int,
         stage_name: str,
         total: int,
+        plan: list[int],
+        source_total: int,
     ) -> Callable[[int], None] | None:
         """Adapt run_stage's int (frames done in THIS stage) into a
-        BatchProgress carrying stage position + overall frame-units."""
+        BatchProgress carrying stage position + overall frame-units, plus the
+        ORIGINAL-timeline position so the GUI's batch knob tracks real frames.
+
+        ``plan`` maps the renumbered output index → original source frame (the
+        identity range for an un-trimmed task); ``source_total`` is the full
+        un-trimmed source length. Mapping the latest completed frame through the
+        plan keeps the position bar inside the section band for EVERY stage (the
+        renumbered stage_completed alone would jump back to 0)."""
         if progress_callback is None:
             return None
+        last = len(plan) - 1
 
         def emit(stage_completed: int) -> None:
+            # Latest completed frame's original index. Clamp into the plan (total
+            # can shrink below len(plan) at EOF; stage_completed is 0 at start).
+            source_frame = (
+                plan[min(max(stage_completed - 1, 0), last)] if last >= 0 else -1
+            )
             progress_callback(
                 BatchProgress(
                     stage_index=stage_index,
@@ -584,6 +603,8 @@ class BatchDriver:
                     stage_total=total,
                     overall_completed=stage_index * total + stage_completed,
                     overall_total=stage_count * total,
+                    source_frame=source_frame,
+                    source_total=source_total,
                 )
             )
 

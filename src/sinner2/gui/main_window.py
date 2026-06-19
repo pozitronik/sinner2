@@ -2569,13 +2569,21 @@ class SinnerMainWindow(QMainWindow):
 
     def _on_batch_progress(self, _task_id: str, progress: BatchProgress) -> None:
         # The editing surface is locked during a render, so repurpose the
-        # position bar to track the batch: set the slider range to the stage's
-        # frame count once (set_frame_count snaps the value to 0), then advance
-        # the playhead to the last rendered frame each tick.
-        if progress.stage_total != self._batch_slider_total:
-            self._batch_slider_total = progress.stage_total
-            self._transport.set_frame_count(progress.stage_total)
-        self._transport.set_current_frame(max(0, progress.stage_completed - 1))
+        # position bar to track the batch. Drive it in ORIGINAL-timeline
+        # coordinates (the full source length + the source frame index mapped
+        # through the section plan), so on a trimmed task the knob sits INSIDE
+        # the section band — consistently for every stage (swap / enhance /
+        # encode), not just the first. Older callers without the source fields
+        # (source_total == 0) fall back to the stage-relative position.
+        if progress.source_total > 0:
+            total, frame = progress.source_total, progress.source_frame
+        else:
+            total, frame = progress.stage_total, progress.stage_completed - 1
+        # set_frame_count snaps the value to 0, so only re-range when it changes.
+        if total != self._batch_slider_total:
+            self._batch_slider_total = total
+            self._transport.set_frame_count(total)
+        self._transport.set_current_frame(max(0, frame))
 
     def _on_batch_queue_idle(self) -> None:
         self._batch_active = False

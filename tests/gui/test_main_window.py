@@ -1200,6 +1200,50 @@ class TestBatchIntegration:
         window._on_add_to_batch()  # noqa: SLF001
         assert len(window._batch_store.list()) == 0  # noqa: SLF001
 
+    def test_batch_progress_knob_tracks_source_timeline(self, window):
+        # On a trimmed task the knob must sit on the REAL timeline (full source
+        # length + the source frame index), inside the section band, for every
+        # stage — not the renumbered 0..N stage position.
+        from unittest.mock import MagicMock
+
+        from sinner2.batch.task import BatchProgress
+
+        window._transport.set_frame_count = MagicMock()  # noqa: SLF001
+        window._transport.set_current_frame = MagicMock()  # noqa: SLF001
+        window._batch_slider_total = -1  # noqa: SLF001
+        # Enhancer stage (index 1), 2 frames done; source maps to frame 141.
+        window._on_batch_progress(  # noqa: SLF001
+            "t",
+            BatchProgress(
+                stage_index=1, stage_count=3, stage_name="enh",
+                stage_completed=2, stage_total=60,
+                overall_completed=62, overall_total=180,
+                source_frame=141, source_total=500,
+            ),
+        )
+        window._transport.set_frame_count.assert_called_once_with(500)  # noqa: SLF001
+        window._transport.set_current_frame.assert_called_with(141)  # noqa: SLF001
+
+    def test_batch_progress_falls_back_without_source_fields(self, window):
+        # Older callers (source_total == 0) keep the stage-relative behaviour.
+        from unittest.mock import MagicMock
+
+        from sinner2.batch.task import BatchProgress
+
+        window._transport.set_frame_count = MagicMock()  # noqa: SLF001
+        window._transport.set_current_frame = MagicMock()  # noqa: SLF001
+        window._batch_slider_total = -1  # noqa: SLF001
+        window._on_batch_progress(  # noqa: SLF001
+            "t",
+            BatchProgress(
+                stage_index=0, stage_count=2, stage_name="swap",
+                stage_completed=5, stage_total=10,
+                overall_completed=5, overall_total=20,
+            ),
+        )
+        window._transport.set_frame_count.assert_called_once_with(10)  # noqa: SLF001
+        window._transport.set_current_frame.assert_called_with(4)  # noqa: SLF001
+
     def test_add_to_batch_persists_task_and_appends_row(
         self, window, qtbot, tmp_path, monkeypatch
     ):

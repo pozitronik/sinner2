@@ -255,6 +255,15 @@ class BatchProgress:
     stage_total: int
     overall_completed: int
     overall_total: int
+    # Original-timeline position for the GUI's batch position bar. stage_completed
+    # / stage_total are renumbered 0..N (section frames are reindexed contiguous),
+    # so on a trimmed task they don't line up with the timeline. source_frame is
+    # the ORIGINAL source index of the latest completed frame (mapped through the
+    # section plan) and source_total the full un-trimmed length, so the knob
+    # tracks real frames INSIDE the section band. source_total == 0 → unknown
+    # (older callers); the GUI then falls back to the stage-relative position.
+    source_frame: int = -1
+    source_total: int = 0
 
     @property
     def overall_fraction(self) -> float:
