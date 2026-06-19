@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
@@ -105,37 +106,21 @@ _VIDEO_BACKENDS: dict[str, VideoBackend] = {
 # file, aliased to the historical private names so the body below is unchanged.
 
 
-def _label_for_playback_mode(mode: PlaybackMode) -> str | None:
-    for label, value in _PLAYBACK_MODES.items():
-        if value is mode:
+def _label_for(value: object, mapping: Mapping[str, object]) -> str | None:
+    """The display label whose mapped value IS ``value`` (identity match), or None
+    — the inverse of the label→value option dicts (playback / cache / format /
+    video-backend), which all hold singleton enum members."""
+    for label, mapped in mapping.items():
+        if mapped is value:
             return label
     return None
 
 
 def _label_for_strategy_name(name: str) -> str | None:
+    """The strategy dict maps label→class, so match on the class name (the token
+    persisted in settings), not identity."""
     for label, cls in _STRATEGIES.items():
         if cls.__name__ == name:
-            return label
-    return None
-
-
-def _label_for_cache_mode(mode: CacheMode) -> str | None:
-    for label, value in _CACHE_MODES.items():
-        if value is mode:
-            return label
-    return None
-
-
-def _label_for_image_format(fmt: ImageFormat) -> str | None:
-    for label, value in _IMAGE_FORMATS.items():
-        if value is fmt:
-            return label
-    return None
-
-
-def _label_for_video_backend(backend: VideoBackend) -> str | None:
-    for label, value in _VIDEO_BACKENDS.items():
-        if value is backend:
             return label
     return None
 
@@ -1649,15 +1634,15 @@ class QProcessorControls(QWidget):
             if realtime_workers is not None:
                 self._worker_count.setValue(realtime_workers)
             if playback_mode is not None:
-                label = _label_for_playback_mode(playback_mode)
+                label = _label_for(playback_mode, _PLAYBACK_MODES)
                 if label is not None:
                     self._playback_combo.setCurrentText(label)
             if cache_mode is not None:
-                label = _label_for_cache_mode(cache_mode)
+                label = _label_for(cache_mode, _CACHE_MODES)
                 if label is not None:
                     self._cache_mode_combo.setCurrentText(label)
             if image_format is not None:
-                label = _label_for_image_format(image_format)
+                label = _label_for(image_format, _IMAGE_FORMATS)
                 if label is not None:
                     self._image_format_combo.setCurrentText(label)
             if image_quality is not None:
@@ -1669,7 +1654,7 @@ class QProcessorControls(QWidget):
             if write_queue_size is not None:
                 self._write_queue_size.setValue(write_queue_size)
             if video_backend is not None:
-                label = _label_for_video_backend(video_backend)
+                label = _label_for(video_backend, _VIDEO_BACKENDS)
                 if label is not None:
                     self._video_backend_combo.setCurrentText(label)
             if reader_pool_size is not None:
