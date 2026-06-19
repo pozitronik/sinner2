@@ -23,6 +23,10 @@ from sinner2.config.execution import DEFAULT_ONNX_PROVIDERS
 from sinner2.pipeline.face_analyser import FaceAnalyser
 from sinner2.pipeline.face_geometry import feather_mask, paste_back
 from sinner2.pipeline.model_cache import get_onnx_session, release_onnx_session
+from sinner2.pipeline.processors.bfr_common import (
+    denormalize_restored_face,
+    normalize_aligned_face,
+)
 from sinner2.types import Frame
 
 _ALIGN_SIZE = 512
@@ -51,12 +55,9 @@ def _restore_aligned(
 
     RGB, normalized to [-1,1], NCHW in; [-1,1] out (clipped). No fidelity input.
     """
-    rgb = cv2.cvtColor(aligned_bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-    chw = np.ascontiguousarray(((rgb - 0.5) / 0.5).transpose(2, 0, 1)[None], np.float32)
+    chw = normalize_aligned_face(aligned_bgr)
     out = session.run([out_name], {in_name: chw})[0]
-    img = (np.clip(out[0], -1.0, 1.0) + 1.0) / 2.0
-    img = (img.transpose(1, 2, 0) * 255.0).round().astype(np.uint8)
-    return cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+    return denormalize_restored_face(out)
 
 
 class PlainBfrBackend:
