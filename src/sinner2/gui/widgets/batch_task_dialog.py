@@ -47,6 +47,16 @@ from sinner2.batch.task import (
 )
 from sinner2.config.execution import available_torch_devices
 from sinner2.config.target import Target, TargetKind
+from sinner2.gui.widgets.model_choices import (
+    DETECTOR_MODELS,
+    ENHANCER_MODELS,
+    OCCLUDER_MODELS,
+    OCCLUSION_MODES,
+    OCCLUSION_PARSERS,
+    ROTATION_SOURCES,
+    SWAPPER_MODELS,
+    UPSCALER_MODELS,
+)
 from sinner2.gui.widgets.onnx_providers_row import OnnxProvidersRow
 from sinner2.io.cv2_video_target_reader import CV2VideoTargetReader
 from sinner2.io.frame_resize import scaled_dims
@@ -197,11 +207,7 @@ class QBatchTaskDialog(QDialog):
         )
         faces_form.addRow("Use face map:", self._use_face_map)
         self._detector = QComboBox()
-        for value, label in (
-            ("buffalo_l", "buffalo_l (full pack, gender + pose)"),
-            ("yoloface", "YOLOFace 8n (fast, detection-only)"),
-            ("scrfd_2.5g", "SCRFD 2.5g (fast, detection-only)"),
-        ):
+        for value, label in DETECTOR_MODELS:
             self._detector.addItem(label, value)
             if value == task.swapper_detector:
                 self._detector.setCurrentIndex(self._detector.count() - 1)
@@ -254,17 +260,7 @@ class QBatchTaskDialog(QDialog):
         self._swapper_box = swap_box
         swap_form = QFormLayout(swap_box)
         self._swapper_model = QComboBox()
-        for value, label in (
-            ("inswapper_128", "inswapper_128 (default)"),
-            ("reswapper_128", "ReSwapper 128"),
-            ("ghost_1_256", "Ghost 1 (256)"),
-            ("ghost_2_256", "Ghost 2 (256)"),
-            ("ghost_3_256", "Ghost 3 (256)"),
-            ("simswap_256", "SimSwap (256, non-commercial)"),
-            ("uniface_256", "UniFace (256)"),
-            ("hyperswap_1a_256", "Hyperswap 1a (256, newest)"),
-            ("hyperswap_1b_256", "Hyperswap 1b (256, newest)"),
-        ):
+        for value, label in SWAPPER_MODELS:
             self._swapper_model.addItem(label, value)
             if value == task.swapper_model:
                 self._swapper_model.setCurrentIndex(self._swapper_model.count() - 1)
@@ -332,11 +328,7 @@ class QBatchTaskDialog(QDialog):
         )
         rotation_form.addRow("Re-detect uprighted:", self._rotation_redetect)
         self._rotation_source = QComboBox()
-        for label, value in (
-            ("Eye keypoints", "keypoints"),
-            ("3D pose estimate", "pose"),
-            ("2dfan4 landmarks", "landmark_68"),
-        ):
+        for label, value in ROTATION_SOURCES:
             self._rotation_source.addItem(label, value)
             if value == task.swapper_rotation_angle_source:
                 self._rotation_source.setCurrentIndex(self._rotation_source.count() - 1)
@@ -357,11 +349,7 @@ class QBatchTaskDialog(QDialog):
         # The mode comes FIRST — it decides which of the two dependent rows
         # below it (parser / occluder) apply.
         self._occlusion_mode = QComboBox()
-        for value, label in (
-            ("region", "Region (face parser)"),
-            ("occluder", "Occluder (XSeg — sees hands/objects)"),
-            ("both", "Both (strictest)"),
-        ):
+        for value, label in OCCLUSION_MODES:
             self._occlusion_mode.addItem(label, value)
             if value == task.swapper_occlusion_mode:
                 self._occlusion_mode.setCurrentIndex(
@@ -372,12 +360,7 @@ class QBatchTaskDialog(QDialog):
         )
         occlusion_form.addRow("Mask source:", self._occlusion_mode)
         self._occlusion_parser = QComboBox()
-        for value, label in (
-            ("bisenet", "BiSeNet (torch, sharper)"),
-            ("parsenet", "ParseNet (torch, GFPGAN default)"),
-            ("bisenet_onnx_34", "BiSeNet-34 (ONNX, parallel workers)"),
-            ("bisenet_onnx_18", "BiSeNet-18 (ONNX, parallel + faster)"),
-        ):
+        for value, label in OCCLUSION_PARSERS:
             self._occlusion_parser.addItem(label, value)
             if value == task.swapper_occlusion_parser:
                 self._occlusion_parser.setCurrentIndex(
@@ -385,13 +368,7 @@ class QBatchTaskDialog(QDialog):
                 )
         occlusion_form.addRow("Mask parser:", self._occlusion_parser)
         self._occluder_model = QComboBox()
-        for value, label in (
-            ("xseg_1", "XSeg 1"),
-            ("xseg_2", "XSeg 2"),
-            ("xseg_3", "XSeg 3"),
-            ("xseg_many", "XSeg all three (strictest, 3x cost)"),
-            ("depth", "Depth (experimental, closer-than-face)"),
-        ):
+        for value, label in OCCLUDER_MODELS:
             self._occluder_model.addItem(label, value)
             if value == task.swapper_occluder_model:
                 self._occluder_model.setCurrentIndex(
@@ -409,15 +386,7 @@ class QBatchTaskDialog(QDialog):
         self._enhancer_box = enh_box
         enh_form = QFormLayout(enh_box)
         self._enhancer_model = QComboBox()
-        for value, label in (
-            ("gfpgan", "GFPGAN (whole-frame, Upscale knob)"),
-            ("gfpgan_onnx", "GFPGAN (ONNX, much faster)"),
-            ("codeformer", "CodeFormer (ONNX, fidelity knob)"),
-            ("gpen_512", "GPEN-512 (ONNX, more detail)"),
-            ("gpen_1024", "GPEN-1024 (ONNX, higher-res)"),
-            ("gpen_2048", "GPEN-2048 (ONNX, highest-res; heavy)"),
-            ("restoreformer_pp", "RestoreFormer++ (ONNX)"),
-        ):
+        for value, label in ENHANCER_MODELS:
             self._enhancer_model.addItem(label, value)
             if value == task.enhancer_model:
                 self._enhancer_model.setCurrentIndex(self._enhancer_model.count() - 1)
@@ -495,17 +464,7 @@ class QBatchTaskDialog(QDialog):
         self._upscaler_box = up_box
         up_form = QFormLayout(up_box)
         self._upscaler_model = QComboBox()
-        for value, label in (
-            ("general-x4v3", "Real-ESRGAN general x4 v3 (fast)"),
-            ("x4plus", "Real-ESRGAN x4plus (higher quality)"),
-            ("x2plus", "Real-ESRGAN x2plus"),
-            ("swinir-m", "SwinIR x4 (sharp, slow)"),
-            ("hat-x4", "HAT x4 (ONNX, very slow — stills only)"),
-            ("ultrasharp-x4", "4x-UltraSharp (ONNX)"),
-            ("span-x4", "SPAN x4 (ONNX, fast)"),
-            ("real-esrgan-x4-fp16", "Real-ESRGAN x4 fp16 (ONNX)"),
-            ("real-esrgan-x2-fp16", "Real-ESRGAN x2 fp16 (ONNX)"),
-        ):
+        for value, label in UPSCALER_MODELS:
             self._upscaler_model.addItem(label, value)
             if value == task.upscaler_model:
                 self._upscaler_model.setCurrentIndex(self._upscaler_model.count() - 1)

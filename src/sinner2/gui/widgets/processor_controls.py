@@ -28,11 +28,7 @@ from sinner2.pipeline.processors.face_enhancer import (
     EnhancerModel,
     FaceEnhancerParams,
 )
-from sinner2.pipeline.processors.occlusion import (
-    FaceParser,
-    OccluderModel,
-    OcclusionMaskMode,
-)
+from sinner2.pipeline.processors.occlusion import OcclusionMaskMode
 from sinner2.pipeline.processors.swapper_models import is_insightface_model
 from sinner2.pipeline.processors.upscaler import (
     UpscalerModel,
@@ -48,6 +44,16 @@ from sinner2.pipeline.processors.face_swapper import (
     TargetSex,
 )
 from sinner2.gui.processor_snapshot import ProcessorParamsSnapshot
+from sinner2.gui.widgets.model_choices import (
+    DETECTOR_MODELS as _DETECTOR_MODELS,
+    ENHANCER_MODELS as _ENHANCER_MODELS,
+    OCCLUDER_MODELS as _OCCLUDER_MODELS,
+    OCCLUSION_MODES as _OCCLUSION_MODES,
+    OCCLUSION_PARSERS as _OCCLUSION_PARSERS,
+    ROTATION_SOURCES as _ROTATION_SOURCES,
+    SWAPPER_MODELS as _SWAPPER_MODELS,
+    UPSCALER_MODELS as _UPSCALER_MODELS,
+)
 from sinner2.gui.widgets.onnx_providers_row import OnnxProvidersRow
 from sinner2.pipeline.skip_strategy import (
     BestEffortStrategy,
@@ -94,72 +100,9 @@ _VIDEO_BACKENDS: dict[str, VideoBackend] = {
     "cv2 (in-place seek; better on slow / network sources)": VideoBackend.CV2,
 }
 
-_ROTATION_SOURCES: list[tuple[str, str]] = [
-    ("Eye keypoints", RotationAngleSource.KEYPOINTS.value),
-    ("3D pose estimate", RotationAngleSource.POSE.value),
-    ("2dfan4 landmarks", RotationAngleSource.LANDMARK_68.value),
-]
-
-_SWAPPER_MODELS: list[tuple[str, str]] = [
-    (SwapperModel.INSWAPPER_128.value, "inswapper_128 (default, InsightFace)"),
-    (SwapperModel.RESWAPPER_128.value, "ReSwapper 128 (open reproduction)"),
-    (SwapperModel.GHOST_1_256.value, "Ghost 1 (256)"),
-    (SwapperModel.GHOST_2_256.value, "Ghost 2 (256)"),
-    (SwapperModel.GHOST_3_256.value, "Ghost 3 (256, heaviest)"),
-    (SwapperModel.SIMSWAP_256.value, "SimSwap (256, non-commercial)"),
-    (SwapperModel.UNIFACE_256.value, "UniFace (256, pose-aware)"),
-    (SwapperModel.HYPERSWAP_1A_256.value, "Hyperswap 1a (256, newest)"),
-    (SwapperModel.HYPERSWAP_1B_256.value, "Hyperswap 1b (256, newest)"),
-]
-
-_DETECTOR_MODELS: list[tuple[str, str]] = [
-    (DetectorModel.BUFFALO_L.value, "buffalo_l (full pack, gender + pose)"),
-    (DetectorModel.YOLOFACE.value, "YOLOFace 8n (fast, detection-only)"),
-    (DetectorModel.SCRFD_2_5G.value, "SCRFD 2.5g (fast, detection-only)"),
-]
-
-_ENHANCER_MODELS: list[tuple[str, str]] = [
-    (EnhancerModel.GFPGAN.value, "GFPGAN (whole-frame, Upscale knob)"),
-    (EnhancerModel.GFPGAN_ONNX.value, "GFPGAN (ONNX, much faster)"),
-    (EnhancerModel.CODEFORMER.value, "CodeFormer (ONNX, fidelity knob)"),
-    (EnhancerModel.GPEN_512.value, "GPEN-512 (ONNX, more detail)"),
-    (EnhancerModel.GPEN_1024.value, "GPEN-1024 (ONNX, higher-res)"),
-    (EnhancerModel.GPEN_2048.value, "GPEN-2048 (ONNX, highest-res; heavy)"),
-    (EnhancerModel.RESTOREFORMER_PP.value, "RestoreFormer++ (ONNX)"),
-]
-
-_UPSCALER_MODELS: list[tuple[str, str]] = [
-    (UpscalerModel.GENERAL_X4V3.value, "Real-ESRGAN general x4 v3 (fast, small)"),
-    (UpscalerModel.X4PLUS.value, "Real-ESRGAN x4plus (higher quality, heavy)"),
-    (UpscalerModel.X2PLUS.value, "Real-ESRGAN x2plus"),
-    (UpscalerModel.SWINIR_M.value, "SwinIR x4 (transformer, sharp, slow)"),
-    (UpscalerModel.HAT_X4.value, "HAT x4 (ONNX, very slow — stills only)"),
-    (UpscalerModel.ULTRASHARP_X4.value, "4x-UltraSharp (ONNX)"),
-    (UpscalerModel.SPAN_X4.value, "SPAN x4 (ONNX, fast)"),
-    (UpscalerModel.REAL_ESRGAN_X4_FP16.value, "Real-ESRGAN x4 fp16 (ONNX)"),
-    (UpscalerModel.REAL_ESRGAN_X2_FP16.value, "Real-ESRGAN x2 fp16 (ONNX)"),
-]
-
-_OCCLUSION_PARSERS: list[tuple[str, str]] = [
-    (FaceParser.BISENET.value, "BiSeNet (torch, sharper)"),
-    (FaceParser.PARSENET.value, "ParseNet (torch, GFPGAN default)"),
-    (FaceParser.BISENET_ONNX_34.value, "BiSeNet-34 (ONNX, parallel workers)"),
-    (FaceParser.BISENET_ONNX_18.value, "BiSeNet-18 (ONNX, parallel + faster)"),
-]
-
-_OCCLUSION_MODES: list[tuple[str, str]] = [
-    (OcclusionMaskMode.REGION.value, "Region (face parser)"),
-    (OcclusionMaskMode.OCCLUDER.value, "Occluder (XSeg — sees hands/objects)"),
-    (OcclusionMaskMode.BOTH.value, "Both (strictest)"),
-]
-
-_OCCLUDER_MODELS: list[tuple[str, str]] = [
-    (OccluderModel.XSEG_1.value, "XSeg 1"),
-    (OccluderModel.XSEG_2.value, "XSeg 2"),
-    (OccluderModel.XSEG_3.value, "XSeg 3"),
-    (OccluderModel.XSEG_MANY.value, "XSeg all three (strictest, 3x cost)"),
-    (OccluderModel.DEPTH.value, "Depth (experimental, closer-than-face)"),
-]
+# Model/option combo catalogs live in gui.widgets.model_choices (the single
+# source of truth shared with the batch task form); imported at the top of the
+# file, aliased to the historical private names so the body below is unchanged.
 
 
 def _label_for_playback_mode(mode: PlaybackMode) -> str | None:
