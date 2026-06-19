@@ -74,6 +74,7 @@ from sinner2.gui.session_capabilities import (
     SessionKind,
 )
 from sinner2.gui.session_facade import SessionFacade
+from sinner2.gui.project import PROJECT_SUFFIX, Project
 from sinner2.gui.widgets.batch_task_dialog import QBatchTaskDialog
 from sinner2.gui.widgets.batch_view import QBatchView
 from sinner2.gui.widgets.models_view import QModelsView
@@ -373,6 +374,10 @@ class SinnerMainWindow(QMainWindow):
         self._status_bar = QStatusActionBar()
         layout.addWidget(self._status_bar)
         self.setCentralWidget(central)
+        # File menu (Open / Save project). The current project's file, if any,
+        # so Save writes back to it instead of re-prompting.
+        self._project_path: Path | None = None
+        self._build_file_menu()
         # Drag a media file onto the window (the preview) to load it: videos →
         # target, images → source. The picker ROWS accept their own drops too
         # (forcing the destination regardless of type); this catches drops
@@ -1364,6 +1369,115 @@ class SinnerMainWindow(QMainWindow):
     def _show_error(self, message: str) -> None:
         self._status_bar.show_message(message, 5000)
         QMessageBox.critical(self, "sinner2", message)
+
+    # ---- Project save / restore ----
+
+    def _build_file_menu(self) -> None:
+        file_menu = self.menuBar().addMenu("&File")
+        open_act = file_menu.addAction("Open Project…")
+        open_act.setShortcut("Ctrl+Shift+O")  # Ctrl+S/O are taken by save-frame
+        open_act.triggered.connect(self._on_open_project)
+        file_menu.addSeparator()
+        save_act = file_menu.addAction("Save Project")
+        save_act.setShortcut("Ctrl+Shift+S")
+        save_act.triggered.connect(self._on_save_project)
+        save_as_act = file_menu.addAction("Save Project As…")
+        save_as_act.triggered.connect(self._on_save_project_as)
+
+    def _set_project_path(self, path: Path | None) -> None:
+        self._project_path = path
+        self.setWindowTitle(f"sinner2 — {path.name}" if path is not None else "sinner2")
+
+    def _capture_project(self) -> Project:
+        """Snapshot the current working state into a Project value object."""
+        sections = self._transport.sections()
+        return Project(
+            source_path=self._pickers.source_path(),
+            target_path=self._pickers.target_path(),
+            sections=None if sections.is_empty() else sections.to_pairs(),
+            processor=self._processors.snapshot().to_settings_kwargs(),
+        )
+
+    def _apply_project(self, project: Project) -> None:
+        """Restore a project by re-driving the normal load path: apply the chain
+        config (via the settings-restore path), set source + target (the pickers
+        emit → the session builds), then override the section selection."""
+        # Chain config: coerce the stored string tokens back to enums by
+        # re-validating through the Settings model, then apply to the controls.
+        if project.processor:
+            merged = self._settings.model_dump()
+            merged.update(project.processor)
+            try:
+                self._settings = user_settings.Settings.model_validate(merged)
+                user_settings.save(self._settings)
+            except Exception as exc:  # noqa: BLE001 — a bad field shouldn't abort
+                _log.warning("project chain config rejected: %s", exc)
+            else:
+                self._restore_processor_settings()
+        # Media — setting the pickers emits, reusing the file-pick load flow
+        # (which builds the session and restores the target's saved sections).
+        if project.source_path is not None:
+            self._pickers.set_source(project.source_path)
+        if project.target_path is not None:
+            self._pickers.set_target(project.target_path)
+        # The project's selection overrides the target's remembered one (or
+        # clears it when the project had none).
+        sections = (
+            SectionSet.of(project.sections)
+            if project.sections
+            else SectionSet.empty()
+        )
+        self._transport.set_sections(sections)
+        self._controller.set_sections(sections)
+        if project.target_path is not None:
+            self._persist_sections(project.target_path, sections)
+
+    def _on_open_project(self) -> None:
+        start = str(self._project_path.parent) if self._project_path else ""
+        path_str, _ = QFileDialog.getOpenFileName(
+            self, "Open project", start, f"Sinner project (*{PROJECT_SUFFIX})"
+        )
+        if not path_str:
+            return
+        try:
+            project = Project.load(Path(path_str))
+        except (OSError, ValueError) as exc:  # JSONDecodeError ⊂ ValueError
+            QMessageBox.warning(
+                self, "Open project", f"Couldn't open the project:\n{exc}"
+            )
+            return
+        self._apply_project(project)
+        self._set_project_path(Path(path_str))
+
+    def _on_save_project(self) -> None:
+        if self._project_path is None:
+            self._on_save_project_as()
+            return
+        self._write_project(self._project_path)
+
+    def _on_save_project_as(self) -> None:
+        start = str(self._project_path) if self._project_path else ""
+        path_str, _ = QFileDialog.getSaveFileName(
+            self, "Save project as", start, f"Sinner project (*{PROJECT_SUFFIX})"
+        )
+        if not path_str:
+            return
+        path = Path(path_str)
+        if path.suffix != PROJECT_SUFFIX:
+            path = path.with_suffix(PROJECT_SUFFIX)
+        if self._write_project(path):
+            self._set_project_path(path)
+
+    def _write_project(self, path: Path) -> bool:
+        try:
+            self._capture_project().save(path)
+        except OSError as exc:
+            QMessageBox.warning(
+                self, "Save project", f"Couldn't save the project:\n{exc}"
+            )
+            return False
+        self._status_bar.show_message(f"Project saved: {path.name}", 3000)
+        return True
 
     # ---- Drag-and-drop loading ----
 

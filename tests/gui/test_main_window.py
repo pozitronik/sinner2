@@ -2442,3 +2442,66 @@ class TestDragAndDrop:
         window._batch_active = True  # noqa: SLF001 — editing locked
         window.dropEvent(self._event([tmp_path / "clip.mp4"]))
         window._pickers.set_target.assert_not_called()  # noqa: SLF001
+
+
+class TestProjectSaveRestore:
+    """File-menu project save/open: capture the working state, write/read a
+    .sinner file, and re-drive the load path on open."""
+
+    def test_capture_project_includes_chain_config(self, window):
+        from sinner2.gui.project import Project
+
+        proj = window._capture_project()  # noqa: SLF001
+        assert isinstance(proj, Project)
+        assert "swapper_model" in proj.processor
+        assert "realtime_workers" in proj.processor
+
+    def test_write_project_creates_loadable_file(self, window, tmp_path):
+        from sinner2.gui.project import Project
+
+        f = tmp_path / "p.sinner"
+        assert window._write_project(f) is True  # noqa: SLF001
+        loaded = Project.load(f)
+        assert "swapper_model" in loaded.processor
+
+    def test_set_project_path_updates_title(self, window, tmp_path):
+        window._set_project_path(tmp_path / "myproj.sinner")  # noqa: SLF001
+        assert "myproj.sinner" in window.windowTitle()
+        window._set_project_path(None)  # noqa: SLF001
+        assert window.windowTitle() == "sinner2"
+
+    def test_save_without_path_prompts_save_as(self, window, monkeypatch):
+        from unittest.mock import MagicMock
+
+        window._project_path = None  # noqa: SLF001
+        window._on_save_project_as = MagicMock()  # noqa: SLF001
+        window._on_save_project()  # noqa: SLF001
+        window._on_save_project_as.assert_called_once()  # noqa: SLF001
+
+    def test_apply_project_redrives_load_path(self, window, tmp_path, monkeypatch):
+        import sinner2.gui.main_window as mw
+        from unittest.mock import MagicMock
+
+        from sinner2.gui.project import Project
+
+        monkeypatch.setattr(mw.user_settings, "save", lambda _s: None)
+        window._restore_processor_settings = MagicMock()  # noqa: SLF001
+        window._pickers.set_source = MagicMock()  # noqa: SLF001
+        window._pickers.set_target = MagicMock()  # noqa: SLF001
+        window._transport.set_sections = MagicMock()  # noqa: SLF001
+        window._controller.set_sections = MagicMock()  # noqa: SLF001
+        window._persist_sections = MagicMock()  # noqa: SLF001
+        src, tgt = tmp_path / "s.png", tmp_path / "t.mp4"
+        proj = Project(
+            source_path=src, target_path=tgt, sections=[[5, 9]],
+            processor={"realtime_workers": 7},
+        )
+        window._apply_project(proj)  # noqa: SLF001
+        window._restore_processor_settings.assert_called_once()  # noqa: SLF001
+        window._pickers.set_source.assert_called_once_with(src)  # noqa: SLF001
+        window._pickers.set_target.assert_called_once_with(tgt)  # noqa: SLF001
+        assert window._transport.set_sections.called  # noqa: SLF001
+        assert window._controller.set_sections.called  # noqa: SLF001
+        window._persist_sections.assert_called_once()  # noqa: SLF001
+        # The stored chain field was coerced into the live settings.
+        assert window._settings.realtime_workers == 7  # noqa: SLF001
