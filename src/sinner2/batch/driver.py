@@ -481,10 +481,11 @@ class BatchDriver:
                 ),
             )
             device = task.enhancer_execution.device
+            enh_providers = list(task.enhancer_execution.providers)
             stages.append(StageSpec(
                 name="faceenhancer",
-                factory=lambda p=enhancer_params, d=device: FaceEnhancer(
-                    params=p, device=d
+                factory=lambda p=enhancer_params, d=device, eps=enh_providers: (
+                    FaceEnhancer(params=p, device=d, providers=eps)
                 ),
                 thread_safe=FaceEnhancer.thread_safe,
                 workers=task.enhancer_execution.workers,
@@ -496,10 +497,11 @@ class BatchDriver:
                 fp16=task.upscaler_fp16,
             )
             up_device = task.upscaler_execution.device
+            up_providers = list(task.upscaler_execution.providers)
             stages.append(StageSpec(
                 name="upscaler",
-                factory=lambda p=upscaler_params, d=up_device: Upscaler(
-                    params=p, device=d
+                factory=lambda p=upscaler_params, d=up_device, eps=up_providers: (
+                    Upscaler(params=p, device=d, providers=eps)
                 ),
                 thread_safe=Upscaler.thread_safe,
                 workers=task.upscaler_execution.workers,

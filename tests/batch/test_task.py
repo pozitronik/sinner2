@@ -14,7 +14,7 @@ from sinner2.batch.task import (
     BatchTaskStatus,
     resolve_output_path,
 )
-from sinner2.config.execution import OnnxExecution, TorchExecution
+from sinner2.config.execution import HybridExecution, OnnxExecution
 from sinner2.io.video_backend import VideoBackend
 from sinner2.pipeline.image_writer import ImageFormat
 
@@ -59,11 +59,11 @@ class TestBatchTaskDefaults:
 
     def test_execution_profiles_default_per_processor(self, tmp_path):
         t = _task(tmp_path)
-        # Swapper is ONNX (providers + workers); enhancer is torch (device +
-        # workers). Worker defaults differ: swapper rides one shared session,
-        # the enhancer needs an instance per worker.
+        # Swapper is ONNX (providers + workers); enhancer is hybrid (torch
+        # device + ONNX providers + workers). Worker defaults differ: swapper
+        # rides one shared session, the enhancer needs an instance per worker.
         assert isinstance(t.swapper_execution, OnnxExecution)
-        assert isinstance(t.enhancer_execution, TorchExecution)
+        assert isinstance(t.enhancer_execution, HybridExecution)
         assert t.swapper_execution.workers == DEFAULT_SWAPPER_WORKERS
         assert t.enhancer_execution.workers == DEFAULT_ENHANCER_WORKERS
         assert t.enhancer_execution.device == "auto"
@@ -96,7 +96,7 @@ class TestBatchTaskRoundtrip:
             swapper_execution=OnnxExecution(
                 workers=8, providers=["CUDAExecutionProvider"]
             ),
-            enhancer_execution=TorchExecution(workers=3, device="cuda:1"),
+            enhancer_execution=HybridExecution(workers=3, device="cuda:1"),
             video_backend=VideoBackend.CV2,
             reader_pool_size=4,
             image_format=ImageFormat.PNG,

@@ -28,7 +28,7 @@ from pathlib import Path
 from pydantic import Field
 
 from sinner2.config.base import SinnerBaseModel
-from sinner2.config.execution import OnnxExecution, TorchExecution
+from sinner2.config.execution import HybridExecution, OnnxExecution
 from sinner2.io.video_backend import VideoBackend
 from sinner2.pipeline.image_writer import ImageFormat
 
@@ -157,17 +157,18 @@ class BatchTask(SinnerBaseModel):
     upscaler_fp16: bool = True
 
     # ---- Execution config (throughput-affecting) ----
-    # Per-processor profiles: the swapper is ONNX (providers), the enhancer is
-    # PyTorch (device). Each carries its own worker count — they run as
-    # separate stages, so there's no single shared pool size.
+    # Per-processor profiles: the swapper is ONNX (providers); the enhancer and
+    # upscaler are HYBRID — a torch backend (device) OR an ONNX-runtime backend
+    # (providers), chosen by their selected model. Each carries its own worker
+    # count — they run as separate stages, so there's no single shared pool size.
     swapper_execution: OnnxExecution = Field(
         default_factory=lambda: OnnxExecution(workers=DEFAULT_SWAPPER_WORKERS)
     )
-    enhancer_execution: TorchExecution = Field(
-        default_factory=lambda: TorchExecution(workers=DEFAULT_ENHANCER_WORKERS)
+    enhancer_execution: HybridExecution = Field(
+        default_factory=lambda: HybridExecution(workers=DEFAULT_ENHANCER_WORKERS)
     )
-    upscaler_execution: TorchExecution = Field(
-        default_factory=lambda: TorchExecution(workers=DEFAULT_UPSCALER_WORKERS)
+    upscaler_execution: HybridExecution = Field(
+        default_factory=lambda: HybridExecution(workers=DEFAULT_UPSCALER_WORKERS)
     )
     video_backend: VideoBackend = VideoBackend.FFMPEG
     reader_pool_size: int = 1

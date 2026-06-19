@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from sinner2.config.execution import (
     ExecutionProfile,
+    HybridExecution,
     OnnxExecution,
     TorchExecution,
     available_torch_devices,
@@ -29,6 +30,27 @@ class TestProfiles:
     def test_torch_roundtrip(self):
         p = TorchExecution(device="cuda:1", workers=2)
         assert TorchExecution.model_validate_json(p.model_dump_json()) == p
+
+    def test_hybrid_carries_device_and_providers(self):
+        # The enhancer/upscaler profile is hybrid: a torch device AND an ONNX
+        # provider list, with the same defaults as its single-framework cousins.
+        p = HybridExecution()
+        assert p.device == "auto"
+        assert p.providers == ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        assert isinstance(p, TorchExecution)  # IS-A torch profile (subclass)
+
+    def test_hybrid_roundtrip(self):
+        p = HybridExecution(
+            device="cuda:1", providers=["CPUExecutionProvider"], workers=2
+        )
+        assert HybridExecution.model_validate_json(p.model_dump_json()) == p
+
+    def test_hybrid_loads_legacy_torch_only_payload(self):
+        # A task persisted before HybridExecution had no `providers` key — it
+        # must still load, defaulting providers in.
+        p = HybridExecution.model_validate({"workers": 2, "device": "cpu"})
+        assert p.device == "cpu"
+        assert p.providers == ["CUDAExecutionProvider", "CPUExecutionProvider"]
 
 
 class TestResolveTorchDevice:

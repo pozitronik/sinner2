@@ -50,6 +50,20 @@ class TorchExecution(ExecutionProfile):
     device: str = "auto"  # "auto" | "cpu" | "cuda" | "cuda:N"
 
 
+class HybridExecution(TorchExecution):
+    """Execution config for processors that switch framework by MODEL — the
+    enhancer and upscaler each have a torch backend (GFPGAN / Real-ESRGAN, via
+    ``device``) AND ONNX-runtime backends (CodeFormer / GPEN / RestoreFormer++ /
+    GFPGAN-ONNX / HAT / fp16 exports, via ``providers``). Both knobs are carried;
+    the processor uses whichever its selected model needs. Subclasses
+    TorchExecution so the ``device`` field + any isinstance checks still hold;
+    adds the ONNX provider list with the standard CUDA→CPU default."""
+
+    providers: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_ONNX_PROVIDERS)
+    )
+
+
 def resolve_torch_device(spec: str) -> "torch.device":
     """Map a device spec to a torch.device, falling back to CPU when CUDA is
     requested but unavailable (so a stale config can't crash — the enhancer
