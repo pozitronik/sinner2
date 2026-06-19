@@ -270,6 +270,28 @@ def test_file_target_after_camera_stops_the_camera(trio):
     assert facade.active_kind() is SessionKind.FILE
 
 
+def test_deactivate_camera_stops_and_drops_to_none(trio):
+    facade, _, live = trio
+    facade.set_source(SRC)
+    facade.set_target(CameraConfig())
+    caps_seen: list = []
+    facade.capabilitiesChanged.connect(caps_seen.append)
+    facade.deactivate_camera()
+    assert ("stop",) in live.calls
+    assert facade.active_kind() is SessionKind.NONE
+    assert caps_seen  # emitted → the file-only chrome restores
+
+
+def test_deactivate_camera_is_noop_when_not_in_camera(trio):
+    facade, _, live = trio
+    facade.set_source(SRC)
+    facade.set_target(FileTarget(TGT))  # FILE, not camera
+    before = list(live.calls)
+    facade.deactivate_camera()
+    assert live.calls == before  # no stop, no transition
+    assert facade.active_kind() is SessionKind.FILE
+
+
 def test_source_change_uses_fast_path_not_rebuild_when_camera(trio):
     facade, _, live = trio
     facade.set_source(SRC)

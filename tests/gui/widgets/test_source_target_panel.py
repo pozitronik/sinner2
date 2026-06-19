@@ -241,3 +241,20 @@ class TestQSourceTargetPanelRecents:
         panel.set_target_recents([tmp_path / "x.mp4"])
         assert panel.source_recents() == [tmp_path / "a.png", tmp_path / "b.png"]
         assert panel.target_recents() == [tmp_path / "x.mp4"]
+
+
+class TestTargetLock:
+    """The target picker locks while the camera IS the target; the 📹 toggle
+    (a separate widget) stays usable so you can leave camera mode."""
+
+    def test_set_target_enabled_locks_only_the_target_picker(self, qtbot):
+        from sinner2.gui.widgets.source_target_panel import QSourceTargetPanel
+
+        panel = QSourceTargetPanel()
+        qtbot.addWidget(panel)
+        panel.set_camera_button_visible(True)
+        panel.set_target_enabled(False)
+        assert panel._target.isEnabled() is False  # noqa: SLF001
+        assert panel._use_camera.isEnabled() is True  # noqa: SLF001 — still togglable
+        panel.set_target_enabled(True)
+        assert panel._target.isEnabled() is True  # noqa: SLF001

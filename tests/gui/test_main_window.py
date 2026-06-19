@@ -1892,6 +1892,7 @@ class TestCapabilityChromeAndFps:
         win._session = MagicMock()  # noqa: SLF001
         win._transport = MagicMock()  # noqa: SLF001
         win._processors = MagicMock()  # noqa: SLF001
+        win._pickers = MagicMock()  # noqa: SLF001
         win._fps_panel = MagicMock()  # noqa: SLF001
         win._batch_active = False  # noqa: SLF001
         return win
@@ -1907,6 +1908,7 @@ class TestCapabilityChromeAndFps:
         win._on_capabilities_changed(SessionCapabilities.for_camera())  # noqa: SLF001
         win._transport.apply_capabilities.assert_called_once()  # noqa: SLF001
         win._processors.set_file_only_visible.assert_called_with(False)  # noqa: SLF001
+        win._pickers.set_target_enabled.assert_called_with(False)  # noqa: SLF001
 
     def test_file_caps_show_file_groups(self):
         from sinner2.gui.session_capabilities import (
@@ -1920,6 +1922,7 @@ class TestCapabilityChromeAndFps:
             SessionCapabilities.for_file(has_audio=True)
         )
         win._processors.set_file_only_visible.assert_called_with(True)  # noqa: SLF001
+        win._pickers.set_target_enabled.assert_called_with(True)  # noqa: SLF001
 
     def test_live_fps_label_only_updates_for_camera(self):
         from sinner2.gui.session_capabilities import SessionKind
@@ -2621,12 +2624,14 @@ class TestCameraGateAndToggle:
         window._on_camera_toggled(True)  # noqa: SLF001
         window._pickers.set_camera_active.assert_called_once_with(False)  # noqa: SLF001
 
-    def test_camera_toggle_off_stops(self, window, monkeypatch):
+    def test_camera_toggle_off_deactivates_via_facade(self, window):
         from unittest.mock import MagicMock
 
-        window._live.stop = MagicMock()  # noqa: SLF001
+        # Off routes through the facade (not _live.stop directly) so it leaves
+        # CAMERA + emits caps → the file-only chrome restores.
+        window._session.deactivate_camera = MagicMock()  # noqa: SLF001
         window._on_camera_toggled(False)  # noqa: SLF001
-        window._live.stop.assert_called_once()  # noqa: SLF001
+        window._session.deactivate_camera.assert_called_once()  # noqa: SLF001
 
     def test_live_running_reflects_on_the_toggle(self, window):
         from unittest.mock import MagicMock

@@ -1050,6 +1050,10 @@ class SinnerMainWindow(QMainWindow):
             self._transport.apply_capabilities(caps)  # type: ignore[arg-type]
         is_camera = self._session.active_kind() is SessionKind.CAMERA
         self._processors.set_file_only_visible(not is_camera)
+        # Lock target selection while the camera IS the target (the 📹 toggle
+        # stays usable). Skipped during a batch render, which owns its own lock.
+        if not self._batch_active:
+            self._pickers.set_target_enabled(not is_camera)
 
     def _update_strategy_mode_label(self, mode: object) -> None:
         self._strategy_panel.set_value(str(mode) if mode else "")
@@ -2376,12 +2380,13 @@ class SinnerMainWindow(QMainWindow):
 
     def _on_camera_toggled(self, on: bool) -> None:
         """The 📹 toggle drove the mode: start the camera, or stop it. Reverts
-        the button if the camera can't start (e.g. no source)."""
+        the button if the camera can't start (e.g. no source). Stop routes
+        through the facade so it leaves CAMERA + restores the file-only chrome."""
         if on:
             if not self._on_use_camera():
                 self._pickers.set_camera_active(False)
         else:
-            self._live.stop()
+            self._session.deactivate_camera()
 
     def _on_use_camera(self) -> bool:
         """Make the camera the active target. The facade tears down the file

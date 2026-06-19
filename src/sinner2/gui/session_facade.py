@@ -102,6 +102,17 @@ class SessionFacade(QObject):
         self._start_camera()
         self._emit_caps()
 
+    def deactivate_camera(self) -> None:
+        """Leave camera mode (the 📹 toggle was turned off): stop the camera and
+        drop to NONE — the file session was torn down on activation, so
+        re-selecting a file target rebuilds it. Emits capabilitiesChanged so the
+        file-only chrome (the Execution group, the target picker) restores."""
+        if self._active_kind is not SessionKind.CAMERA:
+            return
+        self._live.stop()
+        self._active_kind = SessionKind.NONE
+        self._emit_caps()
+
     def _start_camera(self) -> None:
         if self._snapshot_provider is None or self._source_path is None:
             return  # need a face + a settings source to build the live chain

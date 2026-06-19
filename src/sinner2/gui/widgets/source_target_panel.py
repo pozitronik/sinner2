@@ -261,6 +261,12 @@ class QSourceTargetPanel(QWidget):
         """Hide the target picker in live mode (the camera is the target)."""
         self._target.setVisible(visible)
 
+    def set_target_enabled(self, enabled: bool) -> None:
+        """Lock the target picker (path + Load) — e.g. while the camera IS the
+        target. The 📹 toggle is a separate widget, so it stays usable for
+        leaving camera mode."""
+        self._target.setEnabled(enabled)
+
     def set_camera_button_visible(self, visible: bool) -> None:
         """Show/hide the 📹 camera toggle — driven by the "Allow camera mode"
         gate in the Camera settings tab. Match the Source Load button's width to
