@@ -28,7 +28,7 @@ import numpy as np
 from sinner2.config.execution import DEFAULT_ONNX_PROVIDERS
 from sinner2.pipeline.model_cache import (
     get_model_path,
-    get_onnx_session,
+    get_onnx_session_io,
     release_onnx_session,
 )
 from sinner2.types import Frame
@@ -142,9 +142,9 @@ class YoloFaceDetector:
         self._out_name = "output"
 
     def setup(self) -> None:
-        self._session = get_onnx_session(self._model_file, providers=self._providers)
-        self._in_name = self._session.get_inputs()[0].name
-        self._out_name = self._session.get_outputs()[0].name
+        self._session, self._in_name, self._out_name = get_onnx_session_io(
+            self._model_file, providers=self._providers
+        )
         # yoloface_8n exports a FIXED square input (e.g. [1,3,640,640]); the
         # network can't accept any other size, so pin our letterbox target to the
         # model's static H/W. A requested det_size only takes effect if the model

@@ -3,6 +3,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from sinner2.pipeline import model_cache
 from sinner2.pipeline.model_cache import (
     available_onnx_providers,
     build_provider_options,
@@ -12,6 +13,7 @@ from sinner2.pipeline.model_cache import (
     get_model_path,
     get_models_dir,
     get_onnx_session,
+    get_onnx_session_io,
     record_actual_providers,
     reset_actual_providers,
 )
@@ -539,3 +541,39 @@ class TestDeleteModelEvictsCaches:
         assert all(k[0] != path for k in mc._session_refcount)  # noqa: SLF001
         assert all(k[0] != path for k in mc._insightface_cache)  # noqa: SLF001
         clear_session_cache()
+
+
+def _io(name: str) -> MagicMock:
+    m = MagicMock()
+    m.name = name  # MagicMock(name=...) sets the repr, not .name — set it explicitly
+    return m
+
+
+class TestGetOnnxSessionIo:
+    """The shared session+I/O-name helper used by the single-in/single-out
+    ONNX processors (detectors, occlusion maskers)."""
+
+    def test_returns_session_and_first_input_output_names(self, monkeypatch):
+        fake = MagicMock()
+        fake.get_inputs.return_value = [_io("in0"), _io("in1")]
+        fake.get_outputs.return_value = [_io("out0"), _io("out1")]
+        monkeypatch.setattr(model_cache, "get_onnx_session", lambda *a, **k: fake)
+
+        session, in_name, out_name = get_onnx_session_io("m.onnx")
+        assert session is fake
+        assert in_name == "in0"   # FIRST input
+        assert out_name == "out0"  # FIRST output
+
+    def test_forwards_name_and_providers(self, monkeypatch):
+        captured = {}
+        fake = MagicMock()
+        fake.get_inputs.return_value = [_io("i")]
+        fake.get_outputs.return_value = [_io("o")]
+
+        def _spy(name, providers=None):
+            captured["name"], captured["providers"] = name, providers
+            return fake
+
+        monkeypatch.setattr(model_cache, "get_onnx_session", _spy)
+        get_onnx_session_io("yolo.onnx", providers=["CUDAExecutionProvider"])
+        assert captured == {"name": "yolo.onnx", "providers": ["CUDAExecutionProvider"]}

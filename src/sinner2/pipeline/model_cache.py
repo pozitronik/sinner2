@@ -737,6 +737,21 @@ def get_onnx_session(
         return session
 
 
+def get_onnx_session_io(
+    name: str,
+    providers: list[str] | None = None,
+) -> "tuple[ort.InferenceSession, str, str]":
+    """A cached ONNX session plus its first input/output tensor names.
+
+    The single-in / single-out setup most ONNX processors repeat verbatim. Models
+    that need the input tensor's SHAPE (upscaler, plain-BFR) or read EVERY output
+    (landmarker) read the names themselves — this covers only the common
+    name-pair case.
+    """
+    session = get_onnx_session(name, providers=providers)
+    return session, session.get_inputs()[0].name, session.get_outputs()[0].name
+
+
 def release_onnx_session(name: str, providers: list[str] | None = None) -> None:
     """Drop one consumer's hold on the cached ONNX session for ``name``; evict +
     free its device memory only when the LAST consumer releases.

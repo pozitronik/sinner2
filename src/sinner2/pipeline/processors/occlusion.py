@@ -246,11 +246,11 @@ class OnnxParserMasker:
         self._out_name = "output"
 
     def setup(self) -> None:
-        from sinner2.pipeline.model_cache import get_onnx_session
+        from sinner2.pipeline.model_cache import get_onnx_session_io
 
-        self._session = get_onnx_session(self._model_file, providers=self._providers)
-        self._in_name = self._session.get_inputs()[0].name
-        self._out_name = self._session.get_outputs()[0].name
+        self._session, self._in_name, self._out_name = get_onnx_session_io(
+            self._model_file, providers=self._providers
+        )
 
     def face_mask(self, aligned_bgr: Frame) -> np.ndarray:
         """512×512 float mask (1 = facial region) for an aligned BGR crop."""
@@ -371,13 +371,11 @@ class DepthOccluderMasker:
         self._out_name = "predicted_depth"
 
     def setup(self) -> None:
-        from sinner2.pipeline.model_cache import get_onnx_session
+        from sinner2.pipeline.model_cache import get_onnx_session_io
 
-        self._session = get_onnx_session(
+        self._session, self._in_name, self._out_name = get_onnx_session_io(
             _DEPTH_MODEL_FILE, providers=self._providers
         )
-        self._in_name = self._session.get_inputs()[0].name
-        self._out_name = self._session.get_outputs()[0].name
 
     def face_mask(self, aligned_bgr: Frame) -> np.ndarray:
         if self._session is None:

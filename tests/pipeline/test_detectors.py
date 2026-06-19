@@ -163,7 +163,9 @@ class TestYoloStaticInput:
         from sinner2.pipeline import detectors
 
         monkeypatch.setattr(
-            detectors, "get_onnx_session", lambda *a, **k: _PlantedYoloSession()
+            detectors,
+            "get_onnx_session_io",
+            lambda *a, **k: (_PlantedYoloSession(), "input", "output"),
         )
         d = YoloFaceDetector(size=320)
         d.setup()
