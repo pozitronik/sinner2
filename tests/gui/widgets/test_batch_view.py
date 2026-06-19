@@ -491,6 +491,32 @@ class TestTempColumn:
         view._on_size_computed(t.id, 5 * 1024 * 1024)  # noqa: SLF001
         assert view._model.item(0, _COL_TEMP).text() == "5.0 MB"  # noqa: SLF001
 
+    def test_progress_refreshes_temp_size_throttled(
+        self, view, tmp_path, store, monkeypatch
+    ):
+        # Regression: the Temp cell used to freeze on the snapshot taken when the
+        # row was added (cache ~empty) and never refresh while the task ran, so a
+        # task writing tens of GB still showed ~0. Progress now re-walks, throttled.
+        from types import SimpleNamespace
+
+        t = _task(tmp_path)
+        store.save(t)
+        view.reload_from_store()
+        calls: list = []
+        monkeypatch.setattr(
+            view, "_recompute_sizes", lambda ids: calls.append(list(ids))
+        )
+        prog = SimpleNamespace(
+            stage_index=0, stage_count=1, stage_name="swap",
+            stage_completed=10, stage_total=100,
+        )
+        view._on_task_progress(t.id, prog)  # noqa: SLF001 — first tick re-walks
+        view._on_task_progress(t.id, prog)  # noqa: SLF001 — immediate retick throttled
+        assert calls == [[t.id]]
+        view._last_size_walk[t.id] = 0.0  # noqa: SLF001 — age past the throttle window
+        view._on_task_progress(t.id, prog)  # noqa: SLF001
+        assert calls == [[t.id], [t.id]]
+
     def test_delete_cache_confirmed_calls_queue(
         self, view, tmp_path, store, queue, monkeypatch
     ):

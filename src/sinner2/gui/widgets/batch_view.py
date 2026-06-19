@@ -155,6 +155,12 @@ _COLUMN_HEADERS = (
 )
 
 
+# While a task runs, its cache grows over minutes/hours; re-walk it this often
+# (off-thread) so the Temp cell tracks the growing cache instead of freezing on
+# an early snapshot. Throttled because stat-walking a tens-of-GB dir isn't free.
+_SIZE_REFRESH_SEC = 5.0
+
+
 def _dir_size(path: Path) -> int:
     """Total bytes under ``path`` (recursive), tolerant of races / missing
     dirs — a task with no cache yet just sizes to 0."""
@@ -312,6 +318,9 @@ class QBatchView(QWidget):
         # handed back via this signal carrier → the Temp cell.
         self._size_signals = _SizeSignals(self)
         self._size_signals.sized.connect(self._on_size_computed)
+        # Last monotonic time each task's cache size was (re)walked, to throttle
+        # the live refresh during a run (see _on_task_progress).
+        self._last_size_walk: dict[str, float] = {}
 
         layout = QVBoxLayout(self)
         layout.addLayout(toolbar)
@@ -487,14 +496,22 @@ class QBatchView(QWidget):
             time_part += f" / ~{_fmt_eta(expected)}"
         parts.append(time_part)
         self._model.item(row, _COL_PROGRESS).setText(" · ".join(parts))
+        # Track the growing cache live (throttled) — the Temp cell otherwise
+        # froze on the snapshot taken when the row was added (cache ~empty).
+        now = time.monotonic()
+        if now - self._last_size_walk.get(task_id, 0.0) >= _SIZE_REFRESH_SEC:
+            self._last_size_walk[task_id] = now
+            self._recompute_sizes([task_id])
 
     def _on_task_completed(self, task_id: str) -> None:
         self._throughput.pop(task_id, None)
+        self._last_size_walk.pop(task_id, None)
         self._refresh_row(task_id)
-        self._recompute_sizes([task_id])  # cache grew over the run
+        self._recompute_sizes([task_id])  # final accurate size after the run
 
     def _on_task_failed(self, task_id: str, _message: str) -> None:
         self._throughput.pop(task_id, None)
+        self._last_size_walk.pop(task_id, None)
         self._recompute_sizes([task_id])
         # Flip the row to its failed state — Status reads "failed" with the
         # reason on hover (set in _refresh_row from the task's error_message).
