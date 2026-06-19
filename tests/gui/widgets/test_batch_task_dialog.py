@@ -10,7 +10,7 @@ from sinner2.batch.task import (
     BatchTask,
     BatchTaskStatus,
 )
-from sinner2.config.execution import OnnxExecution, TorchExecution
+from sinner2.config.execution import HybridExecution, OnnxExecution
 from sinner2.gui.widgets.batch_task_dialog import QBatchTaskDialog
 from sinner2.io.video_backend import VideoBackend
 from sinner2.pipeline.image_writer import ImageFormat
@@ -29,7 +29,7 @@ class TestProviderFloor:
     def test_empty_selection_floored_to_cpu(self, qtbot, tmp_path):
         dlg = QBatchTaskDialog.from_task(_task(tmp_path))
         qtbot.addWidget(dlg)
-        for cb in dlg._provider_checkboxes.values():  # noqa: SLF001
+        for cb in dlg._swapper_providers_row.checkboxes().values():  # noqa: SLF001
             cb.setChecked(False)
         # You can't run on no provider — the saved task floors to CPU.
         assert dlg._selected_providers() == ["CPUExecutionProvider"]  # noqa: SLF001
@@ -121,7 +121,7 @@ class TestPrefill:
             swapper_execution=OnnxExecution(
                 workers=8, providers=["CPUExecutionProvider"]
             ),
-            enhancer_execution=TorchExecution(workers=2, device="cpu"),
+            enhancer_execution=HybridExecution(workers=2, device="cpu"),
             video_backend=VideoBackend.CV2,
             reader_pool_size=4,
             image_format=ImageFormat.PNG,
@@ -263,7 +263,7 @@ class TestWritebackToTask:
             swapper_execution=OnnxExecution(
                 workers=2, providers=["CPUExecutionProvider"]
             ),
-            enhancer_execution=TorchExecution(workers=1, device="cpu"),
+            enhancer_execution=HybridExecution(workers=1, device="cpu"),
         )
         dlg = QBatchTaskDialog.from_task(t)
         qtbot.addWidget(dlg)
@@ -279,7 +279,7 @@ class TestWritebackToTask:
     def test_unknown_device_token_is_preserved(self, qtbot, tmp_path):
         # A persisted cuda:N this machine doesn't expose must survive an edit
         # rather than silently resetting to Auto.
-        t = _task(tmp_path, enhancer_execution=TorchExecution(device="cuda:9"))
+        t = _task(tmp_path, enhancer_execution=HybridExecution(device="cuda:9"))
         dlg = QBatchTaskDialog.from_task(t)
         qtbot.addWidget(dlg)
         assert dlg._enhancer_device.currentData() == "cuda:9"  # noqa: SLF001
@@ -290,11 +290,12 @@ class TestWritebackToTask:
     ):
         # Editing a task on a machine missing a requested EP must round-trip it
         # (and its priority order), not silently drop it — mirrors the unknown-
-        # device preservation above.
-        from sinner2.gui.widgets import batch_task_dialog as btd
+        # device preservation above. The shared provider row renders the task's
+        # `preferred` EPs even when ORT doesn't expose them.
+        from sinner2.gui.widgets import onnx_providers_row as opr
 
         monkeypatch.setattr(
-            btd, "available_onnx_providers", lambda: ["CPUExecutionProvider"]
+            opr, "available_onnx_providers", lambda: ["CPUExecutionProvider"]
         )
         t = _task(
             tmp_path,
@@ -492,3 +493,90 @@ class TestSwapperToggle:
         qtbot.addWidget(dlg)
         dlg._swapper_box.setChecked(False)  # noqa: SLF001
         assert dlg.to_task().swapper_enabled is False
+
+
+class TestEnhancerProviders:
+    """The enhancer is hybrid: torch GFPGAN uses the CUDA device, the ONNX
+    restorers use the ONNX providers row. The dialog exposes both and gates by
+    model — matching the live settings panel."""
+
+    def test_providers_round_trip(self, qtbot, tmp_path):
+        t = _task(
+            tmp_path,
+            enhancer_execution=HybridExecution(providers=["CPUExecutionProvider"]),
+        )
+        dlg = QBatchTaskDialog.from_task(t)
+        qtbot.addWidget(dlg)
+        assert dlg.to_task().enhancer_execution.providers == ["CPUExecutionProvider"]
+
+    def test_providers_gated_by_model(self, qtbot, tmp_path):
+        # ONNX restorer (default gfpgan_onnx) uses providers, not the torch
+        # device; torch GFPGAN is the reverse.
+        dlg = QBatchTaskDialog.from_task(
+            _task(tmp_path, enhancer_model="gfpgan_onnx")
+        )
+        qtbot.addWidget(dlg)
+        assert dlg._enhancer_providers_row.isEnabled()  # noqa: SLF001
+        assert not dlg._enhancer_device.isEnabled()  # noqa: SLF001
+        combo = dlg._enhancer_model  # noqa: SLF001
+        combo.setCurrentIndex(combo.findData("gfpgan"))
+        assert not dlg._enhancer_providers_row.isEnabled()  # noqa: SLF001
+        assert dlg._enhancer_device.isEnabled()  # noqa: SLF001
+
+
+class TestUpscalerExecution:
+    """The upscaler gained editable workers + an ONNX providers row (it was
+    device-only before), matching its hybrid torch/ONNX model set."""
+
+    def test_workers_round_trip(self, qtbot, tmp_path):
+        dlg = QBatchTaskDialog.from_task(_task(tmp_path, upscaler_enabled=True))
+        qtbot.addWidget(dlg)
+        dlg._upscaler_workers.setValue(3)  # noqa: SLF001
+        assert dlg.to_task().upscaler_execution.workers == 3
+
+    def test_providers_round_trip(self, qtbot, tmp_path):
+        t = _task(
+            tmp_path,
+            upscaler_execution=HybridExecution(providers=["CPUExecutionProvider"]),
+        )
+        dlg = QBatchTaskDialog.from_task(t)
+        qtbot.addWidget(dlg)
+        assert dlg.to_task().upscaler_execution.providers == ["CPUExecutionProvider"]
+
+    def test_device_vs_providers_gated_by_model(self, qtbot, tmp_path):
+        # Torch model (general-x4v3) uses the torch device; an ONNX model
+        # (span-x4) uses the providers row.
+        dlg = QBatchTaskDialog.from_task(
+            _task(tmp_path, upscaler_model="general-x4v3")
+        )
+        qtbot.addWidget(dlg)
+        assert dlg._upscaler_device.isEnabled()  # noqa: SLF001
+        assert not dlg._upscaler_providers_row.isEnabled()  # noqa: SLF001
+        combo = dlg._upscaler_model  # noqa: SLF001
+        combo.setCurrentIndex(combo.findData("span-x4"))
+        assert not dlg._upscaler_device.isEnabled()  # noqa: SLF001
+        assert dlg._upscaler_providers_row.isEnabled()  # noqa: SLF001
+
+
+class TestTabbedLayout:
+    """The form is tabbed (Task / Face swap / Enhance & upscale / Execution)
+    and capped at 80% of the screen height so it stays operable on laptops."""
+
+    def test_form_has_four_named_tabs(self, qtbot, tmp_path):
+        dlg = QBatchTaskDialog.from_task(_task(tmp_path))
+        qtbot.addWidget(dlg)
+        titles = [dlg._tabs.tabText(i) for i in range(dlg._tabs.count())]  # noqa: SLF001
+        assert dlg._tabs.count() == 4  # noqa: SLF001
+        assert titles[0] == "Task"
+        assert titles[1] == "Face swap"
+        assert "Enhance" in titles[2]
+        assert titles[3] == "Execution"
+
+    def test_height_capped_at_80_percent(self, qtbot, tmp_path):
+        from PySide6.QtGui import QGuiApplication
+
+        dlg = QBatchTaskDialog.from_task(_task(tmp_path))
+        qtbot.addWidget(dlg)
+        screen = dlg.screen() or QGuiApplication.primaryScreen()
+        avail = screen.availableGeometry().height()
+        assert dlg.maximumHeight() <= int(avail * 0.8)

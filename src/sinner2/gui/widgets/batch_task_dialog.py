@@ -1,8 +1,11 @@
 """Modal dialog for editing a BatchTask's config.
 
-Surfaces the full session config (chain + execution + output) so the
-user can tweak any aspect of how the task will run. v1 keeps the form
-fields verbatim — a future refactor could share UI with QProcessorControls.
+Surfaces the full session config (chain + execution + output) in a TABBED form
+so the user can tweak any aspect of how the task will run without fighting a
+single tall scroll. The control set + grouping mirror the live settings panel
+(QProcessorControls): the Face-swap tab uses the same Faces-recognition /
+Rotation / Occlusion sub-boxes, and every ONNX-using stage (swapper, enhancer,
+upscaler) gets the shared OnnxProvidersRow selector.
 
 Open via .from_task(task) → user edits → accept() commits back via
 .to_task() — caller persists.
@@ -30,6 +33,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSlider,
     QSpinBox,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -40,18 +44,20 @@ from sinner2.batch.task import (
     BatchTask,
     resolve_output_path,
 )
-from sinner2.config.execution import (
-    DEFAULT_ONNX_PROVIDERS,
-    available_torch_devices,
-)
+from sinner2.config.execution import available_torch_devices
 from sinner2.config.target import Target, TargetKind
+from sinner2.gui.widgets.onnx_providers_row import OnnxProvidersRow
 from sinner2.io.cv2_video_target_reader import CV2VideoTargetReader
 from sinner2.io.frame_resize import scaled_dims
 from sinner2.io.target_reader import ImageTargetReader
 from sinner2.io.video_backend import VideoBackend
 from sinner2.pipeline.image_writer import ImageFormat
-from sinner2.pipeline.model_cache import available_onnx_providers
 from sinner2.pipeline.processors.face_swapper import TargetSex
+from sinner2.pipeline.processors.upscaler import (
+    UpscalerModel,
+    model_runtime,
+    model_supports_fp16,
+)
 
 
 _TARGET_SEX_OPTIONS = [
@@ -197,20 +203,24 @@ class QBatchTaskDialog(QDialog):
             self._update_swapper_model_rows
         )
         swap_form.addRow("Model:", self._swapper_model)
-        self._detection_interval = QSpinBox()
-        self._detection_interval.setRange(1, 30)
-        self._detection_interval.setValue(task.swapper_detection_interval)
-        swap_form.addRow("Detection interval:", self._detection_interval)
-        self._detection_size = QSpinBox()
-        # Multiples of 32 (SCRFD strides); 640 default, smaller = faster.
-        self._detection_size.setRange(128, 1280)
-        self._detection_size.setSingleStep(32)
-        self._detection_size.setValue(task.swapper_detection_size)
-        self._detection_size.setToolTip(
-            "Face-detector input size (px). Smaller = faster detection but may "
-            "miss small or distant faces. 640 default; multiples of 32."
+        self._fast_paste = QCheckBox()
+        self._fast_paste.setChecked(task.swapper_fast_paste)
+        self._fast_paste.setToolTip(
+            "Fast ROI feather paste (~2.7x faster). Off = insightface's "
+            "original diff-based blend (inswapper/reswapper only)."
         )
-        swap_form.addRow("Detection size:", self._detection_size)
+        swap_form.addRow("Fast paste:", self._fast_paste)
+        self._landmark_refine = QCheckBox()
+        self._landmark_refine.setChecked(task.swapper_landmark_refine)
+        self._landmark_refine.setToolTip(
+            "Refine keypoints with the 2dfan4 68-point landmarker (better "
+            "alignment on tilted faces). Downloads 2dfan4 on first batch run."
+        )
+        swap_form.addRow("Landmark refine:", self._landmark_refine)
+
+        # -- Faces recognition sub-box (detection + selection) --
+        faces_box = QGroupBox("Faces recognition")
+        faces_form = QFormLayout(faces_box)
         self._detector = QComboBox()
         for value, label in (
             ("buffalo_l", "buffalo_l (full pack, gender + pose)"),
@@ -225,25 +235,39 @@ class QBatchTaskDialog(QDialog):
             "disable the gender filter and use keypoint-angle rotation."
         )
         self._detector.currentIndexChanged.connect(self._update_detector_rows)
-        swap_form.addRow("Detector:", self._detector)
+        faces_form.addRow("Detector:", self._detector)
+        self._detection_size = QSpinBox()
+        # Multiples of 32 (SCRFD strides); 640 default, smaller = faster.
+        self._detection_size.setRange(128, 1280)
+        self._detection_size.setSingleStep(32)
+        self._detection_size.setValue(task.swapper_detection_size)
+        self._detection_size.setToolTip(
+            "Face-detector input size (px). Smaller = faster detection but may "
+            "miss small or distant faces. 640 default; multiples of 32."
+        )
+        faces_form.addRow("Detection size:", self._detection_size)
+        self._detection_interval = QSpinBox()
+        self._detection_interval.setRange(1, 30)
+        self._detection_interval.setValue(task.swapper_detection_interval)
+        self._detection_interval.setToolTip(
+            "Detect every Nth frame and reuse the result between (1 = every "
+            "frame). Higher = faster on stable shots."
+        )
+        faces_form.addRow("Detection interval:", self._detection_interval)
         self._many_faces = QCheckBox()
         self._many_faces.setChecked(task.swapper_many_faces)
-        swap_form.addRow("Many faces:", self._many_faces)
-        self._fast_paste = QCheckBox()
-        self._fast_paste.setChecked(task.swapper_fast_paste)
-        self._fast_paste.setToolTip(
-            "Fast ROI feather paste (~2.7x faster). Off = insightface's "
-            "original diff-based blend (inswapper/reswapper only)."
-        )
-        swap_form.addRow("Fast paste:", self._fast_paste)
+        faces_form.addRow("Many faces:", self._many_faces)
         self._target_sex = QComboBox()
         for label, value in _TARGET_SEX_OPTIONS:
             self._target_sex.addItem(label, value)
             if value == task.swapper_target_sex:
                 self._target_sex.setCurrentIndex(self._target_sex.count() - 1)
-        swap_form.addRow("Swap which:", self._target_sex)
-        self._update_detector_rows()
-        # Rotation compensation (experimental) — see the realtime panel tooltip.
+        faces_form.addRow("Gender:", self._target_sex)
+        swap_form.addRow(faces_box)
+
+        # -- Rotation sub-box (experimental upright-then-composite) --
+        rotation_box = QGroupBox("Rotation")
+        rotation_form = QFormLayout(rotation_box)
         self._rotation_enabled = QCheckBox()
         self._rotation_enabled.setChecked(task.swapper_rotation_compensation)
         self._rotation_enabled.toggled.connect(self._update_rotation_rows)
@@ -251,18 +275,18 @@ class QBatchTaskDialog(QDialog):
             "Experimental: upright faces tilted past the threshold before "
             "swapping, then composite back. Affects output."
         )
-        swap_form.addRow("Rotation comp.:", self._rotation_enabled)
+        rotation_form.addRow("Rotation compensation:", self._rotation_enabled)
         self._rotation_threshold = QSpinBox()
         self._rotation_threshold.setRange(0, 90)
         self._rotation_threshold.setSuffix("°")
         self._rotation_threshold.setValue(task.swapper_rotation_threshold_deg)
-        swap_form.addRow("Roll threshold:", self._rotation_threshold)
+        rotation_form.addRow("Roll threshold:", self._rotation_threshold)
         self._rotation_redetect = QCheckBox()
         self._rotation_redetect.setChecked(task.swapper_rotation_redetect)
         self._rotation_redetect.setToolTip(
             "Re-detect on the uprighted crop for clean keypoints."
         )
-        swap_form.addRow("Re-detect uprighted:", self._rotation_redetect)
+        rotation_form.addRow("Re-detect uprighted:", self._rotation_redetect)
         self._rotation_source = QComboBox()
         for label, value in (
             ("Eye keypoints", "keypoints"),
@@ -272,14 +296,12 @@ class QBatchTaskDialog(QDialog):
             self._rotation_source.addItem(label, value)
             if value == task.swapper_rotation_angle_source:
                 self._rotation_source.setCurrentIndex(self._rotation_source.count() - 1)
-        swap_form.addRow("Angle source:", self._rotation_source)
-        self._landmark_refine = QCheckBox()
-        self._landmark_refine.setChecked(task.swapper_landmark_refine)
-        self._landmark_refine.setToolTip(
-            "Refine keypoints with the 2dfan4 68-point landmarker (better "
-            "alignment on tilted faces). Downloads 2dfan4 on first batch run."
-        )
-        swap_form.addRow("Landmark refine:", self._landmark_refine)
+        rotation_form.addRow("Angle source:", self._rotation_source)
+        swap_form.addRow(rotation_box)
+
+        # -- Occlusion sub-box --
+        occlusion_box = QGroupBox("Occlusion")
+        occlusion_form = QFormLayout(occlusion_box)
         self._occlusion_mask = QCheckBox()
         self._occlusion_mask.setChecked(task.swapper_occlusion_mask)
         self._occlusion_mask.setToolTip(
@@ -287,9 +309,9 @@ class QBatchTaskDialog(QDialog):
             "the original). Parser model downloads on first batch run."
         )
         self._occlusion_mask.toggled.connect(self._update_occlusion_rows)
-        swap_form.addRow("Occlusion mask:", self._occlusion_mask)
-        # The mode comes FIRST in the form — it decides which of the two
-        # dependent rows below it (parser / occluder) apply.
+        occlusion_form.addRow("Occlusion mask:", self._occlusion_mask)
+        # The mode comes FIRST — it decides which of the two dependent rows
+        # below it (parser / occluder) apply.
         self._occlusion_mode = QComboBox()
         for value, label in (
             ("region", "Region (face parser)"),
@@ -304,7 +326,7 @@ class QBatchTaskDialog(QDialog):
         self._occlusion_mode.currentIndexChanged.connect(
             self._update_occlusion_rows
         )
-        swap_form.addRow("Mask source:", self._occlusion_mode)
+        occlusion_form.addRow("Mask source:", self._occlusion_mode)
         self._occlusion_parser = QComboBox()
         for value, label in (
             ("bisenet", "BiSeNet (torch, sharper)"),
@@ -317,7 +339,7 @@ class QBatchTaskDialog(QDialog):
                 self._occlusion_parser.setCurrentIndex(
                     self._occlusion_parser.count() - 1
                 )
-        swap_form.addRow("Mask parser:", self._occlusion_parser)
+        occlusion_form.addRow("Mask parser:", self._occlusion_parser)
         self._occluder_model = QComboBox()
         for value, label in (
             ("xseg_1", "XSeg 1"),
@@ -331,7 +353,10 @@ class QBatchTaskDialog(QDialog):
                 self._occluder_model.setCurrentIndex(
                     self._occluder_model.count() - 1
                 )
-        swap_form.addRow("Occluder:", self._occluder_model)
+        occlusion_form.addRow("Occluder:", self._occluder_model)
+        swap_form.addRow(occlusion_box)
+
+        # -- Swapper execution (workers + ONNX providers) --
         self._swapper_workers = QSpinBox()
         self._swapper_workers.setRange(1, 16)
         self._swapper_workers.setValue(task.swapper_execution.workers)
@@ -340,34 +365,16 @@ class QBatchTaskDialog(QDialog):
             "session across threads, so more workers cost little extra VRAM."
         )
         swap_form.addRow("Workers:", self._swapper_workers)
-        # Swapper ONNX providers (multi-select). ORT tries them in the listed
-        # order, falling back through to CPU. Unchecking all = platform default.
-        providers_box = QWidget()
-        providers_layout = QVBoxLayout(providers_box)
-        providers_layout.setContentsMargins(0, 0, 0, 0)
-        providers_layout.setSpacing(2)
-        self._provider_checkboxes: dict[str, QCheckBox] = {}
-        try:
-            available = available_onnx_providers()
-        except Exception:
-            available = list(DEFAULT_ONNX_PROVIDERS)
-        wanted = list(task.swapper_execution.providers)
-        wanted_set = set(wanted)
-        # Show the task's requested providers first (in priority order), then any
-        # other provider this machine exposes. This keeps a requested-but-
-        # unavailable EP (e.g. a CUDA task edited on a CPU-only box) AND its order
-        # instead of silently dropping it — mirrors the torch-device preservation.
-        ordered = wanted + [p for p in available if p not in wanted_set]
-        for prov in ordered:
-            cb = QCheckBox(prov)
-            cb.setChecked(prov in wanted_set)
-            providers_layout.addWidget(cb)
-            self._provider_checkboxes[prov] = cb
-        providers_box.setToolTip(
-            "ONNX execution providers for the swap + detection models. ORT "
-            "tries them in the order shown; uncheck all for platform defaults."
+        # Shared provider strip. ``preferred`` renders the task's saved EPs
+        # first (in priority order) and keeps a requested-but-unavailable EP
+        # (e.g. a CUDA task edited on a CPU box) so editing round-trips it.
+        self._swapper_providers_row = OnnxProvidersRow(
+            preferred=list(task.swapper_execution.providers)
         )
-        swap_form.addRow("ONNX providers:", providers_box)
+        self._swapper_providers_row.set_selected(
+            list(task.swapper_execution.providers)
+        )
+        swap_form.addRow("ONNX providers:", self._swapper_providers_row)
 
         # ---- FaceEnhancer group ----
         enh_box = QGroupBox("Face enhancer")
@@ -389,8 +396,8 @@ class QBatchTaskDialog(QDialog):
             if value == task.enhancer_model:
                 self._enhancer_model.setCurrentIndex(self._enhancer_model.count() - 1)
         self._enhancer_model.setToolTip(
-            "Restoration model. GFPGAN upscales the whole frame; CodeFormer "
-            "(ONNX) restores each face with a fidelity knob."
+            "Restoration model. GFPGAN upscales the whole frame (torch device); "
+            "the ONNX restorers run on the ONNX providers below."
         )
         self._enhancer_model.currentIndexChanged.connect(self._update_enhancer_rows)
         enh_form.addRow("Model:", self._enhancer_model)
@@ -410,12 +417,12 @@ class QBatchTaskDialog(QDialog):
         enh_form.addRow("Fidelity (w):", self._enhancer_fidelity)
         self._only_center_face = QCheckBox()
         self._only_center_face.setChecked(task.enhancer_only_center_face)
-        enh_form.addRow("Only center face:", self._only_center_face)
+        enh_form.addRow("Center face only:", self._only_center_face)
         self._enhancer_fp16 = QCheckBox()
         self._enhancer_fp16.setChecked(task.enhancer_fp16)
         self._enhancer_fp16.setToolTip(
             "GFPGAN half precision: less VRAM per worker + faster. CUDA only; "
-            "ignored by CodeFormer."
+            "ignored by the ONNX restorers."
         )
         enh_form.addRow("Half precision:", self._enhancer_fp16)
         self._enhancer_workers = QSpinBox()
@@ -426,8 +433,8 @@ class QBatchTaskDialog(QDialog):
             "so each worker loads its own model (~1.3 GB VRAM each)."
         )
         enh_form.addRow("Workers:", self._enhancer_workers)
-        # GFPGAN torch device (Auto / CPU / each CUDA GPU). Independent of the
-        # swapper's ONNX providers — different framework.
+        # GFPGAN torch device (Auto / CPU / each CUDA GPU). Used by the torch
+        # GFPGAN backend only; the ONNX restorers use the providers row below.
         self._enhancer_device = QComboBox()
         for value, label in available_torch_devices():
             self._enhancer_device.addItem(label, value)
@@ -442,9 +449,18 @@ class QBatchTaskDialog(QDialog):
         self._enhancer_device.setToolTip(
             "Torch device for GFPGAN. Auto picks CUDA when available, else CPU."
         )
-        enh_form.addRow("Device:", self._enhancer_device)
+        enh_form.addRow("CUDA device:", self._enhancer_device)
+        # ONNX providers for the ONNX restorers (GFPGAN-ONNX / CodeFormer / GPEN
+        # / RestoreFormer++). Active only when an ONNX model is chosen.
+        self._enhancer_providers_row = OnnxProvidersRow(
+            preferred=list(task.enhancer_execution.providers)
+        )
+        self._enhancer_providers_row.set_selected(
+            list(task.enhancer_execution.providers)
+        )
+        enh_form.addRow("ONNX providers:", self._enhancer_providers_row)
 
-        # ---- Upscaler group (Real-ESRGAN whole-frame super-resolution) ----
+        # ---- Upscaler group (whole-frame super-resolution) ----
         up_box = QGroupBox("Frame upscaler (Real-ESRGAN)")
         up_box.setCheckable(True)
         up_box.setChecked(task.upscaler_enabled)
@@ -465,6 +481,7 @@ class QBatchTaskDialog(QDialog):
             self._upscaler_model.addItem(label, value)
             if value == task.upscaler_model:
                 self._upscaler_model.setCurrentIndex(self._upscaler_model.count() - 1)
+        self._upscaler_model.currentIndexChanged.connect(self._update_upscaler_rows)
         up_form.addRow("Model:", self._upscaler_model)
         self._upscaler_tile = QSpinBox()
         self._upscaler_tile.setRange(0, 2048)
@@ -474,7 +491,16 @@ class QBatchTaskDialog(QDialog):
         up_form.addRow("Tile size:", self._upscaler_tile)
         self._upscaler_fp16 = QCheckBox()
         self._upscaler_fp16.setChecked(task.upscaler_fp16)
+        self._upscaler_fp16.setToolTip("Half precision (faster, less VRAM, CUDA only).")
         up_form.addRow("Half precision:", self._upscaler_fp16)
+        self._upscaler_workers = QSpinBox()
+        self._upscaler_workers.setRange(1, 16)
+        self._upscaler_workers.setValue(task.upscaler_execution.workers)
+        self._upscaler_workers.setToolTip(
+            "Worker threads for the upscale stage. Heavy — each worker loads its "
+            "own model plus large activations, so raise it cautiously."
+        )
+        up_form.addRow("Workers:", self._upscaler_workers)
         self._upscaler_device = QComboBox()
         for value, label in available_torch_devices():
             self._upscaler_device.addItem(label, value)
@@ -484,7 +510,19 @@ class QBatchTaskDialog(QDialog):
         self._upscaler_device.setCurrentIndex(
             self._upscaler_device.findData(up_current_device)
         )
-        up_form.addRow("Device:", self._upscaler_device)
+        self._upscaler_device.setToolTip(
+            "Torch device for the torch upscalers (Real-ESRGAN / SwinIR)."
+        )
+        up_form.addRow("CUDA device:", self._upscaler_device)
+        # ONNX providers for the ONNX upscalers (HAT / SPAN / UltraSharp / fp16
+        # exports). Active only when an ONNX model is chosen.
+        self._upscaler_providers_row = OnnxProvidersRow(
+            preferred=list(task.upscaler_execution.providers)
+        )
+        self._upscaler_providers_row.set_selected(
+            list(task.upscaler_execution.providers)
+        )
+        up_form.addRow("ONNX providers:", self._upscaler_providers_row)
 
         # ---- Execution group ----
         exec_box = QGroupBox("Execution")
@@ -567,38 +605,31 @@ class QBatchTaskDialog(QDialog):
         button_box.accepted.connect(self.accept)
         button_box.rejected.connect(self.reject)
 
-        # Stack the config groups in a SCROLLABLE area: the full form is taller
-        # than short displays (~768 px laptops), so without this the dialog
-        # opened bigger than the screen and OK/Cancel fell off the bottom. The
-        # button box stays OUTSIDE the scroll area so it's always reachable.
-        content = QWidget()
-        content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.addWidget(paths_box)
-        content_layout.addWidget(swap_box)
-        content_layout.addWidget(enh_box)
-        content_layout.addWidget(up_box)
-        content_layout.addWidget(exec_box)
-        content_layout.addWidget(out_box)
-        content_layout.addStretch(1)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setWidget(content)
+        # Group the config into TABS so each pane stays short — the full form is
+        # taller than short displays (~768 px laptops), and a single scroll was
+        # awkward to operate. Each tab scroll-wraps as a safety net for very
+        # small screens; the button box stays OUTSIDE the tabs so it's always
+        # reachable.
+        tabs = QTabWidget()
+        tabs.addTab(self._tab(paths_box, out_box), "Task")
+        tabs.addTab(self._tab(swap_box), "Face swap")
+        tabs.addTab(self._tab(enh_box, up_box), "Enhance && upscale")
+        tabs.addTab(self._tab(exec_box), "Execution")
+        self._tabs = tabs
 
         layout = QVBoxLayout(self)
-        layout.addWidget(scroll, stretch=1)
+        layout.addWidget(tabs, stretch=1)
         layout.addWidget(button_box)
 
-        # Open at the form's natural size but never taller than the screen —
-        # the scroll area absorbs any overflow on small displays.
+        # Open at the form's natural size but never taller than 80% of the
+        # screen — each tab scroll-wraps to absorb overflow on small displays.
         screen = self.screen() or QGuiApplication.primaryScreen()
         if screen is not None:
             avail_h = screen.availableGeometry().height()
-            self.setMaximumHeight(avail_h)
-            desired_h = content.sizeHint().height() + button_box.sizeHint().height() + 24
-            self.resize(640, min(desired_h, int(avail_h * 0.9)))
+            cap_h = int(avail_h * 0.8)
+            self.setMaximumHeight(cap_h)
+            desired_h = tabs.sizeHint().height() + button_box.sizeHint().height() + 24
+            self.resize(640, min(desired_h, cap_h))
 
         # ---- Output default (per-task only) ----
         # DEFAULTS mode has no per-task source/target to derive an output path
@@ -635,10 +666,29 @@ class QBatchTaskDialog(QDialog):
         else:
             # No target to probe → the scale readout shows the bare percent.
             self._update_scale_label()
-        self._update_enhancer_rows()  # gray out the inactive model's knob
+        self._update_detector_rows()  # gender filter follows the detector
+        self._update_enhancer_rows()  # gray out the inactive model's knobs
+        self._update_upscaler_rows()  # upscaler knobs follow the model runtime
         self._update_occlusion_rows()  # occlusion subknobs follow the checkbox
         self._update_rotation_rows()  # rotation knobs follow the toggle
         self._update_swapper_model_rows()  # fast-paste follows the swap model
+
+    @staticmethod
+    def _tab(*boxes: QWidget) -> QScrollArea:
+        """Stack one or more group boxes in a scroll-wrapped tab page. The
+        scroll area only engages on displays too short for the tab's natural
+        height (the 80% cap); on normal screens every control is visible."""
+        page = QWidget()
+        page_layout = QVBoxLayout(page)
+        page_layout.setContentsMargins(0, 0, 0, 0)
+        for box in boxes:
+            page_layout.addWidget(box)
+        page_layout.addStretch(1)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidget(page)
+        return scroll
 
     def _update_detector_rows(self) -> None:
         """Gray the gender filter for detection-only detectors (no .sex)."""
@@ -647,13 +697,24 @@ class QBatchTaskDialog(QDialog):
     def _update_enhancer_rows(self) -> None:
         """Enable only the knobs the selected enhancer model uses — Upscale /
         fp16 / torch device for GFPGAN, Fidelity for CodeFormer; the ONNX
-        restorers have none (they run on ORT EPs, not a torch device)."""
+        restorers use the ONNX providers row instead of a torch device, so the
+        two are mutually exclusive by model."""
         model = self._enhancer_model.currentData()
         is_gfpgan = model == "gfpgan"
         self._upscale.setEnabled(is_gfpgan)
         self._enhancer_fidelity.setEnabled(model == "codeformer")
         self._enhancer_fp16.setEnabled(is_gfpgan)
         self._enhancer_device.setEnabled(is_gfpgan)
+        self._enhancer_providers_row.setEnabled(not is_gfpgan)
+
+    def _update_upscaler_rows(self) -> None:
+        """Gray the fp16 knob for models it doesn't apply to, and split the
+        torch device vs ONNX providers by the selected model's runtime."""
+        model = UpscalerModel(self._upscaler_model.currentData())
+        is_onnx = model_runtime(model) == "onnx"
+        self._upscaler_fp16.setEnabled(model_supports_fp16(model))
+        self._upscaler_device.setEnabled(not is_onnx)
+        self._upscaler_providers_row.setEnabled(is_onnx)
 
     def _update_occlusion_rows(self) -> None:
         """Link the occlusion sub-controls to the master checkbox and to each
@@ -730,13 +791,14 @@ class QBatchTaskDialog(QDialog):
             "swapper_execution": self._task.swapper_execution.model_copy(
                 update={
                     "workers": self._swapper_workers.value(),
-                    "providers": self._selected_providers(),
+                    "providers": self._swapper_providers_row.selected(),
                 }
             ),
             "enhancer_execution": self._task.enhancer_execution.model_copy(
                 update={
                     "workers": self._enhancer_workers.value(),
                     "device": self._enhancer_device.currentData(),
+                    "providers": self._enhancer_providers_row.selected(),
                 }
             ),
             "upscaler_enabled": self._upscaler_box.isChecked(),
@@ -744,7 +806,11 @@ class QBatchTaskDialog(QDialog):
             "upscaler_tile": self._upscaler_tile.value(),
             "upscaler_fp16": self._upscaler_fp16.isChecked(),
             "upscaler_execution": self._task.upscaler_execution.model_copy(
-                update={"device": self._upscaler_device.currentData()}
+                update={
+                    "workers": self._upscaler_workers.value(),
+                    "device": self._upscaler_device.currentData(),
+                    "providers": self._upscaler_providers_row.selected(),
+                }
             ),
             "video_backend": VideoBackend(self._video_backend.currentData()),
             "reader_pool_size": self._reader_pool_size.value(),
@@ -784,12 +850,9 @@ class QBatchTaskDialog(QDialog):
     # ---- helpers ----
 
     def _selected_providers(self) -> list[str]:
-        """Checked ONNX providers in display order. An empty selection is floored
-        to CPU — you can't run an ONNX model on no provider."""
-        selected = [
-            name for name, cb in self._provider_checkboxes.items() if cb.isChecked()
-        ]
-        return selected or ["CPUExecutionProvider"]
+        """Checked swapper ONNX providers in display order (non-empty — the
+        provider row floors an empty selection to CPU)."""
+        return self._swapper_providers_row.selected()
 
     def _resolve_default_output(self) -> Path:
         """The auto-derived output path for the current source / target /
