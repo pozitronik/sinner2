@@ -46,10 +46,14 @@ class OnnxProvidersRow(QWidget):
     processor. Forces CPU on when everything is unchecked (an ONNX model can't
     run on zero providers). ``changed`` fires on any user toggle.
 
-    ``preferred`` (the batch dialog passes a task's saved provider list) renders
-    those EPs FIRST in the given order, then any other available EP — so the
-    saved priority order is preserved and a requested-but-unavailable EP still
-    appears (and round-trips) instead of being dropped."""
+    The strip always renders in ORT's own priority order (the order
+    ``available_onnx_providers()`` reports — TensorRT first, CPU last), so it
+    reads identically here and in the live panel. ``preferred`` (the batch
+    dialog passes a task's saved provider list) does NOT reorder the available
+    EPs; it only adds checkboxes for any requested EP the platform doesn't
+    expose (e.g. a CUDA task edited on a CPU-only box), inserted at its position
+    relative to the other requested EPs so the saved priority round-trips
+    instead of being dropped or shoved to the end."""
 
     changed = Signal()
 
@@ -69,14 +73,24 @@ class OnnxProvidersRow(QWidget):
             available = available_onnx_providers()
         except Exception:  # noqa: BLE001 — broken ORT install → render the defaults
             available = list(DEFAULT_ONNX_PROVIDERS)
-        # Preferred EPs first (in their saved order), then any remaining
-        # available EP. Dedups while preserving first-seen order.
-        ordered: list[str] = []
-        seen: set[str] = set()
-        for prov in list(preferred or []) + list(available):
-            if prov not in seen:
-                ordered.append(prov)
-                seen.add(prov)
+        # Render the platform's EPs in ORT's priority order (TensorRT first,
+        # CPU last) — identical to the live panel. Any requested EP the platform
+        # doesn't expose is INSERTED before the first later requested EP that is
+        # placed, so a saved priority like [CUDA, CPU] edited on a CPU-only box
+        # round-trips as [CUDA, CPU] rather than [CPU, CUDA].
+        ordered: list[str] = list(available)
+        placed: set[str] = set(ordered)
+        wanted = list(preferred or [])
+        for idx, prov in enumerate(wanted):
+            if prov in placed:
+                continue
+            pos = len(ordered)
+            for later in wanted[idx + 1:]:
+                if later in placed:
+                    pos = ordered.index(later)
+                    break
+            ordered.insert(pos, prov)
+            placed.add(prov)
         default_active = set(DEFAULT_ONNX_PROVIDERS)
         for prov in ordered:
             tip = _TRT_TIP if prov == _TRT_PROVIDER else _GENERIC_PROVIDER_TIP
