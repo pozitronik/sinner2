@@ -19,14 +19,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from sinner2.config.execution import (
-    DEFAULT_ONNX_PROVIDERS,
-    available_torch_devices,
-)
+from sinner2.config.execution import available_torch_devices
 from sinner2.io.frame_resize import scaled_dims
 from sinner2.io.video_backend import VideoBackend
 from sinner2.pipeline.cache_mode import CacheMode
-from sinner2.pipeline.model_cache import available_onnx_providers
 from sinner2.pipeline.image_writer import ImageFormat
 from sinner2.pipeline.playback_mode import PlaybackMode
 from sinner2.pipeline.processors.face_enhancer import (
@@ -53,6 +49,7 @@ from sinner2.pipeline.processors.face_swapper import (
     TargetSex,
 )
 from sinner2.gui.processor_snapshot import ProcessorParamsSnapshot
+from sinner2.gui.widgets.onnx_providers_row import OnnxProvidersRow
 from sinner2.pipeline.skip_strategy import (
     BestEffortStrategy,
     FrameSkipStrategy,
@@ -201,27 +198,6 @@ def _label_for_video_backend(backend: VideoBackend) -> str | None:
     return None
 
 
-_TRT_PROVIDER = "TensorrtExecutionProvider"
-_CPU_PROVIDER = "CPUExecutionProvider"
-_TRT_TIP = (
-    "TensorRT: compiles a GPU-specific engine for this model — typically 2–3×\n"
-    "faster than plain CUDA. The FIRST run after enabling builds the engine\n"
-    "(tens of seconds, one-time) and caches it to disk. Needs the TensorRT\n"
-    "runtime; falls back to CUDA if it's missing."
-)
-_GENERIC_PROVIDER_TIP = (
-    "ONNX execution provider. Multiple may be checked; ORT tries them in the\n"
-    "order shown. You can't run on no provider — unchecking everything forces\n"
-    "CPU back on (the floor). Applies immediately (rebuilds the session)."
-)
-
-
-def _short_provider_label(prov: str) -> str:
-    """'CUDAExecutionProvider' → 'CUDA'; 'TensorrtExecutionProvider' → 'Tensor'."""
-    name = prov.replace("ExecutionProvider", "")
-    return "Tensor" if name == "Tensorrt" else name
-
-
 def _set_combo_silently(combo: QComboBox, value: object) -> None:
     """Select the item whose data == ``value`` WITHOUT firing the combo's signals
     — the shared 'reflect/revert a selection programmatically' helper (used to
@@ -232,83 +208,6 @@ def _set_combo_silently(combo: QComboBox, value: object) -> None:
             combo.setCurrentIndex(i)
             break
     combo.blockSignals(False)
-
-
-class _OnnxProvidersRow(QWidget):
-    """The ``[ ]Tensor [ ]CUDA [ ]CPU`` checkbox strip for one ONNX-using
-    processor — added to a QFormLayout with an "ONNX Providers" label so it sits
-    in the field column like every other row. Forces CPU on when everything is
-    unchecked (an ONNX model can't run on zero providers). ``changed`` fires on
-    any user toggle."""
-
-    changed = Signal()
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
-        self._checkboxes: dict[str, QCheckBox] = {}
-        self._tooltips: dict[str, str] = {}
-        try:
-            available = available_onnx_providers()
-        except Exception:  # noqa: BLE001 — broken ORT install → render the defaults
-            available = list(DEFAULT_ONNX_PROVIDERS)
-        default_active = set(DEFAULT_ONNX_PROVIDERS)
-        for prov in available:
-            tip = _TRT_TIP if prov == _TRT_PROVIDER else _GENERIC_PROVIDER_TIP
-            self._tooltips[prov] = tip
-            cb = QCheckBox(_short_provider_label(prov))
-            cb.setToolTip(tip)
-            cb.setChecked(prov in default_active)
-            cb.toggled.connect(self._on_toggled)
-            layout.addWidget(cb)
-            self._checkboxes[prov] = cb
-        layout.addStretch(1)
-
-    def _force_cpu_if_empty(self) -> None:
-        if any(cb.isChecked() for cb in self._checkboxes.values()):
-            return
-        cpu = self._checkboxes.get(_CPU_PROVIDER)
-        if cpu is not None:
-            cpu.blockSignals(True)
-            cpu.setChecked(True)
-            cpu.blockSignals(False)
-
-    def _on_toggled(self) -> None:
-        self._force_cpu_if_empty()
-        self.changed.emit()
-
-    def selected(self) -> list[str]:
-        """Checked providers in the platform's preference order. Non-empty."""
-        return [p for p, cb in self._checkboxes.items() if cb.isChecked()]
-
-    def set_selected(self, providers: list[str]) -> None:
-        """Reflect a restored selection WITHOUT firing ``changed``."""
-        wanted = set(providers)
-        for p, cb in self._checkboxes.items():
-            cb.blockSignals(True)
-            cb.setChecked(p in wanted)
-            cb.blockSignals(False)
-        self._force_cpu_if_empty()
-
-    def checkboxes(self) -> dict[str, QCheckBox]:
-        return self._checkboxes
-
-    def mark_failed(self, failed: set[str]) -> None:
-        """Red strikethrough on providers ORT couldn't initialise; empty clears."""
-        for name, cb in self._checkboxes.items():
-            if name in failed:
-                cb.setStyleSheet(
-                    "QCheckBox { color: #d94545; text-decoration: line-through; }"
-                )
-                cb.setToolTip(
-                    f"{name} failed to initialise — ORT fell back to a\n"
-                    "lower-priority provider (its runtime libs are likely missing)."
-                )
-            else:
-                cb.setStyleSheet("")
-                cb.setToolTip(self._tooltips.get(name, ""))
 
 
 class QProcessorControls(QWidget):
@@ -485,7 +384,7 @@ class QProcessorControls(QWidget):
         # the swap group. Detection runs on a process-WIDE shared insightface
         # model whose EPs are fixed at first load, so the detector necessarily
         # uses these too (it can't have a separate line).
-        self._swapper_providers_row = _OnnxProvidersRow()
+        self._swapper_providers_row = OnnxProvidersRow()
         self._swapper_providers_row.changed.connect(self.configChanged)
         swapper_form.addRow("ONNX Providers", self._swapper_providers_row)
 
@@ -560,7 +459,7 @@ class QProcessorControls(QWidget):
         # ONNX providers for the ONNX restorer backends (CodeFormer / GPEN /
         # RestoreFormer++ / GFPGAN-ONNX). Active only when an ONNX model is
         # chosen (torch GFPGAN uses the CUDA device above instead).
-        self._enhancer_providers_row = _OnnxProvidersRow()
+        self._enhancer_providers_row = OnnxProvidersRow()
         self._enhancer_providers_row.changed.connect(self.configChanged)
         enhancer_form.addRow("ONNX Providers", self._enhancer_providers_row)
         self._enhancer_box = enhancer_box
@@ -613,7 +512,7 @@ class QProcessorControls(QWidget):
         upscaler_form.addRow("CUDA device", self._upscaler_device)
         # ONNX providers for the ONNX upscalers (HAT, fp16 exports). Active only
         # when an ONNX model is chosen (torch Real-ESRGAN uses the CUDA device).
-        self._upscaler_providers_row = _OnnxProvidersRow()
+        self._upscaler_providers_row = OnnxProvidersRow()
         self._upscaler_providers_row.changed.connect(self.configChanged)
         upscaler_form.addRow("ONNX Providers", self._upscaler_providers_row)
         self._upscaler_box = upscaler_box
