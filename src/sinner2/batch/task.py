@@ -185,6 +185,10 @@ class BatchTask(SinnerBaseModel):
     # ---- Output / cache config (used by frames mode + ffmpeg input glob) ----
     image_format: ImageFormat = ImageFormat.JPEG
     image_quality: int = 95
+    # Power-user extra ffmpeg encode args for VIDEO output (e.g.
+    # "-c:v libx265 -crf 24 -preset slow"). Appended last among the output
+    # options so it overrides the defaults; empty = the built-in H.264 settings.
+    encode_args: str = ""
 
     # ---- Stage execution config (processor-major batch) ----
     cleanup_mode: BatchCleanupMode = BatchCleanupMode.KEEP

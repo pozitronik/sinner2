@@ -18,6 +18,7 @@ command line is short enough to read at a glance.
 """
 from __future__ import annotations
 
+import shlex
 import shutil
 import subprocess
 import threading
@@ -141,6 +142,7 @@ def encode_frames_to_mp4(
     audio_source: Path | None = None,
     audio_segments: list[tuple[float, float]] | None = None,
     progress_callback: Callable[[int], None] | None = None,
+    encode_args: str = "",
 ) -> None:
     """Encode the per-frame files at <frame_dir>/00000000.<ext>, ...
     into an H.264/yuv420p mp4 at `output`. Re-muxes audio from
@@ -158,11 +160,21 @@ def encode_frames_to_mp4(
     it the GUI's progress bar froze at the last processor stage's 100%
     while a long video muxed.
 
-    Raises FfmpegMissingError when ffmpeg isn't on PATH. Raises
+    `encode_args`, when given (a power-user string), is shlex-split and appended
+    to the output options just before the output file, so it OVERRIDES the
+    matching defaults (ffmpeg uses the last value for an option — e.g.
+    "-c:v libx265 -crf 24"). The even-scale filter + audio mapping stay intact.
+
+    Raises FfmpegMissingError when ffmpeg isn't on PATH. Raises ValueError when
+    `encode_args` can't be parsed (unbalanced quotes). Raises
     subprocess.CalledProcessError on encoder failure (the caller
     surfaces this via task.error_message).
     """
     ffmpeg = _require_ffmpeg()
+    try:
+        extra_args = shlex.split(encode_args) if encode_args.strip() else []
+    except ValueError as exc:
+        raise ValueError(f"invalid extra ffmpeg args {encode_args!r}: {exc}") from exc
     output.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
         ffmpeg,
@@ -177,6 +189,9 @@ def encode_frames_to_mp4(
     if use_audio:
         cmd += ["-i", str(audio_source)]
     cmd += _av_args(use_audio, audio_segments)
+    # Power-user overrides go last among the output options so ffmpeg's
+    # last-value-wins resolves them over the defaults above.
+    cmd += extra_args
     if progress_callback is None:
         cmd.append(str(output))
         # capture_output so ffmpeg's stderr doesn't spew through the GUI's

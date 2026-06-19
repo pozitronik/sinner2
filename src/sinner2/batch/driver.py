@@ -670,6 +670,7 @@ class BatchDriver:
                     audio_source=task.target_path,
                     audio_segments=audio_segments,
                     progress_callback=on_progress,
+                    encode_args=task.encode_args,
                 )
             except FfmpegMissingError as exc:
                 # Fallback: ship the frames as a directory next to where the

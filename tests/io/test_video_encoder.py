@@ -460,3 +460,60 @@ class TestAudioMuxCommand:
         cmd = captured["cmd"]
         assert "-map" in cmd and "1:a:0" in cmd  # audio path was taken
         assert "-shortest" not in cmd
+
+
+class TestExtraEncodeArgs:
+    """The power-user `encode_args` string is shlex-split and appended to the
+    output options just before the output file, so it overrides the defaults."""
+
+    def test_extra_args_appended_before_output_and_override_codec(
+        self, tmp_path, monkeypatch
+    ):
+        import subprocess as sp
+
+        monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/ffmpeg")
+        captured: dict = {}
+
+        def fake_run(cmd, **_kw):
+            captured["cmd"] = list(cmd)
+            return sp.CompletedProcess(cmd, 0, "", "")
+
+        monkeypatch.setattr(sp, "run", fake_run)
+        frames = tmp_path / "frames"
+        frames.mkdir()
+        out = tmp_path / "out.mp4"
+        encode_frames_to_mp4(
+            frames, out, fps=10.0, encode_args="-c:v libx265 -crf 24"
+        )
+        cmd = captured["cmd"]
+        assert cmd[-1] == str(out)  # output stays last
+        i = cmd.index("libx265")
+        assert cmd[i - 1] == "-c:v"
+        assert cmd[i + 1 : i + 3] == ["-crf", "24"]
+        # User override is placed AFTER the default libx264 block → it wins.
+        assert cmd.index("libx265") > cmd.index("libx264")
+
+    def test_empty_args_is_a_noop(self, tmp_path, monkeypatch):
+        import subprocess as sp
+
+        monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/ffmpeg")
+        captured: dict = {}
+        monkeypatch.setattr(
+            sp, "run",
+            lambda cmd, **_kw: captured.setdefault("cmd", list(cmd))
+            or sp.CompletedProcess(cmd, 0, "", ""),
+        )
+        frames = tmp_path / "frames"
+        frames.mkdir()
+        encode_frames_to_mp4(frames, tmp_path / "out.mp4", fps=10.0, encode_args="  ")
+        assert "libx265" not in captured["cmd"]  # nothing extra spliced
+
+    def test_invalid_args_raise_valueerror(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/ffmpeg")
+        frames = tmp_path / "frames"
+        frames.mkdir()
+        with pytest.raises(ValueError):
+            encode_frames_to_mp4(
+                frames, tmp_path / "out.mp4", fps=10.0,
+                encode_args='-c:v "unbalanced',  # missing closing quote
+            )

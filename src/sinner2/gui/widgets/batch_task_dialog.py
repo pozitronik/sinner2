@@ -624,6 +624,20 @@ class QBatchTaskDialog(QDialog):
         self._image_quality.setRange(1, 100)
         self._image_quality.setValue(task.image_quality)
         out_form.addRow("Image quality:", self._image_quality)
+        # Power-user ffmpeg override for VIDEO output. Appended last so it wins
+        # over the built-in H.264 defaults; the even-scale + audio mapping stay.
+        self._encode_args = QLineEdit(task.encode_args)
+        self._encode_args.setPlaceholderText(
+            "e.g. -c:v libx265 -crf 24 -preset slow  (leave empty for default H.264)"
+        )
+        self._encode_args.setToolTip(
+            "Extra ffmpeg encode args for VIDEO output, appended to the command "
+            "so they OVERRIDE the defaults (ffmpeg uses the last value for an "
+            "option). Power-user / unvalidated — a bad string fails the encode. "
+            "The even-scale filter and audio mapping are kept. No effect in "
+            "Frames mode."
+        )
+        out_form.addRow("Extra ffmpeg args:", self._encode_args)
 
         # ---- Standard OK / Cancel ----
         button_box = QDialogButtonBox(
@@ -868,6 +882,7 @@ class QBatchTaskDialog(QDialog):
             "continue_on_error": self._continue_on_error.isChecked(),
             "image_format": ImageFormat(self._image_format.currentData()),
             "image_quality": self._image_quality.value(),
+            "encode_args": self._encode_args.text().strip(),
         }
         if not self._defaults_mode:
             # Untouched auto value (or empty) → keep output_path None so it

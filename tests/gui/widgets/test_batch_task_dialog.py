@@ -248,6 +248,14 @@ class TestWritebackToTask:
         # Original is unchanged (model_copy returns a new instance).
         assert t.swapper_execution.workers == 1
 
+    def test_encode_args_round_trips(self, qtbot, tmp_path):
+        t = _task(tmp_path, encode_args="-c:v libx265 -crf 24")
+        dlg = QBatchTaskDialog.from_task(t)
+        qtbot.addWidget(dlg)
+        assert dlg._encode_args.text() == "-c:v libx265 -crf 24"  # noqa: SLF001
+        dlg._encode_args.setText("  -preset slow  ")  # noqa: SLF001 (trimmed)
+        assert dlg.to_task().encode_args == "-preset slow"
+
     def test_continue_on_error_round_trips(self, qtbot, tmp_path):
         t = _task(tmp_path, continue_on_error=False)
         dlg = QBatchTaskDialog.from_task(t)
