@@ -126,6 +126,9 @@ class QStatusActionBar(QWidget):
         self.fullscreen_button = self._toggle("⛶", "Fullscreen (F11)")
         self.side_panel_button = self._toggle("◧", "Toggle side panel (F9)")
         self.save_button = self._action("💾", "Save current frame (Ctrl+S)")
+        self.settings_button = self._action(
+            "⚙️", "Settings — cache, models, camera"
+        )
 
         self._message = QLabel("")
 
@@ -140,6 +143,7 @@ class QStatusActionBar(QWidget):
             self.fullscreen_button,
             self.side_panel_button,
             self.save_button,
+            self.settings_button,
         ):
             layout.addWidget(button)
         # Divider sets the action-button group apart from the message.

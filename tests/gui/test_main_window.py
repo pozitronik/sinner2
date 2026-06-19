@@ -68,16 +68,20 @@ class TestModelDownloadDialog:
 
 
 class TestModelsTab:
-    def test_side_panel_has_models_tab(self, window):
+    def test_models_view_in_settings_dialog(self, window):
+        # Models moved off the side panel into the ⚙️ Settings dialog.
         panel = window._side_panel  # noqa: SLF001
         titles = [panel.tabText(i) for i in range(panel.count())]
-        assert "Models" in titles
+        assert "Models" not in titles
+        dlg = window._settings_dialog  # noqa: SLF001
+        dlg_titles = [dlg._tabs.tabText(i) for i in range(dlg._tabs.count())]  # noqa: SLF001
+        assert dlg_titles == ["Cache", "Models", "Camera"]
 
     def test_models_view_wired(self, window):
-        assert window._side_panel.models_view() is window._models_view  # noqa: SLF001
-        # The catalog is fully listed.
+        # The models view is the same instance, hosted on the dialog's Models tab.
         from sinner2.pipeline.models_catalog import MODEL_CATALOG
 
+        assert window._settings_dialog._tabs.widget(1) is window._models_view  # noqa: SLF001
         assert window._models_view._model.rowCount() == len(MODEL_CATALOG)  # noqa: SLF001
 
 
@@ -2577,3 +2581,13 @@ class TestProblemFrameJump:
         ex.next_problem_frame.return_value = None
         self._press_p(window)
         ex.seek.assert_not_called()
+
+
+class TestSettingsButton:
+    """The ⚙️ button bar action opens the modeless Settings dialog."""
+
+    def test_settings_button_opens_dialog(self, window):
+        assert window._settings_dialog.isVisible() is False  # noqa: SLF001
+        window._status_bar.settings_button.click()  # noqa: SLF001
+        assert window._settings_dialog.isVisible() is True  # noqa: SLF001
+        window._settings_dialog.hide()  # noqa: SLF001 — don't leak a shown window

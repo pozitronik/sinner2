@@ -4,7 +4,6 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QDialog,
     QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
@@ -1003,28 +1002,17 @@ class QProcessorControls(QWidget):
         self._execution_box = execution_box
         self._cache_box = cache_box
         self._cache_storage_box = cache_storage_box
-        # Cache + Cache-storage live in a separate "Cache settings…" dialog (kept
-        # off the main scroll); a button opens it. Both are file-only.
-        self._cache_dialog = QDialog(self)
-        self._cache_dialog.setWindowTitle("Cache settings")
-        cache_dialog_layout = QVBoxLayout(self._cache_dialog)
-        cache_dialog_layout.addWidget(cache_box)
-        cache_dialog_layout.addWidget(cache_storage_box)
-        cache_dialog_layout.addStretch(1)
-        self._cache_settings_btn = QPushButton("Cache settings…")
-        self._cache_settings_btn.setToolTip(
-            "Open the cache + cache-storage settings (mode, image format/quality, "
-            "memory budget, write workers, on-disk usage + clear)."
-        )
-        self._cache_settings_btn.clicked.connect(self._open_cache_settings)
+        # Cache + Cache-storage are hosted by the main window's ⚙️ Settings
+        # dialog (Cache tab) — see cache_widgets(). They're built + wired HERE so
+        # the snapshot/persist surface stays on this panel; they stay parentless
+        # until the dialog reparents them, so nothing shows inside this panel.
         # Assembled in pipeline order: Faces (face-map + detection + selection) →
-        # Face swap → enhance → upscale → file-only Execution + the cache button.
+        # Face swap → enhance → upscale → file-only Execution.
         inner_layout.addWidget(face_box)              # Faces
         inner_layout.addWidget(swapper_box)           # Face swap
         inner_layout.addWidget(enhancer_box)
         inner_layout.addWidget(upscaler_box)
         inner_layout.addWidget(execution_box)
-        inner_layout.addWidget(self._cache_settings_btn)
         inner_layout.addStretch()
 
         scroll = QScrollArea(self)
@@ -1052,22 +1040,18 @@ class QProcessorControls(QWidget):
         self._uniform_label_width = self._compute_uniform_label_width()
         self._apply_form_density()
 
-    def _open_cache_settings(self) -> None:
-        """Open the cache-settings dialog (modeless, so cache changes preview
-        live)."""
-        self._cache_dialog.show()
-        self._cache_dialog.raise_()
-        self._cache_dialog.activateWindow()
+    def cache_widgets(self) -> list[QWidget]:
+        """The Cache + Cache-storage group boxes, for the ⚙️ Settings dialog to
+        host on its Cache tab. Built + wired here (snapshot/persist + the cache-
+        management signals read from this panel); the dialog only reparents them."""
+        return [self._cache_box, self._cache_storage_box]
 
     def set_file_only_visible(self, visible: bool) -> None:
-        """Show/hide the file-only surface (Execution group + the Cache-settings
-        button). Live mode hides them: a camera has no timeline cache, reader
-        pool, processing scale, or video backend, and its worker count lives in
-        the Live tab. Closing the cache dialog too keeps it from lingering."""
+        """Show/hide the file-only Execution group. Live (camera) mode hides it —
+        a camera has no timeline cache, reader pool, processing scale, or video
+        backend. The cache groups are file-only too but live in the Settings
+        dialog now, so they're not toggled here."""
         self._execution_box.setVisible(visible)
-        self._cache_settings_btn.setVisible(visible)
-        if not visible:
-            self._cache_dialog.hide()
 
     # ---- Responsive form density (consistent + adaptive caption columns) ----
 

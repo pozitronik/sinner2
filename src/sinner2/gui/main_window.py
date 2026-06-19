@@ -91,6 +91,7 @@ from sinner2.gui.widgets.metrics_overlay import (
     QMetricsOverlay,
 )
 from sinner2.gui.widgets.processor_controls import QProcessorControls
+from sinner2.gui.widgets.settings_dialog import QSettingsDialog
 from sinner2.gui.widgets.side_panel import QSidePanel
 from sinner2.gui.widgets.source_target_panel import QSourceTargetPanel
 from sinner2.gui.widgets.status_action_bar import QStatusActionBar
@@ -270,8 +271,6 @@ class SinnerMainWindow(QMainWindow):
             thumbnail_cache_dir=default_cache_root() / "thumbnails",
             processors=self._processors,
             batch_view=self._batch_view,
-            models_view=self._models_view,
-            live_view=self._live_view,
             face_map_panel=self._face_map_panel,
             sources_display_dim=self._settings.library_sources_display_dim or _legacy_dim,
             targets_display_dim=self._settings.library_targets_display_dim or _legacy_dim,
@@ -382,6 +381,16 @@ class SinnerMainWindow(QMainWindow):
         self._status_bar.add_leading_button(self._menu_button)
         layout.addWidget(self._status_bar)
         self.setCentralWidget(central)
+        # ⚙️ Settings dialog (modeless): consolidates Cache + Models + Camera,
+        # hosting the existing widget instances so their wiring stays intact.
+        # Built once; the button shows/raises it.
+        self._settings_dialog = QSettingsDialog(
+            cache_widgets=self._processors.cache_widgets(),
+            models_view=self._models_view,
+            camera_view=self._live_view,
+            parent=self,
+        )
+        self._status_bar.settings_button.clicked.connect(self._open_settings)
         # Drag a media file onto the window (the preview) to load it: videos →
         # target, images → source. The picker ROWS accept their own drops too
         # (forcing the destination regardless of type); this catches drops
@@ -1404,6 +1413,11 @@ class SinnerMainWindow(QMainWindow):
         button.setStyleSheet("QToolButton::menu-indicator { image: none; }")
         self._project_menu = menu
         return button
+
+    def _open_settings(self) -> None:
+        """Show the ⚙️ Settings window (Cache / Models / Camera), modeless so its
+        changes preview live against the main window."""
+        self._settings_dialog.show_and_raise()
 
     def _set_project_path(self, path: Path | None) -> None:
         self._project_path = path

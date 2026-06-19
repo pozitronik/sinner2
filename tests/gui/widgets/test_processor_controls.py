@@ -69,31 +69,23 @@ class TestUseFaceMapSwitch:
 
 
 class TestFileOnlyVisibility:
-    """Live mode hides the file-only surface (Execution group + the Cache-settings
-    button); the per-processor groups + providers/devices stay (apply to live)."""
+    """Live mode hides the file-only Execution group; the per-processor groups +
+    providers/devices stay (apply to live). The cache groups moved to the ⚙️
+    Settings dialog and are exposed via cache_widgets()."""
 
-    def test_set_file_only_visible_toggles_execution_and_cache_button(self, widget):
+    def test_set_file_only_visible_toggles_execution(self, widget):
         widget.set_file_only_visible(False)
-        assert not widget._execution_box.isVisibleTo(widget)         # noqa: SLF001
-        assert not widget._cache_settings_btn.isVisibleTo(widget)    # noqa: SLF001
-        assert widget._cache_dialog.isHidden()                       # noqa: SLF001
+        assert not widget._execution_box.isVisibleTo(widget)  # noqa: SLF001
         widget.set_file_only_visible(True)
-        assert widget._execution_box.isVisibleTo(widget)             # noqa: SLF001
-        assert widget._cache_settings_btn.isVisibleTo(widget)        # noqa: SLF001
+        assert widget._execution_box.isVisibleTo(widget)  # noqa: SLF001
 
-    def test_cache_groups_live_in_the_dialog(self, widget):
-        # Cache + Cache storage moved OFF the main panel into the cache-settings
-        # dialog (opened by the button) — not the inner scroll.
-        assert widget._cache_dialog.isAncestorOf(widget._cache_box)  # noqa: SLF001
-        assert widget._cache_dialog.isAncestorOf(  # noqa: SLF001
-            widget._cache_storage_box  # noqa: SLF001
-        )
-
-    def test_cache_settings_button_opens_dialog(self, widget, qtbot):
-        assert widget._cache_dialog.isVisible() is False  # noqa: SLF001
-        widget._open_cache_settings()  # noqa: SLF001
-        assert widget._cache_dialog.isVisible() is True  # noqa: SLF001
-        widget._cache_dialog.hide()  # noqa: SLF001 — don't leak a shown window
+    def test_cache_widgets_exposed_for_the_settings_dialog(self, widget):
+        # The cache groups are no longer in THIS panel's scroll — they're handed
+        # to the ⚙️ Settings dialog (which reparents them) via cache_widgets().
+        boxes = widget.cache_widgets()
+        assert widget._cache_box in boxes  # noqa: SLF001
+        assert widget._cache_storage_box in boxes  # noqa: SLF001
+        assert not widget.isAncestorOf(widget._cache_box)  # noqa: SLF001
 
 
 class TestProviderFloor:
@@ -601,24 +593,25 @@ class TestCacheManagementControls:
         assert not widget._size_cap_enabled.isChecked()  # noqa: SLF001
         assert widget.cache_size_cap_bytes() == 0
 
-    def test_browse_button_emits_signal(self, widget, qtbot):
-        with qtbot.waitSignal(widget.browseRootRequested, timeout=1000):
-            # Find the Browse button by walking children.
-            from PySide6.QtWidgets import QPushButton
-
-            for btn in widget.findChildren(QPushButton):
-                if btn.text() == "Browse...":
-                    btn.click()
-                    break
-
-    def test_clear_all_button_emits_signal(self, widget, qtbot):
+    @staticmethod
+    def _click_cache_button(widget, label):
+        # The cache buttons live on the (now dialog-bound) cache widgets, not in
+        # the panel tree, so search within cache_widgets().
         from PySide6.QtWidgets import QPushButton
 
-        with qtbot.waitSignal(widget.clearAllRequested, timeout=1000):
-            for btn in widget.findChildren(QPushButton):
-                if btn.text() == "Clear all caches":
+        for box in widget.cache_widgets():
+            for btn in box.findChildren(QPushButton):
+                if btn.text() == label:
                     btn.click()
-                    break
+                    return
+
+    def test_browse_button_emits_signal(self, widget, qtbot):
+        with qtbot.waitSignal(widget.browseRootRequested, timeout=1000):
+            self._click_cache_button(widget, "Browse...")
+
+    def test_clear_all_button_emits_signal(self, widget, qtbot):
+        with qtbot.waitSignal(widget.clearAllRequested, timeout=1000):
+            self._click_cache_button(widget, "Clear all caches")
 
     def test_invalidate_button_disabled_initially(self, widget):
         assert not widget._invalidate_btn.isEnabled()  # noqa: SLF001

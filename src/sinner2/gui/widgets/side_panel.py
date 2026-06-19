@@ -42,8 +42,6 @@ class QSidePanel(QTabWidget):
         *,
         processors: QProcessorControls | None = None,
         batch_view: QBatchView | None = None,
-        models_view: QWidget | None = None,
-        live_view: QWidget | None = None,
         face_map_panel: QWidget | None = None,
         thumb_extract_dim: int = 384,
         thumb_display_dim: int = 128,
@@ -81,25 +79,20 @@ class QSidePanel(QTabWidget):
             display_dim=targets_display_dim or thumb_display_dim,
         )
         self._batch_view = batch_view
-        self._models_view = models_view
-        self._live_view = live_view
         self._face_map_panel = face_map_panel
         self._faces_toggle: QPushButton | None = None
 
         # Order: settings first (most-used during initial setup), then
         # libraries for ongoing source/target switching, then batch
-        # (queue management), then models (occasional management). The Faces
-        # panel is NOT its own tab — it's a togglable subpanel of Sources.
+        # (queue management). The Faces panel is NOT its own tab — it's a
+        # togglable subpanel of Sources. Models + Camera moved to the ⚙️
+        # Settings dialog (see QSettingsDialog).
         self.addTab(self._processors, "Settings")
         self._sources_tab = self._build_sources_tab()
         self.addTab(self._sources_tab, "Sources")
         self.addTab(self._targets_library, "Targets")
         if self._batch_view is not None:
             self.addTab(self._batch_view, "Batch")
-        if self._models_view is not None:
-            self.addTab(self._models_view, "Models")
-        if self._live_view is not None:
-            self.addTab(self._live_view, "Live")
 
     def _build_sources_tab(self) -> QWidget:
         """Sources tab = the face-map panel beside the sources library, with a
@@ -166,9 +159,6 @@ class QSidePanel(QTabWidget):
     def batch_view(self) -> QBatchView | None:
         return self._batch_view
 
-    def models_view(self) -> QWidget | None:
-        return self._models_view
-
     def face_map_panel(self) -> QWidget | None:
         return self._face_map_panel
 
@@ -185,10 +175,10 @@ class QSidePanel(QTabWidget):
             self._face_map_panel.setEnabled(not (locked and lock_faces))
 
     def set_mode(self, mode: str) -> None:
-        """Show only the tabs relevant to the active mode. Live hides Targets +
-        Batch (no file target; batch is file-only) and reveals + selects Live;
-        any other mode restores Targets/Batch and hides Live. Resolved by widget
-        index so optional tabs don't shift the mapping."""
+        """Show only the tabs relevant to the active mode. Live (camera) hides
+        Targets + Batch (no file target; batch is file-only); any other mode
+        restores them. Resolved by widget index so optional tabs don't shift the
+        mapping. (The camera config itself lives in the ⚙️ Settings dialog.)"""
         live = mode == "live"
         ti = self.indexOf(self._targets_library)
         if ti >= 0:
@@ -197,12 +187,6 @@ class QSidePanel(QTabWidget):
             bi = self.indexOf(self._batch_view)
             if bi >= 0:
                 self.setTabVisible(bi, not live)
-        if self._live_view is not None:
-            li = self.indexOf(self._live_view)
-            if li >= 0:
-                self.setTabVisible(li, live)
-                if live:
-                    self.setCurrentWidget(self._live_view)
 
     def set_display_dim(self, dim: int) -> None:
         """Apply the same thumbnail display size to both libraries.

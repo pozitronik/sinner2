@@ -153,34 +153,31 @@ class TestQSidePanel:
         assert side_panel.sources_library().isEnabled()
         assert side_panel.targets_library().isEnabled()
 
-    def test_set_mode_toggles_live_and_file_tabs(self, qtbot, tmp_path):
+    def test_set_mode_toggles_file_only_tabs(self, qtbot, tmp_path):
+        # Camera (live) mode hides the file-only Targets + Batch tabs; any other
+        # mode restores them. (The camera config itself now lives in the ⚙️
+        # Settings dialog, not a side-panel tab.)
         from typing import cast
 
         from PySide6.QtWidgets import QWidget
 
         from sinner2.gui.widgets.batch_view import QBatchView
 
-        live = QWidget()
         batch = QWidget()
         panel = QSidePanel(
             thumbnail_cache_dir=tmp_path / "thumbs",
             processors=QProcessorControls(),
             batch_view=cast(QBatchView, batch),  # set_mode only toggles its tab
-            live_view=live,
         )
         qtbot.addWidget(panel)
         try:
             ti = panel.indexOf(panel.targets_library())
             bi = panel.indexOf(batch)
-            li = panel.indexOf(live)
             panel.set_mode("live")
             assert not panel.isTabVisible(ti)       # no file target in live
             assert not panel.isTabVisible(bi)       # batch is file-only
-            assert panel.isTabVisible(li)           # live shown
-            assert panel.currentWidget() is live    # and selected
             panel.set_mode("file")
             assert panel.isTabVisible(ti)           # targets restored
             assert panel.isTabVisible(bi)           # batch restored
-            assert not panel.isTabVisible(li)       # live hidden
         finally:
             panel.shutdown()
