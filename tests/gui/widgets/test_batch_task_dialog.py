@@ -559,18 +559,17 @@ class TestUpscalerExecution:
 
 
 class TestTabbedLayout:
-    """The form is tabbed (Task / Face swap / Enhance & upscale / Execution)
-    and capped at 80% of the screen height so it stays operable on laptops."""
+    """The form is tabbed one-stage-per-tab (Task / Recognition / Face swap /
+    Enhance / Upscale / Execution), mirroring the live settings groups, and
+    capped at 80% of the screen height so it stays operable on laptops."""
 
-    def test_form_has_four_named_tabs(self, qtbot, tmp_path):
+    def test_form_has_per_stage_tabs(self, qtbot, tmp_path):
         dlg = QBatchTaskDialog.from_task(_task(tmp_path))
         qtbot.addWidget(dlg)
         titles = [dlg._tabs.tabText(i) for i in range(dlg._tabs.count())]  # noqa: SLF001
-        assert dlg._tabs.count() == 4  # noqa: SLF001
-        assert titles[0] == "Task"
-        assert titles[1] == "Face swap"
-        assert "Enhance" in titles[2]
-        assert titles[3] == "Execution"
+        assert titles == [
+            "Task", "Recognition", "Face swap", "Enhance", "Upscale", "Execution",
+        ]
 
     def test_height_capped_at_80_percent(self, qtbot, tmp_path):
         from PySide6.QtGui import QGuiApplication
@@ -580,3 +579,34 @@ class TestTabbedLayout:
         screen = dlg.screen() or QGuiApplication.primaryScreen()
         avail = screen.availableGeometry().height()
         assert dlg.maximumHeight() <= int(avail * 0.8)
+
+
+class TestFaceMapOption:
+    """The Recognition tab exposes a per-task 'Use face map' switch. It's
+    disabled (no usable map) by default; round-trips through to_task."""
+
+    def test_disabled_without_a_map(self, qtbot, tmp_path):
+        dlg = QBatchTaskDialog.from_task(_task(tmp_path))  # no store dir
+        qtbot.addWidget(dlg)
+        assert dlg._use_face_map.isEnabled() is False  # noqa: SLF001
+
+    def test_enabled_and_round_trips_when_map_present(self, qtbot, tmp_path):
+        from sinner2.pipeline.face_map import FaceMap, Identity, normalize
+        from sinner2.pipeline.face_map_store import face_map_path, save_face_map
+
+        store = tmp_path / "face_maps"
+        tgt = tmp_path / "tgt.mp4"
+        save_face_map(
+            face_map_path(tgt, store),
+            FaceMap(identities=(Identity("a", normalize([1.0, 0.0, 0.0])),)),
+        )
+        t = _task(
+            tmp_path, target_path=tgt,
+            face_map_store_dir=str(store), use_face_map=True,
+        )
+        dlg = QBatchTaskDialog.from_task(t)
+        qtbot.addWidget(dlg)
+        assert dlg._use_face_map.isEnabled() is True  # noqa: SLF001
+        assert dlg._use_face_map.isChecked() is True  # noqa: SLF001
+        dlg._use_face_map.setChecked(False)  # noqa: SLF001
+        assert dlg.to_task().use_face_map is False

@@ -2,10 +2,11 @@
 
 Surfaces the full session config (chain + execution + output) in a TABBED form
 so the user can tweak any aspect of how the task will run without fighting a
-single tall scroll. The control set + grouping mirror the live settings panel
-(QProcessorControls): the Face-swap tab uses the same Faces-recognition /
-Rotation / Occlusion sub-boxes, and every ONNX-using stage (swapper, enhancer,
-upscaler) gets the shared OnnxProvidersRow selector.
+single tall scroll. The control set, grouping AND order mirror the live settings
+panel (QProcessorControls): Recognition / Face swap / Enhance / Upscale are
+separate tabs just like the live groups; the Face-swap tab uses the same
+Rotation / Occlusion sub-boxes; every ONNX-using stage gets the shared
+OnnxProvidersRow selector; and the precalculated face map has a per-task switch.
 
 Open via .from_task(task) → user edits → accept() commits back via
 .to_task() — caller persists.
@@ -51,6 +52,7 @@ from sinner2.io.cv2_video_target_reader import CV2VideoTargetReader
 from sinner2.io.frame_resize import scaled_dims
 from sinner2.io.target_reader import ImageTargetReader
 from sinner2.io.video_backend import VideoBackend
+from sinner2.pipeline.face_map_store import face_map_path, load_face_map
 from sinner2.pipeline.image_writer import ImageFormat
 from sinner2.pipeline.processors.face_swapper import TargetSex
 from sinner2.pipeline.processors.upscaler import (
@@ -174,7 +176,78 @@ class QBatchTaskDialog(QDialog):
         )
         paths_form.addRow("Output format:", self._format_combo)
 
-        # ---- FaceSwapper group (checkable: disable for enhancer-only) ----
+        # ---- Faces recognition group (its own tab, like the live panel) ----
+        # Order mirrors the live Faces group: face map → detector → detection
+        # size/interval → "Which to swap" sub-box (selection).
+        faces_box = QGroupBox("Faces recognition")
+        faces_form = QFormLayout(faces_box)
+        # Per-task switch to route faces through the target's precalculated map
+        # (catalog + geometry). Enabled only when a usable map exists for the
+        # target; the driver loads it live at render time.
+        self._use_face_map = QCheckBox()
+        self._use_face_map.setChecked(task.use_face_map)
+        fm_available = self._probe_face_map_available(task)
+        self._use_face_map.setEnabled(fm_available)
+        self._use_face_map.setToolTip(
+            "Route each detected face through this target's PRECALCULATED face "
+            "map (per-identity source + saved geometry) instead of the single "
+            "global source. The map is loaded live at render time. Build / scan "
+            "it on the Sources tab first."
+            + ("" if fm_available else "\nNo usable face map found for this target yet.")
+        )
+        faces_form.addRow("Use face map:", self._use_face_map)
+        self._detector = QComboBox()
+        for value, label in (
+            ("buffalo_l", "buffalo_l (full pack, gender + pose)"),
+            ("yoloface", "YOLOFace 8n (fast, detection-only)"),
+            ("scrfd_2.5g", "SCRFD 2.5g (fast, detection-only)"),
+        ):
+            self._detector.addItem(label, value)
+            if value == task.swapper_detector:
+                self._detector.setCurrentIndex(self._detector.count() - 1)
+        self._detector.setToolTip(
+            "Target detector. yoloface / scrfd are faster (detection-only) but "
+            "disable the gender filter and use keypoint-angle rotation."
+        )
+        self._detector.currentIndexChanged.connect(self._update_detector_rows)
+        faces_form.addRow("Detector:", self._detector)
+        self._detection_size = QSpinBox()
+        # Multiples of 32 (SCRFD strides); 640 default, smaller = faster.
+        self._detection_size.setRange(128, 1280)
+        self._detection_size.setSingleStep(32)
+        self._detection_size.setValue(task.swapper_detection_size)
+        self._detection_size.setToolTip(
+            "Face-detector input size (px). Smaller = faster detection but may "
+            "miss small or distant faces. 640 default; multiples of 32."
+        )
+        faces_form.addRow("Detection size:", self._detection_size)
+        self._detection_interval = QSpinBox()
+        self._detection_interval.setRange(1, 30)
+        self._detection_interval.setValue(task.swapper_detection_interval)
+        self._detection_interval.setToolTip(
+            "Detect every Nth frame and reuse the result between (1 = every "
+            "frame). Higher = faster on stable shots."
+        )
+        faces_form.addRow("Detection interval:", self._detection_interval)
+        # "Which to swap" sub-box (selection) sits under the detector it depends
+        # on — same nesting as the live panel.
+        which_box = QGroupBox("Which to swap")
+        which_form = QFormLayout(which_box)
+        self._many_faces = QCheckBox()
+        self._many_faces.setChecked(task.swapper_many_faces)
+        which_form.addRow("Many faces:", self._many_faces)
+        self._target_sex = QComboBox()
+        for label, value in _TARGET_SEX_OPTIONS:
+            self._target_sex.addItem(label, value)
+            if value == task.swapper_target_sex:
+                self._target_sex.setCurrentIndex(self._target_sex.count() - 1)
+        which_form.addRow("Gender:", self._target_sex)
+        faces_form.addRow(which_box)
+
+        # ---- Face swapper group (checkable: disable for enhancer-only) ----
+        # Order mirrors the live Face-swap group: model → fast paste →
+        # execution (workers + providers) → landmark refine → Rotation →
+        # Occlusion.
         swap_box = QGroupBox("Face swapper")
         swap_box.setCheckable(True)
         swap_box.setChecked(task.swapper_enabled)
@@ -210,6 +283,24 @@ class QBatchTaskDialog(QDialog):
             "original diff-based blend (inswapper/reswapper only)."
         )
         swap_form.addRow("Fast paste:", self._fast_paste)
+        self._swapper_workers = QSpinBox()
+        self._swapper_workers.setRange(1, 16)
+        self._swapper_workers.setValue(task.swapper_execution.workers)
+        self._swapper_workers.setToolTip(
+            "Worker threads for the swap stage. The swapper shares one ONNX "
+            "session across threads, so more workers cost little extra VRAM."
+        )
+        swap_form.addRow("Workers:", self._swapper_workers)
+        # Shared provider strip. ``preferred`` renders the task's saved EPs
+        # first (in priority order) and keeps a requested-but-unavailable EP
+        # (e.g. a CUDA task edited on a CPU box) so editing round-trips it.
+        self._swapper_providers_row = OnnxProvidersRow(
+            preferred=list(task.swapper_execution.providers)
+        )
+        self._swapper_providers_row.set_selected(
+            list(task.swapper_execution.providers)
+        )
+        swap_form.addRow("ONNX providers:", self._swapper_providers_row)
         self._landmark_refine = QCheckBox()
         self._landmark_refine.setChecked(task.swapper_landmark_refine)
         self._landmark_refine.setToolTip(
@@ -217,53 +308,6 @@ class QBatchTaskDialog(QDialog):
             "alignment on tilted faces). Downloads 2dfan4 on first batch run."
         )
         swap_form.addRow("Landmark refine:", self._landmark_refine)
-
-        # -- Faces recognition sub-box (detection + selection) --
-        faces_box = QGroupBox("Faces recognition")
-        faces_form = QFormLayout(faces_box)
-        self._detector = QComboBox()
-        for value, label in (
-            ("buffalo_l", "buffalo_l (full pack, gender + pose)"),
-            ("yoloface", "YOLOFace 8n (fast, detection-only)"),
-            ("scrfd_2.5g", "SCRFD 2.5g (fast, detection-only)"),
-        ):
-            self._detector.addItem(label, value)
-            if value == task.swapper_detector:
-                self._detector.setCurrentIndex(self._detector.count() - 1)
-        self._detector.setToolTip(
-            "Target detector. yoloface / scrfd are faster (detection-only) but "
-            "disable the gender filter and use keypoint-angle rotation."
-        )
-        self._detector.currentIndexChanged.connect(self._update_detector_rows)
-        faces_form.addRow("Detector:", self._detector)
-        self._detection_size = QSpinBox()
-        # Multiples of 32 (SCRFD strides); 640 default, smaller = faster.
-        self._detection_size.setRange(128, 1280)
-        self._detection_size.setSingleStep(32)
-        self._detection_size.setValue(task.swapper_detection_size)
-        self._detection_size.setToolTip(
-            "Face-detector input size (px). Smaller = faster detection but may "
-            "miss small or distant faces. 640 default; multiples of 32."
-        )
-        faces_form.addRow("Detection size:", self._detection_size)
-        self._detection_interval = QSpinBox()
-        self._detection_interval.setRange(1, 30)
-        self._detection_interval.setValue(task.swapper_detection_interval)
-        self._detection_interval.setToolTip(
-            "Detect every Nth frame and reuse the result between (1 = every "
-            "frame). Higher = faster on stable shots."
-        )
-        faces_form.addRow("Detection interval:", self._detection_interval)
-        self._many_faces = QCheckBox()
-        self._many_faces.setChecked(task.swapper_many_faces)
-        faces_form.addRow("Many faces:", self._many_faces)
-        self._target_sex = QComboBox()
-        for label, value in _TARGET_SEX_OPTIONS:
-            self._target_sex.addItem(label, value)
-            if value == task.swapper_target_sex:
-                self._target_sex.setCurrentIndex(self._target_sex.count() - 1)
-        faces_form.addRow("Gender:", self._target_sex)
-        swap_form.addRow(faces_box)
 
         # -- Rotation sub-box (experimental upright-then-composite) --
         rotation_box = QGroupBox("Rotation")
@@ -356,27 +400,9 @@ class QBatchTaskDialog(QDialog):
         occlusion_form.addRow("Occluder:", self._occluder_model)
         swap_form.addRow(occlusion_box)
 
-        # -- Swapper execution (workers + ONNX providers) --
-        self._swapper_workers = QSpinBox()
-        self._swapper_workers.setRange(1, 16)
-        self._swapper_workers.setValue(task.swapper_execution.workers)
-        self._swapper_workers.setToolTip(
-            "Worker threads for the swap stage. The swapper shares one ONNX "
-            "session across threads, so more workers cost little extra VRAM."
-        )
-        swap_form.addRow("Workers:", self._swapper_workers)
-        # Shared provider strip. ``preferred`` renders the task's saved EPs
-        # first (in priority order) and keeps a requested-but-unavailable EP
-        # (e.g. a CUDA task edited on a CPU box) so editing round-trips it.
-        self._swapper_providers_row = OnnxProvidersRow(
-            preferred=list(task.swapper_execution.providers)
-        )
-        self._swapper_providers_row.set_selected(
-            list(task.swapper_execution.providers)
-        )
-        swap_form.addRow("ONNX providers:", self._swapper_providers_row)
-
-        # ---- FaceEnhancer group ----
+        # ---- FaceEnhancer group (its own tab) ----
+        # Order mirrors the live enhancer group: model → upscale → fidelity →
+        # center face → half precision → execution (workers + device + providers).
         enh_box = QGroupBox("Face enhancer")
         enh_box.setCheckable(True)
         enh_box.setChecked(task.enhancer_enabled)
@@ -460,7 +486,9 @@ class QBatchTaskDialog(QDialog):
         )
         enh_form.addRow("ONNX providers:", self._enhancer_providers_row)
 
-        # ---- Upscaler group (whole-frame super-resolution) ----
+        # ---- Upscaler group (its own tab) ----
+        # Order mirrors the live upscaler group: model → tile → half precision →
+        # execution (workers + device + providers).
         up_box = QGroupBox("Frame upscaler (Real-ESRGAN)")
         up_box.setCheckable(True)
         up_box.setChecked(task.upscaler_enabled)
@@ -605,15 +633,17 @@ class QBatchTaskDialog(QDialog):
         button_box.accepted.connect(self.accept)
         button_box.rejected.connect(self.reject)
 
-        # Group the config into TABS so each pane stays short — the full form is
-        # taller than short displays (~768 px laptops), and a single scroll was
-        # awkward to operate. Each tab scroll-wraps as a safety net for very
-        # small screens; the button box stays OUTSIDE the tabs so it's always
-        # reachable.
+        # Group the config into TABS — one per stage, mirroring the live
+        # settings panel's groups (Recognition / Face swap / Enhance / Upscale).
+        # Each pane stays short; a single scroll was awkward to operate. Each tab
+        # scroll-wraps as a safety net for very small screens; the button box
+        # stays OUTSIDE the tabs so it's always reachable.
         tabs = QTabWidget()
         tabs.addTab(self._tab(paths_box, out_box), "Task")
+        tabs.addTab(self._tab(faces_box), "Recognition")
         tabs.addTab(self._tab(swap_box), "Face swap")
-        tabs.addTab(self._tab(enh_box, up_box), "Enhance && upscale")
+        tabs.addTab(self._tab(enh_box), "Enhance")
+        tabs.addTab(self._tab(up_box), "Upscale")
         tabs.addTab(self._tab(exec_box), "Execution")
         self._tabs = tabs
 
@@ -672,6 +702,22 @@ class QBatchTaskDialog(QDialog):
         self._update_occlusion_rows()  # occlusion subknobs follow the checkbox
         self._update_rotation_rows()  # rotation knobs follow the toggle
         self._update_swapper_model_rows()  # fast-paste follows the swap model
+
+    @staticmethod
+    def _probe_face_map_available(task: BatchTask) -> bool:
+        """Whether a non-empty precalculated face map exists for this task's
+        target (so the 'Use face map' option can do anything). Cheap one-file
+        read at construction; never raises. False in defaults mode / when the
+        task isn't wired to a face-map store."""
+        if not task.face_map_store_dir:
+            return False
+        try:
+            fm = load_face_map(
+                face_map_path(task.target_path, Path(task.face_map_store_dir))
+            )
+        except Exception:
+            return False
+        return fm is not None and not fm.is_empty()
 
     @staticmethod
     def _tab(*boxes: QWidget) -> QScrollArea:
@@ -765,6 +811,7 @@ class QBatchTaskDialog(QDialog):
         format_value = self._format_combo.currentData()
         update: dict[str, object] = {
             "output_format": BatchOutputFormat(format_value),
+            "use_face_map": self._use_face_map.isChecked(),
             "swapper_enabled": self._swapper_box.isChecked(),
             "swapper_model": self._swapper_model.currentData(),
             "swapper_detection_interval": self._detection_interval.value(),
