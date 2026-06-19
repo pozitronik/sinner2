@@ -2180,6 +2180,14 @@ class TestDeferredModelConfirm:
         win._confirm_optional_models.assert_called_once()  # noqa: SLF001
         assert win._models_confirmed is True  # noqa: SLF001
 
+    def test_config_change_reconfigures_overlay_probe(self):
+        # The snapshot's providers/size must reach the overlay's detection probe
+        # so it doesn't rebuild the shared analyser on stale EPs (the snapshot is
+        # the single capture routed to session + probe + persistence).
+        win = self._win()
+        win._on_processor_config_changed()  # noqa: SLF001
+        win._face_overlay_ctl.configure_probe.assert_called_once_with([], 640)  # noqa: SLF001
+
     def test_deferred_confirm_runs_once_then_gated(self):
         win = self._win()
         win._ensure_models_confirmed_before_build()  # noqa: SLF001
