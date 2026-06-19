@@ -83,6 +83,7 @@ from sinner2.gui.widgets.models_view import QModelsView
 from sinner2.gui.widgets.face_detection_overlay import QFaceDetectionOverlay
 from sinner2.gui.widgets.face_map_panel import QFaceMapPanel
 from sinner2.gui.widgets.frame_display import QFrameDisplayWidget
+from sinner2.gui.fullscreen_controller import FullscreenController
 from sinner2.gui.widgets.fullscreen_control_bar import FullscreenControlBar
 from sinner2.gui.widgets.live_view import QLiveView
 from sinner2.gui.widgets.metrics_overlay import (
@@ -381,6 +382,16 @@ class SinnerMainWindow(QMainWindow):
         self._status_bar.add_leading_button(self._menu_button)
         layout.addWidget(self._status_bar)
         self.setCentralWidget(central)
+        # Fullscreen enter/exit is owned by a dedicated controller; the window
+        # keeps the keyboard/button wiring and delegates (see _enter_fullscreen).
+        self._fullscreen = FullscreenController(
+            self,
+            fs_controls=self._fs_controls,
+            chrome=[self._side_panel, self._pickers, self._status_bar],
+            central_layout=self._central_layout,
+            transport=self._transport,
+            top_splitter=self._top_splitter,
+        )
         # ⚙️ Settings dialog (modeless): consolidates Cache + Models + Camera,
         # hosting the existing widget instances so their wiring stays intact.
         # Built once; the button shows/raises it.
@@ -403,7 +414,9 @@ class SinnerMainWindow(QMainWindow):
             self._set_visualiser_visible
         )
         self._status_bar.rotate_button.clicked.connect(self._cycle_rotation)
-        self._status_bar.fullscreen_button.toggled.connect(self._set_fullscreen)
+        self._status_bar.fullscreen_button.toggled.connect(
+            self._fullscreen.set_fullscreen
+        )
         self._status_bar.side_panel_button.toggled.connect(
             self._set_side_panel_visible
         )
@@ -763,14 +776,6 @@ class SinnerMainWindow(QMainWindow):
         # Flag any persisted-but-broken providers (e.g. user previously
         # checked TensorRT on a machine without the libs).
         self._highlight_failed_providers()
-        # Fullscreen state is per-launch (not persisted) — we always
-        # start windowed regardless of how the last session ended.
-        self._is_fullscreen = False
-        # Saved widget visibility for restoration when leaving fullscreen.
-        self._pre_fullscreen_visibility: dict[QWidget, bool] = {}
-        # Whether the window was maximized before going fullscreen, so exit
-        # restores THAT rather than dropping to a smaller "normal" geometry.
-        self._pre_fullscreen_maximized = False
 
     def _on_source_changed(self, source_path: Path) -> None:
         """Source picker fired. Route the new face to the active session — the
@@ -1784,65 +1789,17 @@ class SinnerMainWindow(QMainWindow):
                 self, "Save failed", f"Could not write image to:\n{path_str}"
             )
 
-    def _set_fullscreen(self, on: bool) -> None:
-        # Driven by the fullscreen action button (and F11 / Esc, which toggle
-        # it). Guard against redundant calls so the button-toggled signal
-        # can't double-enter/exit.
-        if on == self._is_fullscreen:
-            return
-        if on:
-            self._enter_fullscreen()
-        else:
-            self._exit_fullscreen()
+    @property
+    def _is_fullscreen(self) -> bool:
+        # Backed by FullscreenController; kept as a window alias so the keyboard
+        # handlers (Esc), the resize reposition, and the tests read it here.
+        return self._fullscreen.is_fullscreen
 
     def _enter_fullscreen(self) -> None:
-        # Snapshot visibility of every chrome widget — the custom status bar
-        # included (it's a normal widget in the central layout now) — so
-        # exit_fullscreen can restore exactly what was showing. The transport
-        # is NOT hidden: it's moved into the auto-hiding fullscreen bar below.
-        chrome: list[QWidget] = [
-            self._side_panel,
-            self._pickers,
-            self._status_bar,
-        ]
-        self._pre_fullscreen_visibility = {w: w.isVisible() for w in chrome}
-        # Capture maximized state BEFORE showFullScreen() clears it, so exit
-        # can return to maximized rather than a smaller restored geometry.
-        self._pre_fullscreen_maximized = self.isMaximized()
-        for w in chrome:
-            w.setVisible(False)
-        # Hand the transport to the fullscreen bar so the playback controls
-        # stay reachable (revealed on cursor-near-bottom) without permanently
-        # covering the frame. removeWidget first so the central layout drops
-        # its slot cleanly before the bar reparents it.
-        self._central_layout.removeWidget(self._transport)
-        self._fs_controls.attach(self._transport)
-        self._is_fullscreen = True
-        self.showFullScreen()
-        self._fs_controls.begin()
+        self._fullscreen.enter()
 
     def _exit_fullscreen(self) -> None:
-        # Stop the cursor watch, take the transport back out of the bar, and
-        # re-home it into its normal slot (index 1: below the display
-        # splitter, above the pickers row).
-        self._fs_controls.end()
-        self._fs_controls.detach(self._transport)
-        # Re-home the transport just below the display splitter. Resolved by the
-        # splitter's current index (the mode toggle above it shifts the slots),
-        # so it lands correctly whether or not the toggle is present.
-        slot = self._central_layout.indexOf(self._top_splitter) + 1
-        self._central_layout.insertWidget(slot, self._transport)
-        self._transport.show()
-        for w, was_visible in self._pre_fullscreen_visibility.items():
-            w.setVisible(was_visible)
-        self._pre_fullscreen_visibility = {}
-        self._is_fullscreen = False
-        # Restore the pre-fullscreen window state. showNormal() alone would
-        # drop a window that was maximized down to its restored size.
-        if self._pre_fullscreen_maximized:
-            self.showMaximized()
-        else:
-            self.showNormal()
+        self._fullscreen.exit()
 
     # ---- Metrics overlay ----
 
