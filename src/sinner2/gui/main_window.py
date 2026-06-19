@@ -3,7 +3,7 @@ import os
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QByteArray, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QDragEnterEvent,
     QDragMoveEvent,
@@ -28,7 +28,6 @@ from sinner2.batch.task import BatchProgress
 from sinner2.batch.task_store import BatchTaskStore
 from sinner2.config import media_extensions
 from sinner2.config import settings as user_settings
-from sinner2.gui.face_detection_probe import FaceDetectionProbe, FaceDetectionSink
 from sinner2.gui.face_map_controller import FaceMapController
 from sinner2.gui.icon import app_icon
 from sinner2.gui.model_download import ensure_models
@@ -80,11 +79,11 @@ from sinner2.gui.project import PROJECT_SUFFIX, Project
 from sinner2.gui.widgets.batch_task_dialog import QBatchTaskDialog
 from sinner2.gui.widgets.batch_view import QBatchView
 from sinner2.gui.widgets.models_view import QModelsView
-from sinner2.gui.widgets.face_detection_overlay import QFaceDetectionOverlay
 from sinner2.gui.widgets.face_map_panel import QFaceMapPanel
 from sinner2.gui.widgets.frame_display import QFrameDisplayWidget
 from sinner2.gui.batch_coordinator import BatchCoordinator
 from sinner2.gui.cache_management_controller import CacheManagementController
+from sinner2.gui.face_overlay_controller import FaceOverlayController
 from sinner2.gui.fullscreen_controller import FullscreenController
 from sinner2.gui.metrics_overlay_controller import MetricsOverlayController
 from sinner2.gui.provider_status_controller import ProviderStatusController
@@ -166,8 +165,6 @@ class SinnerMainWindow(QMainWindow):
     shortcuts, and error dialogs. Closing the window tears down the player.
     """
 
-    # Cross-thread request to the detection probe (runs on its own QThread).
-    _requestDetection = Signal(object, int, int)  # frame, width, height
     # Relays the face-analyser's buffalo_l download start/end across the thread
     # it fires on (a session-setup worker) onto the GUI thread.
     _modelLoadEvent = Signal(str)
@@ -274,22 +271,10 @@ class SinnerMainWindow(QMainWindow):
             parent=self._display,
         )
         self._metrics_overlay_ctl.set_overlay(self._metrics_overlay)
-        # Face-detection debug overlay: a transparent full-cover child of the
-        # display, fed by a detection probe running on its own thread (so the
-        # live preview never stalls). Off by default; toggled with F8.
-        self._face_overlay_on = False
-        self._comparison_on = False
-        self._last_probe_feed = 0.0
-        # Last frame handed to the display, kept so enabling the overlay can
-        # detect the current frame immediately (e.g. while paused) instead of
-        # waiting for the next rendered frame.
-        self._last_displayed_frame: Frame | None = None
-        # The frame index of the detections the overlay last DREW (from the
-        # sink). A click-to-pick is validated against it: if the sink advanced
-        # since, the displayed boxes are stale and the pick is rejected.
-        self._overlay_drawn_frame: int | None = None
-        self._face_overlay = QFaceDetectionOverlay(parent=self._display)
-        self._display.set_face_overlay(self._face_overlay)
+        # Face-detection debug overlay (+ its detection probe thread + sink) is
+        # owned by FaceOverlayController; it reads shared face-map/scan state
+        # back through this window. Built here (needs the display + settings).
+        self._face_overlay_ctl = FaceOverlayController(self)
         # Auto-hiding playback bar for fullscreen. A child of the display so
         # it floats over the frame; it takes custody of the transport row
         # while fullscreen is active and reveals when the cursor nears the
@@ -303,37 +288,11 @@ class SinnerMainWindow(QMainWindow):
         self._modelLoadEvent.connect(self._on_model_load_event)
         from sinner2.pipeline import face_analyser
         face_analyser.set_load_notifier(self._modelLoadEvent.emit)
-        # When the swapper is running, the overlay shows ITS pre-swap
-        # detections (published to this sink) rather than re-detecting the
-        # swapped output. A timer polls the sink while the overlay is on.
-        self._detection_sink = FaceDetectionSink()
-        self._overlay_timer = QTimer(self)
-        self._overlay_timer.setInterval(int(self._PROBE_INTERVAL_S * 1000))
-        self._overlay_timer.timeout.connect(self._overlay_tick)
         # Processing visualiser: polls the live executor's per-frame state and
         # feeds the transport's heatmap bar while the bar is shown (~20 Hz).
         self._visualiser_timer = QTimer(self)
         self._visualiser_timer.setInterval(50)
         self._visualiser_timer.timeout.connect(self._visualiser_tick)
-        self._detection_probe = FaceDetectionProbe(
-            providers=self._settings.swapper_providers,
-            detection_size=self._settings.swapper_detection_size or 640,
-            # Feed the same sink the swapper publishes to, so the face-map
-            # selection highlight + click-to-pick work with the swapper OFF
-            # (probe and swapper never feed it at once).
-            sink=self._detection_sink,
-        )
-        self._detection_thread = QThread(self)
-        self._detection_probe.moveToThread(self._detection_thread)
-        self._detection_thread.start()
-        self._requestDetection.connect(
-            self._detection_probe.analyze, Qt.ConnectionType.QueuedConnection
-        )
-        self._detection_probe.detectionsReady.connect(
-            self._on_detections, Qt.ConnectionType.QueuedConnection
-        )
-        self._display.frameDisplayed.connect(self._feed_detection_probe)
-
         central = QWidget()
         # Resizable divider between the frame display and the side panel
         # so the user can trade viewer real-estate for more library tile
@@ -505,7 +464,7 @@ class SinnerMainWindow(QMainWindow):
         self._controller = PlayerController(self._display, self._transport, parent=self)
         # Wire the swapper's pre-swap detections to the overlay sink (set before
         # any session so every built chain picks it up).
-        self._controller.set_detection_sink(self._detection_sink)
+        self._controller.set_detection_sink(self._face_overlay_ctl.sink)
         self._controller.errorOccurred.connect(self._show_error)
         self._controller.processingFpsChanged.connect(self._update_fps_label)
         self._controller.displayFpsChanged.connect(self._update_display_fps_label)
@@ -548,7 +507,7 @@ class SinnerMainWindow(QMainWindow):
         self._face_map_ctl = FaceMapController(
             panel=self._face_map_panel,
             player=self._controller,
-            detection_sink=self._detection_sink,
+            detection_sink=self._face_overlay_ctl.sink,
             store_dir=default_cache_root() / "face_maps",
             target_path=self._pickers.target_path,
             providers=lambda: list(self._processors.swapper_providers()) or None,
@@ -569,7 +528,6 @@ class SinnerMainWindow(QMainWindow):
             status=self._status_bar.show_message,
             parent=self,
         )
-        self._face_overlay.faceClicked.connect(self._on_overlay_face_clicked)
         self._face_map_ctl.analyzingChanged.connect(self._on_face_analysis_active)
         self._face_map_panel.resetRequested.connect(self._on_face_map_reset)
         self._face_map_panel.selectionChanged.connect(self._on_face_selection_changed)
@@ -580,7 +538,9 @@ class SinnerMainWindow(QMainWindow):
         # in the Face-recognition settings — same handler keeps them in sync.
         self._face_map_panel.useFaceMapToggled.connect(self._on_use_face_map_toggled)
         # The Faces panel's "Show overlay" toggle controls the face-map overlay.
-        self._face_map_panel.showOverlayToggled.connect(self._on_show_overlay_toggled)
+        self._face_map_panel.showOverlayToggled.connect(
+            self._face_overlay_ctl._on_show_overlay_toggled
+        )
         # The Sources-tab "Faces" toggle drives face-mapping MODE: reveal the
         # panel, lock the global source picker, enable preview face-picking, and
         # route source-tile clicks to the selected face(s).
@@ -591,7 +551,7 @@ class SinnerMainWindow(QMainWindow):
         self._live = LiveController(parent=self)
         # Same detection sink the file path uses, so the live swap publishes to
         # the GUI overlay + comparison-crop probe.
-        self._live.set_detection_sink(self._detection_sink)
+        self._live.set_detection_sink(self._face_overlay_ctl.sink)
         self._live.frameReady.connect(lambda f: self._display.show_frame(f))
         self._live.runningChanged.connect(self._on_live_running)
         self._live.errorOccurred.connect(self._show_error)
@@ -667,8 +627,12 @@ class SinnerMainWindow(QMainWindow):
         self._batch_view.editRequested.connect(self._on_edit_batch_task)
         self._processors.configChanged.connect(self._on_processor_config_changed)
         self._processors.configChanged.connect(self._persist_processor_settings)
-        self._processors.faceOverlayToggled.connect(self._set_face_overlay_visible)
-        self._processors.faceComparisonToggled.connect(self._set_comparison_visible)
+        self._processors.faceOverlayToggled.connect(
+            self._face_overlay_ctl._set_face_overlay_visible
+        )
+        self._processors.faceComparisonToggled.connect(
+            self._face_overlay_ctl._set_comparison_visible
+        )
         self._processors.useFaceMapToggled.connect(self._on_use_face_map_toggled)
         self._processors.openFaceMapRequested.connect(
             self._side_panel.open_face_map_editor
@@ -776,8 +740,8 @@ class SinnerMainWindow(QMainWindow):
         self._restore_top_splitter_from_settings()
         self._restore_metrics_overlay_state()
         self._restore_visualiser_state()
-        self._restore_face_overlay_state()
-        self._restore_comparison_state()
+        self._face_overlay_ctl._restore_face_overlay_state()
+        self._face_overlay_ctl._restore_comparison_state()
         self._restore_stays_on_top()
         self._restore_rotation()
         # Restoring a complete source+target pair would otherwise trigger a
@@ -1068,7 +1032,7 @@ class SinnerMainWindow(QMainWindow):
         # Keep the overlay's detection probe on the SAME providers/size: a
         # providers change resets the shared face analysis, and a probe stuck
         # on its construction-time list could rebuild it on the stale EPs.
-        self._detection_probe.configure(
+        self._face_overlay_ctl.configure_probe(
             list(snap.swapper_providers),
             snap.swapper_params.detection_size,
         )
@@ -1725,31 +1689,61 @@ class SinnerMainWindow(QMainWindow):
 
     _PROBE_INTERVAL_S = 0.15  # ~6 Hz: enough to track, cheap enough to stay smooth
 
+    # Face-detection overlay → FaceOverlayController (these thin delegators +
+    # aliases keep the window API the face-map handlers + tests call).
     def _overlay_active(self) -> bool:
-        """The overlay widget is up (and the probe/poll run) when EITHER overlay
-        wants it — the face-map overlay or the F8 diagnostic — and no scan owns
-        the display."""
-        return (
-            self._face_map_overlay_on() or self._diagnostic_overlay_on()
-        ) and not self._face_analyzing
+        return self._face_overlay_ctl._overlay_active()
 
     def _face_map_overlay_on(self) -> bool:
-        """The face-map overlay (boxes + selected-identity highlight + pick) is
-        gated by the 'Use face map' TOGGLE (the single gate for face-map mode) AND
-        the editor being open (so there's a selection) AND the Faces panel's own
-        'Show overlay' toggle (so you can clear it for a clean preview after
-        assigning). Toggle OFF → pure single-source, no face-map overlay."""
-        return (
-            self._use_face_map
-            and self._faces_mode
-            and self._face_map_panel.show_overlay()
-        )
+        return self._face_overlay_ctl._face_map_overlay_on()
 
     def _diagnostic_overlay_on(self) -> bool:
-        """The F8 'Show detection overlay' diagnostic boxes — single-source mode
-        only. In face-map mode the overlay is the face-map one (managed by the
-        Faces panel's 'Show overlay'), so F8 is grayed and shows nothing here."""
-        return self._face_overlay_on and not self._use_face_map
+        return self._face_overlay_ctl._diagnostic_overlay_on()
+
+    def _set_face_overlay_visible(self, on: bool) -> None:
+        self._face_overlay_ctl._set_face_overlay_visible(on)
+
+    @property
+    def _face_overlay(self):  # type: ignore[no-untyped-def]
+        return self._face_overlay_ctl._face_overlay
+
+    @property
+    def _detection_sink(self):  # type: ignore[no-untyped-def]
+        return self._face_overlay_ctl._detection_sink
+
+    @property
+    def _overlay_timer(self):  # type: ignore[no-untyped-def]
+        return self._face_overlay_ctl._overlay_timer
+
+    @property
+    def _last_displayed_frame(self):  # type: ignore[no-untyped-def]
+        return self._face_overlay_ctl._last_displayed_frame
+
+    @_last_displayed_frame.setter
+    def _last_displayed_frame(self, value) -> None:  # type: ignore[no-untyped-def]
+        self._face_overlay_ctl._last_displayed_frame = value
+
+    @property
+    def _face_overlay_on(self) -> bool:
+        return self._face_overlay_ctl._face_overlay_on
+
+    @_face_overlay_on.setter
+    def _face_overlay_on(self, value: bool) -> None:
+        self._face_overlay_ctl._face_overlay_on = value
+
+    @property
+    def _comparison_on(self) -> bool:
+        return self._face_overlay_ctl._comparison_on
+
+    @_comparison_on.setter
+    def _comparison_on(self, value: bool) -> None:
+        self._face_overlay_ctl._comparison_on = value
+
+    @property
+    def _requestDetection(self):  # type: ignore[no-untyped-def]
+        # The probe-request signal now lives on the controller; alias it so tests
+        # can connect to verify a frame was submitted to the probe.
+        return self._face_overlay_ctl._requestDetection
 
     def _current_display_frame(self) -> int:
         ex = self._controller.executor()
@@ -1768,12 +1762,6 @@ class SinnerMainWindow(QMainWindow):
     def _on_use_face_map_toggled(self, on: bool) -> None:
         """The user toggled the Face-detector "Use face map" switch."""
         self._set_use_face_map(bool(on))
-
-    def _on_show_overlay_toggled(self, _on: bool) -> None:
-        """The Faces panel's 'Show overlay' toggle — re-evaluate the overlay (it
-        gates the face-map overlay) + the highlight."""
-        self._refresh_overlay_state()
-        self._refresh_face_highlight()
 
     def _on_use_for_playback_restored(self, use: bool) -> None:
         """A target's saved 'use the map' preference loaded — apply it without
@@ -1828,23 +1816,7 @@ class SinnerMainWindow(QMainWindow):
         self._face_map_ctl.set_mode_active(active)
 
     def _refresh_face_highlight(self) -> None:
-        """Highlight the selected identity's box on the overlay — only when the
-        face-map overlay is active (toggle ON + editor open); otherwise all boxes
-        normal."""
-        bbox = (
-            self._face_map_ctl.selected_face_bbox()
-            if self._face_map_overlay_on() else None
-        )
-        self._face_overlay.set_highlight(bbox)
-
-    def _on_overlay_face_clicked(self, bbox: object) -> None:
-        """Route an overlay pick to the controller WITH the frame whose boxes are
-        on screen (the last drawn). A pick against a sink that has since advanced
-        is then rejected as stale instead of capturing a face off a frame the
-        user can't see."""
-        self._face_map_ctl.on_face_clicked(
-            bbox, self._overlay_drawn_frame  # type: ignore[arg-type]
-        )
+        self._face_overlay_ctl._refresh_face_highlight()
 
     def _on_face_selection_changed(self) -> None:
         """A Faces-list selection changed: highlight the chosen identity's box
@@ -1879,68 +1851,10 @@ class SinnerMainWindow(QMainWindow):
         self._refresh_overlay_state()
 
     def _refresh_overlay_state(self) -> None:
-        """Single owner of overlay visibility + pick-ability + the poll timer.
-        Two overlays share the one widget, with SEPARATE rules:
-          • face-map overlay (face-map MODE = 'Use face map' ON + editor open):
-            detected-face boxes + the selected identity's highlight +
-            click-to-pick.
-          • diagnostic overlay (F8, whenever the face-map overlay isn't owning
-            the surface): boxes only.
-        A running scan owns the display, so the overlay is fully down then."""
-        face_map = self._face_map_overlay_on() and not self._face_analyzing
-        active = self._overlay_active()
-        # Click-to-pick belongs to the face-map overlay only.
-        self._face_overlay.set_pick_enabled(face_map)
-        self._refresh_overlay_modes()
-        if active:
-            self._face_overlay.setGeometry(self._display.rect())
-            self._face_overlay.show()
-            if not self._overlay_timer.isActive():
-                self._overlay_timer.start()
-            self._refresh_overlay_now()
-        else:
-            self._overlay_timer.stop()
-            self._face_overlay.hide()
-            self._face_overlay.clear()
-            # Keep the sink's latest detection: the swapper keeps publishing
-            # whether or not the overlay is shown, so re-enabling (even while
-            # paused) can display the current frame's boxes at once.
-
-    def _refresh_overlay_now(self) -> None:
-        """Paint the current frame's boxes immediately rather than waiting for a
-        poll tick or the next rendered frame (matters while paused). Swapper on →
-        its published detections; off → probe the last shown frame."""
-        if self._processors.swapper_enabled():
-            self._overlay_tick()
-        elif self._last_displayed_frame is not None:
-            self._submit_to_probe(self._last_displayed_frame)
-
-    def _apply_face_overlay_visible(self, on: bool) -> None:
-        """F8 'Show detection overlay'. It governs the DIAGNOSTIC overlay only —
-        while the Faces editor is open the face-map overlay owns the surface, so
-        flipping F8 there changes nothing visible (see _refresh_overlay_state)."""
-        self._face_overlay_on = on
-        self._refresh_overlay_state()
-
-    def _refresh_overlay_modes(self) -> None:
-        """Comparison crops are only wanted (and drawn) for the DIAGNOSTIC
-        overlay (F8 on, editor closed) with the comparison toggle on — so the
-        swapper extracts them only then (zero cost otherwise); the face-map
-        overlay never shows comparison crops."""
-        comparison = self._diagnostic_overlay_on() and self._comparison_on
-        self._detection_sink.set_wants_crops(comparison)
-        self._face_overlay.set_comparison(comparison)
+        self._face_overlay_ctl._refresh_overlay_state()
 
     def _clear_overlay_for_seek(self) -> None:
-        """A seek is a discontinuity: the boxes drawn for the old frame are stale
-        on the new one. Drop them — AND the sink they're polled from — so a box
-        from the previous position can't linger "stuck" over a face that moved or
-        is gone. The new frame's detection (the swapper's publish, or the probe)
-        repopulates within a poll tick. No-op when the overlay is down."""
-        if not self._overlay_active():
-            return
-        self._detection_sink.clear()
-        self._face_overlay.clear()
+        self._face_overlay_ctl._clear_overlay_for_seek()
 
     def _on_seek_requested(self, frame: int) -> None:
         """The single funnel for user seeks (transport knob, arrow/Home/End,
@@ -1949,127 +1863,8 @@ class SinnerMainWindow(QMainWindow):
         self._clear_overlay_for_seek()
         self._session.seek_to(int(frame))
 
-    def _overlay_tick(self) -> None:
-        # Swapper-on path: poll the swapper's published PRE-swap detections
-        # (and, in comparison mode, its orig/swapped crops). The swapper-off
-        # path runs through the probe, fed by displayed frames.
-        if _OVERLAY_TRACE:
-            self._trace_overlay()
-        if not self._overlay_active() or not self._processors.swapper_enabled():
-            return
-        latest = self._detection_sink.latest_detections()
-        if latest is not None:
-            detections, w, h = latest
-            self._face_overlay.set_detections(detections, w, h)
-            raw = self._detection_sink.latest_raw()
-            self._overlay_drawn_frame = raw[3] if raw is not None else None
-            self._refresh_face_highlight()  # follow the selected identity's box
-        if self._comparison_on:
-            crops = self._detection_sink.latest_crops()
-            if crops is not None:
-                pairs, w, h = crops
-                self._face_overlay.set_crop_pairs(pairs, w, h)
-
-    def _trace_overlay(self) -> None:
-        """SINNER2_OVERLAY_TRACE diagnostic (read-only): the poll-time overlay
-        state, so an intermittent "stuck box" can be pinned to a stale sink vs
-        the displayed frame, and to which flag is keeping the overlay up."""
-        import sys
-
-        latest = self._detection_sink.latest_detections()
-        sink_n = len(latest[0]) if latest is not None else None
-        sink_wh = latest[1:] if latest is not None else None
-        ex = self._controller.executor()
-        print(
-            f"[overlay] f8={self._face_overlay_on} facesMode={self._faces_mode} "
-            f"analyzing={self._face_analyzing} "
-            f"swapper={self._processors.swapper_enabled()} "
-            f"sinkFaces={sink_n} sinkWH={sink_wh} "
-            f"shownFaces={len(self._face_overlay._detections)} "  # noqa: SLF001
-            f"curFrame={ex.current_frame.get() if ex is not None else None} "
-            f"playing={ex.is_playing.get() if ex is not None else None}",
-            file=sys.stderr, flush=True,
-        )
-
-    def _set_face_overlay_visible(self, on: bool) -> None:
-        """Toggle handler for the face button (and F8). Applies + persists."""
-        self._apply_face_overlay_visible(on)
-        if on:
-            # With the swapper ON the overlay shows the swapper's own pre-swap
-            # detections; with it OFF, a re-detection of the (raw) frame.
-            if self._processors.swapper_enabled():
-                msg = "Face-detection overlay on — showing the face swapper's detections"
-            else:
-                msg = "Face-detection overlay on (F8)"
-            self._status_bar.show_message(msg, 4000)
-        self._update_settings(face_overlay_visible=on)
-
-    def _restore_face_overlay_state(self) -> None:
-        visible = bool(self._settings.face_overlay_visible)
-        self._apply_face_overlay_visible(visible)
-        self._processors.set_overlay_checked(visible)
-
-    def _set_comparison_visible(self, on: bool) -> None:
-        """Toggle handler for the comparison checkbox. Persists + applies."""
-        self._comparison_on = on
-        self._refresh_overlay_modes()
-        if on:
-            # Force one reprocess so the current (possibly paused) frame's crops
-            # publish now, instead of only after the next rendered frame.
-            executor = self._controller.executor()
-            if executor is not None:
-                current = executor.current_frame.get()
-                if current >= 0:
-                    executor.seek(current)
-            if not (self._diagnostic_overlay_on() and self._processors.swapper_enabled()):
-                self._status_bar.show_message(
-                    "Comparison needs the face overlay (F8, Faces editor closed) "
-                    "and the swapper on",
-                    4000,
-                )
-        self._update_settings(face_comparison_visible=on)
-
-    def _restore_comparison_state(self) -> None:
-        on = bool(self._settings.face_comparison_visible)
-        self._comparison_on = on
-        self._processors.set_comparison_checked(on)
-        self._refresh_overlay_modes()
-
-    def _feed_detection_probe(self, frame: Frame) -> None:
-        # Tap each displayed frame. Always remember the latest (so enabling the
-        # overlay can detect it at once). Only run the probe when the overlay
-        # is on AND the swapper is off — when the swapper runs, the overlay
-        # uses its published pre-swap detections instead (the _overlay_tick
-        # poll), so re-detecting the swapped output would be both wrong and
-        # wasteful. Zero detection cost when the overlay is off.
-        self._last_displayed_frame = frame
-        if not self._overlay_active() or self._processors.swapper_enabled():
-            return
-        import time as _time
-
-        if _time.monotonic() - self._last_probe_feed < self._PROBE_INTERVAL_S:
-            return
-        self._submit_to_probe(frame)
-
     def _submit_to_probe(self, frame: Frame) -> None:
-        import time as _time
-
-        self._last_probe_feed = _time.monotonic()
-        h, w = frame.shape[:2]
-        # Copy so the producer can't mutate the buffer under the probe thread.
-        self._requestDetection.emit(frame.copy(), w, h)
-
-    def _on_detections(self, detections: object, width: int, height: int) -> None:
-        # The probe result (swapper-off path). Draw the boxes and, in face-map
-        # mode, re-apply the selected identity's highlight — the probe also fed
-        # the sink the highlight matches against, so this is the swapper-off
-        # counterpart to _overlay_tick's highlight refresh.
-        if not self._overlay_active():
-            return
-        self._face_overlay.set_detections(detections, width, height)  # type: ignore[arg-type]
-        raw = self._detection_sink.latest_raw()
-        self._overlay_drawn_frame = raw[3] if raw is not None else None
-        self._refresh_face_highlight()
+        self._face_overlay_ctl._submit_to_probe(frame)
 
     def _on_allow_camera_toggled(self, allowed: bool) -> None:
         """The Camera-tab gate: reveal/hide the 📹 toggle + persist the choice."""
@@ -2189,19 +1984,13 @@ class SinnerMainWindow(QMainWindow):
         # Stop the face-map analysis thread before the controller/models tear down.
         self._face_map_ctl.shutdown()
         self._controller.shutdown()
-        # Stop the detection probe thread (debug overlay) so it doesn't
-        # outlive Qt during shutdown. Wait in bounded increments rather than a
-        # single wait(2000): the first detection can be lazily building the
-        # buffalo_l pack, which exceeds 2s — destroying the thread mid-load
-        # crashes on exit ('QThread: Destroyed while thread is still running').
-        if not _join_qthread(
-            self._detection_thread, _THREAD_JOIN_WAIT_MS, _THREAD_JOIN_MAX_WAITS
-        ):
+        # Stop the detection probe thread (debug overlay) so it doesn't outlive
+        # Qt during shutdown — bounded-join (the first detection can be lazily
+        # building the buffalo_l pack, exceeding a single 2s wait).
+        if not self._face_overlay_ctl.stop():
             _log.warning(
-                "detection thread still running at close after %d×%dms; "
-                "proceeding without destroying it",
-                _THREAD_JOIN_MAX_WAITS,
-                _THREAD_JOIN_WAIT_MS,
+                "detection thread still running at close; "
+                "proceeding without destroying it"
             )
         # Cancel any in-flight model download + join its thread.
         self._models_view.shutdown()

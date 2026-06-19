@@ -2155,7 +2155,7 @@ class TestDeferredModelConfirm:
         win._models_confirmed = False  # noqa: SLF001
         win._processors = MagicMock()  # noqa: SLF001
         win._session = MagicMock()  # noqa: SLF001
-        win._detection_probe = MagicMock()  # noqa: SLF001
+        win._face_overlay_ctl = MagicMock()  # noqa: SLF001
         win._confirm_optional_models = MagicMock()  # noqa: SLF001
         win._refresh_providers_label = MagicMock()  # noqa: SLF001
         win._refresh_session_indicators = MagicMock()  # noqa: SLF001
