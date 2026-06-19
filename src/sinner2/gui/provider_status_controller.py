@@ -47,6 +47,13 @@ class ProviderStatusController(QObject):
         self._trt_wait_active = False
         self._highlight_timer: QTimer | None = None
 
+    def stop(self) -> None:
+        """Stop the failed-provider highlight poll so a queued tick can't fire a
+        slot against torn-down collaborators during shutdown."""
+        if self._highlight_timer is not None:
+            self._highlight_timer.stop()
+            self._highlight_timer = None
+
     def refresh_label(self) -> None:
         # Trim the trailing "ExecutionProvider" suffix so the status-bar cell
         # stays short.

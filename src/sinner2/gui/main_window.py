@@ -1976,6 +1976,9 @@ class SinnerMainWindow(QMainWindow):
         self._persist_geometry_to_settings()
         from sinner2.pipeline import face_analyser
         face_analyser.set_load_notifier(None)  # drop the bound-signal reference
+        # Stop the provider-highlight poll FIRST: a queued tick during teardown
+        # would touch the processor/controller after they're gone.
+        self._provider_status.stop()
         # Stop the batch queue FIRST so its runner thread joins
         # before the controller / side panel start tearing down
         # shared resources (models, etc.).
