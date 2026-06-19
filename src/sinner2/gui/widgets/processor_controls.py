@@ -197,15 +197,25 @@ def _label_for_video_backend(backend: VideoBackend) -> str | None:
     return None
 
 
+def _select_combo_by_data(combo: QComboBox, value: object) -> None:
+    """Select the item whose data (UserRole token) == ``value``; no-op if absent
+    (a persisted token that no longer exists on this machine keeps the default).
+
+    Does NOT touch signal blocking — the caller owns that. The bulk restore
+    blocks every widget once for the whole batch, so it must not be unblocked
+    per-combo; `_set_combo_silently` wraps this when it needs the suppression."""
+    for i in range(combo.count()):
+        if combo.itemData(i) == value:
+            combo.setCurrentIndex(i)
+            break
+
+
 def _set_combo_silently(combo: QComboBox, value: object) -> None:
     """Select the item whose data == ``value`` WITHOUT firing the combo's signals
     — the shared 'reflect/revert a selection programmatically' helper (used to
     revert a declined model download, etc.)."""
     combo.blockSignals(True)
-    for i in range(combo.count()):
-        if combo.itemData(i) == value:
-            combo.setCurrentIndex(i)
-            break
+    _select_combo_by_data(combo, value)
     combo.blockSignals(False)
 
 
@@ -1632,10 +1642,7 @@ class QProcessorControls(QWidget):
             if swapper_detection_size is not None:
                 self._detection_size.setValue(swapper_detection_size)
             if swapper_detector is not None:
-                for i in range(self._detector.count()):
-                    if self._detector.itemData(i) == swapper_detector:
-                        self._detector.setCurrentIndex(i)
-                        break
+                _select_combo_by_data(self._detector, swapper_detector)
             if swapper_many_faces is not None:
                 self._many_faces.setChecked(swapper_many_faces)
             if swapper_fast_paste is not None:
@@ -1645,27 +1652,15 @@ class QProcessorControls(QWidget):
             if swapper_target_sex is not None:
                 # Look up by stored token (UserRole data) since the
                 # combo's display text differs from the persisted value.
-                for i in range(self._target_sex.count()):
-                    if self._target_sex.itemData(i) == swapper_target_sex:
-                        self._target_sex.setCurrentIndex(i)
-                        break
+                _select_combo_by_data(self._target_sex, swapper_target_sex)
             if swapper_occlusion_mask is not None:
                 self._occlusion_mask.setChecked(swapper_occlusion_mask)
             if swapper_occlusion_parser is not None:
-                for i in range(self._occlusion_parser.count()):
-                    if self._occlusion_parser.itemData(i) == swapper_occlusion_parser:
-                        self._occlusion_parser.setCurrentIndex(i)
-                        break
+                _select_combo_by_data(self._occlusion_parser, swapper_occlusion_parser)
             if swapper_occlusion_mode is not None:
-                for i in range(self._occlusion_mode.count()):
-                    if self._occlusion_mode.itemData(i) == swapper_occlusion_mode:
-                        self._occlusion_mode.setCurrentIndex(i)
-                        break
+                _select_combo_by_data(self._occlusion_mode, swapper_occlusion_mode)
             if swapper_occluder_model is not None:
-                for i in range(self._occluder_model.count()):
-                    if self._occluder_model.itemData(i) == swapper_occluder_model:
-                        self._occluder_model.setCurrentIndex(i)
-                        break
+                _select_combo_by_data(self._occluder_model, swapper_occluder_model)
             if swapper_rotation_compensation is not None:
                 self._rotation_enabled.setChecked(swapper_rotation_compensation)
             if swapper_rotation_threshold_deg is not None:
@@ -1673,24 +1668,15 @@ class QProcessorControls(QWidget):
             if swapper_rotation_redetect is not None:
                 self._rotation_redetect.setChecked(swapper_rotation_redetect)
             if swapper_rotation_angle_source is not None:
-                for i in range(self._rotation_source.count()):
-                    if self._rotation_source.itemData(i) == swapper_rotation_angle_source:
-                        self._rotation_source.setCurrentIndex(i)
-                        break
+                _select_combo_by_data(self._rotation_source, swapper_rotation_angle_source)
             if swapper_enabled is not None:
                 self._swapper_box.setChecked(swapper_enabled)
             if swapper_model is not None:
-                for i in range(self._swapper_model.count()):
-                    if self._swapper_model.itemData(i) == swapper_model:
-                        self._swapper_model.setCurrentIndex(i)
-                        break
+                _select_combo_by_data(self._swapper_model, swapper_model)
             if enhancer_enabled is not None:
                 self._enhancer_box.setChecked(enhancer_enabled)
             if enhancer_model is not None:
-                for i in range(self._enhancer_model.count()):
-                    if self._enhancer_model.itemData(i) == enhancer_model:
-                        self._enhancer_model.setCurrentIndex(i)
-                        break
+                _select_combo_by_data(self._enhancer_model, enhancer_model)
             if enhancer_upscale is not None:
                 self._upscale.setValue(enhancer_upscale)
             if enhancer_codeformer_fidelity is not None:
@@ -1702,26 +1688,17 @@ class QProcessorControls(QWidget):
             if enhancer_device is not None:
                 # Match by stored token; a persisted cuda:N that no longer
                 # exists on this machine simply isn't found → keep default.
-                for i in range(self._enhancer_device.count()):
-                    if self._enhancer_device.itemData(i) == enhancer_device:
-                        self._enhancer_device.setCurrentIndex(i)
-                        break
+                _select_combo_by_data(self._enhancer_device, enhancer_device)
             if upscaler_enabled is not None:
                 self._upscaler_box.setChecked(upscaler_enabled)
             if upscaler_model is not None:
-                for i in range(self._upscaler_model.count()):
-                    if self._upscaler_model.itemData(i) == upscaler_model:
-                        self._upscaler_model.setCurrentIndex(i)
-                        break
+                _select_combo_by_data(self._upscaler_model, upscaler_model)
             if upscaler_tile is not None:
                 self._upscaler_tile.setValue(upscaler_tile)
             if upscaler_fp16 is not None:
                 self._upscaler_fp16.setChecked(upscaler_fp16)
             if upscaler_device is not None:
-                for i in range(self._upscaler_device.count()):
-                    if self._upscaler_device.itemData(i) == upscaler_device:
-                        self._upscaler_device.setCurrentIndex(i)
-                        break
+                _select_combo_by_data(self._upscaler_device, upscaler_device)
             if strategy_name is not None:
                 label = _label_for_strategy_name(strategy_name)
                 if label is not None:
