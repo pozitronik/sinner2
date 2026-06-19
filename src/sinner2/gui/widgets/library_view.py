@@ -36,12 +36,14 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListView,
     QMenu,
+    QStackedWidget,
     QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 from sinner2.gui.confirm import confirm
+from sinner2.gui.widgets.folder_grid_view import QFolderGridView
 from sinner2.library.library_model import (
     ROLE_PATH,
     LibraryItemModel,
@@ -193,6 +195,7 @@ class QLibraryView(QWidget):
     rootsChanged = Signal(list)  # list[Path] — emitted when user-added roots change (persist this)
     displayDimChanged = Signal(int)  # emitted when user resizes thumbnails
     sortChanged = Signal()  # emitted when the sort field or direction changes
+    folderModeChanged = Signal(bool)  # flat grid ↔ folder-mirror toggle (persist)
 
     def __init__(
         self,
@@ -299,6 +302,17 @@ class QLibraryView(QWidget):
         )
         self._clear_button.clicked.connect(self._confirm_clear)
 
+        # Folder-mirror toggle: flat grid (off) ↔ grid grouped into the disk's
+        # collapsible folder sections (on).
+        self._folder_mode_button = QToolButton()
+        self._folder_mode_button.setText("📁")
+        self._folder_mode_button.setCheckable(True)
+        self._folder_mode_button.setToolTip(
+            "Folder view: group the thumbnails into the disk's folders "
+            "(collapsible). Off = one flat grid."
+        )
+        self._folder_mode_button.toggled.connect(self._on_folder_mode_toggled)
+
         self._controls = controls = QHBoxLayout()
         controls.addWidget(self._filter_edit, stretch=1)
         controls.addWidget(self._scan_label)
@@ -306,6 +320,7 @@ class QLibraryView(QWidget):
         controls.addWidget(self._grow_button)
         controls.addWidget(self._sort_combo)
         controls.addWidget(self._sort_dir_button)
+        controls.addWidget(self._folder_mode_button)
         controls.addWidget(self._add_button)
         controls.addWidget(self._clear_button)
 
@@ -334,9 +349,18 @@ class QLibraryView(QWidget):
         # minimalism.
         self._list.viewport().installEventFilter(self)
 
+        # Folder-mirror view shares the SAME proxy (so thumbnails are generated
+        # once) and re-emits tile clicks as pathSelected. The stack swaps it in
+        # for the flat grid when folder mode is on.
+        self._folder_view = QFolderGridView(self._proxy, self._display_dim)
+        self._folder_view.pathSelected.connect(self.pathSelected)
+        self._stack = QStackedWidget()
+        self._stack.addWidget(self._list)         # page 0 — flat grid (default)
+        self._stack.addWidget(self._folder_view)  # page 1 — folder mirror
+
         layout = QVBoxLayout(self)
         layout.addLayout(controls)
-        layout.addWidget(self._list, stretch=1)
+        layout.addWidget(self._stack, stretch=1)
 
         self.setAcceptDrops(True)
 
@@ -460,6 +484,8 @@ class QLibraryView(QWidget):
         # pixmaps from their cached JPEGs + updated size hints.
         if hasattr(self, "_model"):
             self._model.set_display_dim(dim)
+        if hasattr(self, "_folder_view"):
+            self._folder_view.set_display_dim(dim)
 
     def set_paths(self, paths: Iterable[Path]) -> None:
         """Replace the entire library with the given paths (silent —
@@ -506,6 +532,9 @@ class QLibraryView(QWidget):
             self._model.add_paths(immediate_files)
         if folders:
             self._start_background_scan(folders)
+        # Keep the folder view's labels (root-relative) in sync; it rebuilds off
+        # the model when it's the shown page.
+        self._folder_view.set_roots(self._roots)
 
     def remove_path(self, path: Path) -> bool:
         """Remove a single path from the grid AND from roots if present.
@@ -727,6 +756,31 @@ class QLibraryView(QWidget):
         path_str = self._proxy.data(proxy_index, ROLE_PATH)
         if path_str:
             self.pathSelected.emit(Path(path_str))
+
+    # ---- Folder-mirror mode ----
+
+    def folder_mode(self) -> bool:
+        return self._folder_mode_button.isChecked()
+
+    def set_folder_mode(self, on: bool) -> None:
+        """Silent restore of the folder/flat toggle (no folderModeChanged)."""
+        self._folder_mode_button.blockSignals(True)
+        self._folder_mode_button.setChecked(bool(on))
+        self._folder_mode_button.blockSignals(False)
+        self._apply_folder_mode(bool(on))
+
+    def _on_folder_mode_toggled(self, on: bool) -> None:
+        self._apply_folder_mode(on)
+        self.folderModeChanged.emit(on)
+
+    def _apply_folder_mode(self, on: bool) -> None:
+        self._folder_view.set_active(on)
+        self._stack.setCurrentWidget(
+            self._folder_view if on else self._list
+        )
+        if on:
+            self._folder_view.set_roots(self._roots)
+            self._folder_view.rebuild()
 
     def _confirm_clear(self) -> None:
         # Skip the confirmation for an already-empty library — pressing

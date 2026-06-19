@@ -710,6 +710,12 @@ class SinnerMainWindow(QMainWindow):
         self._side_panel.targets_library().sortChanged.connect(
             self._persist_targets_sort
         )
+        self._side_panel.sources_library().folderModeChanged.connect(
+            lambda on: self._update_settings(library_sources_folder_mode=bool(on))
+        )
+        self._side_panel.targets_library().folderModeChanged.connect(
+            lambda on: self._update_settings(library_targets_folder_mode=bool(on))
+        )
         # Cache stats (entry count + total size) are a stat-walk of every cache
         # dir — seconds on a large cache. Compute them OFF the GUI thread and
         # apply via a queued callback so session start / teardown / close never
@@ -2646,6 +2652,13 @@ class SinnerMainWindow(QMainWindow):
         self._side_panel.targets_library().set_sort(
             self._settings.library_targets_sort_field,
             self._settings.library_targets_sort_order,
+        )
+        # Per-panel folder-mirror toggle (silent — set_folder_mode doesn't emit).
+        self._side_panel.sources_library().set_folder_mode(
+            bool(self._settings.library_sources_folder_mode)
+        )
+        self._side_panel.targets_library().set_folder_mode(
+            bool(self._settings.library_targets_folder_mode)
         )
 
     def _start_deferred_initial_session(self) -> None:

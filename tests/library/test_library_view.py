@@ -901,3 +901,28 @@ class TestShutdownWaitBudget:
         view.shutdown()
         assert sum(waits) <= 5100  # one shared ~5s budget, not 5s x 3
         assert view._scan_jobs == []  # noqa: SLF001
+
+
+class TestFolderMode:
+    def test_default_is_flat_grid(self, view):
+        assert view.folder_mode() is False
+        assert view._stack.currentWidget() is view._list  # noqa: SLF001
+
+    def test_toggle_switches_view_and_emits(self, view):
+        modes: list = []
+        view.folderModeChanged.connect(modes.append)
+        view._folder_mode_button.setChecked(True)  # noqa: SLF001
+        assert view.folder_mode() is True
+        assert modes == [True]
+        assert view._stack.currentWidget() is view._folder_view  # noqa: SLF001
+        view._folder_mode_button.setChecked(False)  # noqa: SLF001
+        assert modes == [True, False]
+        assert view._stack.currentWidget() is view._list  # noqa: SLF001
+
+    def test_set_folder_mode_is_silent(self, view):
+        modes: list = []
+        view.folderModeChanged.connect(modes.append)
+        view.set_folder_mode(True)
+        assert view.folder_mode() is True
+        assert modes == []  # restore must not re-persist
+        assert view._stack.currentWidget() is view._folder_view  # noqa: SLF001

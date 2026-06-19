@@ -134,6 +134,9 @@ class Settings(SinnerBaseModel):
     library_sources_sort_order: str | None = None  # asc | desc
     library_targets_sort_field: str | None = None
     library_targets_sort_order: str | None = None
+    # Folder-mirror view toggle per library (group thumbnails into disk folders).
+    library_sources_folder_mode: bool | None = None
+    library_targets_folder_mode: bool | None = None
     window_stays_on_top: bool | None = None
     display_rotation: int | None = None  # 0 / 90 / 180 / 270
     batch_store_path: str | None = None  # default <install>/batch
