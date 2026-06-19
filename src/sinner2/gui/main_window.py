@@ -26,7 +26,11 @@ from sinner2.gui.face_map_controller import FaceMapController
 from sinner2.gui.icon import app_icon
 from sinner2.gui.model_download import ensure_models
 from sinner2.pipeline.detectors import DETECTOR_MODEL_FILES, DetectorModel
-from sinner2.pipeline.face_map_store import canonical_target
+from sinner2.pipeline.face_map_store import (
+    canonical_target,
+    load_use_map,
+    use_map_path,
+)
 from sinner2.pipeline.sections import SectionSet
 from sinner2.pipeline.processors.face_enhancer import (
     EnhancerModel,
@@ -2477,10 +2481,14 @@ class SinnerMainWindow(QMainWindow):
             return
         task = batch_defaults.mint_task(self._batch_defaults, source, target)
         # Point the task at the per-target face-map sidecar store so the driver
-        # loads the CURRENT catalog + geometry + 'use the map' preference live at
-        # render time (no map / routing-off for the target → single source).
+        # loads the CURRENT catalog + geometry live at render time, and capture
+        # the live "use the map" routing preference as the task's own per-task
+        # flag (editable later in the task dialog). No map / routing-off → single
+        # source.
+        store_dir = default_cache_root() / "face_maps"
         task = task.model_copy(update={
-            "face_map_store_dir": str(default_cache_root() / "face_maps"),
+            "face_map_store_dir": str(store_dir),
+            "use_face_map": load_use_map(use_map_path(target, store_dir)),
         })
         # Carry the live timeline selection (like source/target, it's specific to
         # THIS target — not part of the reusable defaults template). Empty → the

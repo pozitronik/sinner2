@@ -135,6 +135,11 @@ class BatchTask(SinnerBaseModel):
     # single global source.
     face_map: dict | None = None
     face_map_store_dir: str | None = None  # per-target sidecar root (live load)
+    # Per-task switch to route faces through the target's PRECALCULATED map
+    # (catalog + geometry loaded live from face_map_store_dir at render time).
+    # Captured from the live "Use face map" routing preference when the task is
+    # added to the queue; editable per task. False = the single global source.
+    use_face_map: bool = False
     # Rotation compensation (shared by the swapper AND the enhancer stages).
     swapper_rotation_compensation: bool = True
     swapper_rotation_threshold_deg: int = 15

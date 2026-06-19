@@ -823,6 +823,26 @@ class TestSectionShortcuts:
         task = window._batch_store.list()[0]  # noqa: SLF001
         assert task.face_map_store_dir == str(default_cache_root() / "face_maps")
 
+    def test_add_to_batch_captures_use_face_map_pref(
+        self, window, tmp_path, monkeypatch
+    ):
+        # The live "use the map" routing preference is captured as the task's
+        # own per-task use_face_map flag (editable later in the task dialog).
+        import sinner2.gui.main_window as mw
+
+        monkeypatch.setattr(
+            window._controller, "set_source_and_target", lambda *a, **k: None  # noqa: SLF001
+        )
+        monkeypatch.setattr(mw, "load_use_map", lambda _path: True)  # routing on
+        src = tmp_path / "s.png"
+        src.write_bytes(b"x")
+        tgt = tmp_path / "t.mp4"
+        tgt.write_bytes(b"x")
+        window._pickers.set_source(src)  # noqa: SLF001
+        window._pickers.set_target(tgt)  # noqa: SLF001
+        window._on_add_to_batch()  # noqa: SLF001
+        assert window._batch_store.list()[0].use_face_map is True  # noqa: SLF001
+
 
 class TestFaceMappingWiring:
     def test_faces_toggle_opens_editor(self, window):

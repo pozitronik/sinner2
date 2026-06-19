@@ -65,8 +65,6 @@ from sinner2.pipeline.face_map_geometry import (
 from sinner2.pipeline.face_map_store import (
     face_map_path,
     load_face_map,
-    load_use_map,
-    use_map_path,
 )
 from sinner2.pipeline.image_writer import build_image_writer
 from sinner2.pipeline.sections import SectionSet
@@ -109,18 +107,17 @@ PreviewCallback = Callable[[Frame], None]
 def _resolve_face_map(
     task: "BatchTask",
 ) -> tuple[FaceMap | None, FrameGeometry | None]:
-    """Resolve a task's face map at RENDER time. The GUI stamps the per-target
-    sidecar store dir, so the driver loads the CURRENT catalog + geometry + the
-    'use the map' preference — a re-scan/edit of the target's map is reflected in
-    already-queued renders (the user picked live-at-render over a snapshot).
-    Falls back to the legacy by-value ``task.face_map`` (no geometry) for
-    programmatically-built tasks. Returns (None, None) when routing is off for
-    the target or no map exists → the single global source."""
-    if task.face_map_store_dir:
+    """Resolve a task's face map at RENDER time. Routing is gated by the task's
+    own ``use_face_map`` flag (set from the live preference when queued, editable
+    per task). When on, the GUI-stamped sidecar store dir is read LIVE, so a
+    re-scan/edit of the target's CURRENT catalog + geometry is reflected in
+    already-queued renders (live-at-render, not a snapshot). Falls back to the
+    legacy by-value ``task.face_map`` (no geometry) for programmatically-built
+    tasks. Returns (None, None) when routing is off or no map exists → the
+    single global source."""
+    if task.face_map_store_dir and task.use_face_map:
         store = Path(task.face_map_store_dir)
         target = task.target_path
-        if not load_use_map(use_map_path(target, store)):
-            return None, None
         fm = load_face_map(face_map_path(target, store))
         if fm is None or fm.is_empty():
             return None, None
