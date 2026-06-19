@@ -3,7 +3,7 @@ import os
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, QElapsedTimer, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QByteArray, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import (
     QDragEnterEvent,
     QDragMoveEvent,
@@ -85,6 +85,7 @@ from sinner2.gui.widgets.face_map_panel import QFaceMapPanel
 from sinner2.gui.widgets.frame_display import QFrameDisplayWidget
 from sinner2.gui.cache_management_controller import CacheManagementController
 from sinner2.gui.fullscreen_controller import FullscreenController
+from sinner2.gui.provider_status_controller import ProviderStatusController
 from sinner2.gui.settings_binder import SettingsBinder
 from sinner2.gui.widgets.fullscreen_control_bar import FullscreenControlBar
 from sinner2.gui.widgets.live_view import QLiveView
@@ -202,16 +203,6 @@ class SinnerMainWindow(QMainWindow):
         # reported in one consolidated dialog when the queue goes idle so a
         # continue-on-error run doesn't spam a modal per failed task.
         self._batch_failures: list[tuple[str, str]] = []
-        # Guards _wait_for_tensorrt_build against re-entry: during a FIRST
-        # engine build none of its other guards trip (TRT not recorded yet, no
-        # engine on disk), so a swap completing mid-build would stack a second
-        # dialog + polling timer over the active one.
-        self._trt_wait_active = False
-        # Non-modal poll that refreshes the failed-provider highlight AFTER an
-        # async chain rebuild records the real providers (see
-        # _schedule_provider_highlight_refresh). One at a time — a newer toggle
-        # replaces it.
-        self._provider_highlight_timer: QTimer | None = None
         # While a batch renders we repurpose the position bar to track the
         # render's last frame; this caches the slider range we set so we only
         # reset it when the stage's frame count actually changes (set_frame_count
@@ -692,6 +683,13 @@ class SinnerMainWindow(QMainWindow):
             update_settings=self._update_settings,
             settings_getter=lambda: self._settings,
         )
+        self._provider_status = ProviderStatusController(
+            window=self,
+            controller=self._controller,
+            processors=self._processors,
+            providers_panel=self._providers_panel,
+            status_bar=self._status_bar,
+        )
         self._processors.browseRootRequested.connect(self._cache_mgmt.on_browse_root)
         self._processors.resetRootRequested.connect(self._cache_mgmt.on_reset_root)
         self._processors.invalidateRequested.connect(
@@ -1010,97 +1008,13 @@ class SinnerMainWindow(QMainWindow):
         self._strategy_panel.set_value(str(mode) if mode else "")
 
     def _refresh_providers_label(self) -> None:
-        # Trim the trailing "ExecutionProvider" suffix so the value
-        # stays short — "CUDAExecutionProvider, CPUExecutionProvider"
-        # is too noisy in the status bar.
-        providers = self._controller.effective_onnx_providers()
-        short = [p.removesuffix("ExecutionProvider") or p for p in providers]
-        self._providers_panel.set_value(", ".join(short) if short else "")
+        self._provider_status.refresh_label()
 
     def _highlight_failed_providers(self) -> None:
-        """Mark requested-but-not-loaded providers red on the widget
-        and pop a transient status-bar message. The mismatch is the
-        signal that a provider's runtime libs are missing (TensorRT
-        EP loaded but no nvinfer, etc.). Pulled here instead of
-        emitted by the controller so the styling is purely a view
-        concern."""
-        # This runs at every point the provider TRUTH is (re)known — including
-        # the async-rebuild poll completions — so refresh the status-bar EP cell
-        # here too. The synchronous refresh in _on_processor_config_changed sees
-        # the OLD session's recorded providers (set_chain rebuilds on a worker
-        # thread); without this the cell would stay stale after an EP change.
-        self._refresh_providers_label()
-        requested = set(self._processors.swapper_providers())
-        actual = set(self._controller.effective_onnx_providers())
-        # Empty `requested` = user unchecked everything → we use
-        # defaults; nothing to flag as failed in that case.
-        if not requested:
-            self._processors.mark_providers_failed(set())
-            return
-        failed = requested - actual
-        self._processors.mark_providers_failed(failed)
-        if failed:
-            short_failed = ", ".join(
-                p.removesuffix("ExecutionProvider") for p in failed
-            )
-            short_actual = ", ".join(
-                p.removesuffix("ExecutionProvider")
-                for p in self._controller.effective_onnx_providers()
-            )
-            self._status_bar.show_message(
-                f"ONNX provider(s) failed to load: {short_failed}. "
-                f"ORT is using: {short_actual}",
-                7000,
-            )
+        self._provider_status.highlight_failed()
 
     def _schedule_provider_highlight_refresh(self) -> None:
-        """Refresh the failed-provider highlight AFTER the async chain rebuild
-        records what ORT actually wired up.
-
-        ``set_chain`` is asynchronous — the rebuild + provider recording run on
-        the executor's dispatcher thread — so highlighting synchronously here
-        would compare the new request against the PREVIOUS session's providers
-        and flash a spurious red until the next toggle (the reported bug: a
-        re-checked provider goes red, then clears one toggle later). Poll
-        ``get_actual_providers()`` (non-modal) until it changes from the
-        pre-rebuild snapshot, a newer toggle supersedes this request, the
-        session goes away, or a short timeout backstops a same-providers
-        rebuild — then highlight against the truth. A genuine fallback still
-        shows red, just after the rebuild instead of before it.
-        """
-        from sinner2.pipeline import model_cache
-
-        requested = tuple(self._processors.swapper_providers())
-        if not requested or self._controller.executor() is None:
-            # Defaults in use, or no live session to rebuild — nothing to wait
-            # for; highlight against the current truth immediately.
-            self._highlight_failed_providers()
-            return
-        before = model_cache.get_actual_providers()
-        # Replace any in-flight refresh so rapid toggles don't stack timers.
-        if self._provider_highlight_timer is not None:
-            self._provider_highlight_timer.stop()
-        elapsed = QElapsedTimer()
-        elapsed.start()
-        timer = QTimer(self)
-        timer.setInterval(150)
-        self._provider_highlight_timer = timer
-
-        def _poll() -> None:
-            actual = model_cache.get_actual_providers()
-            rebuilt = actual != before  # the rebuilt session recorded its EPs
-            superseded = tuple(self._processors.swapper_providers()) != requested
-            gone = self._controller.executor() is None
-            if rebuilt or superseded or gone or elapsed.elapsed() > 8000:
-                timer.stop()
-                if self._provider_highlight_timer is timer:
-                    self._provider_highlight_timer = None
-                # A newer toggle owns the highlight now — don't fight it.
-                if not superseded:
-                    self._highlight_failed_providers()
-
-        timer.timeout.connect(_poll)
-        timer.start()
+        self._provider_status.schedule_highlight_refresh()
 
     def _update_metrics_label(self, metrics: object) -> None:
         # `metrics` is BufferMetrics. Compact cell: hit% · memory · write-queue
@@ -1233,8 +1147,6 @@ class SinnerMainWindow(QMainWindow):
         self._models_confirmed = True
         self._confirm_optional_models()
 
-    _TRT_PROVIDER = "TensorrtExecutionProvider"
-
     def _on_session_scratch_dir(self, scratch_dir: object) -> None:
         """A session was (re)installed (non-None dir). If it's about to compile a
         TensorRT engine, surface the modal wait — this covers the launch case
@@ -1244,72 +1156,7 @@ class SinnerMainWindow(QMainWindow):
             self._wait_for_tensorrt_build()
 
     def _wait_for_tensorrt_build(self) -> bool:
-        """If TensorRT is requested but no session has actually loaded it yet, a
-        (possibly slow, one-time) engine build is about to run. Show a modal busy
-        dialog until TensorRT shows up in the ACTUAL recorded providers (build
-        done) or we give up, then refresh the provider highlight. Returns True if
-        it took over the wait (caller must NOT also highlight); False otherwise.
-
-        Uses model_cache.get_actual_providers() — the truly-loaded list — NOT the
-        controller's effective_onnx_providers(), which falls back to the REQUESTED
-        list before any session loads (so at launch it would wrongly report TRT as
-        already active and skip the dialog). No-op when TRT isn't requested,
-        there's no session, or a session has already recorded TRT (cached)."""
-        from sinner2.pipeline import model_cache
-
-        trt = self._TRT_PROVIDER
-        if trt not in self._processors.swapper_providers():
-            return False
-        if self._controller.executor() is None:
-            return False
-        if self._trt_wait_active:
-            # A wait is already showing (re-entered via sessionScratchDirChanged
-            # while the build runs) — don't stack a second dialog + timer.
-            return True
-        before = model_cache.get_actual_providers()
-        if before is not None and trt in before:
-            return False  # a session already built + loaded TRT this run
-        if model_cache.tensorrt_engine_cached():
-            return False  # engine already compiled on disk → fast load, no modal
-        self._trt_wait_active = True
-        dialog = QProgressDialog(
-            "Compiling the TensorRT engine for the swap model.\n"
-            "One-time step (about 30 seconds); cached for next time.",
-            "", 0, 0, self,
-        )
-        dialog.setWindowTitle("TensorRT")
-        dialog.setWindowModality(Qt.WindowModality.ApplicationModal)
-        dialog.setCancelButton(None)  # the compile can't be interrupted
-        dialog.setMinimumDuration(0)
-        dialog.setAutoClose(False)
-        dialog.setAutoReset(False)
-        dialog.show()
-        elapsed = QElapsedTimer()
-        elapsed.start()
-        timer = QTimer(self)
-        timer.setInterval(400)
-
-        def _poll() -> None:
-            actual = model_cache.get_actual_providers()
-            built = actual is not None and trt in actual
-            # A DIFFERENT session recorded providers without TRT → it fell back
-            # (engine failed to load) → stop waiting and let the red highlight
-            # show the truth. (Can't detect a same-providers fallback; the 75s
-            # timeout backstops that rare case.)
-            fell_back = actual is not None and actual != before and trt not in actual
-            gone = (
-                self._controller.executor() is None
-                or trt not in self._processors.swapper_providers()
-            )
-            if built or fell_back or gone or elapsed.elapsed() > 75_000:
-                self._trt_wait_active = False
-                timer.stop()
-                dialog.close()
-                self._highlight_failed_providers()
-
-        timer.timeout.connect(_poll)
-        timer.start()
-        return True
+        return self._provider_status.wait_for_tensorrt_build()
 
     def _ensure_upscaler_model(self) -> bool:
         """Confirm + download the selected upscaler's weights if missing.
