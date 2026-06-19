@@ -4,7 +4,12 @@ import threading
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QElapsedTimer, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QKeyEvent
+from PySide6.QtGui import (
+    QDragEnterEvent,
+    QDragMoveEvent,
+    QDropEvent,
+    QKeyEvent,
+)
 from PySide6.QtWidgets import (
     QFileDialog,
     QMainWindow,
@@ -368,6 +373,11 @@ class SinnerMainWindow(QMainWindow):
         self._status_bar = QStatusActionBar()
         layout.addWidget(self._status_bar)
         self.setCentralWidget(central)
+        # Drag a media file onto the window (the preview) to load it: videos →
+        # target, images → source. The picker ROWS accept their own drops too
+        # (forcing the destination regardless of type); this catches drops
+        # anywhere else. Disabled while a batch render locks editing.
+        self.setAcceptDrops(True)
 
         self._status_bar.on_top_button.toggled.connect(self._set_stays_on_top)
         self._status_bar.stats_button.toggled.connect(self._set_stats_visible)
@@ -1354,6 +1364,51 @@ class SinnerMainWindow(QMainWindow):
     def _show_error(self, message: str) -> None:
         self._status_bar.show_message(message, 5000)
         QMessageBox.critical(self, "sinner2", message)
+
+    # ---- Drag-and-drop loading ----
+
+    def _dropped_media_paths(self, event: QDropEvent | QDragEnterEvent) -> list[Path]:
+        """Local media files in a drag, or [] when there are none / a batch is
+        rendering (editing locked). Used by the drag/drop handlers to decide
+        whether to accept and how to route."""
+        if self._batch_active:
+            return []
+        md = event.mimeData()
+        if not md.hasUrls():
+            return []
+        out: list[Path] = []
+        for url in md.urls():
+            local = url.toLocalFile()
+            if local and media_extensions.is_media_ext(Path(local)):
+                out.append(Path(local))
+        return out
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        if self._dropped_media_paths(event):
+            event.acceptProposedAction()
+
+    def dragMoveEvent(self, event: QDragMoveEvent) -> None:
+        if self._dropped_media_paths(event):
+            event.acceptProposedAction()
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        paths = self._dropped_media_paths(event)
+        if not paths:
+            return
+        event.acceptProposedAction()
+        # Route by type: a video → target, an image (a face) → source. Setting
+        # the picker emits its change signal, so this reuses the exact file-pick
+        # load path. Drop ONTO a picker row to force the destination by type.
+        target = next(
+            (p for p in paths if media_extensions.is_video_ext(p)), None
+        )
+        source = next(
+            (p for p in paths if media_extensions.is_image_ext(p)), None
+        )
+        if target is not None:
+            self._pickers.set_target(target)
+        if source is not None:
+            self._pickers.set_source(source)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         key = event.key()

@@ -2378,3 +2378,67 @@ class TestStatusPanelMenuPersistence:
         win._update_settings = MagicMock()  # noqa: SLF001
         win._on_panel_visibility_changed("fps", True)  # noqa: SLF001
         win._update_settings.assert_called_once_with(status_panels_hidden=None)  # noqa: SLF001
+
+
+class TestDragAndDrop:
+    """Dropping a media file on the window routes by type: video → target,
+    image → source. Reuses the picker setters (the file-pick load path)."""
+
+    @staticmethod
+    def _event(paths):
+        from PySide6.QtCore import QMimeData, QUrl
+
+        mime = QMimeData()
+        mime.setUrls([QUrl.fromLocalFile(str(p)) for p in paths])
+
+        class _Ev:
+            def __init__(self, m):
+                self._m = m
+                self.accepted = False
+
+            def mimeData(self):
+                return self._m
+
+            def acceptProposedAction(self):
+                self.accepted = True
+
+        return _Ev(mime)
+
+    def _stub_pickers(self, window):
+        from unittest.mock import MagicMock
+
+        window._pickers.set_source = MagicMock()  # noqa: SLF001
+        window._pickers.set_target = MagicMock()  # noqa: SLF001
+
+    def test_drop_video_routes_to_target(self, window, tmp_path):
+        self._stub_pickers(window)
+        vid = tmp_path / "clip.mp4"
+        window.dropEvent(self._event([vid]))
+        window._pickers.set_target.assert_called_once_with(vid)  # noqa: SLF001
+        window._pickers.set_source.assert_not_called()  # noqa: SLF001
+
+    def test_drop_image_routes_to_source(self, window, tmp_path):
+        self._stub_pickers(window)
+        img = tmp_path / "face.png"
+        window.dropEvent(self._event([img]))
+        window._pickers.set_source.assert_called_once_with(img)  # noqa: SLF001
+        window._pickers.set_target.assert_not_called()  # noqa: SLF001
+
+    def test_drop_pair_routes_both(self, window, tmp_path):
+        self._stub_pickers(window)
+        img, vid = tmp_path / "face.jpg", tmp_path / "clip.mov"
+        window.dropEvent(self._event([img, vid]))
+        window._pickers.set_source.assert_called_once_with(img)  # noqa: SLF001
+        window._pickers.set_target.assert_called_once_with(vid)  # noqa: SLF001
+
+    def test_drop_non_media_ignored(self, window, tmp_path):
+        self._stub_pickers(window)
+        window.dropEvent(self._event([tmp_path / "notes.txt"]))
+        window._pickers.set_source.assert_not_called()  # noqa: SLF001
+        window._pickers.set_target.assert_not_called()  # noqa: SLF001
+
+    def test_drop_ignored_while_batch_active(self, window, tmp_path):
+        self._stub_pickers(window)
+        window._batch_active = True  # noqa: SLF001 — editing locked
+        window.dropEvent(self._event([tmp_path / "clip.mp4"]))
+        window._pickers.set_target.assert_not_called()  # noqa: SLF001
