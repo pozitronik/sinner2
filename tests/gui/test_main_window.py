@@ -2591,3 +2591,46 @@ class TestSettingsButton:
         window._status_bar.settings_button.click()  # noqa: SLF001
         assert window._settings_dialog.isVisible() is True  # noqa: SLF001
         window._settings_dialog.hide()  # noqa: SLF001 — don't leak a shown window
+
+
+class TestCameraGateAndToggle:
+    """The Camera-tab "Allow camera mode" gate shows/hides the 📹 toggle, which
+    is the single source of truth for camera mode (start/stop)."""
+
+    def test_allow_camera_shows_button_and_persists(self, window):
+        from unittest.mock import MagicMock
+
+        window._pickers.set_camera_button_visible = MagicMock()  # noqa: SLF001
+        window._on_allow_camera_toggled(True)  # noqa: SLF001
+        window._pickers.set_camera_button_visible.assert_called_once_with(True)  # noqa: SLF001
+        assert window._settings.camera_mode_allowed is True  # noqa: SLF001
+
+    def test_camera_toggle_on_starts_camera(self, window, monkeypatch):
+        from unittest.mock import MagicMock
+
+        started = MagicMock(return_value=True)
+        monkeypatch.setattr(window, "_on_use_camera", started)
+        window._on_camera_toggled(True)  # noqa: SLF001
+        started.assert_called_once()
+
+    def test_camera_toggle_on_reverts_when_start_bails(self, window, monkeypatch):
+        from unittest.mock import MagicMock
+
+        monkeypatch.setattr(window, "_on_use_camera", lambda: False)  # no source
+        window._pickers.set_camera_active = MagicMock()  # noqa: SLF001
+        window._on_camera_toggled(True)  # noqa: SLF001
+        window._pickers.set_camera_active.assert_called_once_with(False)  # noqa: SLF001
+
+    def test_camera_toggle_off_stops(self, window, monkeypatch):
+        from unittest.mock import MagicMock
+
+        window._live.stop = MagicMock()  # noqa: SLF001
+        window._on_camera_toggled(False)  # noqa: SLF001
+        window._live.stop.assert_called_once()  # noqa: SLF001
+
+    def test_live_running_reflects_on_the_toggle(self, window):
+        from unittest.mock import MagicMock
+
+        window._pickers.set_camera_active = MagicMock()  # noqa: SLF001
+        window._on_live_running(True)  # noqa: SLF001
+        window._pickers.set_camera_active.assert_called_with(True)  # noqa: SLF001

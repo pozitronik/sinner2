@@ -1,14 +1,17 @@
-"""Live-camera control panel (a side-panel tab).
+"""Camera settings panel (the ⚙️ Settings dialog's Camera tab).
 
-Picks the capture device + resolution/fps + MJPEG port, and drives start/stop.
-The actual session is owned by LiveController; this is just the controls + the
-served-URL readout. Device probing is on-demand (the Refresh button), never at
-construction — probing opens each camera, which is slow and can fight other apps.
+Camera-only settings: capture device + resolution/fps/workers + MJPEG port, the
+served-URL readout, and the "Allow camera mode" gate that reveals the 📹 toggle
+button in the main window (the single source of truth for camera mode). Start/
+stop is driven by THAT button, not here. Device probing is on-demand (Refresh),
+never at construction — probing opens each camera, which is slow and can fight
+other apps.
 """
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFormLayout,
     QHBoxLayout,
@@ -24,14 +27,22 @@ from sinner2.pipeline.live.live_loop import MAX_LIVE_WORKERS
 
 
 class QLiveView(QWidget):
-    startRequested = Signal()
-    stopRequested = Signal()
+    allowCameraToggled = Signal(bool)  # the gate → show/hide the 📹 button
     workersChanged = Signal(int)  # live worker-pool resize while running
     configChanged = Signal()  # device/res/fps/workers/port changed → persist
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._running = False
+
+        # The gate: reveals the 📹 camera toggle in the main window. Camera mode
+        # is opt-in, so it's off (and the button hidden) by default.
+        self._allow_camera = QCheckBox("Allow camera mode")
+        self._allow_camera.setToolTip(
+            "Show the 📹 camera toggle in the main window so you can switch to "
+            "live-camera mode. Off = camera mode hidden."
+        )
+        self._allow_camera.toggled.connect(self.allowCameraToggled)
 
         form = QFormLayout()
 
@@ -70,16 +81,13 @@ class QLiveView(QWidget):
                      self._port):
             spin.valueChanged.connect(self.configChanged)
 
-        self._toggle = QPushButton("Start live")
-        self._toggle.clicked.connect(self._on_toggle)
-
         self._url = QLabel("—")
         self._url.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self._url.setWordWrap(True)
 
         root = QVBoxLayout(self)
+        root.addWidget(self._allow_camera)
         root.addLayout(form)
-        root.addWidget(self._toggle)
         root.addWidget(QLabel("Serving:"))
         root.addWidget(self._url)
         root.addStretch(1)
@@ -132,25 +140,27 @@ class QLiveView(QWidget):
             spin.setValue(value)
             spin.blockSignals(False)
 
+    def allow_camera(self) -> bool:
+        return self._allow_camera.isChecked()
+
+    def set_allow_camera(self, on: bool) -> None:
+        """Reflect the persisted gate WITHOUT emitting allowCameraToggled."""
+        self._allow_camera.blockSignals(True)
+        self._allow_camera.setChecked(bool(on))
+        self._allow_camera.blockSignals(False)
+
     # ---- state driven by LiveController.runningChanged ----
 
     def set_running(self, running: bool) -> None:
+        # Lock the device/resolution + the gate while a camera session runs
+        # (workers stays adjustable live). Stop is via the 📹 button.
         self._running = running
-        self._toggle.setText("Stop live" if running else "Start live")
         for w in (self._device, self._refresh, self._width, self._height,
-                  self._fps, self._port):
+                  self._fps, self._port, self._allow_camera):
             w.setEnabled(not running)
 
     def set_url(self, url: str | None) -> None:
         self._url.setText(url or "—")
-
-    def _on_toggle(self) -> None:
-        # Emit intent; main_window flips our state via set_running once the
-        # session actually starts/stops (so the button reflects reality).
-        if self._running:
-            self.stopRequested.emit()
-        else:
-            self.startRequested.emit()
 
     def _refresh_devices(self) -> None:
         found = available_cameras(max_probe=8)

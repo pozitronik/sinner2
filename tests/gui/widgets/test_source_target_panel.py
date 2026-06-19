@@ -77,28 +77,52 @@ class TestQSourceTargetPanel:
         panel.set_source_enabled(True)
         assert panel._source.isEnabled() is True      # noqa: SLF001
 
-    def test_use_camera_button_emits_camera_requested(self, panel, qtbot):
-        with qtbot.waitSignal(panel.cameraRequested, timeout=1000):
-            panel._use_camera.click()  # noqa: SLF001
+    def test_camera_button_is_a_hidden_toggle_by_default(self, panel):
+        # Camera mode is opt-in: the 📹 toggle is checkable and hidden until the
+        # "Allow camera mode" gate shows it.
+        assert panel._use_camera.isCheckable()  # noqa: SLF001
+        assert panel._use_camera.isVisibleTo(panel) is False  # noqa: SLF001
+        assert panel.camera_active() is False
 
-    def test_source_and_target_edits_are_equal_width(self, panel, qtbot):
-        # The camera button on the target row would otherwise make the target
-        # edit narrower; the source Load button is widened to compensate so both
-        # path edits render the same width.
+    def test_camera_toggle_emits_on_then_off(self, panel, qtbot):
+        panel.set_camera_button_visible(True)
+        states: list[bool] = []
+        panel.cameraToggled.connect(states.append)
+        panel._use_camera.click()  # noqa: SLF001 — on
+        panel._use_camera.click()  # noqa: SLF001 — off
+        assert states == [True, False]
+
+    def test_set_camera_active_is_silent(self, panel):
+        seen: list[bool] = []
+        panel.cameraToggled.connect(seen.append)
+        panel.set_camera_active(True)  # reflect running, no re-emit
+        assert panel.camera_active() is True
+        assert seen == []
+
+    def test_edits_equal_width_with_camera_hidden_and_shown(self, panel, qtbot):
+        # The Source Load button matches the camera footprint only while the 📹
+        # button shows, so the path edits stay equal-width in BOTH states.
         panel.resize(400, 80)
         panel.show()
         qtbot.waitExposed(panel)
-        src_edit = panel._source._display  # noqa: SLF001
-        tgt_edit = panel._target._display  # noqa: SLF001
-        assert abs(src_edit.width() - tgt_edit.width()) <= 1
+        src = panel._source._display  # noqa: SLF001
+        tgt = panel._target._display  # noqa: SLF001
+        assert abs(src.width() - tgt.width()) <= 1  # camera hidden (default)
+        panel.set_camera_button_visible(True)
+        qtbot.wait(10)
+        assert abs(src.width() - tgt.width()) <= 1  # camera shown
 
-    def test_source_load_button_wider_than_target_load(self, panel, qtbot):
+    def test_source_load_button_wider_only_while_camera_shows(self, panel, qtbot):
         panel.resize(400, 80)
         panel.show()
         qtbot.waitExposed(panel)
         src_load = panel._source._load_button  # noqa: SLF001
         tgt_load = panel._target._load_button  # noqa: SLF001
-        # Source spends the camera's space on its Load button → strictly wider.
+        # Camera hidden (default): no extension → equal Load buttons.
+        assert src_load.width() == tgt_load.width()
+        # Camera shown: source spends the camera's space → strictly wider.
+        panel.set_camera_button_visible(True)
+        qtbot.wait(10)
         assert src_load.width() > tgt_load.width()
 
 

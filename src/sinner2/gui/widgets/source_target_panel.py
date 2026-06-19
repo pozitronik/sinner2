@@ -191,7 +191,7 @@ class QSourceTargetPanel(QWidget):
     targetChanged = Signal(Path)
     sourceRecentsChanged = Signal(list)  # list[Path]
     targetRecentsChanged = Signal(list)
-    cameraRequested = Signal()  # "use the camera as the target"
+    cameraToggled = Signal(bool)  # the 📹 toggle: on = camera mode, off = file
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -201,15 +201,19 @@ class QSourceTargetPanel(QWidget):
         self._target.pathChanged.connect(self.targetChanged)
         self._source.recentsChanged.connect(self.sourceRecentsChanged)
         self._target.recentsChanged.connect(self.targetRecentsChanged)
-        # Camera is a peer choice to a file target: a compact icon button after
-        # the target's Load button (config lives in the Live tab).
+        # Camera is a peer choice to a file target: a compact CHECKABLE icon
+        # button (the single source of truth for camera mode — checked = camera
+        # running). Hidden until "Allow camera mode" is enabled in the Camera
+        # settings tab; config + the gate live there.
         self._use_camera = QToolButton()
         self._use_camera.setText("📹")
+        self._use_camera.setCheckable(True)
         self._use_camera.setToolTip(
-            "Use the camera as the target (live mode). Configure the device / "
-            "resolution / fps in the Live tab."
+            "Toggle live-camera mode (the camera becomes the target). Configure "
+            "the device / resolution / fps in Settings → Camera."
         )
-        self._use_camera.clicked.connect(self.cameraRequested)
+        self._use_camera.setVisible(False)  # revealed by "Allow camera mode"
+        self._use_camera.toggled.connect(self.cameraToggled)
 
         layout = QVBoxLayout(self)
         # Tight + edge-aligned with the display above: no side inset, minimal
@@ -235,9 +239,11 @@ class QSourceTargetPanel(QWidget):
         label_w = max(self._source.label_width_hint(), self._target.label_width_hint())
         self._source.set_label_width(label_w)
         self._target.set_label_width(label_w)
-        self._source.extend_load_button(
-            _CAMERA_GAP + self._use_camera.sizeHint().width()
-        )
+        # The camera button's footprint on the target row; the Source Load button
+        # spends it to keep both path edits the same width — but ONLY while the
+        # camera button shows (it's hidden by default), so the extension follows
+        # the button's visibility (see set_camera_button_visible).
+        self._camera_footprint = _CAMERA_GAP + self._use_camera.sizeHint().width()
 
     def source_path(self) -> Path | None:
         return self._source.path()
@@ -254,6 +260,27 @@ class QSourceTargetPanel(QWidget):
     def set_target_visible(self, visible: bool) -> None:
         """Hide the target picker in live mode (the camera is the target)."""
         self._target.setVisible(visible)
+
+    def set_camera_button_visible(self, visible: bool) -> None:
+        """Show/hide the 📹 camera toggle — driven by the "Allow camera mode"
+        gate in the Camera settings tab. Match the Source Load button's width to
+        the camera button's footprint only while it shows, so the source/target
+        edits stay equal-width in both states (no extra gap when hidden)."""
+        self._use_camera.setVisible(visible)
+        self._source.extend_load_button(self._camera_footprint if visible else 0)
+
+    def camera_active(self) -> bool:
+        """Whether the 📹 toggle is on (camera mode) — the single source of
+        truth for the mode."""
+        return self._use_camera.isChecked()
+
+    def set_camera_active(self, active: bool) -> None:
+        """Reflect the actual running state on the 📹 toggle WITHOUT re-emitting
+        cameraToggled (so a start that fails / an external stop syncs the
+        button)."""
+        self._use_camera.blockSignals(True)
+        self._use_camera.setChecked(bool(active))
+        self._use_camera.blockSignals(False)
 
     def set_source_enabled(self, enabled: bool) -> None:
         """Lock the source picker. Used as the visual cue that face-mapping mode

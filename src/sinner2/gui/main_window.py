@@ -595,8 +595,7 @@ class SinnerMainWindow(QMainWindow):
         self._live.runningChanged.connect(self._on_live_running)
         self._live.errorOccurred.connect(self._show_error)
         self._live.processingFpsChanged.connect(self._update_live_fps_label)
-        self._live_view.startRequested.connect(self._on_use_camera)
-        self._live_view.stopRequested.connect(self._live.stop)
+        self._live_view.allowCameraToggled.connect(self._on_allow_camera_toggled)
         self._live_view.workersChanged.connect(self._live.set_worker_count)
         self._live_view.configChanged.connect(self._persist_camera_config)
 
@@ -609,7 +608,7 @@ class SinnerMainWindow(QMainWindow):
             snapshot_provider=self._processors.snapshot, parent=self,
         )
         self._session.capabilitiesChanged.connect(self._on_capabilities_changed)
-        self._pickers.cameraRequested.connect(self._on_use_camera)
+        self._pickers.cameraToggled.connect(self._on_camera_toggled)
         # Preprocessing: render a smart head-start before releasing playback.
         self._preprocess = PreprocessController(
             get_executor=self._controller.executor, parent=self
@@ -2370,13 +2369,27 @@ class SinnerMainWindow(QMainWindow):
         self._overlay_drawn_frame = raw[3] if raw is not None else None
         self._refresh_face_highlight()
 
-    def _on_use_camera(self) -> None:
-        """Make the camera the active target (from the picker button or the Live
-        tab). The facade tears down the file session + auto-starts the camera;
-        needs a source face to build the chain."""
+    def _on_allow_camera_toggled(self, allowed: bool) -> None:
+        """The Camera-tab gate: reveal/hide the 📹 toggle + persist the choice."""
+        self._pickers.set_camera_button_visible(allowed)
+        self._update_settings(camera_mode_allowed=allowed)
+
+    def _on_camera_toggled(self, on: bool) -> None:
+        """The 📹 toggle drove the mode: start the camera, or stop it. Reverts
+        the button if the camera can't start (e.g. no source)."""
+        if on:
+            if not self._on_use_camera():
+                self._pickers.set_camera_active(False)
+        else:
+            self._live.stop()
+
+    def _on_use_camera(self) -> bool:
+        """Make the camera the active target. The facade tears down the file
+        session + auto-starts the camera; needs a source face to build the
+        chain. Returns whether the start was issued."""
         if self._pickers.source_path() is None:
             self._status_bar.show_message("Load a source face first", 4000)
-            return
+            return False
         self._persist_camera_config()
         self._ensure_models_confirmed_before_build()
         self._session.set_target(CameraConfig(
@@ -2387,6 +2400,7 @@ class SinnerMainWindow(QMainWindow):
             workers=self._live_view.workers(),
             mjpeg_port=self._live_view.port(),
         ))
+        return True
 
     def _persist_face_analyze_settings(self) -> None:
         p = self._face_map_panel
@@ -2416,6 +2430,9 @@ class SinnerMainWindow(QMainWindow):
     def _on_live_running(self, running: bool) -> None:
         self._live_view.set_running(running)
         self._live_view.set_url(self._live.sink_url() if running else None)
+        # The 📹 toggle is the single source of truth — sync it to reality (a
+        # failed start or external stop unchecks it).
+        self._pickers.set_camera_active(running)
         # Face-mapping is file-only — a camera can't be precomputed; disable the
         # Faces toggle (and clear the mode) while the camera session runs.
         self._side_panel.set_faces_available(not running)
@@ -2586,8 +2603,8 @@ class SinnerMainWindow(QMainWindow):
                     self._pickers.set_target(p)
         finally:
             self._restoring_paths = False
-        # Restore the persisted camera target config into the Live tab (silent —
-        # set_config doesn't fire configChanged, so it won't re-persist).
+        # Restore the persisted camera target config into the Camera tab (silent
+        # — set_config doesn't fire configChanged, so it won't re-persist).
         s = self._settings
         if s.camera_device is not None:
             self._live_view.set_config(
@@ -2598,6 +2615,10 @@ class SinnerMainWindow(QMainWindow):
                 workers=s.camera_workers or self._live_view.workers(),
                 mjpeg_port=s.camera_mjpeg_port or self._live_view.port(),
             )
+        # Restore the "Allow camera mode" gate → 📹 button visibility (silent).
+        camera_allowed = bool(s.camera_mode_allowed)
+        self._live_view.set_allow_camera(camera_allowed)
+        self._pickers.set_camera_button_visible(camera_allowed)
         # Library roots — set_roots is silent (doesn't fire rootsChanged)
         # so restoring won't re-persist the same list. Stale folder
         # roots (parent dir since deleted) and stale file roots are

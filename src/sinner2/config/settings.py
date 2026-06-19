@@ -90,6 +90,9 @@ class Settings(SinnerBaseModel):
     camera_fps: int | None = None
     camera_workers: int | None = None
     camera_mjpeg_port: int | None = None
+    # Opt-in gate: when True the 📹 camera toggle shows in the main window
+    # (camera mode is otherwise hidden). Set from the Camera settings tab.
+    camera_mode_allowed: bool | None = None
     side_panel_visible: bool | None = None
     metrics_overlay_visible: bool | None = None
     face_overlay_visible: bool | None = None  # face-detection debug overlay
