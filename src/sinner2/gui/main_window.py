@@ -1399,6 +1399,9 @@ class SinnerMainWindow(QMainWindow):
         button.setAutoRaise(True)  # flat, like the other button-bar actions
         button.setMenu(menu)
         button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        # Drop the menu-indicator arrow ("v") so it reads as a plain icon button
+        # like its neighbours — it still opens the menu on click.
+        button.setStyleSheet("QToolButton::menu-indicator { image: none; }")
         self._project_menu = menu
         return button
 
