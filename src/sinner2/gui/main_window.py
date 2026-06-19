@@ -83,6 +83,7 @@ from sinner2.gui.widgets.models_view import QModelsView
 from sinner2.gui.widgets.face_detection_overlay import QFaceDetectionOverlay
 from sinner2.gui.widgets.face_map_panel import QFaceMapPanel
 from sinner2.gui.widgets.frame_display import QFrameDisplayWidget
+from sinner2.gui.cache_management_controller import CacheManagementController
 from sinner2.gui.fullscreen_controller import FullscreenController
 from sinner2.gui.settings_binder import SettingsBinder
 from sinner2.gui.widgets.fullscreen_control_bar import FullscreenControlBar
@@ -684,12 +685,23 @@ class SinnerMainWindow(QMainWindow):
         )
         # Cache-management actions (own signals so they don't go through
         # configChanged, which is for runtime tuning of the chain).
-        self._processors.browseRootRequested.connect(self._on_browse_cache_root)
-        self._processors.resetRootRequested.connect(self._on_reset_cache_root)
-        self._processors.invalidateRequested.connect(self._on_invalidate_session)
-        self._processors.rerenderRequested.connect(self._on_rerender_from_current)
-        self._processors.clearAllRequested.connect(self._on_clear_all_caches)
-        self._processors.sizeCapChanged.connect(self._on_size_cap_changed)
+        self._cache_mgmt = CacheManagementController(
+            window=self,
+            controller=self._controller,
+            processors=self._processors,
+            update_settings=self._update_settings,
+            settings_getter=lambda: self._settings,
+        )
+        self._processors.browseRootRequested.connect(self._cache_mgmt.on_browse_root)
+        self._processors.resetRootRequested.connect(self._cache_mgmt.on_reset_root)
+        self._processors.invalidateRequested.connect(
+            self._cache_mgmt.on_invalidate_session
+        )
+        self._processors.rerenderRequested.connect(
+            self._cache_mgmt.on_rerender_from_current
+        )
+        self._processors.clearAllRequested.connect(self._cache_mgmt.on_clear_all)
+        self._processors.sizeCapChanged.connect(self._cache_mgmt.on_size_cap_changed)
         # Audio: transport emits, main_window persists. The controller's
         # own slots already update the backend; we only need to write
         # settings back here.
@@ -750,7 +762,7 @@ class SinnerMainWindow(QMainWindow):
         # apply_restored_settings emits configChanged once at the end, which
         # both seeds the controller and persists the (now equal) values back.
         self._restore_processor_settings()
-        self._restore_cache_management_state()
+        self._cache_mgmt.restore_state()
         self._restore_audio_state()
         self._refresh_cache_stats()
         self._refresh_providers_label()
@@ -913,17 +925,6 @@ class SinnerMainWindow(QMainWindow):
 
     # ---- Cache management slots ----
 
-    def _restore_cache_management_state(self) -> None:
-        # Cache root: settings → controller → widget display
-        if self._settings.cache_root_path:
-            self._controller.set_cache_root(Path(self._settings.cache_root_path))
-        self._processors.set_cache_root_text(self._controller.cache_root())
-        # Size cap: settings → controller (state) + widget (display)
-        cap_mb = self._settings.cache_size_cap_mb or 0
-        cap_bytes = cap_mb * 1024 * 1024 if cap_mb > 0 else 0
-        self._controller.set_cache_size_cap_bytes(cap_bytes)
-        self._processors.set_cache_size_cap_bytes(cap_bytes)
-
     def _refresh_cache_stats(self) -> None:
         # Skip during shutdown — closeEvent tears the session down (firing
         # cacheStorageStatsChanged), and walking a large cache root on the GUI
@@ -966,68 +967,6 @@ class SinnerMainWindow(QMainWindow):
         self._processors.set_cache_stats_text(
             f"{count} entries · {_fmt_size(total)} · {free_text}"
         )
-
-    def _on_browse_cache_root(self) -> None:
-        chosen = QFileDialog.getExistingDirectory(
-            self,
-            "Choose cache root directory",
-            str(self._controller.cache_root()),
-        )
-        if not chosen:
-            return
-        self._controller.set_cache_root(Path(chosen))
-        self._processors.set_cache_root_text(self._controller.cache_root())
-        self._update_settings(cache_root_path=str(self._controller.cache_root()))
-
-    def _on_reset_cache_root(self) -> None:
-        self._controller.set_cache_root(None)
-        self._processors.set_cache_root_text(self._controller.cache_root())
-        self._update_settings(cache_root_path=None)
-
-    def _on_invalidate_session(self) -> None:
-        if self._controller.executor() is None:
-            return
-        if not confirm(
-            self,
-            "invalidate_session",
-            "Invalidate current session",
-            "Drop all cached frames for this session and reprocess from scratch?",
-        ):
-            return
-        self._controller.invalidate_current_session()
-
-    def _on_rerender_from_current(self) -> None:
-        # No confirmation: it only reprocesses from the playhead forward and is
-        # the natural "apply my param change retroactively" gesture.
-        self._controller.rerender_from_current()
-
-    def _on_clear_all_caches(self) -> None:
-        manager = self._controller.cache_manager()
-        protected = self._controller.session_cache_dir()
-        # Count via entry_paths() (no per-file size walk) so the dialog opens
-        # instantly even on a huge cache — the size walk is what hung the app.
-        deletable = [p for p in manager.entry_paths() if p != protected]
-        if not deletable:
-            QMessageBox.information(
-                self,
-                "Clear all caches",
-                "Nothing to delete — only the current session's cache is present.",
-            )
-            return
-        if not confirm(
-            self,
-            "clear_all_caches",
-            "Clear all caches",
-            f"Delete {len(deletable)} cache entries?\n"
-            "The currently active session will be spared.",
-        ):
-            return
-        self._controller.clear_all_caches()
-
-    def _on_size_cap_changed(self, bytes_cap: int) -> None:
-        self._controller.set_cache_size_cap_bytes(bytes_cap)
-        cap_mb = bytes_cap // (1024 * 1024) if bytes_cap > 0 else 0
-        self._update_settings(cache_size_cap_mb=cap_mb or None)
 
     # ---- Audio ----
 
