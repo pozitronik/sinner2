@@ -2505,3 +2505,18 @@ class TestProjectSaveRestore:
         window._persist_sections.assert_called_once()  # noqa: SLF001
         # The stored chain field was coerced into the live settings.
         assert window._settings.realtime_workers == 7  # noqa: SLF001
+
+
+class TestProjectMenuButton:
+    """The project menu lives on a bottom 📂 button, not a top menu bar."""
+
+    def test_button_carries_the_project_menu(self, window):
+        btn = window._menu_button  # noqa: SLF001
+        assert btn.text() == "📂"
+        menu = btn.menu()
+        assert menu is not None
+        labels = [a.text() for a in menu.actions() if not a.isSeparator()]
+        assert labels == ["Open Project…", "Save Project", "Save Project As…"]
+
+    def test_no_top_menu_bar_actions(self, window):
+        assert window.menuBar().actions() == []

@@ -12,10 +12,13 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QFileDialog,
+    QHBoxLayout,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QProgressDialog,
     QSplitter,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -371,13 +374,19 @@ class SinnerMainWindow(QMainWindow):
         # messages. Each button mirrors a keyboard shortcut and routes through
         # the matching handler, so button state / action / persisted setting
         # never drift.
+        # Project menu lives at the BOTTOM as a 📂 button just above the button
+        # bar (not a top menu bar). _project_path tracks the open file so Save
+        # writes back to it instead of re-prompting.
+        self._project_path: Path | None = None
+        menu_row = QHBoxLayout()
+        menu_row.setContentsMargins(0, 0, 0, 0)
+        self._menu_button = self._build_project_menu_button()
+        menu_row.addWidget(self._menu_button)
+        menu_row.addStretch(1)
+        layout.addLayout(menu_row)
         self._status_bar = QStatusActionBar()
         layout.addWidget(self._status_bar)
         self.setCentralWidget(central)
-        # File menu (Open / Save project). The current project's file, if any,
-        # so Save writes back to it instead of re-prompting.
-        self._project_path: Path | None = None
-        self._build_file_menu()
         # Drag a media file onto the window (the preview) to load it: videos →
         # target, images → source. The picker ROWS accept their own drops too
         # (forcing the destination regardless of type); this catches drops
@@ -1372,17 +1381,30 @@ class SinnerMainWindow(QMainWindow):
 
     # ---- Project save / restore ----
 
-    def _build_file_menu(self) -> None:
-        file_menu = self.menuBar().addMenu("&File")
-        open_act = file_menu.addAction("Open Project…")
+    def _build_project_menu_button(self) -> QToolButton:
+        """The 📂 caller button (bottom row, before the button bar) that pops up
+        the project menu. Parented to the window so its action shortcuts stay
+        active without a top menu bar."""
+        menu = QMenu(self)
+        open_act = menu.addAction("Open Project…")
         open_act.setShortcut("Ctrl+Shift+O")  # Ctrl+S/O are taken by save-frame
         open_act.triggered.connect(self._on_open_project)
-        file_menu.addSeparator()
-        save_act = file_menu.addAction("Save Project")
+        menu.addSeparator()
+        save_act = menu.addAction("Save Project")
         save_act.setShortcut("Ctrl+Shift+S")
         save_act.triggered.connect(self._on_save_project)
-        save_as_act = file_menu.addAction("Save Project As…")
+        save_as_act = menu.addAction("Save Project As…")
         save_as_act.triggered.connect(self._on_save_project_as)
+        # Window-context shortcuts work even though the menu only opens on click.
+        self.addActions(menu.actions())
+
+        button = QToolButton()
+        button.setText("📂")
+        button.setToolTip("Project — open / save")
+        button.setMenu(menu)
+        button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self._project_menu = menu
+        return button
 
     def _set_project_path(self, path: Path | None) -> None:
         self._project_path = path
