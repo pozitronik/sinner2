@@ -81,3 +81,42 @@ class TestFrameStateMap:
         assert FrameState.READY_MEM == 4
         assert FrameState.READY_DISK == 5
         assert FrameState.INVALID == 6
+
+
+class TestFaceMarks:
+    """The parallel FaceMark dimension (problem-frame markers) is independent of
+    the pipeline-state byte the buffer rewrites."""
+
+    def test_set_get_and_snapshot(self):
+        from sinner2.pipeline.realtime.frame_state import (
+            FaceMark, FrameState, FrameStateMap,
+        )
+        m = FrameStateMap(5)
+        m.set_face(1, FaceMark.PRESENT)
+        m.set_face(3, FaceMark.ABSENT)
+        assert m.get_face(1) is FaceMark.PRESENT
+        assert m.get_face(3) is FaceMark.ABSENT
+        assert m.get_face(0) is FaceMark.UNKNOWN
+        assert m.face_snapshot() == bytes([0, 1, 0, 2, 0])
+        # Independent of the state byte: rewriting state doesn't touch faces.
+        m.set(3, FrameState.READY_DISK)
+        assert m.get_face(3) is FaceMark.ABSENT
+
+    def test_reset_clears_both_dimensions(self):
+        from sinner2.pipeline.realtime.frame_state import (
+            FaceMark, FrameState, FrameStateMap,
+        )
+        m = FrameStateMap(3)
+        m.set(0, FrameState.READY_MEM)
+        m.set_face(0, FaceMark.ABSENT)
+        m.reset()
+        assert m.snapshot() == bytes(3)
+        assert m.face_snapshot() == bytes(3)
+        assert m.get_face(0) is FaceMark.UNKNOWN
+
+    def test_out_of_range_face_is_ignored(self):
+        from sinner2.pipeline.realtime.frame_state import FaceMark, FrameStateMap
+        m = FrameStateMap(2)
+        m.set_face(9, FaceMark.ABSENT)  # no error
+        assert m.face_snapshot() == bytes(2)
+        assert m.get_face(9) is FaceMark.UNKNOWN

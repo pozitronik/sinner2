@@ -106,3 +106,32 @@ class TestClear:
         assert bar._states == b""          # noqa: SLF001
         assert bar._playhead == -1         # noqa: SLF001
         assert not bar.grab().isNull()
+
+
+class TestProblemMarkers:
+    """The bar overlays a marker on columns covering a no-face (ABSENT) frame,
+    fed via the optional `faces` arg, and paints without error."""
+
+    def test_set_data_stores_faces_and_paints(self, qtbot):
+        from sinner2.pipeline.realtime.frame_state import FaceMark
+
+        bar = QFrameStateBar()
+        qtbot.addWidget(bar)
+        bar.resize(120, 16)
+        states = _states(*([FrameState.READY_MEM] * 6))
+        faces = bytes(
+            int(m) for m in (
+                FaceMark.PRESENT, FaceMark.PRESENT, FaceMark.ABSENT,
+                FaceMark.PRESENT, FaceMark.ABSENT, FaceMark.UNKNOWN,
+            )
+        )
+        bar.set_data(states, 6, faces)
+        assert bar._faces == faces  # noqa: SLF001
+        bar.grab()  # force a paint — must not raise with the overlay
+
+    def test_faces_optional(self, qtbot):
+        bar = QFrameStateBar()
+        qtbot.addWidget(bar)
+        bar.set_data(_states(*([FrameState.READY_MEM] * 4)), 4)  # no faces arg
+        assert bar._faces == b""  # noqa: SLF001
+        bar.grab()

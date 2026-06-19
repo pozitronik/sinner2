@@ -2193,8 +2193,9 @@ class TestApplyChainContext:
 
         ex = self._executor_shell()
         frame = np.zeros((4, 4, 3), np.uint8)
-        _result, had_faces = ex._apply_chain(frame, (_Producer(),))
+        _result, had_faces, detection_ran = ex._apply_chain(frame, (_Producer(),))
         assert had_faces is True
+        assert detection_ran is True
 
     def test_reports_no_faces_for_empty_detection(self):
         class _Empty:
@@ -2208,8 +2209,9 @@ class TestApplyChainContext:
 
         ex = self._executor_shell()
         frame = np.zeros((4, 4, 3), np.uint8)
-        _result, had_faces = ex._apply_chain(frame, (_Empty(),))
+        _result, had_faces, detection_ran = ex._apply_chain(frame, (_Empty(),))
         assert had_faces is False
+        assert detection_ran is True  # ran, found nothing → a problem frame
 
     def test_reports_no_faces_when_no_detection_ran(self):
         class _Plain:
@@ -2221,8 +2223,9 @@ class TestApplyChainContext:
 
         ex = self._executor_shell()
         frame = np.zeros((4, 4, 3), np.uint8)
-        _result, had_faces = ex._apply_chain(frame, (_Plain(),))
+        _result, had_faces, detection_ran = ex._apply_chain(frame, (_Plain(),))
         assert had_faces is False  # ctx.faces stays None
+        assert detection_ran is False  # didn't look → NOT a problem frame
 
 
 class TestFaceProcessingFps:
@@ -2808,3 +2811,45 @@ class TestSetGeometry:
         ex._chain = ()  # noqa: SLF001
         ex._handle_set_geometry(None)  # noqa: SLF001
         assert ex._generation == 3  # noqa: SLF001 — bumped from 2
+
+
+class TestProblemFrames:
+    """_mark_face records a frame's detection outcome; next_problem_frame
+    scans for ABSENT (detection ran, no face) frames for the jump shortcut."""
+
+    @staticmethod
+    def _shell(n):
+        from sinner2.pipeline.realtime.executor import RealtimeExecutor
+        from sinner2.pipeline.realtime.frame_state import FrameStateMap
+
+        ex = object.__new__(RealtimeExecutor)
+        ex._frame_states = FrameStateMap(n)
+        return ex
+
+    def test_mark_face_only_flags_ran_but_empty(self):
+        from sinner2.pipeline.realtime.frame_state import FaceMark
+
+        ex = self._shell(3)
+        ex._mark_face(0, had_faces=True, detection_ran=True)    # PRESENT
+        ex._mark_face(1, had_faces=False, detection_ran=True)   # ABSENT (problem)
+        ex._mark_face(2, had_faces=False, detection_ran=False)  # UNKNOWN (no look)
+        assert ex._frame_states.get_face(0) is FaceMark.PRESENT
+        assert ex._frame_states.get_face(1) is FaceMark.ABSENT
+        assert ex._frame_states.get_face(2) is FaceMark.UNKNOWN
+
+    def test_next_problem_frame_forward_and_back(self):
+        ex = self._shell(10)
+        ex._mark_face(2, had_faces=False, detection_ran=True)  # ABSENT
+        ex._mark_face(7, had_faces=False, detection_ran=True)  # ABSENT
+        ex._mark_face(4, had_faces=True, detection_ran=True)   # PRESENT (skipped)
+        assert ex.next_problem_frame(0, forward=True) == 2
+        assert ex.next_problem_frame(2, forward=True) == 7
+        assert ex.next_problem_frame(7, forward=True) is None
+        assert ex.next_problem_frame(9, forward=False) == 7
+        assert ex.next_problem_frame(7, forward=False) == 2
+        assert ex.next_problem_frame(2, forward=False) is None
+
+    def test_next_problem_frame_empty_when_none(self):
+        ex = self._shell(5)
+        assert ex.next_problem_frame(0, forward=True) is None
+        assert ex.next_problem_frame(4, forward=False) is None

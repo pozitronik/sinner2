@@ -281,9 +281,12 @@ class QTransportControls(QWidget):
         self._update_label(frame)
         self._frame_state_bar.set_playhead(frame)
 
-    def set_frame_states(self, states: bytes, frame_count: int) -> None:
-        """Feed the processing visualiser a fresh per-frame state snapshot."""
-        self._frame_state_bar.set_data(states, frame_count)
+    def set_frame_states(
+        self, states: bytes, frame_count: int, faces: bytes = b""
+    ) -> None:
+        """Feed the processing visualiser a fresh per-frame state snapshot (+
+        the optional problem-frame markers)."""
+        self._frame_state_bar.set_data(states, frame_count, faces)
 
     def set_visualiser_visible(self, visible: bool) -> None:
         """Show / hide the processing-visualiser bar under the slider."""

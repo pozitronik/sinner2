@@ -30,6 +30,18 @@ class FrameState(IntEnum):
     INVALID = 6       # stale (chain/param change) — will be reprocessed
 
 
+class FaceMark(IntEnum):
+    """Per-frame face-detection outcome, recorded when a frame finishes the
+    chain. A SEPARATE dimension from FrameState because the buffer rewrites the
+    state byte (mem⇄disk) and would clobber it — this survives that. ABSENT is a
+    'problem' frame (detection ran but found nothing); the visualiser marks them
+    and the player can jump between them."""
+
+    UNKNOWN = 0   # not processed this session, or detection didn't run
+    PRESENT = 1   # detection ran and found at least one face
+    ABSENT = 2    # detection ran and found NO face — a problem frame
+
+
 class FrameStateMap:
     """A bytearray of FrameState, one entry per target frame. Thread-safe by
     relying on the GIL for the byte/slice writes it makes; no explicit lock."""
@@ -37,6 +49,7 @@ class FrameStateMap:
     def __init__(self, frame_count: int) -> None:
         self._n = max(0, frame_count)
         self._states = bytearray(self._n)  # zero-filled → all NOT_REACHED
+        self._faces = bytearray(self._n)   # parallel FaceMark dimension
 
     @property
     def frame_count(self) -> int:
@@ -61,10 +74,26 @@ class FrameStateMap:
             return FrameState(self._states[index])
         return FrameState.NOT_REACHED
 
+    def set_face(self, index: int, mark: FaceMark) -> None:
+        """Record a frame's face-detection outcome (atomic single-byte write)."""
+        if 0 <= index < self._n:
+            self._faces[index] = int(mark)
+
+    def get_face(self, index: int) -> FaceMark:
+        if 0 <= index < self._n:
+            return FaceMark(self._faces[index])
+        return FaceMark.UNKNOWN
+
     def reset(self) -> None:
-        """Back to all-NOT_REACHED (same length) — e.g. on invalidate_all."""
+        """Back to all-NOT_REACHED / UNKNOWN (same length) — e.g. on
+        invalidate_all."""
         self._states = bytearray(self._n)
+        self._faces = bytearray(self._n)
 
     def snapshot(self) -> bytes:
         """An immutable copy of the whole array for the GUI to bin + paint."""
         return bytes(self._states)
+
+    def face_snapshot(self) -> bytes:
+        """An immutable copy of the FaceMark dimension (problem-frame markers)."""
+        return bytes(self._faces)

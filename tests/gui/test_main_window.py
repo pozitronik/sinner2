@@ -2531,3 +2531,49 @@ class TestProjectMenuButtonPlacement:
         pin_idx = bar_layout.indexOf(window._status_bar.on_top_button)  # noqa: SLF001
         assert menu_idx == 0  # very front of the action group
         assert menu_idx < pin_idx
+
+
+class TestProblemFrameJump:
+    """P / Shift+P jump the playhead to the next / previous no-face frame."""
+
+    def _stub_executor(self, window, monkeypatch):
+        from unittest.mock import MagicMock
+
+        ex = MagicMock()
+        ex.frame_count.return_value = 100
+        ex.current_frame.get.return_value = 50
+        monkeypatch.setattr(window._controller, "executor", lambda: ex)  # noqa: SLF001
+        monkeypatch.setattr(window._controller, "_executor", ex)  # noqa: SLF001
+        return ex
+
+    @staticmethod
+    def _press_p(window, shift=False):
+        from PySide6.QtCore import QEvent, Qt
+        from PySide6.QtGui import QKeyEvent
+
+        mod = (
+            Qt.KeyboardModifier.ShiftModifier
+            if shift
+            else Qt.KeyboardModifier.NoModifier
+        )
+        window.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_P, mod))
+
+    def test_p_seeks_to_next_problem(self, window, monkeypatch):
+        ex = self._stub_executor(window, monkeypatch)
+        ex.next_problem_frame.return_value = 42
+        self._press_p(window)
+        ex.next_problem_frame.assert_called_once_with(50, True)  # forward
+        ex.seek.assert_called_once_with(42)
+
+    def test_shift_p_seeks_to_previous_problem(self, window, monkeypatch):
+        ex = self._stub_executor(window, monkeypatch)
+        ex.next_problem_frame.return_value = 10
+        self._press_p(window, shift=True)
+        ex.next_problem_frame.assert_called_once_with(50, False)  # backward
+        ex.seek.assert_called_once_with(10)
+
+    def test_p_with_no_problem_does_not_seek(self, window, monkeypatch):
+        ex = self._stub_executor(window, monkeypatch)
+        ex.next_problem_frame.return_value = None
+        self._press_p(window)
+        ex.seek.assert_not_called()

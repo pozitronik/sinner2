@@ -14,7 +14,11 @@ from sinner2.pipeline.buffer.buffer import FrameBuffer
 from sinner2.pipeline.buffer.metrics import BufferMetrics
 from sinner2.pipeline.buffer.store import FrameStore
 from sinner2.pipeline.buffer.timeline import Timeline
-from sinner2.pipeline.realtime.frame_state import FrameState, FrameStateMap
+from sinner2.pipeline.realtime.frame_state import (
+    FaceMark,
+    FrameState,
+    FrameStateMap,
+)
 from sinner2.pipeline.messages import (
     Message,
     PauseMsg,
@@ -613,6 +617,23 @@ class RealtimeExecutor:
         + paint. One byte per target frame; see FrameStateMap."""
         return self._frame_states.snapshot()
 
+    def face_states_snapshot(self) -> bytes:
+        """Per-frame FaceMark bytes (problem-frame markers) for the visualiser."""
+        return self._frame_states.face_snapshot()
+
+    def next_problem_frame(self, from_index: int, forward: bool = True) -> int | None:
+        """The nearest ABSENT frame (detection ran but found no face) after (or,
+        when forward=False, before) ``from_index`` — for the player's jump-to-
+        problem shortcut. None when there is none in that direction. Uses a fast
+        bytes scan over the FaceMark snapshot."""
+        faces = self._frame_states.face_snapshot()
+        absent = bytes([int(FaceMark.ABSENT)])
+        if forward:
+            pos = faces.find(absent, max(0, from_index + 1))
+        else:
+            pos = faces.rfind(absent, 0, max(0, from_index))
+        return pos if pos != -1 else None
+
     def preprocess_progress(self) -> tuple[int, int]:
         """(frames rendered at/ahead of the playhead, frames remaining from the
         playhead) — an ATOMIC snapshot for the preprocessing head-start.
@@ -633,6 +654,23 @@ class RealtimeExecutor:
         fs = getattr(self, "_frame_states", None)
         if fs is not None:
             fs.set(index, state)
+
+    def _mark_face(
+        self, index: FrameIndex, had_faces: bool, detection_ran: bool
+    ) -> None:
+        """Record a completed frame's face outcome. Only a frame where detection
+        actually ran and found nothing is a PROBLEM (ABSENT); a frame that never
+        ran detection (enhancer-only / detection-skip) stays UNKNOWN."""
+        fs = getattr(self, "_frame_states", None)
+        if fs is None:
+            return
+        if not detection_ran:
+            mark = FaceMark.UNKNOWN
+        elif had_faces:
+            mark = FaceMark.PRESENT
+        else:
+            mark = FaceMark.ABSENT
+        fs.set_face(index, mark)
 
     def _mark_range(self, lo: int, hi: int, state: FrameState) -> None:
         fs = getattr(self, "_frame_states", None)
@@ -1351,7 +1389,7 @@ class RealtimeExecutor:
                 # workers calling the same chain's swapper.get() in parallel
                 # is the intended fast path.
                 chain = self._chain
-                result, had_faces = self._apply_chain(
+                result, had_faces, detection_ran = self._apply_chain(
                     source_frame, chain, item.frame_index
                 )
                 # Publish under the generation guard: a reconfigure may have
@@ -1361,6 +1399,7 @@ class RealtimeExecutor:
                 # writing a stale frame into the new buffer.
                 if self._publish_result(item, result):
                     self._record_completion(had_faces)
+                    self._mark_face(item.frame_index, had_faces, detection_ran)
             except Exception as e:
                 # A per-frame chain/buffer error is RECOVERABLE — log it and
                 # skip this frame, exactly like a reader error above. Do NOT set
@@ -1422,7 +1461,7 @@ class RealtimeExecutor:
     def _apply_chain(
         self, frame: Frame, chain: tuple[Processor, ...],
         frame_index: int | None = None,
-    ) -> tuple[Frame, bool]:
+    ) -> tuple[Frame, bool, bool]:
         # Wrap each processor with perf_counter so the metrics overlay
         # can attribute wall-clock to FaceSwapper vs FaceEnhancer. The
         # measurement excludes the chain-iteration overhead and the
@@ -1445,8 +1484,10 @@ class RealtimeExecutor:
                 self._processor_timings.append((time.monotonic(), p.name, elapsed_ns))
         # ctx.faces: None = no detection ran, [] = no faces, [..] = faces. The
         # preprocessing head-start sizes off how fast FACE frames render (the
-        # expensive ones), so report whether this frame carried any.
-        return frame, bool(ctx.faces)
+        # expensive ones), so report whether this frame carried any AND whether
+        # detection actually ran (so the visualiser can tell "no face found"
+        # apart from "didn't look" — an enhancer-only or detection-skip frame).
+        return frame, bool(ctx.faces), ctx.faces is not None
 
     def processor_timings(self) -> dict[str, float]:
         """Average milliseconds per process() call over the last

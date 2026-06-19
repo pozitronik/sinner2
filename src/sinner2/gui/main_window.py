@@ -1645,6 +1645,21 @@ class SinnerMainWindow(QMainWindow):
         if key == Qt.Key.Key_End:
             self._on_seek_requested(max(0, executor.frame_count() - 1))
             return
+        if key == Qt.Key.Key_P:
+            # Jump to the next (Shift = previous) processed frame where detection
+            # found no face — a likely swap failure. Works whether or not the
+            # visualiser bar is shown.
+            forward = not (event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+            problem = executor.next_problem_frame(
+                executor.current_frame.get(), forward
+            )
+            if problem is not None:
+                self._on_seek_requested(problem)
+            else:
+                self._status_bar.show_message(
+                    "No more no-face frames in that direction.", 2000
+                )
+            return
         # Section selection: [ sets a section's start at the playhead, ] its
         # end; Delete removes the selected band. The transport owns the state
         # machine (new in-point vs nudge-selected) and emits sectionsChanged.
@@ -1848,7 +1863,9 @@ class SinnerMainWindow(QMainWindow):
         if executor is None:
             return
         self._transport.set_frame_states(
-            executor.frame_states_snapshot(), executor.frame_count()
+            executor.frame_states_snapshot(),
+            executor.frame_count(),
+            executor.face_states_snapshot(),
         )
 
     def _restore_visualiser_state(self) -> None:

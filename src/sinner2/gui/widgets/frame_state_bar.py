@@ -18,9 +18,13 @@ from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QMouseEvent, QPaintEvent, QPainter
 from PySide6.QtWidgets import QWidget
 
-from sinner2.pipeline.realtime.frame_state import FrameState
+from sinner2.pipeline.realtime.frame_state import FaceMark, FrameState
 
 _NSTATES = len(FrameState)
+# Problem-frame marker (detection ran, found no face): a bright magenta tick
+# along the TOP of the column, over the state stack, so it can't be missed.
+_NO_FACE = QColor(235, 64, 170)
+_NO_FACE_MARK = int(FaceMark.ABSENT)
 
 # Per-state colour. NOT_REACHED is the background (unpainted remainder).
 _BACKGROUND = QColor(38, 40, 44)
@@ -55,17 +59,22 @@ class QFrameStateBar(QWidget):
         super().__init__(parent)
         self._frame_count = 0
         self._states = b""
+        self._faces = b""
         self._playhead = -1
         self.setMinimumHeight(16)
         self.setToolTip(
             "Processing visualiser — per-frame pipeline state.\n"
             "gray=skipped  blue=queued  orange=processing  "
             "green=ready (memory)  teal=ready (disk)  red=stale.\n"
+            "magenta tick (top) = no face detected (P / Shift+P to jump).\n"
             "Click to seek."
         )
 
-    def set_data(self, states: bytes, frame_count: int) -> None:
+    def set_data(
+        self, states: bytes, frame_count: int, faces: bytes = b""
+    ) -> None:
         self._states = states
+        self._faces = faces
         self._frame_count = max(0, frame_count)
         self.update()
 
@@ -76,6 +85,7 @@ class QFrameStateBar(QWidget):
 
     def clear(self) -> None:
         self._states = b""
+        self._faces = b""
         self._frame_count = 0
         self._playhead = -1
         self.update()
@@ -127,6 +137,20 @@ class QFrameStateBar(QWidget):
                     QRectF(cx, y - seg_h, 1.0, seg_h), _COLORS[state]
                 )
                 y -= seg_h
+        # Problem-frame markers: a magenta tick at the TOP of any column that
+        # covers a no-face frame, painted over the state stack.
+        if self._faces:
+            farr = np.frombuffer(self._faces, dtype=np.uint8)
+            fcount = min(n, farr.shape[0])
+            if fcount > 0:
+                farr = farr[:fcount]
+                mark_h = min(3.0, float(h))
+                for cx in range(w):
+                    lo = cx * n // w
+                    hi = max(lo + 1, (cx + 1) * n // w)
+                    seg = farr[lo:hi]
+                    if seg.size and bool(np.any(seg == _NO_FACE_MARK)):
+                        painter.fillRect(QRectF(cx, 0.0, 1.0, mark_h), _NO_FACE)
         if 0 <= self._playhead < n:
             px = self._playhead * w // n
             painter.fillRect(QRectF(px, 0.0, 1.0, float(h)), _PLAYHEAD)
