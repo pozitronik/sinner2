@@ -2520,3 +2520,14 @@ class TestProjectMenuButton:
 
     def test_no_top_menu_bar_actions(self, window):
         assert window.menuBar().actions() == []
+
+
+class TestProjectMenuButtonPlacement:
+    """The 📂 button sits in the button bar, right before the pin button."""
+
+    def test_menu_button_is_before_pin_button(self, window):
+        bar_layout = window._status_bar._layout  # noqa: SLF001
+        menu_idx = bar_layout.indexOf(window._menu_button)  # noqa: SLF001
+        pin_idx = bar_layout.indexOf(window._status_bar.on_top_button)  # noqa: SLF001
+        assert menu_idx == 0  # very front of the action group
+        assert menu_idx < pin_idx

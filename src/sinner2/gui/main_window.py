@@ -12,7 +12,6 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QFileDialog,
-    QHBoxLayout,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -374,17 +373,13 @@ class SinnerMainWindow(QMainWindow):
         # messages. Each button mirrors a keyboard shortcut and routes through
         # the matching handler, so button state / action / persisted setting
         # never drift.
-        # Project menu lives at the BOTTOM as a 📂 button just above the button
-        # bar (not a top menu bar). _project_path tracks the open file so Save
-        # writes back to it instead of re-prompting.
+        # Project menu lives on a 📂 button in the button bar, right before the
+        # pin button (not a top menu bar). _project_path tracks the open file so
+        # Save writes back to it instead of re-prompting.
         self._project_path: Path | None = None
-        menu_row = QHBoxLayout()
-        menu_row.setContentsMargins(0, 0, 0, 0)
         self._menu_button = self._build_project_menu_button()
-        menu_row.addWidget(self._menu_button)
-        menu_row.addStretch(1)
-        layout.addLayout(menu_row)
         self._status_bar = QStatusActionBar()
+        self._status_bar.add_leading_button(self._menu_button)
         layout.addWidget(self._status_bar)
         self.setCentralWidget(central)
         # Drag a media file onto the window (the preview) to load it: videos →
@@ -1401,6 +1396,7 @@ class SinnerMainWindow(QMainWindow):
         button = QToolButton()
         button.setText("📂")
         button.setToolTip("Project — open / save")
+        button.setAutoRaise(True)  # flat, like the other button-bar actions
         button.setMenu(menu)
         button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self._project_menu = menu

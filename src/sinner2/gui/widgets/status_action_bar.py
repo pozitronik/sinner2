@@ -221,6 +221,11 @@ class QStatusActionBar(QWidget):
         QStatusBar.addPermanentWidget). Prefer ``add_panel`` for indicators."""
         self._layout.addWidget(widget)
 
+    def add_leading_button(self, button: QWidget) -> None:
+        """Insert a host-owned button at the FRONT of the action group — before
+        the pin button (e.g. the project 📂 menu button)."""
+        self._layout.insertWidget(0, button)
+
     # ---- Panel-visibility context menu ----
 
     def contextMenuEvent(self, event: QContextMenuEvent) -> None:
