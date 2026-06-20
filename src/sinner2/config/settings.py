@@ -60,6 +60,7 @@ class Settings(SinnerBaseModel):
     face_analyze_landmark_refine: bool | None = None    # bake 2dfan4 kps
     face_analyze_landmark_min_score: float | None = None
     face_analyze_bake_angle: bool | None = None         # bake per-face roll
+    face_analyze_batch_recognition: bool | None = None  # cross-frame ArcFace batch
     enhancer_model: str | None = None  # an EnhancerModel value
     enhancer_upscale: int | None = None
     enhancer_only_center_face: bool | None = None

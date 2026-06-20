@@ -247,6 +247,7 @@ class SinnerMainWindow(QMainWindow):
             landmark_refine=self._settings.face_analyze_landmark_refine,
             landmark_min_score=self._settings.face_analyze_landmark_min_score,
             bake_angle=self._settings.face_analyze_bake_angle,
+            batch_recognition=self._settings.face_analyze_batch_recognition,
         )
         # Per-panel zoom: fall back to the legacy shared value, then 128.
         _legacy_dim = self._settings.library_display_dim or 128
@@ -1924,6 +1925,7 @@ class SinnerMainWindow(QMainWindow):
             face_analyze_landmark_refine=p.landmark_refine(),
             face_analyze_landmark_min_score=p.landmark_min_score(),
             face_analyze_bake_angle=p.bake_angle(),
+            face_analyze_batch_recognition=p.batch_recognition(),
         )
 
     def _persist_camera_config(self) -> None:

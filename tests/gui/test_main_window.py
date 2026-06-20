@@ -1762,6 +1762,7 @@ class TestFaceAnalyzeSettingsPersistence:
         panel.landmark_refine.return_value = True
         panel.landmark_min_score.return_value = 0.7
         panel.bake_angle.return_value = False
+        panel.batch_recognition.return_value = False
         win._face_map_panel = panel  # noqa: SLF001
         win._persist_face_analyze_settings()  # noqa: SLF001
         s = win._settings  # noqa: SLF001
@@ -1774,6 +1775,7 @@ class TestFaceAnalyzeSettingsPersistence:
         assert s.face_analyze_landmark_refine is True
         assert s.face_analyze_landmark_min_score == 0.7
         assert s.face_analyze_bake_angle is False
+        assert s.face_analyze_batch_recognition is False
 
 
 class TestMetricsRateResetOnShow:

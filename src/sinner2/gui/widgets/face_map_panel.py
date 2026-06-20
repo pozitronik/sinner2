@@ -281,6 +281,15 @@ class QFaceMapPanel(QWidget):
         )
         form.addRow(_field_row(self._precompute_check, self._bake_angle_check))
 
+        self._batch_recognition_check = QCheckBox("Batch recognition")
+        self._batch_recognition_check.setChecked(True)
+        self._batch_recognition_check.setToolTip(
+            "Recognise faces in cross-frame batches (one ArcFace call per ~32 "
+            "faces instead of per face) — a faster scan, identical catalog. "
+            "Turn off only to isolate a recognition issue."
+        )
+        form.addRow(self._batch_recognition_check)
+
         self._analyze_btn = QPushButton("Scan for faces")
         self._analyze_btn.setToolTip("Scan the target to discover the people in it.")
         self._analyze_btn.clicked.connect(self._on_analyze_clicked)
@@ -305,6 +314,7 @@ class QFaceMapPanel(QWidget):
         self._refine_check.toggled.connect(self._on_settings_changed)
         self._refine_score.valueChanged.connect(self._on_settings_changed)
         self._bake_angle_check.toggled.connect(self._on_settings_changed)
+        self._batch_recognition_check.toggled.connect(self._on_settings_changed)
         self._detector.currentIndexChanged.connect(self._on_settings_changed)
         # "min score" only matters when refinement is on — gray it with the
         # checkbox so the dependency is visible. "Detect age/sex/angle" needs buffalo_l,
@@ -388,6 +398,9 @@ class QFaceMapPanel(QWidget):
     def precompute_geometry(self) -> bool:
         return self._precompute_check.isChecked()
 
+    def batch_recognition(self) -> bool:
+        return self._batch_recognition_check.isChecked()
+
     def detector(self) -> DetectorModel:
         return DetectorModel(self._detector.currentData())
 
@@ -435,6 +448,7 @@ class QFaceMapPanel(QWidget):
         landmark_refine: bool | None = None,
         landmark_min_score: float | None = None,
         bake_angle: bool | None = None,
+        batch_recognition: bool | None = None,
     ) -> None:
         """Seed the scan-settings controls from persisted values (None = keep the
         default). Runs silently — no settingsChanged echo during restore."""
@@ -462,6 +476,8 @@ class QFaceMapPanel(QWidget):
                 self._refine_score.setValue(float(landmark_min_score))
             if bake_angle is not None:
                 self._bake_angle_check.setChecked(bool(bake_angle))
+            if batch_recognition is not None:
+                self._batch_recognition_check.setChecked(bool(batch_recognition))
         finally:
             self._restoring = False
         self._update_refine_rows()  # reflect the restored refine state

@@ -216,6 +216,7 @@ class FaceMapController(QObject):
             landmark_refine=bool(self._landmark_refine()),
             landmark_min_score=float(self._landmark_min_score()),
             bake_angle=bool(self._panel.bake_angle()),
+            batch_recognition=bool(self._panel.batch_recognition()),
         ))
 
     def _on_geometry_started(self) -> None:

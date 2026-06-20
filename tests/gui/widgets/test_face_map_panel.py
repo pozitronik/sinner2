@@ -269,18 +269,20 @@ class TestAnalyzeControls:
         assert panel.landmark_refine() is False
         assert panel.landmark_min_score() == 0.5
         assert panel.bake_angle() is True  # D5 default on
+        assert panel.batch_recognition() is True  # batched recognition default on
 
     def test_restore_detection_settings(self, panel, qtbot):
         fired = []
         panel.settingsChanged.connect(lambda: fired.append(1))
         panel.restore_settings(
             detection_size=960, landmark_refine=True, landmark_min_score=0.8,
-            bake_angle=False,
+            bake_angle=False, batch_recognition=False,
         )
         assert panel.detection_size() == 960
         assert panel.landmark_refine() is True
         assert panel.landmark_min_score() == 0.8
         assert panel.bake_angle() is False
+        assert panel.batch_recognition() is False
         assert fired == []  # silent restore
 
     def test_detection_controls_locked_while_analyzing(self, panel):

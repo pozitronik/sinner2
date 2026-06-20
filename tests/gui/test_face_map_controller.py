@@ -28,6 +28,7 @@ def ctrl(qtbot, tmp_path):
     panel.preview_enabled.return_value = True
     panel.detect_demographics.return_value = False  # fast by default
     panel.precompute_geometry.return_value = True
+    panel.batch_recognition.return_value = True
     player = MagicMock()
     player.face_map.return_value = FaceMap.empty()
     sink = FaceDetectionSink()  # real sink: tests publish() raw faces into it
@@ -82,6 +83,14 @@ class TestAnalyze:
         assert req.fast is True       # demographics off → fast
         assert req.start_index == 0   # no prior progress → fresh
         assert req.compute_geometry is True  # precompute checkbox on
+        assert req.batch_recognition is True  # batched recognition on
+
+    def test_batch_recognition_off_threads_through(self, ctrl):
+        ctrl._panel.batch_recognition.return_value = False
+        fired = []
+        ctrl._requestAnalysis.connect(fired.append)
+        ctrl._on_analyze_requested(15)
+        assert fired[0].batch_recognition is False
 
     def test_precompute_unchecked_skips_geometry(self, ctrl):
         ctrl._panel.precompute_geometry.return_value = False
