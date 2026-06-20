@@ -83,6 +83,29 @@ class TestSessionCache:
         assert s1 is s2
         assert call_count == 1
 
+    def test_records_model_footprint_on_load(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        import onnxruntime
+
+        from sinner2.pipeline import memory_probe
+
+        clear_session_cache()
+        memory_probe.reset_footprints()
+        monkeypatch.setenv("SINNER2_MODELS_DIR", str(tmp_path))
+        (tmp_path / "m.onnx").write_bytes(b"x")
+        monkeypatch.setattr(
+            onnxruntime, "InferenceSession", lambda *a, **k: MagicMock()
+        )
+        # Deterministic probe deltas so the load records a known footprint.
+        vrams = iter([(1_000, 8_000), (1_400, 8_000)])  # before, after
+        monkeypatch.setattr(memory_probe, "device_vram", lambda index=0: next(vrams))
+        monkeypatch.setattr(memory_probe, "process_ram", lambda: 0)
+
+        get_onnx_session("m.onnx")
+        fp = memory_probe.model_footprints()["m.onnx"]
+        assert fp.vram_bytes == 400  # the measured load delta, keyed by filename
+
     def test_caches_per_path_and_providers(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ):

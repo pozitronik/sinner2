@@ -86,6 +86,7 @@ def _get_shared_face_analysis(
             from insightface.app import FaceAnalysis
 
             from sinner2.config.execution import DEFAULT_ONNX_PROVIDERS
+            from sinner2.pipeline.memory_probe import measure_model_load
             from sinner2.pipeline.model_cache import (
                 build_provider_options,
                 get_models_dir,
@@ -124,13 +125,16 @@ def _get_shared_face_analysis(
             if not pack_present:
                 _notify_load("Downloading face-analysis models (~300 MB)…")
             try:
-                app = FaceAnalysis(
-                    name=_FACE_MODEL_NAME,
-                    root=str(root),
-                    providers=eps,
-                    provider_options=build_provider_options(eps),
-                )
-                app.prepare(ctx_id=0, det_size=_normalize_det_size(det_size))
+                with measure_model_load("buffalo_l (face pack)"):
+                    app = FaceAnalysis(
+                        name=_FACE_MODEL_NAME,
+                        root=str(root),
+                        providers=eps,
+                        provider_options=build_provider_options(eps),
+                    )
+                    app.prepare(
+                        ctx_id=0, det_size=_normalize_det_size(det_size)
+                    )
             finally:
                 if not pack_present:
                     _notify_load("")

@@ -6,6 +6,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from sinner2.pipeline.memory_probe import measure_model_load
+
 if TYPE_CHECKING:
     import onnxruntime as ort
 
@@ -726,12 +728,13 @@ def get_onnx_session(
         if cached is not None:
             _session_refcount[key] = _session_refcount.get(key, 0) + 1
             return cached
-        session = ort.InferenceSession(
-            str(path),
-            sess_options=build_session_options(),
-            providers=names,
-            provider_options=build_provider_options(names),
-        )
+        with measure_model_load(path.name):
+            session = ort.InferenceSession(
+                str(path),
+                sess_options=build_session_options(),
+                providers=names,
+                provider_options=build_provider_options(names),
+            )
         _session_cache[key] = session
         _session_refcount[key] = 1
         return session
@@ -815,11 +818,12 @@ def get_insightface_swap_model(
         # InferenceSession, so the inswapper gets the same CUDA tuning as every
         # other model (sess_options aren't forwarded, but ORT's default already
         # optimizes the graph at ALL).
-        model = get_model(
-            str(path),
-            providers=list(eps),
-            provider_options=build_provider_options(list(eps)),
-        )
+        with measure_model_load(path.name):
+            model = get_model(
+                str(path),
+                providers=list(eps),
+                provider_options=build_provider_options(list(eps)),
+            )
         _insightface_cache[key] = model
         return model
 

@@ -120,13 +120,16 @@ def _load_restorer(path: Path, upscale: int, device: Any, fp16: bool = False) ->
     fp32 rather than failing the load."""
     from gfpgan import GFPGANer
 
-    restorer = GFPGANer(
-        model_path=str(path),
-        upscale=upscale,
-        arch="clean",
-        channel_multiplier=2,
-        device=device,
-    )
+    from sinner2.pipeline.memory_probe import measure_model_load
+
+    with measure_model_load("GFPGAN (torch, per worker)"):
+        restorer = GFPGANer(
+            model_path=str(path),
+            upscale=upscale,
+            arch="clean",
+            channel_multiplier=2,
+            device=device,
+        )
     if fp16:
         try:
             restorer.gfpgan.half()

@@ -181,6 +181,7 @@ class OcclusionMasker:
         from facexlib.parsing import init_parsing_model
 
         from sinner2.config.execution import resolve_torch_device
+        from sinner2.pipeline.memory_probe import measure_model_load
 
         if not model_present(self._spec.filename):
             # The GUI ensures the model (with a download confirmation) before
@@ -191,12 +192,13 @@ class OcclusionMasker:
             )
         self._device = resolve_torch_device(self._device_str)
         self._device_is_cuda = self._device.type == "cuda"
-        self._model = init_parsing_model(
-            model_name=self._parser.value,
-            device=self._device,
-            model_rootpath=str(get_models_dir()),
-        )
-        self._model.eval()
+        with measure_model_load(f"{self._parser.value} (torch parser, per worker)"):
+            self._model = init_parsing_model(
+                model_name=self._parser.value,
+                device=self._device,
+                model_rootpath=str(get_models_dir()),
+            )
+            self._model.eval()
 
     def release(self) -> None:
         """Drop the parser model and hand its VRAM back to the driver — torch's
