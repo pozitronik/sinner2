@@ -168,21 +168,19 @@ class FaceOverlayController(QObject):
         self._face_overlay.clear()
 
     def show_catalog_face(
-        self, bbox: tuple[float, float, float, float], frame_w: int, frame_h: int
+        self, detection: FaceDetection, frame_w: int, frame_h: int
     ) -> None:
-        """Draw a single face box straight from the scan catalog (no live
-        detection) when navigating to a found face, so its box shows even on a
-        cached frame the swapper skips — instead of relying on a live re-detect
-        that can miss it. ``bbox`` is in native frame-pixel space (``frame_w`` ×
-        ``frame_h``). Pins the box so an empty live result won't wipe it."""
+        """Draw a single face straight from the scan catalog (no live detection)
+        when navigating to a found face, so its box AND the scanned age/sex/angle
+        show even on a cached frame the swapper skips — instead of relying on a
+        live re-detect that can miss it. ``detection.bbox`` is in native
+        frame-pixel space (``frame_w`` × ``frame_h``). Pins the box so an empty
+        live result won't wipe it."""
         if not self._overlay_active():
             return
-        box = (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3]))
-        self._pinned_box = box
-        self._face_overlay.set_detections(
-            [FaceDetection(bbox=box)], frame_w, frame_h
-        )
-        self._face_overlay.set_highlight(box)
+        self._pinned_box = detection.bbox
+        self._face_overlay.set_detections([detection], frame_w, frame_h)
+        self._face_overlay.set_highlight(detection.bbox)
 
     # ---- toggles / restore ----
 

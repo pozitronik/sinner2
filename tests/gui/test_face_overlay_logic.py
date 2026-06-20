@@ -15,6 +15,7 @@ from unittest.mock import MagicMock
 
 from sinner2.config.settings import Settings
 from sinner2.gui.face_overlay_controller import FaceOverlayController
+from sinner2.gui.widgets.face_detection_overlay import FaceDetection
 
 # Keys the controller READS through the window vs the state it OWNS.
 _WINDOW_READ = {"_use_face_map", "_faces_mode", "_face_analyzing", "_settings"}
@@ -237,16 +238,17 @@ class TestCatalogFace:
 
     def test_draws_and_pins_when_active(self):
         ctl, _ = _ctl(_face_overlay_on=True)
-        ctl.show_catalog_face((1.0, 2.0, 3.0, 4.0), 640, 480)
+        det = FaceDetection(bbox=(1.0, 2.0, 3.0, 4.0), sex="M", age=30)
+        ctl.show_catalog_face(det, 640, 480)
         dets, w, h = ctl._face_overlay.set_detections.call_args.args
-        assert len(dets) == 1 and dets[0].bbox == (1.0, 2.0, 3.0, 4.0)
+        assert dets == [det]  # the full detection (box + demographics) is drawn
         assert (w, h) == (640, 480)
         ctl._face_overlay.set_highlight.assert_called_once_with((1.0, 2.0, 3.0, 4.0))
         assert ctl._pinned_box == (1.0, 2.0, 3.0, 4.0)
 
     def test_noop_when_overlay_down(self):
         ctl, _ = _ctl()  # overlay inactive
-        ctl.show_catalog_face((1.0, 2.0, 3.0, 4.0), 640, 480)
+        ctl.show_catalog_face(FaceDetection(bbox=(1.0, 2.0, 3.0, 4.0)), 640, 480)
         ctl._face_overlay.set_detections.assert_not_called()
         assert ctl._pinned_box is None
 

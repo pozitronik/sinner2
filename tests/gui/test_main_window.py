@@ -480,16 +480,19 @@ class TestStatusActionButtons:
         assert seeks == [3]
 
     def test_face_navigate_seeks_and_draws_catalog_box(self, window, monkeypatch):
-        # A found-face row click seeks AND draws the scanned box straight onto the
-        # overlay, so it shows even when the swapper skips a cached frame.
+        # A found-face row click seeks AND draws the scanned box + age/sex/angle
+        # straight onto the overlay, so it shows even when the swapper skips a
+        # cached frame.
+        from sinner2.gui.widgets.face_detection_overlay import FaceDetection
+
         seeks = []
         monkeypatch.setattr(window._session, "seek_to", seeks.append)  # noqa: SLF001
         window._face_overlay_on = True  # noqa: SLF001 — overlay active
         window._native_size = (640, 480)  # noqa: SLF001
-        window._on_face_navigate(7, (1.0, 2.0, 3.0, 4.0))  # noqa: SLF001
+        det = FaceDetection(bbox=(1.0, 2.0, 3.0, 4.0), sex="M", age=30)
+        window._on_face_navigate(7, det)  # noqa: SLF001
         assert seeks == [7]
-        drawn = window._face_overlay._detections  # noqa: SLF001
-        assert len(drawn) == 1 and drawn[0].bbox == (1.0, 2.0, 3.0, 4.0)
+        assert window._face_overlay._detections == [det]  # noqa: SLF001 — box + demographics
 
     def test_face_navigate_without_box_just_seeks(self, window, monkeypatch):
         seeks = []

@@ -79,6 +79,7 @@ from sinner2.gui.project import PROJECT_SUFFIX, Project
 from sinner2.gui.widgets.batch_task_dialog import QBatchTaskDialog
 from sinner2.gui.widgets.batch_view import QBatchView
 from sinner2.gui.widgets.models_view import QModelsView
+from sinner2.gui.widgets.face_detection_overlay import FaceDetection
 from sinner2.gui.widgets.face_map_panel import QFaceMapPanel
 from sinner2.gui.widgets.frame_display import QFrameDisplayWidget
 from sinner2.gui.batch_coordinator import BatchCoordinator
@@ -1863,15 +1864,15 @@ class SinnerMainWindow(QMainWindow):
         self._clear_overlay_for_seek()
         self._session.seek_to(int(frame))
 
-    def _on_face_navigate(self, frame: int, bbox: object) -> None:
+    def _on_face_navigate(self, frame: int, detection: object) -> None:
         """A found-face row was clicked: seek to it (clearing stale boxes), then
-        draw that face's box straight from the scan catalog so the overlay shows
-        even on a cached frame the swapper skips — instead of relying on a live
-        re-detect that can miss it. ``bbox`` is in native frame coords."""
+        draw that face's box + scanned age/sex/angle straight from the catalog so
+        the overlay shows even on a cached frame the swapper skips — instead of
+        relying on a live re-detect that can miss it."""
         self._on_seek_requested(frame)
-        if isinstance(bbox, tuple) and self._native_size is not None:
+        if isinstance(detection, FaceDetection) and self._native_size is not None:
             w, h = self._native_size
-            self._face_overlay_ctl.show_catalog_face(bbox, w, h)  # type: ignore[arg-type]
+            self._face_overlay_ctl.show_catalog_face(detection, w, h)
 
     def _submit_to_probe(self, frame: Frame) -> None:
         self._face_overlay_ctl._submit_to_probe(frame)

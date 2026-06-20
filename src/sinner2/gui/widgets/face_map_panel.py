@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from sinner2.gui.widgets.face_detection_overlay import FaceDetection
 from sinner2.pipeline.detectors import DetectorModel
 from sinner2.pipeline.face_map import FaceMap, Identity
 
@@ -115,8 +116,9 @@ class QFaceMapPanel(QWidget):
     analyzeRequested = Signal(int)              # stride
     cancelRequested = Signal()
     resetRequested = Signal()                  # clear catalog + scan progress
-    # frame index of a clicked person + that person's box (native frame coords)
-    # at that frame, or None when no box is catalogued for it.
+    # frame index of a clicked person + a drawable FaceDetection (box in native
+    # frame coords + the scanned age/sex/angle) at that frame, or None when no box
+    # is catalogued for it.
     navigateRequested = Signal(int, object)
     deleteIdentitiesRequested = Signal(list)   # ids to exclude
     mergeIdentitiesRequested = Signal(list)    # ids to fold into one
@@ -234,10 +236,11 @@ class QFaceMapPanel(QWidget):
         divider.setFrameShadow(QFrame.Shadow.Sunken)
         form.addRow(divider)
 
-        self._demographics_check = QCheckBox("Detect age/sex")
+        self._demographics_check = QCheckBox("Detect age/sex/angle")
         self._demographics_check.setToolTip(
-            "Also run the gender/age model (slower) to fill the Age/Sex columns. "
-            "Off = fast detection + recognition only. Needs buffalo_l."
+            "Also run the gender/age model (slower) to fill the Age/Sex columns "
+            "and the head-angle (roll/yaw/pitch) readout. Off = fast detection + "
+            "recognition only. Needs buffalo_l."
         )
         form.addRow(self._demographics_check)
 
@@ -304,7 +307,7 @@ class QFaceMapPanel(QWidget):
         self._bake_angle_check.toggled.connect(self._on_settings_changed)
         self._detector.currentIndexChanged.connect(self._on_settings_changed)
         # "min score" only matters when refinement is on — gray it with the
-        # checkbox so the dependency is visible. "Detect age/sex" needs buffalo_l,
+        # checkbox so the dependency is visible. "Detect age/sex/angle" needs buffalo_l,
         # so it grays for the detection-only detectors.
         self._refine_check.toggled.connect(self._update_refine_rows)
         self._detector.currentIndexChanged.connect(self._update_detector_dependent)
@@ -412,8 +415,8 @@ class QFaceMapPanel(QWidget):
         self._refine_score.setEnabled(on)
 
     def _update_detector_dependent(self) -> None:
-        """Demographics (age/sex) need buffalo_l's genderage pack — gray + clear
-        'Detect age/sex' for the detection-only detectors."""
+        """Demographics (age/sex/angle) need buffalo_l's genderage pack — gray +
+        clear 'Detect age/sex/angle' for the detection-only detectors."""
         full = self._detector.currentData() == DetectorModel.BUFFALO_L.value
         self._demographics_check.setEnabled(full)
         if not full and self._demographics_check.isChecked():
@@ -631,15 +634,34 @@ class QFaceMapPanel(QWidget):
         ident = self._face_map_identity(ident_id)
         if ident is None:
             return
-        # Navigate to the EARLIEST occurrence (first_frame) and draw its box when
-        # the scan stored one. Fall back to the clearest occurrence (ref) for
-        # scans predating first_bbox, then to a box-less jump.
+        # Navigate to the EARLIEST occurrence (first_frame) and draw its box + the
+        # scanned age/sex/angle when the scan stored a box there. Fall back to the
+        # clearest occurrence (ref) for scans predating first_bbox, then to a
+        # box-less jump.
         if ident.first_frame is not None and ident.first_bbox is not None:
-            self.navigateRequested.emit(ident.first_frame, ident.first_bbox)
+            self.navigateRequested.emit(
+                ident.first_frame, self._catalog_face(ident, ident.first_bbox)
+            )
         elif ident.ref_frame is not None and ident.ref_bbox is not None:
-            self.navigateRequested.emit(ident.ref_frame, ident.ref_bbox)
+            self.navigateRequested.emit(
+                ident.ref_frame, self._catalog_face(ident, ident.ref_bbox)
+            )
         elif ident.first_frame is not None:
             self.navigateRequested.emit(ident.first_frame, None)
+
+    @staticmethod
+    def _catalog_face(
+        ident: Identity, bbox: tuple[float, float, float, float]
+    ) -> FaceDetection:
+        """A drawable detection from the catalog: the box plus the identity's
+        scanned age/sex/score/angle, so the overlay shows the same readout as the
+        Faces table (the pose is the clearest occurrence's, matching the table)."""
+        pose: tuple[float, float, float] | None = None
+        if ident.pitch is not None and ident.yaw is not None and ident.roll is not None:
+            pose = (ident.pitch, ident.yaw, ident.roll)
+        return FaceDetection(
+            bbox=bbox, score=ident.det_score, sex=ident.sex, age=ident.age, pose=pose,
+        )
 
     def _on_delete_shortcut(self) -> None:
         """Delete key (while the table has focus) removes the selected people."""
