@@ -30,6 +30,7 @@ stage's model is resident while it runs.
 from __future__ import annotations
 
 import logging
+import os
 import queue
 import threading
 import time
@@ -57,6 +58,28 @@ def frame_ok(path: Path) -> bool:
         return path.is_file() and path.stat().st_size > 0
     except OSError:
         return False
+
+
+def present_indices(output_dir: Path, ext: str) -> set[int]:
+    """The frame indices already DONE in ``output_dir`` (exist + non-empty),
+    via ONE directory sweep (os.scandir, stat cached per entry) instead of a
+    per-frame ``stat()`` over range(total) — far fewer syscalls on large clips
+    and on network / AV-scanned dirs. A missing dir yields the empty set."""
+    suffix = f".{ext}"
+    done: set[int] = set()
+    try:
+        with os.scandir(output_dir) as it:
+            for entry in it:
+                if not entry.name.endswith(suffix):
+                    continue
+                try:
+                    if entry.is_file() and entry.stat().st_size > 0:
+                        done.add(int(entry.name[: -len(suffix)]))
+                except (ValueError, OSError):
+                    continue
+    except OSError:
+        pass
+    return done
 
 
 class StageStatus(str, Enum):
@@ -214,14 +237,13 @@ def run_stage(
     workers = max(1, workers)
 
     def missing(t: int) -> list[int]:
-        return [
-            i for i in range(t)
-            if not frame_ok(output_dir / f"{i:08d}.{ext}")
-        ]
+        present = present_indices(output_dir, ext)
+        return [i for i in range(t) if i not in present]
 
     def contiguous(t: int) -> int:
+        present = present_indices(output_dir, ext)
         for i in range(t):
-            if not frame_ok(output_dir / f"{i:08d}.{ext}"):
+            if i not in present:
                 return i
         return t
 

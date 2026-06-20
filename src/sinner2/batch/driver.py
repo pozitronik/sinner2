@@ -38,7 +38,7 @@ from sinner2.batch.stage import (
     PlanReaderStageInput,
     StageInput,
     StageStatus,
-    frame_ok,
+    present_indices,
     run_stage,
 )
 from sinner2.batch.task import (
@@ -560,10 +560,9 @@ class BatchDriver:
 
     @staticmethod
     def _stage_complete(stage_dir: Path, ext: str, total: int) -> bool:
-        """True iff every frame for this stage is already valid on disk."""
-        return all(
-            frame_ok(stage_dir / f"{i:08d}.{ext}") for i in range(total)
-        )
+        """True iff every frame for this stage is already valid on disk —
+        one os.scandir sweep instead of a stat() per frame over range(total)."""
+        return present_indices(stage_dir, ext).issuperset(range(total))
 
     @staticmethod
     def _stage_progress(

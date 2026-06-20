@@ -11,6 +11,7 @@ from sinner2.batch.stage import (
     FramesDirInput,
     StageStatus,
     frame_ok,
+    present_indices,
     run_stage,
 )
 from sinner2.pipeline.image_writer import ImageFormat, build_image_writer
@@ -156,6 +157,19 @@ class TestFrameOk:
         p = tmp_path / "z.jpg"
         p.write_bytes(b"")
         assert not frame_ok(p)
+
+
+class TestPresentIndices:
+    def test_collects_nonempty_matching_frames(self, tmp_path):
+        (tmp_path / "00000000.jpg").write_bytes(b"x")
+        (tmp_path / "00000005.jpg").write_bytes(b"x")
+        (tmp_path / "00000007.jpg").write_bytes(b"")     # zero-byte → excluded
+        (tmp_path / "00000009.png").write_bytes(b"x")    # wrong ext → excluded
+        (tmp_path / "notes.txt").write_bytes(b"x")       # non-frame → excluded
+        assert present_indices(tmp_path, "jpg") == {0, 5}
+
+    def test_missing_dir_is_empty(self, tmp_path):
+        assert present_indices(tmp_path / "nope", "jpg") == set()
 
 
 class TestRunStage:
