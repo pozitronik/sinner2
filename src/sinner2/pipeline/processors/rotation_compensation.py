@@ -123,6 +123,7 @@ def _composite_back(
     region (eroded) so the rotate-back never blends in the black border the
     inverse warp samples outside the crop — the source of the square halos."""
     h, w = target.shape[:2]
+    size = upright.shape[0]
     diff = cv2.absdiff(processed, upright).max(axis=2)
     mask = (diff > _DIFF_THRESHOLD).astype(np.float32)
     if mask.max() <= 0:
@@ -130,17 +131,41 @@ def _composite_back(
     mask = cv2.GaussianBlur(mask, (0, 0), sigmaX=_FEATHER_SIGMA)
 
     m_inv = cv2.invertAffineTransform(m)
-    back = cv2.warpAffine(processed, m_inv, (w, h)).astype(np.float32)
-    alpha = cv2.warpAffine(mask, m_inv, (w, h))
+    # The crop maps into the frame as a rotated square; only that region (plus a
+    # margin for the warped feather + erode fringe) changes — outside it the
+    # full-frame blend is just target (alpha 0). Warp + blend within that
+    # bounding box instead of the whole frame: the heaviest per-frame CPU in the
+    # rotation path (py-spy). Pixel-identical — the ROI warp samples the same
+    # source as the full warp, and outside the box stays target.
+    corners = np.array(
+        [[0, 0], [size, 0], [size, size], [0, size]], np.float32
+    ).reshape(-1, 1, 2)
+    mapped = cv2.transform(corners, m_inv).reshape(-1, 2)
+    scale = float(np.sqrt(abs(np.linalg.det(m_inv[:, :2])))) or 1.0
+    # cv2's float GaussianBlur support is ~4 sigma; carry it into frame space.
+    margin = int(np.ceil(4.0 * _FEATHER_SIGMA * scale)) + 4
+    x0 = max(0, int(np.floor(mapped[:, 0].min())) - margin)
+    y0 = max(0, int(np.floor(mapped[:, 1].min())) - margin)
+    x1 = min(w, int(np.ceil(mapped[:, 0].max())) + margin)
+    y1 = min(h, int(np.ceil(mapped[:, 1].max())) + margin)
+    if x1 <= x0 or y1 <= y0:
+        return None
+    rw, rh = x1 - x0, y1 - y0
+    # Shift the inverse warp so it targets the ROI's origin.
+    m_roi = m_inv.copy()
+    m_roi[0, 2] -= x0
+    m_roi[1, 2] -= y0
+    back = cv2.warpAffine(processed, m_roi, (rw, rh)).astype(np.float32)
+    alpha = cv2.warpAffine(mask, m_roi, (rw, rh))
     # Only composite where the inverse warp had real source pixels (inside the
     # crop). Erode to drop the 1-px interpolation fringe at the crop edge.
-    valid = cv2.warpAffine(
-        np.ones(upright.shape[:2], np.float32), m_inv, (w, h)
-    )
+    valid = cv2.warpAffine(np.ones((size, size), np.float32), m_roi, (rw, rh))
     valid = cv2.erode(valid, np.ones((3, 3), np.uint8), iterations=2)
     alpha = (alpha * valid)[..., None]
-    blended = target.astype(np.float32) * (1.0 - alpha) + back * alpha
-    return blended.astype(np.uint8)
+    out = target.copy()
+    roi = out[y0:y1, x0:x1].astype(np.float32)
+    out[y0:y1, x0:x1] = (roi * (1.0 - alpha) + back * alpha).astype(np.uint8)
+    return out
 
 
 def swap_with_uprighting(

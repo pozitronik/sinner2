@@ -123,6 +123,49 @@ class TestSwapWithUprighting:
         )
         assert out.min() > 0  # no black halo bled in from the warp border
 
+    def test_composite_back_roi_matches_fullframe(self):
+        # The ROI-bounded composite must be PIXEL-IDENTICAL to the old
+        # whole-frame warp+blend, across centred / near-corner / near-edge faces.
+        import cv2
+
+        def _fullframe(target, upright, processed, m):
+            h, w = target.shape[:2]
+            diff = cv2.absdiff(processed, upright).max(axis=2)
+            mask = (diff > rc._DIFF_THRESHOLD).astype(np.float32)  # noqa: SLF001
+            if mask.max() <= 0:
+                return None
+            mask = cv2.GaussianBlur(mask, (0, 0), sigmaX=rc._FEATHER_SIGMA)  # noqa: SLF001,E501
+            m_inv = cv2.invertAffineTransform(m)
+            back = cv2.warpAffine(processed, m_inv, (w, h)).astype(np.float32)
+            alpha = cv2.warpAffine(mask, m_inv, (w, h))
+            valid = cv2.warpAffine(
+                np.ones(upright.shape[:2], np.float32), m_inv, (w, h)
+            )
+            valid = cv2.erode(valid, np.ones((3, 3), np.uint8), iterations=2)
+            alpha = (alpha * valid)[..., None]
+            blended = target.astype(np.float32) * (1.0 - alpha) + back * alpha
+            return blended.astype(np.uint8)
+
+        rng = np.random.default_rng(0)
+        cases = [((30, 30, 70, 70), 20.0), ((4, 4, 44, 44), 25.0),
+                 ((58, 12, 96, 50), -35.0)]
+        for bbox, angle in cases:
+            target = rng.integers(0, 256, (100, 100, 3), dtype=np.uint8)
+            face = SimpleNamespace(bbox=np.array(bbox, float))
+            m, size = rc._crop_geometry(face, angle)  # noqa: SLF001
+            upright = cv2.warpAffine(
+                target, m, (size, size), borderMode=cv2.BORDER_REPLICATE
+            )
+            processed = upright.copy()
+            c = size // 2
+            processed[c - 8:c + 8, c - 8:c + 8] = (
+                255 - processed[c - 8:c + 8, c - 8:c + 8]
+            )
+            got = rc._composite_back(target, upright, processed, m)  # noqa: SLF001
+            want = _fullframe(target, upright, processed, m)
+            assert got is not None and want is not None
+            assert np.array_equal(got, want), f"mismatch for bbox={bbox}"
+
     def test_falls_back_to_direct_swap_on_error(self):
         frame = np.full((100, 100, 3), 50, np.uint8)
         seen_shapes: list = []
