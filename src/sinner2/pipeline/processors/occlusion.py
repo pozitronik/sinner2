@@ -192,7 +192,7 @@ class OcclusionMasker:
             )
         self._device = resolve_torch_device(self._device_str)
         self._device_is_cuda = self._device.type == "cuda"
-        with measure_model_load(f"{self._parser.value} (torch parser, per worker)"):
+        with measure_model_load(self._spec.filename):  # filename → Models tab
             self._model = init_parsing_model(
                 model_name=self._parser.value,
                 device=self._device,

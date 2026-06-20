@@ -122,7 +122,7 @@ def _load_restorer(path: Path, upscale: int, device: Any, fp16: bool = False) ->
 
     from sinner2.pipeline.memory_probe import measure_model_load
 
-    with measure_model_load("GFPGAN (torch, per worker)"):
+    with measure_model_load(path.name):  # keyed by filename for the Models tab
         restorer = GFPGANer(
             model_path=str(path),
             upscale=upscale,

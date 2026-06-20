@@ -198,3 +198,70 @@ class TestDownloadQueue:
             timeout=3000,
         )
         assert _status(view, "span_kendata_x4.onnx") == "✓ Installed"
+
+
+def _memory(view, name):
+    from sinner2.gui.widgets.models_view import _COL_MEMORY
+    return view._model.item(_row_for(view, name), _COL_MEMORY).text()  # noqa: SLF001
+
+
+_KNOWN = "GFPGANv1.4.pth"  # a catalog filename used for the footprint matching
+
+
+class TestMemoryColumn:
+    def test_blank_until_a_model_is_measured(self, view):
+        from sinner2.pipeline import memory_probe
+
+        memory_probe.reset_footprints()
+        view._refresh_memory_cells()  # noqa: SLF001
+        assert _memory(view, _KNOWN) == ""
+
+    def test_shows_measured_vram_footprint_by_filename(self, view):
+        from sinner2.pipeline import memory_probe
+        from sinner2.pipeline.memory_probe import ModelFootprint
+
+        memory_probe.reset_footprints()
+        memory_probe._footprints[_KNOWN] = ModelFootprint(  # noqa: SLF001
+            _KNOWN, vram_bytes=int(0.30 * 1024 ** 3), ram_bytes=0, first_load=False
+        )
+        view._refresh_memory_cells()  # noqa: SLF001
+        assert _memory(view, _KNOWN) == "+0.30 GB"
+        memory_probe.reset_footprints()
+
+    def test_first_load_marked_with_star(self, view):
+        from sinner2.pipeline import memory_probe
+        from sinner2.pipeline.memory_probe import ModelFootprint
+
+        memory_probe.reset_footprints()
+        memory_probe._footprints[_KNOWN] = ModelFootprint(  # noqa: SLF001
+            _KNOWN, vram_bytes=1024 ** 3, ram_bytes=0, first_load=True
+        )
+        view._refresh_memory_cells()  # noqa: SLF001
+        assert _memory(view, _KNOWN) == "+1.00 GB *"
+        memory_probe.reset_footprints()
+
+
+class TestFmtFootprint:
+    def test_vram_delta(self):
+        from sinner2.gui.widgets.models_view import _fmt_footprint
+        from sinner2.pipeline.memory_probe import ModelFootprint
+
+        text, sort_b, tip = _fmt_footprint(
+            ModelFootprint("m", 2 * 1024 ** 3, 0, False)
+        )
+        assert text == "+2.00 GB" and sort_b == 2 * 1024 ** 3 and tip
+
+    def test_ram_only_when_no_vram(self):
+        from sinner2.gui.widgets.models_view import _fmt_footprint
+        from sinner2.pipeline.memory_probe import ModelFootprint
+
+        text, _s, _t = _fmt_footprint(
+            ModelFootprint("m", None, 512 * 1024 ** 2, False)
+        )
+        assert text == "+0.50 GB RAM"
+
+    def test_nothing_measured_is_blank(self):
+        from sinner2.gui.widgets.models_view import _fmt_footprint
+        from sinner2.pipeline.memory_probe import ModelFootprint
+
+        assert _fmt_footprint(ModelFootprint("m", 0, 0, False)) == ("", 0, "")

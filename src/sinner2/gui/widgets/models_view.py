@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import threading
 
-from PySide6.QtCore import QObject, Qt, QThread, QUrl, Signal
+from PySide6.QtCore import QObject, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -35,11 +35,19 @@ from sinner2.pipeline.models_catalog import (
     model_info,
 )
 
-_COL_MODEL, _COL_CATEGORY, _COL_STATUS, _COL_SIZE = range(4)
-_HEADERS = ["Model", "Category", "Status", "Size"]
+_COL_MODEL, _COL_CATEGORY, _COL_STATUS, _COL_SIZE, _COL_MEMORY = range(5)
+_HEADERS = ["Model", "Category", "Status", "Size", "Memory"]
 _ROLE_FILE = Qt.ItemDataRole.UserRole
 _ROLE_SORT = Qt.ItemDataRole.UserRole + 1  # comparable value driving header sort
 _MB = 1024 * 1024
+_GB = 1024 ** 3
+_MEMORY_TOOLTIP = (
+    "VRAM this model added when it loaded — measured live on THIS machine "
+    "(fills in as you use models), not a prediction. Torch models (GFPGAN, "
+    "parsers) load once PER WORKER, so multiply by the worker count. '*' marks "
+    "the first GPU model loaded — its number also includes the one-time CUDA "
+    "context (cuDNN/cuBLAS). Needs nvidia-ml-py."
+)
 
 
 def _fmt_mb(num_bytes: int) -> str:
@@ -47,6 +55,25 @@ def _fmt_mb(num_bytes: int) -> str:
     if mb >= 1024:
         return f"{mb / 1024:.1f} GB"
     return f"{mb:.0f} MB"
+
+
+def _fmt_footprint(fp) -> "tuple[str, int, str]":
+    """(text, sort-bytes, tooltip) for a measured model footprint, or
+    ("", 0, "") when nothing measurable was recorded."""
+    if fp.vram_bytes is not None and fp.vram_bytes > 0:
+        text = f"+{fp.vram_bytes / _GB:.2f} GB"
+        sort_bytes = fp.vram_bytes
+        tip = "Measured VRAM this model added when it loaded."
+    elif fp.ram_bytes > 0:
+        text = f"+{fp.ram_bytes / _GB:.2f} GB RAM"
+        sort_bytes = fp.ram_bytes
+        tip = "Measured RAM this model added (no GPU was measured)."
+    else:
+        return "", 0, ""
+    if fp.first_load:
+        text += " *"
+        tip += " * includes the one-time CUDA context (cuDNN/cuBLAS)."
+    return text, sort_bytes, tip
 
 
 class _SortItem(QStandardItem):
@@ -114,6 +141,9 @@ class QModelsView(QWidget):
         # ---- table ----
         self._model = QStandardItemModel(0, len(_HEADERS), self)
         self._model.setHorizontalHeaderLabels(_HEADERS)
+        mem_header = self._model.horizontalHeaderItem(_COL_MEMORY)
+        if mem_header is not None:
+            mem_header.setToolTip(_MEMORY_TOOLTIP)
         self._table = QTableView()
         self._table.setModel(self._model)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -140,6 +170,13 @@ class QModelsView(QWidget):
 
         self._populate()
 
+        # Per-model footprints fill in as models load (in the background, while
+        # the tab is open) — poll the registry so the Memory column updates live.
+        self._mem_timer = QTimer(self)
+        self._mem_timer.setInterval(2000)
+        self._mem_timer.timeout.connect(self._refresh_memory_cells)
+        self._mem_timer.start()
+
     # ---- population / refresh ----
 
     def _populate(self) -> None:
@@ -162,9 +199,12 @@ class QModelsView(QWidget):
                 f"{cats.index(info.category):02d}:{info.display_name.lower()}",
                 _ROLE_SORT,
             )
-            row = [name_item, cat_item, _SortItem(""), _SortItem("")]
+            row = [
+                name_item, cat_item, _SortItem(""), _SortItem(""), _SortItem("")
+            ]
             self._model.appendRow(row)
             self._refresh_row(self._model.rowCount() - 1)
+        self._refresh_memory_cells()
         # Group by category initially; user can re-sort any column.
         self._table.setSortingEnabled(True)
         self._table.sortByColumn(_COL_CATEGORY, Qt.SortOrder.AscendingOrder)
@@ -209,6 +249,24 @@ class QModelsView(QWidget):
         item = self._model.item(row, _COL_SIZE)
         item.setText(text)
         item.setData(sort_bytes, _ROLE_SORT)
+
+    def _refresh_memory_cells(self) -> None:
+        """Fill the Memory column from the live per-model footprint registry —
+        cells appear as each model is loaded (measured), keyed by filename."""
+        from sinner2.pipeline.memory_probe import model_footprints
+
+        footprints = model_footprints()
+        for row in range(self._model.rowCount()):
+            item = self._model.item(row, _COL_MEMORY)
+            if item is None:
+                continue
+            fp = footprints.get(self._row_file(row))
+            text, sort_bytes, tip = (
+                _fmt_footprint(fp) if fp is not None else ("", 0, "")
+            )
+            item.setText(text)
+            item.setData(sort_bytes, _ROLE_SORT)
+            item.setToolTip(tip)
 
     def _refresh_summary(self) -> None:
         files = [self._row_file(r) for r in range(self._model.rowCount())]
@@ -412,6 +470,7 @@ class QModelsView(QWidget):
     def shutdown(self) -> None:
         """Cancel any in-flight download and join the thread — call before the
         app quits so a long fetch doesn't outlive the GUI."""
+        self._mem_timer.stop()
         self._queue.clear()
         if self._worker is not None:
             self._worker.cancel()
