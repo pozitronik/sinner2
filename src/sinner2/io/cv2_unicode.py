@@ -66,7 +66,11 @@ def imwrite_unicode(
     # output. (Single writer per path, so a fixed .tmp suffix can't collide.)
     tmp = p.with_name(p.name + ".tmp")
     try:
-        tmp.write_bytes(encoded.tobytes())
+        # Write the encoded buffer straight from the numpy array (it's a
+        # contiguous bytes-like) — no intermediate .tobytes() copy. open() keeps
+        # the write Unicode-path-safe, like the rest of this module.
+        with open(tmp, "wb") as f:
+            f.write(encoded)
         os.replace(tmp, p)
     except OSError:
         try:
