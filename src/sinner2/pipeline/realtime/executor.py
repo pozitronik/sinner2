@@ -1211,7 +1211,10 @@ class RealtimeExecutor:
                     self._last_shown_frame_index = None
                     # Tell the controller so it re-seeks audio to the new spot.
                     self.playhead_jumped.set(nxt)
-            metrics = self._buffer.metrics()
+            # Skip the write-latency percentile sorts here: this runs every
+            # submit tick (≥200 Hz) but no strategy reads them — only the
+            # throttled GUI publish (above) shows the percentiles.
+            metrics = self._buffer.metrics(include_write_latency=False)
             decision = self._strategy.decide(
                 last_submitted=self._last_submitted,
                 last_completed=self._last_completed,

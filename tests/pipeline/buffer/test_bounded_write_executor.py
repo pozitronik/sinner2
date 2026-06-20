@@ -90,6 +90,12 @@ class TestMetricsSnapshot:
             assert m.dropped == 0
             # 10 ms sleep -> p50 should be >0; some overhead expected.
             assert m.latency_p50_ms > 5.0
+            # include_latency=False skips the percentile sorts (the realtime
+            # dispatcher's per-tick path) — counts stay, percentiles read 0.
+            cheap = ex.metrics_snapshot(include_latency=False)
+            assert cheap.completed == 5
+            assert cheap.latency_p50_ms == 0.0
+            assert cheap.latency_p95_ms == 0.0
         finally:
             ex.shutdown(wait=True)
 

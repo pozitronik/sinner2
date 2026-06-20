@@ -98,8 +98,13 @@ class BoundedWriteExecutor:
                 self._dropped += 1
             return False
 
-    def metrics_snapshot(self) -> WriteExecutorMetrics:
+    def metrics_snapshot(self, include_latency: bool = True) -> WriteExecutorMetrics:
         with self._lock:
+            # The two percentiles each sort the latency window. The realtime
+            # dispatcher reads this snapshot every tick but only the (throttled)
+            # GUI shows the percentiles, so skip the sorts when not needed.
+            p50 = _percentile(self._latencies_ms, 50) if include_latency else 0.0
+            p95 = _percentile(self._latencies_ms, 95) if include_latency else 0.0
             return WriteExecutorMetrics(
                 outstanding=self._outstanding,
                 max_outstanding=self._max_outstanding,
@@ -107,8 +112,8 @@ class BoundedWriteExecutor:
                 completed=self._completed,
                 dropped=self._dropped,
                 failed=self._failed,
-                latency_p50_ms=_percentile(self._latencies_ms, 50),
-                latency_p95_ms=_percentile(self._latencies_ms, 95),
+                latency_p50_ms=p50,
+                latency_p95_ms=p95,
             )
 
     def shutdown(self, wait: bool = True) -> None:

@@ -275,7 +275,7 @@ class FrameBuffer:
         Lets the GUI's memory-cache size apply to the live session immediately."""
         self._cache.set_max_bytes(max_bytes)
 
-    def metrics(self) -> BufferMetrics:
+    def metrics(self, include_write_latency: bool = True) -> BufferMetrics:
         with self._lock:
             last_displayed = self._last_displayed_index
             last_written = self._last_written_index
@@ -295,7 +295,9 @@ class FrameBuffer:
             total_reads = self._hits + self._misses
             ratio = (self._hits / total_reads) if total_reads > 0 else 0.0
 
-        write_m = self._write_executor.metrics_snapshot()
+        write_m = self._write_executor.metrics_snapshot(
+            include_latency=include_write_latency
+        )
         return BufferMetrics(
             frame_lag=frame_lag,
             time_lag_s=frame_lag * frame_time_s,
