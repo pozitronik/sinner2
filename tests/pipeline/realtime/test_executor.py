@@ -93,6 +93,7 @@ def _install_rate_state(ex) -> None:
 
     ex._telemetry = TelemetryCollector()  # noqa: SLF001
     ex._skipped = 0  # noqa: SLF001
+    ex._last_published_current = -1  # noqa: SLF001
     ex.display_fps = MagicMock()
     ex.frames_skipped = MagicMock()
 
@@ -1975,6 +1976,55 @@ class TestMetricsPublishThrottle:
         clock[0] = 2.0
         ex._do_playback_tick()  # noqa: SLF001 — interval elapsed → publishes
         assert calls[0] == 2
+
+    def test_refresh_fps_throttled_and_current_frame_guarded(self, monkeypatch):
+        # _refresh_fps now lives inside the metrics throttle (no ~1 kHz fps-window
+        # trimming), and current_frame only publishes when the index changes.
+        from sinner2.pipeline.realtime import executor as ex_mod
+
+        clock = [0.0]
+        monkeypatch.setattr(ex_mod.time, "monotonic", lambda: clock[0])
+        fps_calls = [0]
+        sets: list[int] = []
+
+        class _Buf:
+            def get_at_current_time(self):
+                return (5, "px")  # same index every tick
+
+            def latest_index_at_or_below(self, _i):
+                return 5
+
+            def get(self, _i):
+                return "px"
+
+            def metrics(self):
+                return None
+
+        class _CF:
+            def set(self, v):
+                sets.append(v)
+
+        ex = RealtimeExecutor.__new__(RealtimeExecutor)
+        ex._state_lock = threading.RLock()  # noqa: SLF001
+        ex._state = ex_mod._State.PLAYING  # noqa: SLF001
+        ex._last_shown_frame_index = None  # noqa: SLF001
+        ex._last_metrics_pub = 0.0  # noqa: SLF001
+        _bind(ex, buffer=_Buf())
+        ex._refresh_fps = lambda: fps_calls.__setitem__(0, fps_calls[0] + 1)  # noqa: SLF001,E501
+        ex._on_frame = None  # noqa: SLF001
+        ex.current_frame = _CF()
+        ex.metrics = self._Obs()
+        ex.status = self._Obs()
+        _install_rate_state(ex)
+
+        clock[0] = 1.0
+        ex._do_playback_tick()  # noqa: SLF001 — publishes index 5 + fps refresh
+        clock[0] = 1.01
+        ex._do_playback_tick()  # noqa: SLF001 — within interval, same index
+        clock[0] = 2.0
+        ex._do_playback_tick()  # noqa: SLF001 — interval elapsed → fps refresh
+        assert fps_calls[0] == 2   # gated by the throttle, not once per tick
+        assert sets == [5]         # current_frame published once (index unchanged)
 
 
 class TestReconfigureGenerationGuard:

@@ -222,6 +222,10 @@ class RealtimeExecutor:
         self._playback_thread: threading.Thread | None = None
 
         self.current_frame: ObservableValue[FrameIndex] = ObservableValue(0)
+        # Last index published to current_frame, so the ~1 kHz playback tick can
+        # skip even the observable's lock acquisition on the many no-change ticks
+        # (the index only advances at the timeline frame rate).
+        self._last_published_current: FrameIndex = -1
         self.is_playing: ObservableValue[bool] = ObservableValue(False)
         self.processing_fps: ObservableValue[float] = ObservableValue(0.0)
         # Distinct frames actually shown per second (rate of on_frame calls).
@@ -1528,15 +1532,21 @@ class RealtimeExecutor:
                 self._telemetry.record_display()
             except Exception as e:
                 self.status.set(f"on_frame callback error: {e}")
-        self.current_frame.set(index)
-        # Throttle metrics publication — buffer.metrics() recomputes percentiles
-        # and this tick can run at ~1 kHz; the overlay only needs ~UI rate.
+        # The index only advances at the timeline frame rate; skip the
+        # observable's lock on the many no-change ticks (UNLIMITED runs ~1 kHz).
+        if index != self._last_published_current:
+            self._last_published_current = index
+            self.current_frame.set(index)
+        # Throttle metrics + fps publication to ~UI rate: buffer.metrics()
+        # recomputes percentiles and this tick can run at ~1 kHz, but the overlay
+        # samples at ~10 Hz — there's no reason to publish (or trim the fps
+        # windows) 50x more often than the metrics right beside them.
         now = time.monotonic()
         if now - self._last_metrics_pub >= _METRICS_PUBLISH_INTERVAL_S:
             self._last_metrics_pub = now
             self.metrics.set(self._buffer.metrics())
             self.frames_skipped.set(self._skipped)
-        self._refresh_fps()
+            self._refresh_fps()
 
     def _compute_playback_sleep(self) -> float | None:
         """Read the playback state under the lock and defer the per-mode tick
