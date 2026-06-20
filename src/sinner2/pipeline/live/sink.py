@@ -125,6 +125,9 @@ class MjpegSink:
         self.fps = max(1, fps)
         self._jpeg_params = [cv2.IMWRITE_JPEG_QUALITY, int(jpeg_quality)]
         self._latest: Frame | None = None
+        self._version = 0  # bumped on each push; tags the encoded cache
+        self._encoded: bytes | None = None  # JPEG of _latest, shared by clients
+        self._encoded_version = -1
         self._lock = threading.Lock()
         self._server: _Server | None = None
         self._thread: threading.Thread | None = None
@@ -141,14 +144,29 @@ class MjpegSink:
     def push(self, frame: Frame) -> None:
         with self._lock:
             self._latest = frame
+            self._version += 1  # invalidates the encoded cache; re-encode lazily
 
     def encode_latest(self) -> bytes | None:
         with self._lock:
+            # Encode-once-share: N client handler threads (and a static scene
+            # that isn't pushing new frames) reuse one JPEG instead of each
+            # re-encoding the same frame every tick.
+            if self._encoded is not None and self._encoded_version == self._version:
+                return self._encoded
             frame = self._latest
+            version = self._version
         if frame is None:
             return None
+        # Encode OUTSIDE the lock so a slow encode can't block push() (the live
+        # loop). A rare race where two clients both encode a freshly-pushed frame
+        # just wastes one encode; the cache write below keeps only the latest.
         ok, jpg = cv2.imencode(".jpg", frame, self._jpeg_params)
-        return jpg.tobytes() if ok else None
+        data = jpg.tobytes() if ok else None
+        with self._lock:
+            if data is not None and version == self._version:
+                self._encoded = data
+                self._encoded_version = version
+        return data
 
     def stop(self) -> None:
         if self._server is not None:

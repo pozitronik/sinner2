@@ -69,6 +69,30 @@ def test_push_swaps_latest_frame():
     assert first is not None and second is not None and first != second
 
 
+def test_encode_latest_caches_until_next_push(monkeypatch):
+    # Encode-once-share: repeated encode_latest() calls (N clients) reuse one
+    # JPEG until a new frame is pushed.
+    import sinner2.pipeline.live.sink as sink_mod
+
+    calls = [0]
+    real = sink_mod.cv2.imencode
+
+    def counting(ext, frame, params):
+        calls[0] += 1
+        return real(ext, frame, params)
+
+    monkeypatch.setattr(sink_mod.cv2, "imencode", counting)
+    sink = _sink()
+    sink.push(np.zeros((8, 8, 3), np.uint8))
+    a = sink.encode_latest()
+    b = sink.encode_latest()  # cache hit — no second encode
+    assert a is not None and a == b
+    assert calls[0] == 1
+    sink.push(np.full((8, 8, 3), 255, np.uint8))  # invalidates the cache
+    c = sink.encode_latest()
+    assert calls[0] == 2 and c != a
+
+
 def test_describe_reports_url():
     sink = _sink()
     sink.start()
