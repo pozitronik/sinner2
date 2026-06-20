@@ -184,6 +184,53 @@ def pin_shared_face_analysis() -> Iterator[None]:
                 _drop_shared_app_locked()
 
 
+def _recognition_batch_capable(rec: Any) -> bool:
+    """Whether the ArcFace ONNX export accepts a batch of N crops in one call.
+
+    insightface stores the session's declared input shape on ``rec.input_shape``
+    (e.g. ``['None', 3, 112, 112]``). A symbolic batch dim (a string like
+    ``'None'`` / ``'batch'``) or a non-positive int is dynamic → stack-able; a
+    fixed positive int (a batch locked to that size) is NOT → recognise per-face.
+    """
+    shape = getattr(rec, "input_shape", None)
+    if not shape:
+        return False
+    batch = shape[0]
+    if isinstance(batch, int):
+        return batch <= 0  # 0 / -1 = dynamic; >=1 = fixed
+    return True  # 'None' / 'batch' / other symbolic → dynamic
+
+
+def _batch_recognize(frame: Frame, rec: Any, faces: list[Any]) -> None:
+    """Set ``face.embedding`` for every face carrying keypoints, batching them
+    through ArcFace in ONE ``get_feat`` call when the export allows it.
+
+    Equivalent to ``rec.get(frame, face)`` per face — same alignment
+    (``norm_crop`` on the face keypoints) and the same per-row embeddings (the
+    batched ``get_feat`` is bit-identical to the per-image calls it replaces),
+    just fewer ONNX invocations. Faces without keypoints are left embedding-less,
+    exactly as before. A fixed-batch export falls back to the per-face path."""
+    if rec is None:
+        return
+    targets = [f for f in faces if getattr(f, "kps", None) is not None]
+    if not targets:
+        return
+    if not _recognition_batch_capable(rec):
+        for face in targets:
+            rec.get(frame, face)  # → face.embedding / normed_embedding
+        return
+    from insightface.utils import face_align
+
+    size = rec.input_size[0]
+    crops = [
+        face_align.norm_crop(frame, landmark=f.kps, image_size=size)
+        for f in targets
+    ]
+    feats = rec.get_feat(crops)  # (N, D) — one ONNX call for all N crops
+    for face, feat in zip(targets, feats):
+        face.embedding = feat.flatten()
+
+
 class FaceAnalyser:
     """Per-stream face detection with optional caching by interval.
 
@@ -312,26 +359,25 @@ class FaceAnalyser:
             faces: list[Any] = []
             for d in self._detector.detect(frame):
                 kps = getattr(d, "kps", None)
-                face = Face(
+                faces.append(Face(
                     bbox=np.asarray(d.bbox, np.float32),
                     kps=None if kps is None else np.asarray(kps, np.float32),
                     det_score=float(getattr(d, "det_score", 1.0)),
+                ))
+        else:
+            bboxes, kpss = app.det_model.detect(frame, max_num=0, metric="default")
+            faces = [
+                Face(
+                    bbox=bboxes[i][0:4],
+                    kps=kpss[i] if kpss is not None else None,
+                    det_score=bboxes[i][4],
                 )
-                if rec is not None and face.kps is not None:
-                    rec.get(frame, face)  # → face.embedding / normed_embedding
-                faces.append(face)
-            return faces
-        bboxes, kpss = app.det_model.detect(frame, max_num=0, metric="default")
-        faces = []
-        for i in range(len(bboxes)):
-            face = Face(
-                bbox=bboxes[i][0:4],
-                kps=kpss[i] if kpss is not None else None,
-                det_score=bboxes[i][4],
-            )
-            if rec is not None:
-                rec.get(frame, face)  # sets face.embedding (→ normed_embedding)
-            faces.append(face)
+                for i in range(len(bboxes))
+            ]
+        # Recognise every face in ONE ArcFace call (per-frame batch) rather than
+        # one call per face — same embeddings (verified bit-identical), fewer
+        # kernel launches. Falls back to per-face for a fixed-batch export.
+        _batch_recognize(frame, rec, faces)
         return faces
 
     def provides_gender(self) -> bool:

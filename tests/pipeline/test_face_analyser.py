@@ -103,6 +103,22 @@ def stub_insightface(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
             np.array([[[3.0, 4.0]] * 5], np.float32),
         )
     )
+    # Recognition stub mirroring real buffalo_l: a DYNAMIC-batch ArcFace whose
+    # get_feat returns one embedding row per crop, so analyse_det_rec's batched
+    # path works. norm_crop is patched to a cheap dummy (the stub keypoints are
+    # degenerate, and the warp itself isn't under test here).
+    rec = stub.models.get.return_value
+    rec.input_shape = ["None", 3, 112, 112]
+    rec.input_size = (112, 112)
+    rec.get_feat = MagicMock(
+        side_effect=lambda crops: np.zeros((len(crops), 512), np.float32)
+    )
+    monkeypatch.setattr(
+        "insightface.utils.face_align.norm_crop",
+        lambda img, landmark=None, image_size=112: np.zeros(
+            (image_size, image_size, 3), np.uint8
+        ),
+    )
     monkeypatch.setattr(face_analyser, "_get_shared_face_analysis", lambda *a, **k: stub)
     return stub
 
@@ -235,8 +251,8 @@ class TestScanDetectorChoice:
         # The CHOSEN detector found the faces — NOT buffalo_l's det_model…
         stub_det.detect.assert_called_once()
         stub_insightface.det_model.detect.assert_not_called()
-        # …and ArcFace ran per face to add the embedding.
-        assert rec.get.call_count == 1
+        # …and ArcFace ran (batched) to add the embedding.
+        rec.get_feat.assert_called_once()
         assert len(faces) == 1 and faces[0].det_score == pytest.approx(0.8)
 
     def test_buffalo_l_still_uses_det_model(self, stub_insightface):
@@ -245,7 +261,7 @@ class TestScanDetectorChoice:
         a = FaceAnalyser()  # buffalo_l
         a.analyse_det_rec(_blank_frame())
         stub_insightface.det_model.detect.assert_called_once()
-        assert rec.get.call_count == 1
+        rec.get_feat.assert_called_once()
 
     def test_release_releases_standalone_detector(self, stub_insightface, monkeypatch):
         from sinner2.pipeline import detectors as det_mod
@@ -265,6 +281,86 @@ class TestScanDetectorChoice:
         a = FaceAnalyser()
         a.release()
         assert a._detector is None  # noqa: SLF001
+
+
+class TestRecognitionBatchCapable:
+    """The dynamic-batch guard: stack crops only when the ArcFace export's
+    batch dim is dynamic; a fixed batch falls back to per-face recognition."""
+
+    @staticmethod
+    def _rec(shape):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(input_shape=shape)
+
+    def test_symbolic_batch_is_dynamic(self):
+        assert face_analyser._recognition_batch_capable(  # noqa: SLF001
+            self._rec(["None", 3, 112, 112])
+        )
+
+    def test_fixed_batch_of_one_is_not(self):
+        assert not face_analyser._recognition_batch_capable(  # noqa: SLF001
+            self._rec([1, 3, 112, 112])
+        )
+
+    def test_zero_or_negative_is_dynamic(self):
+        assert face_analyser._recognition_batch_capable(  # noqa: SLF001
+            self._rec([0, 3, 112, 112])
+        )
+        assert face_analyser._recognition_batch_capable(  # noqa: SLF001
+            self._rec([-1, 3, 112, 112])
+        )
+
+    def test_missing_shape_is_not(self):
+        from types import SimpleNamespace
+
+        assert not face_analyser._recognition_batch_capable(  # noqa: SLF001
+            SimpleNamespace(input_shape=None)
+        )
+
+
+class TestBatchedRecognition:
+    """analyse_det_rec recognises a frame's faces in ONE ArcFace call (batched)
+    when the export is dynamic, assigning each face its own embedding row."""
+
+    def _two_faces(self, stub_insightface):
+        stub_insightface.det_model.detect.return_value = (
+            np.array([[1, 2, 3, 4, 0.9], [5, 6, 7, 8, 0.8]], np.float32),
+            np.array([[[3.0, 4.0]] * 5, [[5.0, 6.0]] * 5], np.float32),
+        )
+
+    def test_all_faces_recognised_in_one_call(self, stub_insightface):
+        rec = stub_insightface.models.get.return_value
+        self._two_faces(stub_insightface)
+        # Distinct rows so each face's embedding is traceable to its crop.
+        rec.get_feat = MagicMock(side_effect=lambda crops: np.array(
+            [[float(i)] * 512 for i in range(len(crops))], np.float32
+        ))
+        faces = FaceAnalyser().analyse_det_rec(_blank_frame())
+        rec.get_feat.assert_called_once()
+        assert len(rec.get_feat.call_args[0][0]) == 2  # both crops, ONE call
+        rec.get.assert_not_called()
+        assert faces[0].embedding[0] == 0.0  # row 0 → face 0
+        assert faces[1].embedding[0] == 1.0  # row 1 → face 1
+
+    def test_falls_back_to_per_face_for_fixed_batch(self, stub_insightface):
+        rec = stub_insightface.models.get.return_value
+        rec.input_shape = [1, 3, 112, 112]  # fixed batch → no stacking
+        self._two_faces(stub_insightface)
+        FaceAnalyser().analyse_det_rec(_blank_frame())
+        assert rec.get.call_count == 2  # one ArcFace call per face
+        rec.get_feat.assert_not_called()
+
+    def test_face_without_keypoints_gets_no_recognition(self, stub_insightface):
+        rec = stub_insightface.models.get.return_value
+        stub_insightface.det_model.detect.return_value = (
+            np.array([[1, 2, 3, 4, 0.9]], np.float32),
+            None,  # no keypoints → can't align → no embedding
+        )
+        faces = FaceAnalyser().analyse_det_rec(_blank_frame())
+        rec.get_feat.assert_not_called()
+        rec.get.assert_not_called()
+        assert len(faces) == 1
 
 
 class TestDetectionSize:
