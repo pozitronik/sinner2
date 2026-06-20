@@ -153,6 +153,7 @@ class BatchTask(SinnerBaseModel):
     enhancer_model: str = "gfpgan_onnx"  # an EnhancerModel value
     enhancer_upscale: int = 1
     enhancer_only_center_face: bool = False
+    enhancer_only_swapped: bool = False  # restore only swapped faces
     enhancer_codeformer_fidelity: float = 0.7  # CodeFormer w knob
     enhancer_fp16: bool = True  # GFPGAN half precision (CUDA only)
     # Upscaler (Real-ESRGAN) — whole-frame super-resolution stage

@@ -17,6 +17,14 @@ class ChainContext:
     consumers self-detect as before. An EMPTY list is a real result ("this
     frame has no faces") and is trusted, not re-detected.
 
+    ``swapped_faces``: the SUBSET of ``faces`` the swapper actually swapped this
+    frame (after the sex / face-map / single-face filters) — a strict subset, in
+    swap order. The enhancer's "only swapped faces" option restores just these
+    instead of every detected face (don't alter bystanders you didn't swap).
+    ``None`` means no swapper ran (enhancer-only chain, batch enhance stage,
+    direct call) → the enhancer falls back to all detected faces. An EMPTY list
+    is a real result ("the swapper swapped nothing"), trusted as such.
+
     ``frame_index``: which frame this is, when the executor knows it (realtime +
     batch both do). Face-mapping's detection-free runtime keys its precomputed
     per-frame geometry on this; ``None`` (direct call / stage without an index)
@@ -29,6 +37,7 @@ class ChainContext:
     """
 
     faces: list[Any] | None = field(default=None)
+    swapped_faces: list[Any] | None = field(default=None)
     frame_index: int | None = field(default=None)
 
 

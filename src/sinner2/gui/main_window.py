@@ -2045,6 +2045,7 @@ class SinnerMainWindow(QMainWindow):
                 enhancer_model=self._settings.enhancer_model,
                 enhancer_upscale=self._settings.enhancer_upscale,
                 enhancer_only_center_face=self._settings.enhancer_only_center_face,
+                enhancer_only_swapped=self._settings.enhancer_only_swapped,
                 enhancer_codeformer_fidelity=self._settings.enhancer_codeformer_fidelity,
                 enhancer_fp16=self._settings.enhancer_fp16,
                 playback_mode=self._settings.playback_mode,

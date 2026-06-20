@@ -51,6 +51,7 @@ _PERTURB_ATTRS = (
     "_rotation_redetect", "_rotation_source", "_enhancer_box", "_upscaler_box",
     "_upscaler_model", "_upscaler_tile", "_upscaler_fp16", "_upscaler_device",
     "_enhancer_model", "_upscale", "_enhancer_fidelity", "_only_center_face",
+    "_only_swapped",
     "_enhancer_fp16", "_enhancer_device", "_strategy_combo", "_worker_count",
     "_playback_combo", "_cache_mode_combo", "_image_format_combo",
     "_image_quality", "_memory_cache_mb", "_write_workers", "_write_queue_size",

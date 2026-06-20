@@ -152,6 +152,7 @@ class ProcessorParamsSnapshot:
             enhancer_model=ep.model.value,
             enhancer_upscale=ep.upscale,
             enhancer_only_center_face=ep.only_center_face,
+            enhancer_only_swapped=ep.only_swapped,
             enhancer_codeformer_fidelity=ep.codeformer_fidelity,
             enhancer_fp16=ep.fp16,
             playback_mode=self.playback_mode,

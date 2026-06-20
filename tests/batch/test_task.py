@@ -93,6 +93,7 @@ class TestBatchTaskRoundtrip:
             enhancer_enabled=False,
             enhancer_upscale=4,
             enhancer_only_center_face=True,
+            enhancer_only_swapped=True,
             swapper_execution=OnnxExecution(
                 workers=8, providers=["CUDAExecutionProvider"]
             ),

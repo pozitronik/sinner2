@@ -139,6 +139,16 @@ class TestQProcessorControls:
             widget._swapper_box.setChecked(False)  # noqa: SLF001
         assert widget.swapper_enabled() is False
 
+    def test_only_swapped_gated_on_swapper_enabled(self, widget):
+        # "Swapped faces only" is inert without the swapper (it marks the
+        # swapped subset), so the checkbox greys out when the swapper is off.
+        widget._swapper_box.setChecked(True)  # noqa: SLF001
+        assert widget._only_swapped.isEnabled() is True  # noqa: SLF001
+        widget._swapper_box.setChecked(False)  # noqa: SLF001
+        assert widget._only_swapped.isEnabled() is False  # noqa: SLF001
+        widget._swapper_box.setChecked(True)  # noqa: SLF001
+        assert widget._only_swapped.isEnabled() is True  # noqa: SLF001
+
     def test_changing_detection_interval_emits_config_changed(self, widget, qtbot):
         with qtbot.waitSignal(widget.configChanged, timeout=1000):
             widget._detection_interval.setValue(5)  # noqa: SLF001

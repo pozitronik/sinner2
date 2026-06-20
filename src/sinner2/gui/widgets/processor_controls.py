@@ -371,6 +371,19 @@ class QProcessorControls(QWidget):
         self._only_center_face.setChecked(enhancer_defaults.only_center_face)
         self._only_center_face.toggled.connect(self.configChanged)
         enhancer_form.addRow("Center face only", self._only_center_face)
+        self._only_swapped = QCheckBox()
+        self._only_swapped.setChecked(enhancer_defaults.only_swapped)
+        self._only_swapped.setToolTip(
+            "Restore only the faces the swapper actually swapped, not every\n"
+            "detected face — leaves bystanders you didn't swap untouched.\n"
+            "Needs the face swapper enabled (greyed out otherwise)."
+        )
+        self._only_swapped.toggled.connect(self.configChanged)
+        enhancer_form.addRow("Swapped faces only", self._only_swapped)
+        # Only meaningful when the swapper runs (it's what marks the swapped
+        # subset) — gate the checkbox on the swapper-enabled groupbox.
+        self._swapper_box.toggled.connect(self._update_only_swapped_enabled)
+        self._update_only_swapped_enabled()
         self._enhancer_fp16 = QCheckBox()
         self._enhancer_fp16.setChecked(enhancer_defaults.fp16)
         self._enhancer_fp16.setToolTip(
@@ -1156,6 +1169,12 @@ class QProcessorControls(QWidget):
         self._enhancer_device.setEnabled(is_gfpgan)
         self._enhancer_providers_row.setEnabled(not is_gfpgan)
 
+    def _update_only_swapped_enabled(self) -> None:
+        """Grey out "Swapped faces only" when the swapper is off — it's the
+        swapper that marks the swapped subset, so the option is inert without
+        it (the enhancer falls back to all detected faces)."""
+        self._only_swapped.setEnabled(self._swapper_box.isChecked())
+
     def enhancer_model(self) -> str:
         return self._enhancer_model.currentData()
 
@@ -1172,6 +1191,7 @@ class QProcessorControls(QWidget):
             model=EnhancerModel(self._enhancer_model.currentData()),
             upscale=self._upscale.value(),
             only_center_face=self._only_center_face.isChecked(),
+            only_swapped=self._only_swapped.isChecked(),
             codeformer_fidelity=self._enhancer_fidelity.value(),
             fp16=self._enhancer_fp16.isChecked(),
             rotation_compensation=self._rotation_enabled.isChecked(),
@@ -1485,6 +1505,7 @@ class QProcessorControls(QWidget):
         enhancer_model: str | None = None,
         enhancer_upscale: int | None,
         enhancer_only_center_face: bool | None,
+        enhancer_only_swapped: bool | None = None,
         enhancer_codeformer_fidelity: float | None = None,
         enhancer_fp16: bool | None = None,
         playback_mode: PlaybackMode | None,
@@ -1544,6 +1565,7 @@ class QProcessorControls(QWidget):
             self._upscale,
             self._enhancer_fidelity,
             self._only_center_face,
+            self._only_swapped,
             self._enhancer_fp16,
             self._enhancer_device,
             self._strategy_combo,
@@ -1611,6 +1633,8 @@ class QProcessorControls(QWidget):
                 self._enhancer_fidelity.setValue(enhancer_codeformer_fidelity)
             if enhancer_only_center_face is not None:
                 self._only_center_face.setChecked(enhancer_only_center_face)
+            if enhancer_only_swapped is not None:
+                self._only_swapped.setChecked(enhancer_only_swapped)
             if enhancer_fp16 is not None:
                 self._enhancer_fp16.setChecked(enhancer_fp16)
             if enhancer_device is not None:
@@ -1690,4 +1714,5 @@ class QProcessorControls(QWidget):
         self._update_upscaler_rows()  # reflect a restored upscaler model
         self._update_occlusion_rows()  # reflect restored occlusion mask/mode
         self._update_swapper_model_rows()  # reflect a restored swap model
+        self._update_only_swapped_enabled()  # gate on restored swapper-enabled
         self.configChanged.emit()

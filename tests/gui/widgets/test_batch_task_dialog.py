@@ -117,6 +117,7 @@ class TestPrefill:
             enhancer_enabled=False,
             enhancer_upscale=4,
             enhancer_only_center_face=True,
+            enhancer_only_swapped=True,
             enhancer_fp16=False,
             swapper_execution=OnnxExecution(
                 workers=8, providers=["CPUExecutionProvider"]
@@ -144,6 +145,8 @@ class TestPrefill:
         assert dlg._enhancer_box.isChecked() is False  # noqa: SLF001
         assert dlg._upscale.value() == 4  # noqa: SLF001
         assert dlg._only_center_face.isChecked() is True  # noqa: SLF001
+        assert dlg._only_swapped.isChecked() is True  # noqa: SLF001
+        assert dlg.to_task().enhancer_only_swapped is True  # round-trips back out
         assert dlg._enhancer_fp16.isChecked() is False  # noqa: SLF001
         assert dlg.to_task().enhancer_fp16 is False  # round-trips back out
         assert dlg._swapper_workers.value() == 8  # noqa: SLF001

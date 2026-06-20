@@ -70,6 +70,18 @@ class FaceEnhancerParams(SinnerBaseModel):
     only_center_face: bool = Field(
         default=False, description="Enhance only the center face"
     )
+    only_swapped: bool = Field(
+        default=False,
+        description=(
+            "Restore only the faces the swapper actually swapped (from the "
+            "upstream chain context), not every detected face — so bystanders "
+            "you didn't swap are left untouched. Needs the swapper enabled; "
+            "honored by the ONNX restorers (which take a faces list). The torch "
+            "GFPGAN base pass self-detects, so its whole-frame restore can't be "
+            "narrowed — only its rotation re-enhance pass is. No effect when no "
+            "swapper ran (the enhancer falls back to all detected faces)."
+        ),
+    )
     fp16: bool = Field(
         default=True,
         description=(
@@ -236,6 +248,14 @@ class FaceEnhancer:
         # them instead of re-detecting. Only for the FULL frame; the rotation
         # pass below enhances uprighted CROPS, whose geometry differs.
         shared_faces = ctx.faces if ctx is not None else None
+        # "Only swapped faces": restore just the subset the swapper swapped
+        # (ctx.swapped_faces), not every detected face. None means no swapper
+        # ran (enhancer-only chain) → fall back to all detected faces.
+        faces_to_enhance = shared_faces
+        if self._params.only_swapped and ctx is not None:
+            swapped = getattr(ctx, "swapped_faces", None)
+            if swapped is not None:
+                faces_to_enhance = swapped
 
         def enhance_image(
             img: Frame, only_center: bool, faces: list | None = None
@@ -254,7 +274,7 @@ class FaceEnhancer:
             return out if out is not None else img
 
         result = enhance_image(
-            frame, self._params.only_center_face, faces=shared_faces
+            frame, self._params.only_center_face, faces=faces_to_enhance
         )
         # Only GFPGAN needs the uprighting pass. The ONNX restorers (CodeFormer /
         # GPEN / RestoreFormer) already remove in-plane roll via their per-face
@@ -274,7 +294,7 @@ class FaceEnhancer:
         # per frame — re-detect only when there are no shared faces (enhancer-only
         # chain) or the POSE angle source needs the face.pose that detection-only
         # / standalone-detector faces lack.
-        faces = shared_faces
+        faces = faces_to_enhance
         if faces is None or (
             self._params.rotation_angle_source is RotationAngleSource.POSE
             and faces

@@ -413,6 +413,17 @@ class QBatchTaskDialog(QDialog):
         self._only_center_face = QCheckBox()
         self._only_center_face.setChecked(task.enhancer_only_center_face)
         enh_form.addRow("Center face only:", self._only_center_face)
+        self._only_swapped = QCheckBox()
+        self._only_swapped.setChecked(task.enhancer_only_swapped)
+        self._only_swapped.setToolTip(
+            "Restore only the faces the swapper actually swapped, not every "
+            "detected face. Needs the face swapper enabled (greyed out "
+            "otherwise)."
+        )
+        enh_form.addRow("Swapped faces only:", self._only_swapped)
+        # Inert without the swapper (it marks the swapped subset) — gate it.
+        self._swapper_box.toggled.connect(self._only_swapped.setEnabled)
+        self._only_swapped.setEnabled(self._swapper_box.isChecked())
         self._enhancer_fp16 = QCheckBox()
         self._enhancer_fp16.setChecked(task.enhancer_fp16)
         self._enhancer_fp16.setToolTip(
@@ -806,6 +817,7 @@ class QBatchTaskDialog(QDialog):
             "enhancer_model": self._enhancer_model.currentData(),
             "enhancer_upscale": self._upscale.value(),
             "enhancer_only_center_face": self._only_center_face.isChecked(),
+            "enhancer_only_swapped": self._only_swapped.isChecked(),
             "enhancer_codeformer_fidelity": self._enhancer_fidelity.value(),
             "enhancer_fp16": self._enhancer_fp16.isChecked(),
             "swapper_execution": self._task.swapper_execution.model_copy(

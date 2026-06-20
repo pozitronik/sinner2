@@ -541,6 +541,84 @@ class TestChainContextConsume:
         assert captured["faces"] is None  # backend falls back to its analyser
 
 
+class TestOnlySwapped:
+    """`only_swapped`: restore only the swapper's swapped subset
+    (ctx.swapped_faces), not every detected face (ctx.faces)."""
+
+    @staticmethod
+    def _spy(monkeypatch, captured):
+        class _Spy:
+            def __init__(self, *a, **k):
+                pass
+
+            def setup(self):
+                pass
+
+            def enhance(self, img, faces=None):
+                captured["faces"] = faces
+                return img
+
+        monkeypatch.setattr(face_enhancer, "PlainBfrBackend", _Spy)
+
+    def _enhancer(self, only_swapped):
+        fe = FaceEnhancer(params=FaceEnhancerParams(
+            model=EnhancerModel.GPEN_512, rotation_compensation=False,
+            only_swapped=only_swapped,
+        ))
+        fe.setup()
+        return fe
+
+    def test_restricts_to_swapped_subset(
+        self, models_dir, stub_face_detection, monkeypatch
+    ):
+        from sinner2.pipeline.processor import ChainContext
+
+        captured: dict = {}
+        self._spy(monkeypatch, captured)
+        a, b, c = object(), object(), object()
+        ctx = ChainContext(faces=[a, b, c], swapped_faces=[b])
+        self._enhancer(only_swapped=True).process(_blank(), ctx)
+        assert captured["faces"] == [b]  # only the swapped face, not all detected
+
+    def test_falls_back_to_all_when_no_swapper(
+        self, models_dir, stub_face_detection, monkeypatch
+    ):
+        from sinner2.pipeline.processor import ChainContext
+
+        captured: dict = {}
+        self._spy(monkeypatch, captured)
+        detected = [object(), object()]
+        # No swapper ran → swapped_faces stays None → enhance every detected face.
+        ctx = ChainContext(faces=detected, swapped_faces=None)
+        self._enhancer(only_swapped=True).process(_blank(), ctx)
+        assert captured["faces"] is detected
+
+    def test_empty_swapped_subset_enhances_nothing(
+        self, models_dir, stub_face_detection, monkeypatch
+    ):
+        from sinner2.pipeline.processor import ChainContext
+
+        captured: dict = {}
+        self._spy(monkeypatch, captured)
+        # Swapper ran but swapped nothing (e.g. gender filter) → restore nothing.
+        ctx = ChainContext(faces=[object(), object()], swapped_faces=[])
+        self._enhancer(only_swapped=True).process(_blank(), ctx)
+        assert captured["faces"] == []
+
+    def test_off_uses_all_detected(
+        self, models_dir, stub_face_detection, monkeypatch
+    ):
+        from sinner2.pipeline.processor import ChainContext
+
+        captured: dict = {}
+        self._spy(monkeypatch, captured)
+        detected = [object(), object()]
+        # Option off → ignore the swapped subset, enhance every detected face.
+        ctx = ChainContext(faces=detected, swapped_faces=[detected[0]])
+        self._enhancer(only_swapped=False).process(_blank(), ctx)
+        assert captured["faces"] is detected
+
+
 class TestPlainBfrBackends:
     """GPEN-512 and RestoreFormer++ route through the shared PlainBfrBackend."""
 

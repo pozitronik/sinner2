@@ -754,6 +754,11 @@ class FaceSwapper:
             swapped_faces.append(face)
             if not multi and not self._params.many_faces:
                 break
+        if ctx is not None:
+            # The subset actually swapped (post-filter) — the enhancer's "only
+            # swapped faces" option restores just these. Distinct from ctx.faces
+            # (every detected face); an empty list is a real "swapped nothing".
+            ctx.swapped_faces = list(swapped_faces)
         self._maybe_publish_crops(frame, result, swapped_faces)
         return result
 

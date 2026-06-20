@@ -201,6 +201,9 @@ class TestChainContextPublish:
         ctx = ChainContext()
         fs.process(_blank(), ctx)
         assert ctx.faces == [f_male, f_female]  # pre-filter, both published
+        # ...but swapped_faces is the POST-filter subset: target_sex="F" swaps
+        # only the female, so the enhancer's "only swapped" sees just her.
+        assert ctx.swapped_faces == [f_female]
 
     def test_no_context_is_fine(
         self, source_image, models_dir, stub_insightface_app, stub_inswapper

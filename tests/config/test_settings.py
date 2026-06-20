@@ -166,6 +166,11 @@ class TestExtendedFieldsRoundtrip:
         settings.save(settings.Settings(enhancer_only_center_face=value))
         assert settings.load().enhancer_only_center_face is value
 
+    @pytest.mark.parametrize("value", [True, False])
+    def test_enhancer_only_swapped(self, value: bool):
+        settings.save(settings.Settings(enhancer_only_swapped=value))
+        assert settings.load().enhancer_only_swapped is value
+
     @pytest.mark.parametrize("mode", list(PlaybackMode))
     def test_playback_mode(self, mode: PlaybackMode):
         settings.save(settings.Settings(playback_mode=mode))
