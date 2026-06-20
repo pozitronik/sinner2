@@ -105,14 +105,15 @@ def _factory(*processors):
 
 
 def _install_rate_state(ex) -> None:
-    """Give a bypass-init (object.__new__) executor the display-fps + skip-count
-    state the playback tick / fps refresh publish (added with the status-bar
-    rate panels). Tests that drive _do_playback_tick / _refresh_fps directly
-    need these set since they skip __init__."""
-    from collections import deque
+    """Give a bypass-init (object.__new__) executor the telemetry + skip-count
+    state the playback tick / fps refresh read & publish. Tests that drive
+    _do_playback_tick / _refresh_fps directly need these set since they skip
+    __init__."""
     from unittest.mock import MagicMock
 
-    ex._display_times = deque()  # noqa: SLF001
+    from sinner2.pipeline.realtime.telemetry import TelemetryCollector
+
+    ex._telemetry = TelemetryCollector()  # noqa: SLF001
     ex._skipped = 0  # noqa: SLF001
     ex.display_fps = MagicMock()
     ex.frames_skipped = MagicMock()
@@ -1002,14 +1003,11 @@ class TestProcessorTimings:
             # Force the window past — manually re-aim the deque
             # timestamps to "long ago" so we don't have to actually
             # wait 3 seconds in the test.
-            with ex._timings_lock:  # noqa: SLF001
-                aged = [(0.0, name, ns) for (_ts, name, ns) in ex._timings  # noqa: SLF001
-                        ] if False else [
-                    (0.0, name, ns)
-                    for (_ts, name, ns) in ex._processor_timings  # noqa: SLF001
-                ]
-                ex._processor_timings.clear()  # noqa: SLF001
-                ex._processor_timings.extend(aged)  # noqa: SLF001
+            timings = ex._telemetry._processor_timings  # noqa: SLF001
+            with ex._telemetry._timings_lock:  # noqa: SLF001
+                aged = [(0.0, name, ns) for (_ts, name, ns) in timings]
+                timings.clear()
+                timings.extend(aged)
             # Now the next read should trim everything (cutoff is now-3s,
             # all entries are at t=0 ≪ cutoff).
             assert ex.processor_timings() == {}
@@ -1751,7 +1749,6 @@ class TestPlaybackFallbackNoBackwardStutter:
     current frame until a frame >= the last shown one is available."""
 
     def _tick(self, *, last_shown, fallback_index):
-        from collections import deque
         from unittest.mock import MagicMock
 
         from sinner2.pipeline.realtime.executor import _State
@@ -1759,10 +1756,6 @@ class TestPlaybackFallbackNoBackwardStutter:
         ex = object.__new__(RealtimeExecutor)
         ex._state_lock = threading.RLock()  # noqa: SLF001
         ex._state = _State.PLAYING  # noqa: SLF001
-        ex._fps_lock = threading.Lock()  # noqa: SLF001
-        ex._completion_times = deque()  # noqa: SLF001
-        ex._last_completion_time = None  # noqa: SLF001
-        ex._last_fps = 0.0  # noqa: SLF001
         ex._last_metrics_pub = 0.0  # noqa: SLF001
         ex.current_frame = MagicMock()
         ex.metrics = MagicMock()
@@ -1798,58 +1791,23 @@ class TestPlaybackFallbackNoBackwardStutter:
         assert last == 50
 
 
-class TestProcessingFpsStallDecay:
-    """processing_fps reports a decaying estimate during slow-but-alive
-    progress instead of a hard 0, so a slow source isn't mistaken for a hang."""
+class TestRefreshFpsWiring:
+    """_refresh_fps publishes the telemetry collector's computed rates onto the
+    executor's observables. The windowing/decay math itself is covered in
+    test_telemetry.py."""
 
-    def _refresh(self, *, completion_times, last_completion_time, last_fps):
-        from collections import deque
+    def test_publishes_processing_and_display_rates(self):
         from unittest.mock import MagicMock
 
         ex = object.__new__(RealtimeExecutor)
-        ex._fps_lock = threading.RLock()  # noqa: SLF001
-        ex._completion_times = deque(completion_times)  # noqa: SLF001
-        ex._last_completion_time = last_completion_time  # noqa: SLF001
-        ex._last_fps = last_fps  # noqa: SLF001
+        ex._telemetry = MagicMock()  # noqa: SLF001
+        ex._telemetry.processing_fps.return_value = 12.5  # noqa: SLF001
+        ex._telemetry.display_fps.return_value = 7.0  # noqa: SLF001
         ex.processing_fps = MagicMock()
-        _install_rate_state(ex)
+        ex.display_fps = MagicMock()
         ex._refresh_fps()  # noqa: SLF001
-        (val,), _ = ex.processing_fps.set.call_args
-        return val
-
-    def test_decays_to_small_positive_during_slow_progress(self):
-        now = time.monotonic()
-        fps = self._refresh(completion_times=[], last_completion_time=now - 5.0,
-                            last_fps=10.0)
-        assert 0.1 < fps < 0.4  # ~0.2, not 0
-
-    def test_zero_after_long_stall(self):
-        now = time.monotonic()
-        fps = self._refresh(completion_times=[], last_completion_time=now - 60.0,
-                            last_fps=10.0)
-        assert fps == 0.0
-
-    def test_never_completed_is_zero(self):
-        fps = self._refresh(completion_times=[], last_completion_time=None,
-                            last_fps=0.0)
-        assert fps == 0.0
-
-    def test_windowed_rate_when_healthy(self):
-        now = time.monotonic()
-        fps = self._refresh(
-            completion_times=[now - 0.3, now - 0.2, now - 0.1, now],
-            last_completion_time=now, last_fps=0.0,
-        )
-        assert fps > 5.0
-
-    def test_cold_start_decay_is_capped(self):
-        # First completion just happened (count=1), windowed rate undefined,
-        # last_fps still 0 → the 1/tiny-elapsed estimate must be capped, not a
-        # bogus thousands-fps spike.
-        now = time.monotonic()
-        fps = self._refresh(completion_times=[now], last_completion_time=now,
-                            last_fps=0.0)
-        assert fps <= 120.0
+        ex.processing_fps.set.assert_called_once_with(12.5)
+        ex.display_fps.set.assert_called_once_with(7.0)
 
 
 class TestSeekResetsChainStreamState:
@@ -2115,13 +2073,11 @@ class TestApplyChainContext:
     one-argument call."""
 
     def _executor_shell(self):
-        from collections import deque
-
         from sinner2.pipeline.realtime.executor import RealtimeExecutor
+        from sinner2.pipeline.realtime.telemetry import TelemetryCollector
 
         ex = object.__new__(RealtimeExecutor)  # bypass the heavy __init__
-        ex._timings_lock = threading.Lock()
-        ex._processor_timings = deque()
+        ex._telemetry = TelemetryCollector()  # noqa: SLF001
         return ex
 
     def test_context_flows_between_context_aware_processors(self):
@@ -2226,82 +2182,6 @@ class TestApplyChainContext:
         _result, had_faces, detection_ran = ex._apply_chain(frame, (_Plain(),))
         assert had_faces is False  # ctx.faces stays None
         assert detection_ran is False  # didn't look → NOT a problem frame
-
-
-class TestFaceProcessingFps:
-    """Throughput counting only FACE frames — the head-start sizes off these."""
-
-    def _shell(self):
-        from collections import deque
-
-        ex = object.__new__(RealtimeExecutor)
-        ex._fps_lock = threading.RLock()  # noqa: SLF001
-        ex._completion_times = deque()  # noqa: SLF001
-        ex._face_completion_times = deque()  # noqa: SLF001
-        ex._last_completion_time = None  # noqa: SLF001
-        return ex
-
-    def test_zero_with_fewer_than_two_face_frames(self):
-        ex = self._shell()
-        assert ex.face_processing_fps() == 0.0
-        ex._record_completion(had_faces=True)  # noqa: SLF001
-        assert ex.face_processing_fps() == 0.0  # only one — no rate yet
-
-    def test_records_only_face_frames(self):
-        ex = self._shell()
-        ex._record_completion(had_faces=True)  # noqa: SLF001
-        ex._record_completion(had_faces=False)  # noqa: SLF001 — empty frame
-        ex._record_completion(had_faces=True)  # noqa: SLF001
-        assert len(ex._face_completion_times) == 2  # noqa: SLF001 — faces only
-        assert len(ex._completion_times) == 3  # noqa: SLF001 — all frames
-
-    def test_computes_rate_from_face_timestamps(self):
-        ex = self._shell()
-        now = time.monotonic()
-        # 3 face frames spanning 0.2 s → (3-1)/0.2 = 10 fps.
-        ex._face_completion_times.extend([now - 0.2, now - 0.1, now])  # noqa: SLF001
-        assert abs(ex.face_processing_fps() - 10.0) < 0.5
-
-    def test_trims_outside_the_window(self):
-        ex = self._shell()
-        now = time.monotonic()
-        # Two stale (>3 s old) + two recent → only the recent pair counts.
-        ex._face_completion_times.extend(  # noqa: SLF001
-            [now - 10.0, now - 9.0, now - 0.1, now]
-        )
-        rate = ex.face_processing_fps()
-        assert abs(rate - 10.0) < 0.5  # (2-1)/0.1 from the recent pair
-
-
-class TestDisplayFps:
-    """display_fps = distinct frames actually shown per second, computed over
-    the same window as processing_fps but from on_frame timestamps."""
-
-    def _display_rate(self, *, display_times):
-        from collections import deque
-        from unittest.mock import MagicMock
-
-        ex = object.__new__(RealtimeExecutor)
-        ex._fps_lock = threading.RLock()  # noqa: SLF001
-        ex._completion_times = deque()  # noqa: SLF001
-        ex._last_completion_time = None  # noqa: SLF001
-        ex._last_fps = 0.0  # noqa: SLF001
-        ex.processing_fps = MagicMock()
-        ex.display_fps = MagicMock()
-        ex._display_times = deque(display_times)  # noqa: SLF001
-        ex._refresh_fps()  # noqa: SLF001
-        (val,), _ = ex.display_fps.set.call_args
-        return val
-
-    def test_windowed_rate_over_shown_frames(self):
-        now = time.monotonic()
-        # 5 frames shown across 0.4s → (5-1)/0.4 = 10 fps.
-        times = [now - 0.4, now - 0.3, now - 0.2, now - 0.1, now]
-        assert 9.0 < self._display_rate(display_times=times) < 11.0
-
-    def test_zero_with_fewer_than_two_frames(self):
-        assert self._display_rate(display_times=[time.monotonic()]) == 0.0
-        assert self._display_rate(display_times=[]) == 0.0
 
 
 class TestSectionPlayback:
