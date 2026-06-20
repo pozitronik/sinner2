@@ -356,6 +356,58 @@ class TestRotationCompensation:
         fe.process(_blank())
         stub_face_detection.get.assert_not_called()
 
+    def test_reuses_ctx_faces_without_redetecting(
+        self, models_dir, stub_restorer, stub_face_detection, monkeypatch
+    ):
+        # Upstream detections (ctx.faces, pose-carrying) drive the rotation pass
+        # WITHOUT a second full-frame detection.
+        called: list = []
+        monkeypatch.setattr(
+            face_enhancer, "enhance_with_uprighting",
+            lambda result, *a, **k: called.append(True) or result,
+        )
+        tilted = MagicMock()
+        tilted.bbox = np.array([2, 2, 8, 8], float)
+        tilted.kps = np.array([[3, 3], [7, 7]], float)
+        tilted.pose = (0.0, 0.0, 45.0)  # POSE source reads pose[2] = 45°
+        ctx = MagicMock()
+        ctx.faces = [tilted]
+        fe = FaceEnhancer(
+            params=_gfpgan(rotation_compensation=True, rotation_threshold_deg=15)
+        )
+        fe.setup()
+        fe.process(_blank(), ctx)
+        assert called == [True]                       # uprighted from ctx.faces
+        stub_face_detection.get.assert_not_called()   # no second detection
+
+    def test_redetects_when_pose_source_faces_lack_pose(
+        self, models_dir, stub_restorer, stub_face_detection, monkeypatch
+    ):
+        # POSE source + shared faces without pose (standalone detector) → fall
+        # back to the full pack so the roll matches the non-shared path.
+        called: list = []
+        monkeypatch.setattr(
+            face_enhancer, "enhance_with_uprighting",
+            lambda result, *a, **k: called.append(True) or result,
+        )
+        no_pose = MagicMock(spec=["bbox", "kps"])  # no .pose attribute
+        no_pose.bbox = np.array([2, 2, 8, 8], float)
+        no_pose.kps = np.array([[3, 3], [7, 7]], float)
+        detected = MagicMock()
+        detected.bbox = np.array([2, 2, 8, 8], float)
+        detected.kps = np.array([[3, 3], [7, 7]], float)
+        detected.pose = (0.0, 0.0, 45.0)
+        stub_face_detection.get.return_value = [detected]
+        ctx = MagicMock()
+        ctx.faces = [no_pose]
+        fe = FaceEnhancer(
+            params=_gfpgan(rotation_compensation=True, rotation_threshold_deg=15)
+        )
+        fe.setup()
+        fe.process(_blank(), ctx)
+        stub_face_detection.get.assert_called_once()  # re-detected for pose
+        assert called == [True]
+
 
 class TestCodeFormerBackend:
     def test_codeformer_model_uses_onnx_backend(

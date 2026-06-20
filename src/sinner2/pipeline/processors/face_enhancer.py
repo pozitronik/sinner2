@@ -269,8 +269,19 @@ class FaceEnhancer:
             return result
         # GFPGAN just mangled any tilted faces (no rotation handling). For each
         # face rolled past the threshold, re-enhance an uprighted crop of the
-        # ORIGINAL face and composite it over the cursed result.
-        for face in self._analyser.analyse(frame):
+        # ORIGINAL face and composite it over the cursed result. Reuse the
+        # swapper's upstream detections instead of a SECOND full-frame detection
+        # per frame — re-detect only when there are no shared faces (enhancer-only
+        # chain) or the POSE angle source needs the face.pose that detection-only
+        # / standalone-detector faces lack.
+        faces = shared_faces
+        if faces is None or (
+            self._params.rotation_angle_source is RotationAngleSource.POSE
+            and faces
+            and getattr(faces[0], "pose", None) is None
+        ):
+            faces = self._analyser.analyse(frame)
+        for face in faces:
             roll = compute_roll(face, self._params.rotation_angle_source)
             if abs(roll) >= self._params.rotation_threshold_deg:
                 result = enhance_with_uprighting(
