@@ -21,6 +21,11 @@ from sinner2.pipeline.memory_probe import (
 VramFn = Callable[[], "tuple[int, int] | None"]
 RamFn = Callable[[], "int | None"]
 
+# Shown when NEITHER probe is available, so the cell explains itself rather than
+# silently vanishing (an empty value hides the panel — confusing for a feature
+# the user expects to see). psutil covers RAM everywhere; nvidia-ml-py adds VRAM.
+_UNAVAILABLE = "needs psutil / nvidia-ml-py"
+
 
 class MemoryMonitor(QObject):
     """Refreshes ``panel.set_value(...)`` with the live memory readout ~1 Hz."""
@@ -32,12 +37,14 @@ class MemoryMonitor(QObject):
         interval_ms: int = 1000,
         vram_fn: VramFn = device_vram,
         ram_fn: RamFn = process_ram,
+        unavailable_text: str = _UNAVAILABLE,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
         self._panel = panel
         self._vram_fn = vram_fn
         self._ram_fn = ram_fn
+        self._unavailable_text = unavailable_text
         self._timer = QTimer(self)
         self._timer.setInterval(max(100, interval_ms))
         self._timer.timeout.connect(self.refresh)
@@ -45,7 +52,9 @@ class MemoryMonitor(QObject):
         self.refresh()  # paint a value immediately, don't wait a full interval
 
     def refresh(self) -> None:
-        self._panel.set_value(format_memory(self._vram_fn(), self._ram_fn()))
+        # Empty readout (no probes) → a hint instead of a vanished cell.
+        text = format_memory(self._vram_fn(), self._ram_fn())
+        self._panel.set_value(text or self._unavailable_text)
 
     def stop(self) -> None:
         self._timer.stop()

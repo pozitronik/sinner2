@@ -24,10 +24,14 @@ class TestMemoryMonitor:
         assert panel.value == "VRAM 1.0 / 8 GB · RAM 2.0 GB"
         m.stop()
 
-    def test_empty_when_no_probes_available(self, qtbot):
+    def test_shows_hint_when_no_probes_available(self, qtbot):
         panel = _FakePanel()
-        m = MemoryMonitor(panel, vram_fn=lambda: None, ram_fn=lambda: None)
-        assert panel.value == ""  # empty → the status cell hides itself
+        m = MemoryMonitor(
+            panel, vram_fn=lambda: None, ram_fn=lambda: None,
+            unavailable_text="install deps",
+        )
+        # No probes → a hint, NOT an empty value (which would hide the cell).
+        assert panel.value == "install deps"
         m.stop()
 
     def test_refresh_reflects_new_readings(self, qtbot):
