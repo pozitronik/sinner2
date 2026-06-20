@@ -66,3 +66,9 @@ class World:
         worker still processing the old routing has its result discarded rather
         than published as a one-frame stale flash."""
         return replace(self, generation=self.generation + 1)
+
+    def with_chain(self, chain: tuple[Processor, ...]) -> "World":
+        """A new world with only the chain replaced and the SAME generation —
+        for a chain swap (set_chain) that has already drained in-flight work, so
+        no result needs to be invalidated by a generation bump."""
+        return replace(self, chain=chain)

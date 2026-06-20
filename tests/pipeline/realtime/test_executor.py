@@ -22,6 +22,27 @@ from sinner2.pipeline.skip_strategy import BestEffortStrategy, SyncedStrategy
 from sinner2.types import Frame
 
 
+def _bind(ex, **fields):
+    """Rebind one or more World fields on a bypass-init executor.
+
+    The six source/target+chain fields (chain / reader_pool / buffer / timeline /
+    frame_states / generation) are now read-only views of ex._world, so tests
+    that hand-assemble an executor via object.__new__ set them through here. Each
+    call preserves the fields it doesn't mention, so incremental setup still works.
+    """
+    import dataclasses
+
+    from sinner2.pipeline.realtime.world import World
+
+    cur = getattr(ex, "_world", None)
+    if cur is None:
+        cur = World(
+            generation=0, chain=(), reader_pool=None, buffer=None,
+            timeline=None, frame_states=None,
+        )
+    ex._world = dataclasses.replace(cur, **fields)  # noqa: SLF001
+
+
 def _pool_for(reader, size: int = 1) -> ReaderPool:
     """Wrap a single reader in a size-1 pool. Tests use size=1 so the
     single returned instance from the lambda is fine — the pool never
@@ -1070,7 +1091,7 @@ class TestRealtimeExecutorSetChain:
         from unittest.mock import MagicMock
 
         ex = RealtimeExecutor.__new__(RealtimeExecutor)
-        ex._buffer = MagicMock()  # noqa: SLF001
+        _bind(ex, buffer=MagicMock())  # noqa: SLF001
         ex.set_memory_cache_bytes(2048)
         ex._buffer.set_memory_max_bytes.assert_called_once_with(2048)  # noqa: SLF001
 
@@ -1438,13 +1459,13 @@ class TestRerenderFromCurrent:
         ex._playback_wake = threading.Event()  # noqa: SLF001
         ex._last_submitted = 80  # noqa: SLF001
         ex._last_completed = 75  # noqa: SLF001
-        ex._generation = 0  # noqa: SLF001
+        _bind(ex, generation=0)  # noqa: SLF001
         ex._last_shown_frame_index = 50  # noqa: SLF001
-        ex._timeline = MagicMock()  # noqa: SLF001
+        _bind(ex, timeline=MagicMock())  # noqa: SLF001
         ex._timeline.current_frame.return_value = 50  # noqa: SLF001
-        ex._buffer = MagicMock()  # noqa: SLF001
+        _bind(ex, buffer=MagicMock())  # noqa: SLF001
         ex._buffer.has.return_value = False  # noqa: SLF001 — not cached → submits
-        ex._reader_pool = MagicMock()  # noqa: SLF001
+        _bind(ex, reader_pool=MagicMock())  # noqa: SLF001
         ex._reader_pool.frame_count = 100  # noqa: SLF001
 
         ex._handle_rerender()  # noqa: SLF001
@@ -1625,7 +1646,7 @@ class TestSetChainSetupOrdering:
             strategy=BestEffortStrategy(),
         )
         ex._setup_done_event.set()  # noqa: SLF001
-        ex._buffer = MagicMock()  # noqa: SLF001 — spy the buffer
+        _bind(ex, buffer=MagicMock())  # noqa: SLF001 — spy the buffer
         ex._buffer.has.return_value = False  # noqa: SLF001
         new_store = MagicMock()
         ex._handle_set_chain((_CountingProcessor(),), store=new_store)  # noqa: SLF001
@@ -1642,7 +1663,7 @@ class TestSetChainSetupOrdering:
             strategy=BestEffortStrategy(),
         )
         ex._setup_done_event.set()  # noqa: SLF001
-        ex._buffer = MagicMock()  # noqa: SLF001
+        _bind(ex, buffer=MagicMock())  # noqa: SLF001
         ex._buffer.has.return_value = False  # noqa: SLF001
         ex._handle_set_chain((_CountingProcessor(),))  # noqa: SLF001 — no store
         ex._buffer.invalidate_all.assert_called_once()  # noqa: SLF001
@@ -1725,7 +1746,7 @@ class TestPlaybackFallbackNoBackwardStutter:
         buf.get_at_current_time.return_value = (200, None)  # miss at target 200
         buf.latest_index_at_or_below.return_value = fallback_index
         buf.get.return_value = np.zeros((2, 2, 3), dtype=np.uint8)
-        ex._buffer = buf  # noqa: SLF001
+        _bind(ex, buffer=buf)  # noqa: SLF001
         _install_rate_state(ex)
         ex._do_playback_tick()  # noqa: SLF001
         return shown, ex._last_shown_frame_index  # noqa: SLF001
@@ -1841,7 +1862,7 @@ class TestChainSetupFailure:
         ex._stop_event = threading.Event()  # noqa: SLF001
         ex._setup_done_event = threading.Event()  # noqa: SLF001
         ex.status = self._Status()
-        ex._chain = chain  # noqa: SLF001
+        _bind(ex, chain=chain)  # noqa: SLF001
         return ex
 
     def test_setup_failure_releases_loaded_processors(self):
@@ -1889,7 +1910,7 @@ class TestPlaybackFallbackIndex:
         ex._state = ex_mod._State.PLAYING  # noqa: SLF001
         ex._last_shown_frame_index = None  # noqa: SLF001
         ex._last_metrics_pub = 0.0  # noqa: SLF001
-        ex._buffer = self._Buf()  # noqa: SLF001
+        _bind(ex, buffer=self._Buf())  # noqa: SLF001
         ex._refresh_fps = lambda: None  # noqa: SLF001
         ex.current_frame = self._Obs()
         ex.metrics = self._Obs()
@@ -1939,7 +1960,7 @@ class TestMetricsPublishThrottle:
         ex._state = ex_mod._State.PLAYING  # noqa: SLF001
         ex._last_shown_frame_index = None  # noqa: SLF001
         ex._last_metrics_pub = 0.0  # noqa: SLF001
-        ex._buffer = _Buf()  # noqa: SLF001
+        _bind(ex, buffer=_Buf())  # noqa: SLF001
         ex._refresh_fps = lambda: None  # noqa: SLF001
         ex._on_frame = None  # noqa: SLF001
         ex.current_frame = self._Obs()
@@ -1968,7 +1989,7 @@ class TestReconfigureGenerationGuard:
     def _bare(self, generation):
         ex = RealtimeExecutor.__new__(RealtimeExecutor)
         ex._state_lock = threading.RLock()  # noqa: SLF001
-        ex._generation = generation  # noqa: SLF001
+        _bind(ex, generation=generation)  # noqa: SLF001
         ex._last_completed = -1  # noqa: SLF001
         ex._playback_wake = self._Obs()  # noqa: SLF001
         return ex
@@ -1981,7 +2002,7 @@ class TestReconfigureGenerationGuard:
 
         ex = self._bare(generation=5)
         buf = MagicMock()
-        ex._buffer = buf  # noqa: SLF001
+        _bind(ex, buffer=buf)  # noqa: SLF001
         item = WorkItem(frame_index=3, source_future=Future(), generation=4)
         assert ex._publish_result(item, "frame") is False  # noqa: SLF001
         buf.put.assert_not_called()  # stale frame NOT written to the new buffer
@@ -1995,7 +2016,7 @@ class TestReconfigureGenerationGuard:
 
         ex = self._bare(generation=5)
         buf = MagicMock()
-        ex._buffer = buf  # noqa: SLF001
+        _bind(ex, buffer=buf)  # noqa: SLF001
         item = WorkItem(frame_index=3, source_future=Future(), generation=5)
         assert ex._publish_result(item, "frame") is True  # noqa: SLF001
         buf.put.assert_called_once_with(3, "frame")
@@ -2011,7 +2032,7 @@ class TestPublicAccessors:
 
         ex = RealtimeExecutor.__new__(RealtimeExecutor)
         buf = MagicMock()
-        ex._buffer = buf  # noqa: SLF001
+        _bind(ex, buffer=buf)  # noqa: SLF001
         ex.invalidate_from(7)
         buf.invalidate_from.assert_called_once_with(7)
 
@@ -2020,7 +2041,7 @@ class TestPublicAccessors:
 
         ex = RealtimeExecutor.__new__(RealtimeExecutor)
         pool = MagicMock()
-        ex._reader_pool = pool  # noqa: SLF001
+        _bind(ex, reader_pool=pool)  # noqa: SLF001
         assert ex.reader_pool is pool
 
 
@@ -2043,23 +2064,23 @@ class TestSectionPlayback:
         ex._playback_wake = threading.Event()  # noqa: SLF001
         ex._state = _State.PLAYING  # noqa: SLF001
         ex._sections = sections  # noqa: SLF001
-        ex._timeline = timeline  # noqa: SLF001
-        ex._buffer = MagicMock()  # noqa: SLF001
+        _bind(ex, timeline=timeline)  # noqa: SLF001
+        _bind(ex, buffer=MagicMock())  # noqa: SLF001
         ex._buffer.has.return_value = False  # noqa: SLF001 — not cached → submits
-        ex._reader_pool = MagicMock()  # noqa: SLF001
+        _bind(ex, reader_pool=MagicMock())  # noqa: SLF001
         ex._reader_pool.frame_count = frame_count  # noqa: SLF001
         ex._reader_pool.recent_read_latency_ms.return_value = 1.0  # noqa: SLF001
         ex._last_submitted = last_submitted  # noqa: SLF001
         ex._last_completed = last_completed  # noqa: SLF001
         ex._skipped = 0  # noqa: SLF001
-        ex._generation = 0  # noqa: SLF001
+        _bind(ex, generation=0)  # noqa: SLF001
         ex._last_shown_frame_index = None  # noqa: SLF001
         ex._inflight_count = 0  # noqa: SLF001
         # The dispatcher now feeds the strategy throughput + parallelism + depth;
         # the mocked strategy ignores them, so any stand-ins suffice here.
         ex.processing_fps = MagicMock()
         ex._workers = []  # noqa: SLF001
-        ex._frame_states = FrameStateMap(frame_count)  # noqa: SLF001
+        _bind(ex, frame_states=FrameStateMap(frame_count))  # noqa: SLF001
         ex._strategy = MagicMock()  # noqa: SLF001
         ex._strategy.current_mode.return_value = "seq"  # noqa: SLF001
         ex._strategy.decide.return_value = SimpleNamespace(  # noqa: SLF001
@@ -2187,14 +2208,14 @@ class TestFrameStateTracking:
         ex = object.__new__(RealtimeExecutor)
         ex._state_lock = threading.RLock()  # noqa: SLF001
         ex._work_queue = Queue()  # noqa: SLF001
-        ex._generation = 0  # noqa: SLF001
+        _bind(ex, generation=0)  # noqa: SLF001
         ex._last_submitted = -1  # noqa: SLF001
-        ex._reader_pool = MagicMock()  # noqa: SLF001
+        _bind(ex, reader_pool=MagicMock())  # noqa: SLF001
         ex._reader_pool.frame_count = 10  # noqa: SLF001
         ex._reader_pool.read_async.return_value = MagicMock()  # noqa: SLF001
-        ex._buffer = MagicMock()  # noqa: SLF001
+        _bind(ex, buffer=MagicMock())  # noqa: SLF001
         ex._buffer.has.return_value = False  # noqa: SLF001 — not cached → submits
-        ex._frame_states = FrameStateMap(10)  # noqa: SLF001
+        _bind(ex, frame_states=FrameStateMap(10))  # noqa: SLF001
         ex._submit_specific_frame(3)  # noqa: SLF001
         assert ex._frame_states.get(3) is FrameState.QUEUED  # noqa: SLF001
 
@@ -2312,7 +2333,7 @@ class TestBuffering:
 
         ex = object.__new__(RealtimeExecutor)
         ex._state_lock = threading.RLock()  # noqa: SLF001
-        ex._timeline = Timeline(fps=30.0)  # noqa: SLF001
+        _bind(ex, timeline=Timeline(fps=30.0))  # noqa: SLF001
         ex._timeline.set_max_frame(99)  # noqa: SLF001
         ex._state = _State.IDLE  # noqa: SLF001
         ex.is_playing = ObservableValue(False)
@@ -2436,20 +2457,20 @@ class TestSetFaceMap:
         ex._state_lock = threading.RLock()  # noqa: SLF001
         ex._playback_wake = threading.Event()  # noqa: SLF001
         ex._work_queue = Queue()  # noqa: SLF001
-        ex._generation = 0  # noqa: SLF001
+        _bind(ex, generation=0)  # noqa: SLF001
         ex._last_submitted = 10  # noqa: SLF001
         ex._last_completed = 8  # noqa: SLF001
         ex._last_shown_frame_index = 5  # noqa: SLF001
         ex.status = MagicMock()
-        ex._buffer = MagicMock()  # noqa: SLF001
+        _bind(ex, buffer=MagicMock())  # noqa: SLF001
         ex._buffer.has.return_value = False  # noqa: SLF001 — not cached → submits
-        ex._reader_pool = MagicMock()  # noqa: SLF001
+        _bind(ex, reader_pool=MagicMock())  # noqa: SLF001
         ex._reader_pool.frame_count = 100  # noqa: SLF001
-        ex._timeline = MagicMock()  # noqa: SLF001
+        _bind(ex, timeline=MagicMock())  # noqa: SLF001
         ex._timeline.current_frame.return_value = 7  # noqa: SLF001
         swapper = MagicMock()  # has set_face_map
         plain = object()       # has no set_face_map → skipped
-        ex._chain = (swapper, plain)  # noqa: SLF001
+        _bind(ex, chain=(swapper, plain))  # noqa: SLF001
 
         fm = FaceMap.empty()
         ex._handle_set_face_map(fm)  # noqa: SLF001
@@ -2473,18 +2494,18 @@ class TestSetFaceMap:
         ex._state_lock = threading.RLock()  # noqa: SLF001
         ex._playback_wake = threading.Event()  # noqa: SLF001
         ex._work_queue = Queue()  # noqa: SLF001
-        ex._generation = 4  # noqa: SLF001
+        _bind(ex, generation=4)  # noqa: SLF001
         ex._last_submitted = 10  # noqa: SLF001
         ex._last_completed = 8  # noqa: SLF001
         ex._last_shown_frame_index = 5  # noqa: SLF001
         ex.status = MagicMock()
-        ex._buffer = MagicMock()  # noqa: SLF001
+        _bind(ex, buffer=MagicMock())  # noqa: SLF001
         ex._buffer.has.return_value = False  # noqa: SLF001 — not cached → submits
-        ex._reader_pool = MagicMock()  # noqa: SLF001
+        _bind(ex, reader_pool=MagicMock())  # noqa: SLF001
         ex._reader_pool.frame_count = 100  # noqa: SLF001
-        ex._timeline = MagicMock()  # noqa: SLF001
+        _bind(ex, timeline=MagicMock())  # noqa: SLF001
         ex._timeline.current_frame.return_value = 7  # noqa: SLF001
-        ex._chain = ()  # noqa: SLF001
+        _bind(ex, chain=())  # noqa: SLF001
         ex._handle_set_face_map(FaceMap.empty())  # noqa: SLF001
         assert ex._generation == 5  # noqa: SLF001
 
@@ -2498,16 +2519,16 @@ class TestSetGeometry:
         ex._state_lock = threading.RLock()  # noqa: SLF001
         ex._playback_wake = threading.Event()  # noqa: SLF001
         ex._work_queue = Queue()  # noqa: SLF001
-        ex._generation = 2  # noqa: SLF001
+        _bind(ex, generation=2)  # noqa: SLF001
         ex._last_submitted = 10  # noqa: SLF001
         ex._last_completed = 8  # noqa: SLF001
         ex._last_shown_frame_index = 5  # noqa: SLF001
         ex.status = MagicMock()
-        ex._buffer = MagicMock()  # noqa: SLF001
+        _bind(ex, buffer=MagicMock())  # noqa: SLF001
         ex._buffer.has.return_value = False  # noqa: SLF001 — not cached → submits
-        ex._reader_pool = MagicMock()  # noqa: SLF001
+        _bind(ex, reader_pool=MagicMock())  # noqa: SLF001
         ex._reader_pool.frame_count = 100  # noqa: SLF001
-        ex._timeline = MagicMock()  # noqa: SLF001
+        _bind(ex, timeline=MagicMock())  # noqa: SLF001
         ex._timeline.current_frame.return_value = 7  # noqa: SLF001
         return ex
 
@@ -2517,7 +2538,7 @@ class TestSetGeometry:
         ex = self._bare()
         swapper = MagicMock()  # has set_geometry
         plain = object()       # no set_geometry → skipped
-        ex._chain = (swapper, plain)  # noqa: SLF001
+        _bind(ex, chain=(swapper, plain))  # noqa: SLF001
         geom = object()
         ex._handle_set_geometry(geom)  # noqa: SLF001
         swapper.set_geometry.assert_called_once_with(geom)
@@ -2528,7 +2549,7 @@ class TestSetGeometry:
         # Switching detection-free geometry on/off must discard any in-flight
         # worker still rendering with the old geometry (one-frame stale flash).
         ex = self._bare()
-        ex._chain = ()  # noqa: SLF001
+        _bind(ex, chain=())  # noqa: SLF001
         ex._handle_set_geometry(None)  # noqa: SLF001
         assert ex._generation == 3  # noqa: SLF001 — bumped from 2
 
@@ -2543,7 +2564,7 @@ class TestProblemFrames:
         from sinner2.pipeline.realtime.frame_state import FrameStateMap
 
         ex = object.__new__(RealtimeExecutor)
-        ex._frame_states = FrameStateMap(n)
+        _bind(ex, frame_states=FrameStateMap(n))
         return ex
 
     def test_mark_face_only_flags_ran_but_empty(self):

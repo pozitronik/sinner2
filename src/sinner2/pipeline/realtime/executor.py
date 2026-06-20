@@ -45,6 +45,7 @@ from sinner2.pipeline.processor import Processor
 from sinner2.pipeline.realtime.chain_runner import ChainRunner
 from sinner2.pipeline.realtime.telemetry import TelemetryCollector
 from sinner2.pipeline.realtime.work_item import WorkItem
+from sinner2.pipeline.realtime.world import World
 from sinner2.pipeline.sections import SectionSet
 from sinner2.pipeline.skip_strategy import FrameSkipStrategy
 from sinner2.types import Frame, FrameIndex
@@ -133,18 +134,14 @@ class RealtimeExecutor:
             raise ValueError(
                 f"worker_count must be <= {MAX_WORKERS}; got {worker_count}"
             )
-        self._reader_pool = reader_pool
-        self._buffer = buffer
-        self._generation = 0  # bumped on reconfigure; tags WorkItems to a world
-        self._timeline = timeline
         # Clamp the wall-clock playhead to the real last frame so it can't run
         # off the end of the media (see Timeline.set_max_frame).
-        self._timeline.set_max_frame(max(0, reader_pool.frame_count - 1))
+        timeline.set_max_frame(max(0, reader_pool.frame_count - 1))
         # Per-frame pipeline state for the processing visualiser. The executor
         # writes the pre-buffer states (queued / processing / skipped); the
         # buffer writes the memory/disk/invalidation ones via this shared map.
-        self._frame_states = FrameStateMap(reader_pool.frame_count)
-        self._buffer.set_frame_states(self._frame_states)
+        frame_states = FrameStateMap(reader_pool.frame_count)
+        buffer.set_frame_states(frame_states)
         self._strategy = strategy
         # Initial worker count; the live count is len(self._workers) and can
         # be changed via set_worker_count() at any point after start().
@@ -161,7 +158,19 @@ class RealtimeExecutor:
         # PerWorkerProcessor, which hands each worker thread its own instance —
         # parallel enhance without multiplying the swapper's context. From
         # here it still looks like one shared chain of Processors.
-        self._chain: tuple[Processor, ...] = tuple(chain)
+        # The "world" bundles that chain with the source/target it runs against
+        # (reader pool / buffer / timeline / frame-state map), tagged by a
+        # generation. Reconfigure / set_chain / routing changes rebind it
+        # atomically (see World); a WorkItem carries its world's generation so a
+        # result from a superseded world is dropped, not written to the new buffer.
+        self._world = World(
+            generation=0,
+            chain=tuple(chain),
+            reader_pool=reader_pool,
+            buffer=buffer,
+            timeline=timeline,
+            frame_states=frame_states,
+        )
         self._state: _State = _State.STOPPED
         self._last_submitted: FrameIndex = -1
         self._last_completed: FrameIndex = -1
@@ -256,6 +265,37 @@ class RealtimeExecutor:
         # Cumulative strategy-skip counter (incremented in the dispatcher under
         # _state_lock; published from the playback tick).
         self._skipped = 0
+
+    # ---- World snapshot (source/target + chain; single source of truth) ----
+    # Read-only views: the many incidental reads keep their `self._chain` etc.
+    # spelling, while every WRITE goes through a World transition (reconfigure /
+    # set_chain / set_face_map / set_geometry) that rebinds self._world in one
+    # atomic assignment — so a reader that captures `self._world` once gets a
+    # consistent snapshot and a stale-world result is structurally droppable.
+
+    @property
+    def _chain(self) -> tuple[Processor, ...]:
+        return self._world.chain
+
+    @property
+    def _reader_pool(self) -> ReaderPool:
+        return self._world.reader_pool
+
+    @property
+    def _buffer(self) -> FrameBuffer:
+        return self._world.buffer
+
+    @property
+    def _timeline(self) -> Timeline:
+        return self._world.timeline
+
+    @property
+    def _frame_states(self) -> FrameStateMap:
+        return self._world.frame_states
+
+    @property
+    def _generation(self) -> int:
+        return self._world.generation
 
     # ---- Lifecycle ----
 
@@ -858,16 +898,17 @@ class RealtimeExecutor:
 
     def _submit_specific_frame(self, frame_index: FrameIndex) -> None:
         """Enqueue a specific frame regardless of state. Must NOT be called while holding state_lock."""
-        if frame_index < 0 or frame_index >= self._reader_pool.frame_count:
+        world = self._world
+        if frame_index < 0 or frame_index >= world.reader_pool.frame_count:
             return
         # Already cached for this config → reuse it instead of reprocessing.
-        if self._buffer.has(frame_index):
+        if world.buffer.has(frame_index):
             self._fast_complete_cached(frame_index)
             return
         # Submit the read non-blockingly — a reader thread will produce
         # the frame; the worker will await the future.
-        future = self._reader_pool.read_async(frame_index)
-        item = WorkItem(frame_index=frame_index, source_future=future, generation=self._generation)
+        future = world.reader_pool.read_async(frame_index)
+        item = WorkItem(frame_index=frame_index, source_future=future, generation=world.generation)
         try:
             self._work_queue.put(item, timeout=0.1)
         except Full:
@@ -905,7 +946,9 @@ class RealtimeExecutor:
             if p not in old_chain:
                 p.setup()
         with self._state_lock:
-            self._chain = chain
+            # Chain-only swap, same generation: in-flight work has been drained
+            # (set_chain quiesces before release), so nothing needs discarding.
+            self._world = self._world.with_chain(chain)
             to_release = [p for p in old_chain if p not in chain]
         # Wait for any worker mid-chain-run to finish before releasing
         # the dropped processors. Without this, release() can null internal
@@ -965,22 +1008,22 @@ class RealtimeExecutor:
         self._drain_work_queue()
         self._wait_for_inflight()
         with self._state_lock:
-            old_chain = self._chain
-            old_reader_pool = self._reader_pool
-            old_buffer = self._buffer
-            self._reader_pool = msg.reader_pool
-            self._buffer = msg.buffer
-            self._timeline = msg.timeline
-            self._timeline.set_max_frame(max(0, msg.reader_pool.frame_count - 1))
+            old = self._world
             # New target → a fresh per-frame state map sized to it, bound to the
             # adopted buffer (the old buffer keeps its own; it's discarded).
-            self._frame_states = FrameStateMap(msg.reader_pool.frame_count)
-            self._buffer.set_frame_states(self._frame_states)
-            self._chain = msg.chain
-            # New world: bump the generation so any worker still parked on an
-            # old-world source future discards its result instead of writing a
-            # stale frame into the new buffer.
-            self._generation += 1
+            new_frame_states = FrameStateMap(msg.reader_pool.frame_count)
+            msg.buffer.set_frame_states(new_frame_states)
+            msg.timeline.set_max_frame(max(0, msg.reader_pool.frame_count - 1))
+            # One atomic rebind into a new world with a bumped generation, so any
+            # worker still parked on an old-world source future discards its
+            # result instead of writing a stale frame into the new buffer.
+            self._world = old.reconfigured(
+                chain=msg.chain,
+                reader_pool=msg.reader_pool,
+                buffer=msg.buffer,
+                timeline=msg.timeline,
+                frame_states=new_frame_states,
+            )
             self._strategy = msg.strategy
             self._playback_mode = msg.playback_mode
             # New world → reset progress trackers and the playback dup-guard so
@@ -995,6 +1038,9 @@ class RealtimeExecutor:
             else:
                 self._timeline.pause()
                 self._state = _State.PAUSED
+        old_chain = old.chain
+        old_reader_pool = old.reader_pool
+        old_buffer = old.buffer
         # 3) Release the OLD chain's processors (drops refs; cached/shared models
         #    like the inswapper persist in model_cache). Off the state lock.
         for p in old_chain:
@@ -1059,7 +1105,7 @@ class RealtimeExecutor:
             # worker still in-flight on the OLD state has its result DISCARDED
             # (not published as a one-frame stale flash) when it lands after the
             # re-render below. The chain isn't released here, so no inflight wait.
-            self._generation += 1
+            self._world = self._world.bumped()
             current = self._timeline.current_frame()
             self._last_submitted = current - 1
             self._last_completed = min(self._last_completed, current - 1)
@@ -1088,7 +1134,7 @@ class RealtimeExecutor:
             # worker still in-flight on the OLD state has its result DISCARDED
             # (not published as a one-frame stale flash) when it lands after the
             # re-render below. The chain isn't released here, so no inflight wait.
-            self._generation += 1
+            self._world = self._world.bumped()
             current = self._timeline.current_frame()
             self._last_submitted = current - 1
             self._last_completed = min(self._last_completed, current - 1)
@@ -1277,7 +1323,7 @@ class RealtimeExecutor:
         # Submit the read non-blockingly — a reader thread will produce
         # the frame; the worker awaits the future.
         future = self._reader_pool.read_async(frame_index)
-        item = WorkItem(frame_index=frame_index, source_future=future, generation=self._generation)
+        item = WorkItem(frame_index=frame_index, source_future=future, generation=self._world.generation)
         try:
             self._work_queue.put(item, timeout=0.1)
         except Full:
@@ -1392,9 +1438,10 @@ class RealtimeExecutor:
         write an OLD-world frame into the NEW buffer. Returns False if discarded.
         """
         with self._state_lock:
-            if item.generation != self._generation:
+            world = self._world
+            if item.generation != world.generation:
                 return False
-            buffer = self._buffer
+            buffer = world.buffer
             if self._last_completed < item.frame_index:
                 self._last_completed = item.frame_index
         buffer.put(item.frame_index, result)

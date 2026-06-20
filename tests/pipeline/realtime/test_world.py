@@ -88,6 +88,23 @@ class TestBumped:
         assert w.generation == 7
 
 
+class TestWithChain:
+    def test_replaces_only_chain_keeping_generation_and_components(self):
+        w = _world(generation=4)
+        nw = w.with_chain(("chain1",))
+        assert nw.generation == 4  # set_chain drained in-flight → no bump
+        assert nw.chain == ("chain1",)
+        assert nw.reader_pool is w.reader_pool
+        assert nw.buffer is w.buffer
+        assert nw.timeline is w.timeline
+        assert nw.frame_states is w.frame_states
+
+    def test_leaves_the_original_world_untouched(self):
+        w = _world(generation=4)
+        w.with_chain(("chain1",))
+        assert w.chain == ("chain0",)
+
+
 class TestGenerationMonotonicity:
     def test_advances_one_per_transition_across_a_chain(self):
         w = _world(generation=0)
