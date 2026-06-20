@@ -17,12 +17,14 @@ cuda = [
     "torch>=2.7",
     "insightface>=0.7.3",
     "gfpgan>=1.3.8",
+    "nvidia-ml-py>=12",  # pynvml: device VRAM readout (NVIDIA only)
 ]
 cuda118 = [
     "onnxruntime-gpu>=1.18,<1.19",
     "torch",
     "insightface>=0.7.3",
     "gfpgan>=1.3.8",
+    "nvidia-ml-py>=12",  # pynvml: device VRAM readout (NVIDIA only)
 ]
 cpu = [
     "onnxruntime>=1.20",
@@ -38,6 +40,7 @@ mac-arm = [
 ]
 gui = [
     "PySide6>=6.8",
+    "psutil>=5",  # process RAM readout for the memory monitor
 ]
 # Optional ~2-3x faster ONNX swap+detect via the TensorRT EP. Pin the 10.x major:
 # onnxruntime-gpu's TRT EP links nvinfer_10 (the 11.x line would fail to load and
