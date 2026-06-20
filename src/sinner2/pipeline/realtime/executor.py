@@ -43,6 +43,10 @@ from sinner2.pipeline.face_map_geometry import FrameGeometry
 from sinner2.pipeline.playback_mode import PlaybackMode
 from sinner2.pipeline.processor import Processor
 from sinner2.pipeline.realtime.chain_runner import ChainRunner
+from sinner2.pipeline.realtime.playback import (
+    compute_playback_sleep,
+    select_fallback_index,
+)
 from sinner2.pipeline.realtime.telemetry import TelemetryCollector
 from sinner2.pipeline.realtime.work_item import WorkItem
 from sinner2.pipeline.realtime.world import World
@@ -65,14 +69,6 @@ _DISPATCHER_TICK_S = 0.005
 # reader genuinely hangs longer than this, something else is wrong
 # and surfacing the timeout is better than blocking the worker.
 _WORKER_READ_TIMEOUT_S = 30.0
-# Default fixed-rate tick when PlaybackMode.FIXED_30 is selected. Keep at
-# 30 Hz: high enough for smooth perceived motion, low enough to be cheap.
-_FIXED_PLAYBACK_TICK_S = 1.0 / 30
-# Floor for UNLIMITED mode so we still yield to the OS scheduler rather
-# than burning a core in a tight loop. The per-tick duplicate-frame guard
-# means we don't actually emit more frames than the timeline produces, so
-# this floor mostly just bounds wakeup frequency.
-_UNLIMITED_PLAYBACK_TICK_S = 0.001
 # Throttle metrics publication to ~UI rate: buffer.metrics() recomputes
 # percentiles (two sorts over the latency deque) and the playback tick can run
 # at ~1 kHz in UNLIMITED mode, so publishing every tick burns CPU the overlay
@@ -1507,18 +1503,14 @@ class RealtimeExecutor:
             # at the paused frame — the worker's resubmit (from _handle_pause)
             # will produce that exact frame and the display converges.
             fallback_index = self._buffer.latest_index_at_or_below(index)
-            # Don't repaint an OLDER frame than what's already on screen during
-            # forward playback — that's a visible backward stutter (the newest
-            # frame ≤ target can be lower than the last shown when skipped
-            # frames complete out of order or an old one is evicted). Hold the
-            # current frame instead. A seek resets _last_shown_frame_index to
-            # None, so seeks (incl. backward) still repaint freely.
-            if fallback_index is not None and (
-                self._last_shown_frame_index is None
-                or fallback_index >= self._last_shown_frame_index
-            ):
-                frame = self._buffer.get(fallback_index)
-                shown_index = fallback_index
+            # The backward-stutter guard (don't repaint older than what's already
+            # shown during forward playback) lives in select_fallback_index.
+            chosen = select_fallback_index(
+                fallback_index, self._last_shown_frame_index
+            )
+            if chosen is not None:
+                frame = self._buffer.get(chosen)
+                shown_index = chosen
         if (
             frame is not None
             and shown_index is not None
@@ -1547,21 +1539,11 @@ class RealtimeExecutor:
         self._refresh_fps()
 
     def _compute_playback_sleep(self) -> float | None:
-        """How long to wait before the next playback tick.
-
-        Returns None for "block until woken" — used when nothing is
-        producing frame changes (paused or idle). Otherwise returns the
-        per-mode tick interval. The wake event interrupts the wait early
-        on any state change, so this is purely the upper bound between
-        ticks during normal playback.
-        """
+        """Read the playback state under the lock and defer the per-mode tick
+        interval to compute_playback_sleep (see playback.py)."""
         with self._state_lock:
             state = self._state
             mode = self._playback_mode
-        if state is not _State.PLAYING:
-            return None
-        if mode is PlaybackMode.UNLIMITED:
-            return _UNLIMITED_PLAYBACK_TICK_S
-        if mode is PlaybackMode.SOURCE:
-            return 1.0 / self._timeline.fps
-        return _FIXED_PLAYBACK_TICK_S
+        return compute_playback_sleep(
+            state is _State.PLAYING, mode, self._timeline.fps
+        )
