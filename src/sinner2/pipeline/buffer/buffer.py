@@ -234,11 +234,17 @@ class FrameBuffer:
         for them, so offering one would stall the fallback for a tick.
         """
         with self._lock:
-            candidates = [
-                i for i in self._recent_indices
-                if i <= target and i not in self._invalidated
-            ]
-        return max(candidates) if candidates else None
+            # Generator (not a materialized list) into max(): on the high-
+            # frequency playback fallback path this drops a per-tick allocation
+            # of up to 1024 ints. max() iterates under the lock — same O(n) as
+            # the old list build, just without the intermediate list.
+            return max(
+                (
+                    i for i in self._recent_indices
+                    if i <= target and i not in self._invalidated
+                ),
+                default=None,
+            )
 
     def invalidate_from(self, index: FrameIndex) -> None:
         self._cache.evict_from(index)
