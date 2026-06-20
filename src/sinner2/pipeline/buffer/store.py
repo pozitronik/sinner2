@@ -68,6 +68,15 @@ class DiskFrameStore:
         return out
 
     def clear_from(self, index: FrameIndex) -> None:
+        if index <= 0:
+            # Invalidate-all: one rmtree beats globbing + unlinking every file
+            # (O(files) syscalls — a stutter on a large cache, worse under
+            # Windows AV). Recreate the directory empty so the store stays usable.
+            shutil.rmtree(self._dir, ignore_errors=True)
+            self._dir.mkdir(parents=True, exist_ok=True)
+            return
+        # index > 0: glob (not a directed walk) so non-contiguous gaps from
+        # out-of-order multi-worker writes don't strand higher frames.
         for f in self._dir.glob(f"*.{self._writer.extension}"):
             try:
                 if int(f.stem) >= index:

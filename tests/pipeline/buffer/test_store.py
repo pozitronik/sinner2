@@ -63,6 +63,9 @@ class TestDiskFrameStore:
         store.clear_from(0)
         assert not store.has(0)
         assert not store.has(5)
+        # The directory is recreated empty — the store stays usable afterwards.
+        store.write(1, _frame())
+        assert store.has(1)
 
     def test_creates_nested_directory_if_missing(self, tmp_path: Path):
         nested = tmp_path / "a" / "b" / "c"
