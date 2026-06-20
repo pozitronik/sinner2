@@ -170,7 +170,10 @@ def swap_with_uprighting(
 
         target = None
         if redetect:
-            target = _central_face(analyser.analyse_uncached(upright), size)
+            # Detection-only: the redetect needs just the upright face's box +
+            # keypoints (for re-alignment), not the full buffalo_l pack's aux
+            # models (landmarks/genderage/recognition) per tilted face.
+            target = _central_face(analyser.detect_only(upright), size)
         if target is None:
             target = _rotated_face(face, m)
 

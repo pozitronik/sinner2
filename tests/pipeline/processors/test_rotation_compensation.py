@@ -96,7 +96,7 @@ class TestSwapWithUprighting:
 
     def test_composites_change_near_face_centre(self):
         frame = np.full((100, 100, 3), 50, np.uint8)
-        analyser = SimpleNamespace(analyse_uncached=lambda img: [])  # → fallback kps
+        analyser = SimpleNamespace(detect_only=lambda img: [])  # → fallback kps
         out = rc.swap_with_uprighting(
             frame, self._face(), object(), _MarkSwapper(), analyser,
             angle_deg=20.0, redetect=False,
@@ -116,7 +116,7 @@ class TestSwapWithUprighting:
             bbox=np.array([4, 4, 44, 44], float),
             kps=np.array([[14, 18], [34, 18], [24, 28], [16, 36], [32, 36]], float),
         )
-        analyser = SimpleNamespace(analyse_uncached=lambda img: [])
+        analyser = SimpleNamespace(detect_only=lambda img: [])
         out = rc.swap_with_uprighting(
             frame, face, object(), _MarkSwapper(), analyser,
             angle_deg=25.0, redetect=False,
@@ -133,7 +133,7 @@ class TestSwapWithUprighting:
                 return img
 
         class _BoomAnalyser:
-            def analyse_uncached(self, img):
+            def detect_only(self, img):
                 raise RuntimeError("detector down")
 
         out = rc.swap_with_uprighting(
@@ -142,3 +142,26 @@ class TestSwapWithUprighting:
         )
         assert out.shape == frame.shape
         assert seen_shapes == [100]  # only the full-frame fallback swap ran
+
+    def test_redetect_uses_detection_only_not_full_pack(self):
+        # The redetect must use the cheap det-only call (box+kps), NOT the full
+        # buffalo_l pack (aux landmark/genderage/recognition nets) — that's the
+        # whole point of the rotation perf fix.
+        frame = np.full((100, 100, 3), 50, np.uint8)
+        calls = {"detect_only": 0, "analyse_uncached": 0}
+
+        class _Analyser:
+            def detect_only(self, img):
+                calls["detect_only"] += 1
+                return []  # empty → fallback kps; we only assert which ran
+
+            def analyse_uncached(self, img):
+                calls["analyse_uncached"] += 1
+                return []
+
+        rc.swap_with_uprighting(
+            frame, self._face(), object(), _MarkSwapper(), _Analyser(),
+            angle_deg=20.0, redetect=True,
+        )
+        assert calls["detect_only"] == 1
+        assert calls["analyse_uncached"] == 0

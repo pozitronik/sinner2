@@ -254,7 +254,7 @@ class FaceAnalyser:
         if self._detector is not None:
             faces = self._detector.detect(frame)
         elif self._detection_only:
-            faces = self._detect_kps_only(frame)
+            faces = self.detect_only(frame)
         else:
             faces = _get_shared_face_analysis(
                 self._providers, self._detection_size
@@ -263,10 +263,12 @@ class FaceAnalyser:
             self._cached_faces = faces
         return list(faces or [])
 
-    def _detect_kps_only(self, frame: Frame) -> list[Any]:
+    def detect_only(self, frame: Frame) -> list[Any]:
         """Run ONLY the shared pack's detection model (det_10g) — the exact
-        call `.get()` starts with — and wrap results as FaceLite, skipping the
-        per-face aux models. Thread-safety matches `.get()` (same det call)."""
+        call `.get()` starts with — and wrap results as FaceLite (box + kps +
+        det_score), skipping the per-face aux models (2 landmark nets, genderage,
+        recognition). Thread-safety matches `.get()` (same det call). Use this
+        when only the box/keypoints are needed (e.g. rotation re-detect)."""
         from sinner2.pipeline.detectors import FaceLite
 
         app = _get_shared_face_analysis(self._providers, self._detection_size)
