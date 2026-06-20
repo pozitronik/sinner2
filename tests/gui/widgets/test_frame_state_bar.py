@@ -135,3 +135,21 @@ class TestProblemMarkers:
         bar.set_data(_states(*([FrameState.READY_MEM] * 4)), 4)  # no faces arg
         assert bar._faces == b""  # noqa: SLF001
         bar.grab()
+
+
+class TestRenderCache:
+    def test_playhead_move_reuses_cached_stack(self, qtbot):
+        # A playhead move must NOT rebuild the per-column state stack — that was
+        # the per-frame GUI-thread cost. set_data / clear invalidate it.
+        bar = QFrameStateBar()
+        qtbot.addWidget(bar)
+        bar.resize(50, 16)
+        bar.set_data(_states(*([FrameState.READY_MEM] * 100)), 100)
+        assert bar._cache is None  # noqa: SLF001 — invalidated by set_data
+        bar.grab()  # force a paint → builds the cached stack
+        cached = bar._cache  # noqa: SLF001
+        assert cached is not None
+        bar.set_playhead(10)
+        assert bar._cache is cached  # noqa: SLF001 — same pixmap, not rebuilt
+        bar.set_data(_states(*([FrameState.QUEUED] * 100)), 100)
+        assert bar._cache is None  # noqa: SLF001 — data change invalidates

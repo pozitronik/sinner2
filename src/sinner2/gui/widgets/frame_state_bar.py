@@ -15,7 +15,14 @@ from __future__ import annotations
 
 import numpy as np
 from PySide6.QtCore import QRectF, Qt, Signal
-from PySide6.QtGui import QColor, QMouseEvent, QPaintEvent, QPainter
+from PySide6.QtGui import (
+    QColor,
+    QMouseEvent,
+    QPaintEvent,
+    QPainter,
+    QPixmap,
+    QResizeEvent,
+)
 from PySide6.QtWidgets import QWidget
 
 from sinner2.pipeline.realtime.frame_state import FaceMark, FrameState
@@ -61,6 +68,11 @@ class QFrameStateBar(QWidget):
         self._states = b""
         self._faces = b""
         self._playhead = -1
+        # Cached render of the state stack + markers (everything EXCEPT the
+        # playhead). Rebuilt only when the data / size change — NOT on the
+        # per-frame playhead moves, which were re-running the whole per-column
+        # bin on the GUI thread (py-spy: the heaviest GUI-thread cost).
+        self._cache: QPixmap | None = None
         self.setMinimumHeight(16)
         self.setToolTip(
             "Processing visualiser — per-frame pipeline state.\n"
@@ -76,6 +88,7 @@ class QFrameStateBar(QWidget):
         self._states = states
         self._faces = faces
         self._frame_count = max(0, frame_count)
+        self._cache = None  # data changed → rebuild the stack on the next paint
         self.update()
 
     def set_playhead(self, frame: int) -> None:
@@ -88,7 +101,12 @@ class QFrameStateBar(QWidget):
         self._faces = b""
         self._frame_count = 0
         self._playhead = -1
+        self._cache = None
         self.update()
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        self._cache = None  # re-render the stack at the new width
+        super().resizeEvent(event)
 
     def _frame_at(self, x: int) -> int:
         """Map a local x pixel to a frame index (inverse of the paint mapping)."""
@@ -105,52 +123,70 @@ class QFrameStateBar(QWidget):
             super().mousePressEvent(event)
 
     def paintEvent(self, event: QPaintEvent) -> None:
+        w = self.rect().width()
+        h = self.rect().height()
+        if self._cache is None:
+            self._cache = self._render_stack(w, h)
         painter = QPainter(self)
-        rect = self.rect()
-        painter.fillRect(rect, _BACKGROUND)
+        painter.drawPixmap(0, 0, self._cache)
+        # The playhead is the only per-frame-changing element — draw it fresh
+        # over the cached stack (cheap) so a playhead move doesn't re-bin.
         n = self._frame_count
-        w = rect.width()
-        h = rect.height()
+        if n > 0 and w > 0 and 0 <= self._playhead < n:
+            px = self._playhead * w // n
+            painter.fillRect(QRectF(px, 0.0, 1.0, float(h)), _PLAYHEAD)
+
+    def _render_stack(self, w: int, h: int) -> QPixmap:
+        """Render the per-frame state stack + no-face markers into a pixmap (the
+        playhead is added per-paint, not here). Cached by paintEvent and rebuilt
+        only when the data / size change."""
+        pm = QPixmap(max(1, w), max(1, h))
+        pm.fill(_BACKGROUND)
+        n = self._frame_count
         if n <= 0 or w <= 0 or not self._states:
-            return
+            return pm
         arr = np.frombuffer(self._states, dtype=np.uint8)
         count = min(n, arr.shape[0])
         if count <= 0:
-            return
+            return pm
         arr = arr[:count]
-        for cx in range(w):
-            lo = cx * n // w
-            hi = max(lo + 1, (cx + 1) * n // w)
-            seg = arr[lo:hi]
-            seg = seg[seg < _NSTATES]  # guard against any out-of-range byte
-            if seg.size == 0:
-                continue
-            counts = np.bincount(seg, minlength=_NSTATES)
-            total = int(seg.size)
-            y = float(h)
-            for state in _STACK_ORDER:
-                c = int(counts[state])
-                if c == 0:
+        painter = QPainter(pm)
+        try:
+            for cx in range(w):
+                lo = cx * n // w
+                hi = max(lo + 1, (cx + 1) * n // w)
+                seg = arr[lo:hi]
+                seg = seg[seg < _NSTATES]  # guard against any out-of-range byte
+                if seg.size == 0:
                     continue
-                seg_h = c / total * h
-                painter.fillRect(
-                    QRectF(cx, y - seg_h, 1.0, seg_h), _COLORS[state]
-                )
-                y -= seg_h
-        # Problem-frame markers: a magenta tick at the TOP of any column that
-        # covers a no-face frame, painted over the state stack.
-        if self._faces:
-            farr = np.frombuffer(self._faces, dtype=np.uint8)
-            fcount = min(n, farr.shape[0])
-            if fcount > 0:
-                farr = farr[:fcount]
-                mark_h = min(3.0, float(h))
-                for cx in range(w):
-                    lo = cx * n // w
-                    hi = max(lo + 1, (cx + 1) * n // w)
-                    seg = farr[lo:hi]
-                    if seg.size and bool(np.any(seg == _NO_FACE_MARK)):
-                        painter.fillRect(QRectF(cx, 0.0, 1.0, mark_h), _NO_FACE)
-        if 0 <= self._playhead < n:
-            px = self._playhead * w // n
-            painter.fillRect(QRectF(px, 0.0, 1.0, float(h)), _PLAYHEAD)
+                counts = np.bincount(seg, minlength=_NSTATES)
+                total = int(seg.size)
+                y = float(h)
+                for state in _STACK_ORDER:
+                    c = int(counts[state])
+                    if c == 0:
+                        continue
+                    seg_h = c / total * h
+                    painter.fillRect(
+                        QRectF(cx, y - seg_h, 1.0, seg_h), _COLORS[state]
+                    )
+                    y -= seg_h
+            # Problem-frame markers: a magenta tick at the TOP of any column that
+            # covers a no-face frame, painted over the state stack.
+            if self._faces:
+                farr = np.frombuffer(self._faces, dtype=np.uint8)
+                fcount = min(n, farr.shape[0])
+                if fcount > 0:
+                    farr = farr[:fcount]
+                    mark_h = min(3.0, float(h))
+                    for cx in range(w):
+                        lo = cx * n // w
+                        hi = max(lo + 1, (cx + 1) * n // w)
+                        seg = farr[lo:hi]
+                        if seg.size and bool(np.any(seg == _NO_FACE_MARK)):
+                            painter.fillRect(
+                                QRectF(cx, 0.0, 1.0, mark_h), _NO_FACE
+                            )
+        finally:
+            painter.end()
+        return pm
