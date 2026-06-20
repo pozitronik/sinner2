@@ -1,5 +1,5 @@
 import numpy as np
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal, Slot
+from PySide6.QtCore import QPointF, QRectF, Qt, QThread, Signal, Slot
 from PySide6.QtGui import QImage, QPainter, QPaintEvent, QPixmap, QTransform
 from PySide6.QtWidgets import QWidget
 
@@ -90,8 +90,17 @@ class QFrameDisplayWidget(QWidget):
         return self._rotated_source()
 
     def show_frame(self, frame: Frame, index: FrameIndex = 0) -> None:
-        """Schedule the frame for display. Safe to call from any thread."""
-        self._frameReady.emit(frame, index)
+        """Schedule the frame for display. Safe to call from any thread.
+
+        Already on the GUI thread (the live path: its controller has ALREADY
+        hopped the frame over via its own queued frameReady signal) → update
+        synchronously, skipping a redundant GUI→GUI event-loop hop per frame.
+        Cross-thread callers (the file executor's worker pool) still marshal
+        through the queued signal so the pixmap work lands on the GUI thread."""
+        if QThread.currentThread() is self.thread():
+            self._on_frame_ready(frame, index)
+        else:
+            self._frameReady.emit(frame, index)
 
     @Slot(object, int)
     def _on_frame_ready(self, frame: Frame, _index: FrameIndex) -> None:

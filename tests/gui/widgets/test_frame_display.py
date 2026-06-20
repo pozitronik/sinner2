@@ -54,6 +54,14 @@ class TestQFrameDisplayWidget:
         assert widget._pixmap.width() == 30  # noqa: SLF001
         assert widget._pixmap.height() == 20  # noqa: SLF001
 
+    def test_show_frame_on_gui_thread_is_synchronous(self, widget):
+        # On the GUI thread (the live path, already hopped over by its
+        # controller) the pixmap updates IMMEDIATELY — no event-loop spin —
+        # so the redundant GUI→GUI queued hop is gone. No qtbot.wait here.
+        widget.show_frame(_bgr(h=12, w=24))
+        assert widget._pixmap is not None  # noqa: SLF001 — set synchronously
+        assert widget._pixmap.width() == 24  # noqa: SLF001
+
     def test_subsequent_frame_replaces_previous(self, widget, qtbot):
         widget.show_frame(_bgr(h=10, w=10))
         qtbot.waitUntil(lambda: widget._pixmap is not None and widget._pixmap.width() == 10, timeout=1000)  # noqa: SLF001,E501
