@@ -85,9 +85,18 @@ class QFrameStateBar(QWidget):
     def set_data(
         self, states: bytes, frame_count: int, faces: bytes = b""
     ) -> None:
+        fc = max(0, frame_count)
+        if (
+            states == self._states
+            and faces == self._faces
+            and fc == self._frame_count
+        ):
+            return  # unchanged snapshot — the 20 Hz visualiser polls at a fixed
+            # rate, so a slow chain leaves the bytes identical across many ticks;
+            # skip re-binning every column (the heaviest GUI-thread cost).
         self._states = states
         self._faces = faces
-        self._frame_count = max(0, frame_count)
+        self._frame_count = fc
         self._cache = None  # data changed → rebuild the stack on the next paint
         self.update()
 

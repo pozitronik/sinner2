@@ -153,3 +153,19 @@ class TestRenderCache:
         assert bar._cache is cached  # noqa: SLF001 — same pixmap, not rebuilt
         bar.set_data(_states(*([FrameState.QUEUED] * 100)), 100)
         assert bar._cache is None  # noqa: SLF001 — data change invalidates
+
+    def test_set_data_skips_rerender_when_unchanged(self, qtbot):
+        # The 20 Hz visualiser polls set_data every tick; an unchanged snapshot
+        # must NOT invalidate the cache (no per-column re-render).
+        bar = QFrameStateBar()
+        qtbot.addWidget(bar)
+        bar.resize(50, 16)
+        states = _states(*([FrameState.READY_MEM] * 10))
+        bar.set_data(states, 10)
+        bar.grab()  # build the cache
+        cached = bar._cache  # noqa: SLF001
+        assert cached is not None
+        bar.set_data(bytes(states), 10)  # value-identical snapshot → skip
+        assert bar._cache is cached  # noqa: SLF001 — cache NOT invalidated
+        bar.set_data(_states(*([FrameState.QUEUED] * 10)), 10)  # changed
+        assert bar._cache is None  # noqa: SLF001 — invalidated
