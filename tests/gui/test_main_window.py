@@ -479,6 +479,27 @@ class TestStatusActionButtons:
         assert window._detection_sink.latest_detections() is not None  # noqa: SLF001
         assert seeks == [3]
 
+    def test_face_navigate_seeks_and_draws_catalog_box(self, window, monkeypatch):
+        # A found-face row click seeks AND draws the scanned box straight onto the
+        # overlay, so it shows even when the swapper skips a cached frame.
+        seeks = []
+        monkeypatch.setattr(window._session, "seek_to", seeks.append)  # noqa: SLF001
+        window._face_overlay_on = True  # noqa: SLF001 — overlay active
+        window._native_size = (640, 480)  # noqa: SLF001
+        window._on_face_navigate(7, (1.0, 2.0, 3.0, 4.0))  # noqa: SLF001
+        assert seeks == [7]
+        drawn = window._face_overlay._detections  # noqa: SLF001
+        assert len(drawn) == 1 and drawn[0].bbox == (1.0, 2.0, 3.0, 4.0)
+
+    def test_face_navigate_without_box_just_seeks(self, window, monkeypatch):
+        seeks = []
+        monkeypatch.setattr(window._session, "seek_to", seeks.append)  # noqa: SLF001
+        window._face_overlay_on = True  # noqa: SLF001
+        window._native_size = (640, 480)  # noqa: SLF001
+        window._on_face_navigate(5, None)  # noqa: SLF001
+        assert seeks == [5]
+        assert window._face_overlay._detections == []  # noqa: SLF001 — nothing drawn
+
     def test_face_map_overlay_gated_by_toggle(self, window, monkeypatch):
         # The "Use face map" toggle is the gate: only with it ON (+ editor open)
         # is the overlay the FACE-MAP overlay (pick + highlight) and the F8

@@ -115,7 +115,9 @@ class QFaceMapPanel(QWidget):
     analyzeRequested = Signal(int)              # stride
     cancelRequested = Signal()
     resetRequested = Signal()                  # clear catalog + scan progress
-    navigateRequested = Signal(int)            # frame index of a clicked person
+    # frame index of a clicked person + that person's box (native frame coords)
+    # at that frame, or None when no box is catalogued for it.
+    navigateRequested = Signal(int, object)
     deleteIdentitiesRequested = Signal(list)   # ids to exclude
     mergeIdentitiesRequested = Signal(list)    # ids to fold into one
     selectionChanged = Signal()                # table row selection changed
@@ -627,8 +629,15 @@ class QFaceMapPanel(QWidget):
         if ident_id is None:
             return
         ident = self._face_map_identity(ident_id)
-        if ident is not None and ident.first_frame is not None:
-            self.navigateRequested.emit(ident.first_frame)
+        if ident is None:
+            return
+        # Prefer the CLEAREST occurrence (ref_frame, which also drives the
+        # thumbnail) and carry its box, so the overlay can draw that exact box
+        # on arrival. Fall back to the earliest occurrence with no box.
+        if ident.ref_frame is not None and ident.ref_bbox is not None:
+            self.navigateRequested.emit(ident.ref_frame, ident.ref_bbox)
+        elif ident.first_frame is not None:
+            self.navigateRequested.emit(ident.first_frame, None)
 
     def _on_delete_shortcut(self) -> None:
         """Delete key (while the table has focus) removes the selected people."""

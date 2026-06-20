@@ -81,7 +81,7 @@ class FaceMapController(QObject):
         landmark_min_score: Callable[[], float] | None = None,
         show_preview: Callable[[Any], None] | None = None,
         set_position: Callable[[int], None] | None = None,
-        navigate: Callable[[int], None] | None = None,
+        navigate: Callable[[int, object], None] | None = None,
         status: Callable[[str, int], None] | None = None,
         extract_target_thumb: TargetThumbFn | None = None,
         load_source_thumb: SourceThumbFn | None = None,
@@ -277,9 +277,9 @@ class FaceMapController(QObject):
         if self._set_position is not None:
             self._set_position(int(frame_idx))
 
-    def _on_navigate(self, frame_idx: int) -> None:
+    def _on_navigate(self, frame_idx: int, bbox: object = None) -> None:
         if self._navigate is not None and frame_idx >= 0:
-            self._navigate(int(frame_idx))
+            self._navigate(int(frame_idx), bbox)
 
     # ---- Edits (called by the panel / main window) ----
 

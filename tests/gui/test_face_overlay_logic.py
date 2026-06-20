@@ -35,6 +35,7 @@ def _ctl(**overrides):
     ctl._face_overlay_on = False
     ctl._comparison_on = False
     ctl._overlay_drawn_frame = None
+    ctl._pinned_box = None
     ctl._last_displayed_frame = None
     ctl._last_probe_feed = 0.0
     for key, value in overrides.items():
@@ -227,3 +228,54 @@ class TestFaceClicked:
         ctl, win = _ctl(_overlay_drawn_frame=42)
         ctl._on_overlay_face_clicked((10, 20, 30, 40))
         win._face_map_ctl.on_face_clicked.assert_called_once_with((10, 20, 30, 40), 42)
+
+
+class TestCatalogFace:
+    """show_catalog_face draws the scanned box on navigate and PINS it so an
+    empty live re-detect (or a cached frame the swapper skips) can't wipe it,
+    while a real detection supersedes it."""
+
+    def test_draws_and_pins_when_active(self):
+        ctl, _ = _ctl(_face_overlay_on=True)
+        ctl.show_catalog_face((1.0, 2.0, 3.0, 4.0), 640, 480)
+        dets, w, h = ctl._face_overlay.set_detections.call_args.args
+        assert len(dets) == 1 and dets[0].bbox == (1.0, 2.0, 3.0, 4.0)
+        assert (w, h) == (640, 480)
+        ctl._face_overlay.set_highlight.assert_called_once_with((1.0, 2.0, 3.0, 4.0))
+        assert ctl._pinned_box == (1.0, 2.0, 3.0, 4.0)
+
+    def test_noop_when_overlay_down(self):
+        ctl, _ = _ctl()  # overlay inactive
+        ctl.show_catalog_face((1.0, 2.0, 3.0, 4.0), 640, 480)
+        ctl._face_overlay.set_detections.assert_not_called()
+        assert ctl._pinned_box is None
+
+    def test_empty_detections_keep_the_pin(self):
+        ctl, _ = _ctl(_face_overlay_on=True, _pinned_box=(1.0, 2.0, 3.0, 4.0))
+        ctl._refresh_face_highlight = MagicMock()
+        ctl._on_detections([], 640, 480)
+        ctl._face_overlay.set_detections.assert_not_called()
+        assert ctl._pinned_box == (1.0, 2.0, 3.0, 4.0)
+
+    def test_nonempty_detections_supersede_the_pin(self):
+        ctl, _ = _ctl(_face_overlay_on=True, _pinned_box=(1.0, 2.0, 3.0, 4.0))
+        ctl._refresh_face_highlight = MagicMock()
+        ctl._detection_sink.latest_raw.return_value = ("a", "b", "c", 9)
+        ctl._on_detections(["d"], 320, 240)
+        ctl._face_overlay.set_detections.assert_called_once_with(["d"], 320, 240)
+        assert ctl._pinned_box is None
+
+    def test_seek_clears_the_pin(self):
+        ctl, _ = _ctl(_face_overlay_on=True, _pinned_box=(1.0, 2.0, 3.0, 4.0))
+        ctl._clear_overlay_for_seek()
+        assert ctl._pinned_box is None
+        ctl._detection_sink.clear.assert_called_once()
+
+    def test_overlay_tick_keeps_pin_on_empty_sink(self):
+        ctl, win = _ctl(_face_overlay_on=True, _pinned_box=(1.0, 2.0, 3.0, 4.0))
+        win._processors.swapper_enabled.return_value = True
+        ctl._refresh_face_highlight = MagicMock()
+        ctl._detection_sink.latest_detections.return_value = ([], 640, 480)
+        ctl._overlay_tick()
+        ctl._face_overlay.set_detections.assert_not_called()
+        assert ctl._pinned_box == (1.0, 2.0, 3.0, 4.0)

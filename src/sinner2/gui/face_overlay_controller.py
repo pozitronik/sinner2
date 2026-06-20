@@ -20,7 +20,10 @@ from typing import TYPE_CHECKING
 from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal
 
 from sinner2.gui.face_detection_probe import FaceDetectionProbe, FaceDetectionSink
-from sinner2.gui.widgets.face_detection_overlay import QFaceDetectionOverlay
+from sinner2.gui.widgets.face_detection_overlay import (
+    FaceDetection,
+    QFaceDetectionOverlay,
+)
 
 if TYPE_CHECKING:
     from sinner2.types import Frame
@@ -47,6 +50,12 @@ class FaceOverlayController(QObject):
         # Frame index of the detections the overlay last DREW (from the sink). A
         # click-to-pick is rejected if the sink has advanced since (stale boxes).
         self._overlay_drawn_frame: int | None = None
+        # A box drawn straight from the scan catalog when navigating to a found
+        # face (show_catalog_face). PINNED: an EMPTY live result for the same
+        # frame must not wipe it (a cached frame the swapper skips publishes
+        # nothing; a single live re-detect can miss a face the scan caught). A
+        # NON-empty live result supersedes it; the next seek clears it.
+        self._pinned_box: tuple[float, float, float, float] | None = None
         self._face_overlay = QFaceDetectionOverlay(parent=window._display)
         window._display.set_face_overlay(self._face_overlay)
         self._face_overlay.faceClicked.connect(self._on_overlay_face_clicked)
@@ -154,8 +163,26 @@ class FaceOverlayController(QObject):
     def _clear_overlay_for_seek(self) -> None:
         if not self._overlay_active():
             return
+        self._pinned_box = None
         self._detection_sink.clear()
         self._face_overlay.clear()
+
+    def show_catalog_face(
+        self, bbox: tuple[float, float, float, float], frame_w: int, frame_h: int
+    ) -> None:
+        """Draw a single face box straight from the scan catalog (no live
+        detection) when navigating to a found face, so its box shows even on a
+        cached frame the swapper skips — instead of relying on a live re-detect
+        that can miss it. ``bbox`` is in native frame-pixel space (``frame_w`` ×
+        ``frame_h``). Pins the box so an empty live result won't wipe it."""
+        if not self._overlay_active():
+            return
+        box = (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3]))
+        self._pinned_box = box
+        self._face_overlay.set_detections(
+            [FaceDetection(bbox=box)], frame_w, frame_h
+        )
+        self._face_overlay.set_highlight(box)
 
     # ---- toggles / restore ----
 
@@ -221,10 +248,14 @@ class FaceOverlayController(QObject):
         latest = self._detection_sink.latest_detections()
         if latest is not None:
             detections, w, h = latest
-            self._face_overlay.set_detections(detections, w, h)
-            raw = self._detection_sink.latest_raw()
-            self._overlay_drawn_frame = raw[3] if raw is not None else None
-            self._refresh_face_highlight()
+            # A non-empty live result supersedes a pinned catalog box; an empty
+            # one must not wipe it (see show_catalog_face).
+            if detections or self._pinned_box is None:
+                self._pinned_box = None
+                self._face_overlay.set_detections(detections, w, h)
+                raw = self._detection_sink.latest_raw()
+                self._overlay_drawn_frame = raw[3] if raw is not None else None
+                self._refresh_face_highlight()
         if self._comparison_on:
             crops = self._detection_sink.latest_crops()
             if crops is not None:
@@ -271,6 +302,11 @@ class FaceOverlayController(QObject):
     def _on_detections(self, detections: object, width: int, height: int) -> None:
         if not self._overlay_active():
             return
+        # Keep a pinned catalog box rather than let an empty live re-detect wipe
+        # it (see show_catalog_face); a non-empty result supersedes it.
+        if not detections and self._pinned_box is not None:
+            return
+        self._pinned_box = None
         self._face_overlay.set_detections(detections, width, height)  # type: ignore[arg-type]
         raw = self._detection_sink.latest_raw()
         self._overlay_drawn_frame = raw[3] if raw is not None else None

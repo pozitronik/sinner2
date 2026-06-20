@@ -353,7 +353,7 @@ class TestReset:
         finally:
             c.shutdown()
 
-    def test_navigate_forwards_frame(self, qtbot, tmp_path):
+    def test_navigate_forwards_frame_and_bbox(self, qtbot, tmp_path):
         navs = []
         panel = MagicMock()
         player = MagicMock()
@@ -362,11 +362,12 @@ class TestReset:
             panel=panel, player=player, detection_sink=SimpleNamespace(_latest=None),
             store_dir=tmp_path, target_path=lambda: Path("/v.mp4"),
             providers=lambda: None, detection_size=lambda: 640,
-            current_frame=lambda: 0, navigate=navs.append,
+            current_frame=lambda: 0, navigate=lambda f, b: navs.append((f, b)),
         )
         try:
-            c._on_navigate(42)
-            assert navs == [42]
+            c._on_navigate(42)  # no box → None
+            c._on_navigate(7, (1.0, 2.0, 3.0, 4.0))  # carries the catalogued box
+            assert navs == [(42, None), (7, (1.0, 2.0, 3.0, 4.0))]
         finally:
             c.shutdown()
 

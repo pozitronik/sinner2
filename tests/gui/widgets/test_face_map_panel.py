@@ -115,12 +115,24 @@ class TestSelection:
 
 
 class TestNavigate:
-    def test_row_click_navigates_to_first_frame(self, panel, qtbot):
-        # A single click jumps the preview to that person's first appearance.
+    def test_row_click_without_ref_falls_back_to_first_frame(self, panel, qtbot):
+        # No catalogued box (ref_frame/ref_bbox absent) → earliest frame, no box.
         panel.set_face_map(_map(("a", 1, None, None, 77)))
         with qtbot.waitSignal(panel.navigateRequested) as blocker:
             panel._on_cell_clicked(panel._model.index(0, _C_FACE))  # noqa: SLF001
-        assert blocker.args == [77]
+        assert blocker.args == [77, None]
+
+    def test_row_click_uses_ref_frame_and_box_when_available(self, panel, qtbot):
+        # A clearest-occurrence box exists → navigate THERE (matching the
+        # thumbnail) and carry the box so the overlay can draw it on arrival.
+        ident = Identity(
+            "a", normalize([1, 0, 1]), occurrences=1,
+            ref_frame=42, ref_bbox=(1.0, 2.0, 3.0, 4.0), first_frame=10,
+        )
+        panel.set_face_map(FaceMap(identities=(ident,)))
+        with qtbot.waitSignal(panel.navigateRequested) as blocker:
+            panel._on_cell_clicked(panel._model.index(0, _C_FACE))  # noqa: SLF001
+        assert blocker.args == [42, (1.0, 2.0, 3.0, 4.0)]
 
 
 class TestExclude:

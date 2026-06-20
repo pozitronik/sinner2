@@ -524,7 +524,7 @@ class SinnerMainWindow(QMainWindow):
             set_position=self._transport.set_current_frame,
             # Deferred: the session facade is built a few lines below. Route
             # through _on_seek_requested so a row-click jump clears stale boxes.
-            navigate=lambda frame: self._on_seek_requested(frame),
+            navigate=lambda frame, bbox: self._on_face_navigate(frame, bbox),
             status=self._status_bar.show_message,
             parent=self,
         )
@@ -1862,6 +1862,16 @@ class SinnerMainWindow(QMainWindow):
         session."""
         self._clear_overlay_for_seek()
         self._session.seek_to(int(frame))
+
+    def _on_face_navigate(self, frame: int, bbox: object) -> None:
+        """A found-face row was clicked: seek to it (clearing stale boxes), then
+        draw that face's box straight from the scan catalog so the overlay shows
+        even on a cached frame the swapper skips — instead of relying on a live
+        re-detect that can miss it. ``bbox`` is in native frame coords."""
+        self._on_seek_requested(frame)
+        if isinstance(bbox, tuple) and self._native_size is not None:
+            w, h = self._native_size
+            self._face_overlay_ctl.show_catalog_face(bbox, w, h)  # type: ignore[arg-type]
 
     def _submit_to_probe(self, frame: Frame) -> None:
         self._face_overlay_ctl._submit_to_probe(frame)
