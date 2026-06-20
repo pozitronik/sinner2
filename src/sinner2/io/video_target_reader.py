@@ -177,14 +177,18 @@ class FFmpegVideoTargetReader:
         if self._decoder is None or self._decoder.stdout is None:
             return None
         frame_size = self._width * self._height * 3
-        raw = self._decoder.stdout.read(frame_size)
-        if len(raw) < frame_size:
+        # Read the pipe STRAIGHT into the returned frame's buffer: one memcpy
+        # (pipe → frame) instead of read()-into-bytes plus a second .copy() to
+        # get a writable array. readinto issues multiple raw reads to fill the
+        # buffer and returns short only at EOF. The frame is freshly allocated
+        # per call, so it's independent (safe to mutate / hold downstream).
+        frame = np.empty(frame_size, dtype=np.uint8)
+        # stdout is a BufferedReader (readinto), though typed as the broader
+        # IO[bytes]; the PIPE is always buffered+blocking here.
+        n = self._decoder.stdout.readinto(frame)  # type: ignore[attr-defined]
+        if not n or n < frame_size:
             return None
-        return (
-            np.frombuffer(raw, dtype=np.uint8)
-            .reshape(self._height, self._width, 3)
-            .copy()
-        )
+        return frame.reshape(self._height, self._width, 3)
 
 
 # Back-compat alias — preserves the symbol older tests / callers import.
