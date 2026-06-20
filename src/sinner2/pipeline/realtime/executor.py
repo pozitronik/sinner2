@@ -41,7 +41,8 @@ from sinner2.pipeline.cache_mode import CacheMode
 from sinner2.pipeline.face_map import FaceMap
 from sinner2.pipeline.face_map_geometry import FrameGeometry
 from sinner2.pipeline.playback_mode import PlaybackMode
-from sinner2.pipeline.processor import ChainContext, Processor
+from sinner2.pipeline.processor import Processor
+from sinner2.pipeline.realtime.chain_runner import ChainRunner
 from sinner2.pipeline.realtime.telemetry import TelemetryCollector
 from sinner2.pipeline.realtime.work_item import WorkItem
 from sinner2.pipeline.sections import SectionSet
@@ -200,7 +201,7 @@ class RealtimeExecutor:
         # _stop_event) so anything blocked on it can wake and check stop.
         self._setup_done_event = threading.Event()
         self._setup_thread: threading.Thread | None = None
-        # Track workers mid-_apply_chain so set_chain can wait for them to
+        # Track workers mid-chain-run so set_chain can wait for them to
         # finish before releasing the old chain's processors. Without this,
         # release() (e.g. FaceEnhancer dropping its GFPGAN ref) races with
         # workers calling .process() on the same instance.
@@ -245,6 +246,12 @@ class RealtimeExecutor:
         # and timings (the collector owns the locks); the playback thread reads
         # the rates and publishes them to the observables above each tick.
         self._telemetry = TelemetryCollector()
+        # Runs the chain over each frame + reports per-processor timing to the
+        # collector. The status sink is late-bound so it writes the live
+        # observable (e.g. best-effort thread-local release errors).
+        self._chain_runner = ChainRunner(
+            self._telemetry, on_error=lambda msg: self.status.set(msg)
+        )
         self._last_metrics_pub = 0.0  # throttle metrics publication to ~UI rate
         # Cumulative strategy-skip counter (incremented in the dispatcher under
         # _state_lock; published from the playback tick).
@@ -900,7 +907,7 @@ class RealtimeExecutor:
         with self._state_lock:
             self._chain = chain
             to_release = [p for p in old_chain if p not in chain]
-        # Wait for any worker mid-_apply_chain to finish before releasing
+        # Wait for any worker mid-chain-run to finish before releasing
         # the dropped processors. Without this, release() can null internal
         # state while a worker is still calling .process() on the instance.
         if to_release:
@@ -1343,7 +1350,7 @@ class RealtimeExecutor:
                 # workers calling the same chain's swapper.get() in parallel
                 # is the intended fast path.
                 chain = self._chain
-                result, had_faces, detection_ran = self._apply_chain(
+                result, had_faces, detection_ran = self._chain_runner.apply(
                     source_frame, chain, item.frame_index
                 )
                 # Publish under the generation guard: a reconfigure may have
@@ -1374,7 +1381,7 @@ class RealtimeExecutor:
         # Worker is exiting (pool shrank, or executor stopping): drop any
         # per-thread processor instances THIS worker built so a live shrink
         # frees the surplus model now, not at chain teardown.
-        self._release_thread_local_chain()
+        self._chain_runner.release_thread_local(self._chain)
 
     def _publish_result(self, item: WorkItem, result: Frame) -> bool:
         """Write a worker's result to the buffer iff its WorkItem still belongs
@@ -1395,52 +1402,6 @@ class RealtimeExecutor:
         # tick (a seek-while-paused otherwise sleeps forever on an empty buffer).
         self._playback_wake.set()
         return True
-
-    def _release_thread_local_chain(self) -> None:
-        """Release any per-thread processor instances the calling (exiting)
-        worker built — e.g. a PerWorkerProcessor's own GFPGAN. Plain shared
-        processors don't expose release_thread_local() and are skipped. On a
-        full stop() the chain is released wholesale anyway; this matters for
-        the live worker-count-DECREASE path, where the surplus worker's model
-        would otherwise linger until the next chain swap."""
-        for p in self._chain:
-            release = getattr(p, "release_thread_local", None)
-            if release is None:
-                continue
-            try:
-                release()
-            except Exception as e:  # noqa: BLE001
-                self.status.set(f"thread-local release error: {e}")
-
-    def _apply_chain(
-        self, frame: Frame, chain: tuple[Processor, ...],
-        frame_index: int | None = None,
-    ) -> tuple[Frame, bool, bool]:
-        # Wrap each processor with perf_counter so the metrics overlay
-        # can attribute wall-clock to FaceSwapper vs FaceEnhancer. The
-        # measurement excludes the chain-iteration overhead and the
-        # buffer.put (those aren't processor work); strict measurement
-        # of the .process() call only.
-        #
-        # One ChainContext per frame: the swapper publishes its detections,
-        # downstream context-aware processors (enhancer ONNX backends) reuse
-        # them instead of re-detecting — one detection pass per frame. The frame
-        # index lets face-mapping read its precomputed per-frame geometry.
-        ctx = ChainContext(frame_index=frame_index)
-        for p in chain:
-            t0 = time.perf_counter_ns()
-            if getattr(p, "accepts_context", False):
-                frame = p.process(frame, ctx)  # type: ignore[call-arg]
-            else:
-                frame = p.process(frame)
-            elapsed_ns = time.perf_counter_ns() - t0
-            self._telemetry.record_processor_timing(p.name, elapsed_ns)
-        # ctx.faces: None = no detection ran, [] = no faces, [..] = faces. The
-        # preprocessing head-start sizes off how fast FACE frames render (the
-        # expensive ones), so report whether this frame carried any AND whether
-        # detection actually ran (so the visualiser can tell "no face found"
-        # apart from "didn't look" — an enhancer-only or detection-skip frame).
-        return frame, bool(ctx.faces), ctx.faces is not None
 
     def processor_timings(self) -> dict[str, float]:
         """Average milliseconds per process() call over the recent window, per
