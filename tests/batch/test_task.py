@@ -90,6 +90,7 @@ class TestBatchTaskRoundtrip:
             swapper_detection_interval=3,
             swapper_many_faces=False,
             swapper_target_sex="F",
+            swapper_occlusion_cache=True,
             enhancer_enabled=False,
             enhancer_upscale=4,
             enhancer_only_center_face=True,

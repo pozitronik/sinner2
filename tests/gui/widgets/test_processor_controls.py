@@ -975,11 +975,13 @@ class TestFaceDetectorGroup:
         assert not widget._occlusion_mode.isEnabled()  # noqa: SLF001
         assert not widget._occlusion_parser.isEnabled()  # noqa: SLF001
         assert not widget._occluder_model.isEnabled()  # noqa: SLF001
+        assert not widget._occlusion_cache.isEnabled()  # noqa: SLF001
         widget._occlusion_mask.setChecked(True)  # noqa: SLF001
         assert widget._occlusion_mode.isEnabled()  # noqa: SLF001
         # Default mode is region → parser relevant, occluder not.
         assert widget._occlusion_parser.isEnabled()  # noqa: SLF001
         assert not widget._occluder_model.isEnabled()  # noqa: SLF001
+        assert widget._occlusion_cache.isEnabled()  # noqa: SLF001 — cache follows mask
 
     def test_occlusion_mode_links_parser_and_occluder(self, widget):
         from sinner2.pipeline.processors.occlusion import OcclusionMaskMode

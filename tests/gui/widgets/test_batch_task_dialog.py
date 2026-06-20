@@ -47,9 +47,11 @@ class TestDependentRows:
         assert not dlg._occlusion_mode.isEnabled()  # noqa: SLF001
         assert not dlg._occlusion_parser.isEnabled()  # noqa: SLF001
         assert not dlg._occluder_model.isEnabled()  # noqa: SLF001
+        assert not dlg._occlusion_cache.isEnabled()  # noqa: SLF001
         dlg._occlusion_mask.setChecked(True)  # noqa: SLF001
         assert dlg._occlusion_parser.isEnabled()  # noqa: SLF001 — region default
         assert not dlg._occluder_model.isEnabled()  # noqa: SLF001
+        assert dlg._occlusion_cache.isEnabled()  # noqa: SLF001 — cache follows mask
         mode = dlg._occlusion_mode  # noqa: SLF001
         mode.setCurrentIndex(mode.findData("occluder"))
         assert not dlg._occlusion_parser.isEnabled()  # noqa: SLF001

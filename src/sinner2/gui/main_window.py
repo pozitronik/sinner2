@@ -2044,6 +2044,7 @@ class SinnerMainWindow(QMainWindow):
                 swapper_occlusion_mode=self._settings.swapper_occlusion_mode,
                 swapper_occlusion_parser=self._settings.swapper_occlusion_parser,
                 swapper_occluder_model=self._settings.swapper_occluder_model,
+                swapper_occlusion_cache=self._settings.swapper_occlusion_cache,
                 enhancer_model=self._settings.enhancer_model,
                 enhancer_upscale=self._settings.enhancer_upscale,
                 enhancer_only_center_face=self._settings.enhancer_only_center_face,

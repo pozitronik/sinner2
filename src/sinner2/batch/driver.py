@@ -453,6 +453,7 @@ class BatchDriver:
                 occlusion_mode=OcclusionMaskMode(task.swapper_occlusion_mode),
                 occlusion_parser=FaceParser(task.swapper_occlusion_parser),
                 occluder_model=OccluderModel(task.swapper_occluder_model),
+                occlusion_cache=task.swapper_occlusion_cache,
             )
             providers = list(task.swapper_execution.providers)
             # Load the target's face map + geometry live at render time.

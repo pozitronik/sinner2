@@ -375,6 +375,13 @@ class QBatchTaskDialog(QDialog):
                     self._occluder_model.count() - 1
                 )
         occlusion_form.addRow("Occluder:", self._occluder_model)
+        self._occlusion_cache = QCheckBox()
+        self._occlusion_cache.setChecked(task.swapper_occlusion_cache)
+        self._occlusion_cache.setToolTip(
+            "Reuse a near-static face's occlusion mask across frames (faster; "
+            "slight boundary lag on motion). Output-affecting."
+        )
+        occlusion_form.addRow("Cache mask:", self._occlusion_cache)
         swap_form.addRow(occlusion_box)
 
         # ---- FaceEnhancer group (its own tab) ----
@@ -755,6 +762,7 @@ class QBatchTaskDialog(QDialog):
         self._occlusion_mode.setEnabled(on)
         self._occlusion_parser.setEnabled(on and mode != "occluder")
         self._occluder_model.setEnabled(on and mode != "region")
+        self._occlusion_cache.setEnabled(on)
 
     def _update_rotation_rows(self) -> None:
         """Gray the rotation knobs when rotation compensation is off."""
@@ -813,6 +821,7 @@ class QBatchTaskDialog(QDialog):
             "swapper_occlusion_mode": self._occlusion_mode.currentData(),
             "swapper_occlusion_parser": self._occlusion_parser.currentData(),
             "swapper_occluder_model": self._occluder_model.currentData(),
+            "swapper_occlusion_cache": self._occlusion_cache.isChecked(),
             "enhancer_enabled": self._enhancer_box.isChecked(),
             "enhancer_model": self._enhancer_model.currentData(),
             "enhancer_upscale": self._upscale.value(),

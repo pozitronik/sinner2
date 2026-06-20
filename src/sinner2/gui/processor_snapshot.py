@@ -149,6 +149,7 @@ class ProcessorParamsSnapshot:
             swapper_occlusion_mode=sp.occlusion_mode.value,
             swapper_occlusion_parser=sp.occlusion_parser.value,
             swapper_occluder_model=sp.occluder_model.value,
+            swapper_occlusion_cache=sp.occlusion_cache,
             enhancer_model=ep.model.value,
             enhancer_upscale=ep.upscale,
             enhancer_only_center_face=ep.only_center_face,

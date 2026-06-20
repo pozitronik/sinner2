@@ -109,6 +109,7 @@ class Settings(SinnerBaseModel):
     swapper_occlusion_mode: str | None = None  # region | occluder | both
     swapper_occlusion_parser: str | None = None  # a FaceParser value
     swapper_occluder_model: str | None = None  # an OccluderModel value
+    swapper_occlusion_cache: bool | None = None  # temporal mask reuse
     swapper_providers: list[str] | None = None  # ONNX EPs for the swapper + detector
     enhancer_device: str | None = None  # realtime torch device for GFPGAN
     enhancer_providers: list[str] | None = None  # ONNX EPs for ONNX enhancer models

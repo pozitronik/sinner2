@@ -542,6 +542,38 @@ class TestModelDispatch:
         fs.setup()
         assert fs._masker is None  # noqa: SLF001 — not built when off
 
+    def test_occlusion_cache_param_threads_to_builder(
+        self,
+        source_image: Path,
+        models_dir: Path,
+        stub_insightface_app: MagicMock,
+        stub_inswapper: MagicMock,
+        monkeypatch,
+    ):
+        # The occlusion_cache param must reach build_occlusion_masker's `cache`.
+        seen: dict = {}
+
+        class _Masker:
+            thread_safe = True
+
+            def setup(self):
+                pass
+
+        def _spy(*a, cache=False, **k):
+            seen["cache"] = cache
+            return _Masker()
+
+        monkeypatch.setattr(face_swapper, "build_occlusion_masker", _spy)
+        fs = FaceSwapper(
+            source=Source(path=source_image),
+            params=_params(
+                occlusion_mask=True, occlusion_cache=True,
+                rotation_compensation=False,
+            ),
+        )
+        fs.setup()
+        assert seen["cache"] is True
+
     def test_rotation_compensation_uprights_tilted_face(
         self,
         source_image: Path,

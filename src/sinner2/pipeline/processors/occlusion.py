@@ -17,6 +17,8 @@ follow-up needing a dedicated occluder model.
 """
 from __future__ import annotations
 
+import threading
+from collections import OrderedDict
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
@@ -437,6 +439,68 @@ class CombinedMasker:
             m.release()
 
 
+class CachingMasker:
+    """Temporal mask cache (opt-in): skip the parser/occluder forward for a
+    near-static face by reusing a recently-computed mask.
+
+    CONTENT-ADDRESSED — the cache key is a coarse signature of the ALIGNED crop
+    (an 8×8 luma thumbnail, quantized), so a barely-moved face (near-identical
+    aligned crop) HITS the cache while real movement MISSES and recomputes. No
+    frame index or face-identity tracking, so it's robust to the realtime
+    executor's out-of-order parallel workers — two frames with the face in the
+    same pose share the mask whichever order they land.
+
+    Output-affecting: a face that moves WITHIN one signature bucket reuses a
+    slightly-stale mask (the occlusion boundary lags a fraction), which is why
+    it's opt-in. Thread-safe iff the wrapped masker is; the small LRU is
+    lock-guarded and the forward runs OUTSIDE the lock, so the thread-safe ONNX
+    maskers still parse in parallel on a miss."""
+
+    # Signature = an 8×8 grayscale thumbnail of the aligned crop, quantized to
+    # 16 luma buckets: tolerant of capture noise, sensitive to real movement.
+    _THUMB = 8
+    _LEVELS = 16
+
+    def __init__(self, inner: Any, max_entries: int = 8) -> None:
+        self._inner = inner
+        self._max = max(1, max_entries)
+        self._cache: "OrderedDict[bytes, np.ndarray]" = OrderedDict()
+        self._lock = threading.Lock()
+        # Mirror the wrapped masker so the swapper's lock decision is unchanged.
+        self.thread_safe = bool(getattr(inner, "thread_safe", False))
+
+    def setup(self) -> None:
+        self._inner.setup()
+
+    def _signature(self, aligned_bgr: Frame) -> bytes:
+        thumb = cv2.resize(
+            aligned_bgr, (self._THUMB, self._THUMB), interpolation=cv2.INTER_AREA
+        )
+        gray = cv2.cvtColor(thumb, cv2.COLOR_BGR2GRAY)
+        return (gray // (256 // self._LEVELS)).astype(np.uint8).tobytes()
+
+    def face_mask(self, aligned_bgr: Frame) -> np.ndarray:
+        key = self._signature(aligned_bgr)
+        with self._lock:
+            cached = self._cache.get(key)
+            if cached is not None:
+                self._cache.move_to_end(key)  # LRU touch
+                return cached
+        # Miss: run the real forward OUTSIDE the lock so parallel misses overlap.
+        mask = self._inner.face_mask(aligned_bgr)
+        with self._lock:
+            self._cache[key] = mask
+            self._cache.move_to_end(key)
+            while len(self._cache) > self._max:
+                self._cache.popitem(last=False)  # evict the oldest
+        return mask
+
+    def release(self) -> None:
+        with self._lock:
+            self._cache.clear()
+        self._inner.release()
+
+
 def build_parser_masker(
     parser: FaceParser,
     device: str = "auto",
@@ -456,9 +520,11 @@ def build_occlusion_masker(
     occluder: OccluderModel,
     device: str = "auto",
     providers: list[str] | None = None,
+    cache: bool = False,
 ) -> Any:
     """Compose the masker for an occlusion-mode choice: the region parser, the
-    occluder model, or the min-combination of both."""
+    occluder model, or the min-combination of both. ``cache`` wraps the result
+    in a temporal mask cache (reuse a near-static face's mask across frames)."""
     maskers: list[Any] = []
     if mode in (OcclusionMaskMode.REGION, OcclusionMaskMode.BOTH):
         maskers.append(build_parser_masker(parser, device=device, providers=providers))
@@ -467,7 +533,8 @@ def build_occlusion_masker(
             maskers.append(DepthOccluderMasker(providers=providers))
         else:
             maskers.append(XsegOccluderMasker(occluder, providers=providers))
-    return maskers[0] if len(maskers) == 1 else CombinedMasker(maskers)
+    masker = maskers[0] if len(maskers) == 1 else CombinedMasker(maskers)
+    return CachingMasker(masker) if cache else masker
 
 
 def apply_occlusion(

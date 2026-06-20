@@ -485,6 +485,28 @@ class TestBuildOcclusionMasker:
         )
         assert isinstance(m, OnnxParserMasker)
 
+    def test_cache_wraps_the_masker(self):
+        from sinner2.pipeline.processors.occlusion import (
+            CachingMasker,
+            FaceParser,
+            OccluderModel,
+            OcclusionMaskMode,
+            OnnxParserMasker,
+            build_occlusion_masker,
+        )
+
+        args = (
+            OcclusionMaskMode.REGION, FaceParser.BISENET_ONNX_18,
+            OccluderModel.XSEG_1,
+        )
+        cached = build_occlusion_masker(*args, cache=True)
+        assert isinstance(cached, CachingMasker)
+        assert isinstance(cached._inner, OnnxParserMasker)  # noqa: SLF001
+        # Default (cache=False) is the bare masker — no behaviour change.
+        assert not isinstance(
+            build_occlusion_masker(*args), CachingMasker
+        )
+
     def test_occluder_builds_xseg_only(self):
         from sinner2.pipeline.processors.occlusion import (
             FaceParser,
@@ -558,3 +580,100 @@ class TestRelease:
         m.release()
         assert m._model is None  # noqa: SLF001
         assert empties == [1]  # VRAM handed back
+
+
+class _CountingMasker:
+    """Records how many real forwards ran + returns a distinct mask per call."""
+
+    thread_safe = True
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.released = False
+
+    def setup(self) -> None:
+        pass
+
+    def face_mask(self, _aligned) -> np.ndarray:
+        self.calls += 1
+        return np.full((512, 512), float(self.calls), np.float32)
+
+    def release(self) -> None:
+        self.released = True
+
+
+def _solid(luma: int) -> np.ndarray:
+    return np.full((512, 512, 3), luma, np.uint8)
+
+
+class TestCachingMasker:
+    def test_identical_crop_hits_cache(self):
+        from sinner2.pipeline.processors.occlusion import CachingMasker
+
+        inner = _CountingMasker()
+        cm = CachingMasker(inner)
+        m1 = cm.face_mask(_solid(100))
+        m2 = cm.face_mask(_solid(100))
+        assert inner.calls == 1  # the second call was served from the cache
+        assert m2 is m1
+
+    def test_near_static_within_bucket_reuses(self):
+        from sinner2.pipeline.processors.occlusion import CachingMasker
+
+        inner = _CountingMasker()
+        cm = CachingMasker(inner)
+        cm.face_mask(_solid(96))   # 96 // 16 == 6
+        cm.face_mask(_solid(100))  # 100 // 16 == 6 → same bucket → the lag/reuse
+        assert inner.calls == 1
+
+    def test_real_movement_misses(self):
+        from sinner2.pipeline.processors.occlusion import CachingMasker
+
+        inner = _CountingMasker()
+        cm = CachingMasker(inner)
+        cm.face_mask(_solid(50))   # bucket 3
+        cm.face_mask(_solid(200))  # bucket 12 → distinct → recompute
+        assert inner.calls == 2
+
+    def test_lru_evicts_oldest(self):
+        from sinner2.pipeline.processors.occlusion import CachingMasker
+
+        inner = _CountingMasker()
+        cm = CachingMasker(inner, max_entries=2)
+        cm.face_mask(_solid(16))   # bucket 1
+        cm.face_mask(_solid(48))   # bucket 3
+        cm.face_mask(_solid(80))   # bucket 5 → evicts bucket 1
+        cm.face_mask(_solid(16))   # bucket 1 was evicted → recompute
+        assert inner.calls == 4
+
+    def test_thread_safe_mirrors_inner(self):
+        from sinner2.pipeline.processors.occlusion import CachingMasker
+
+        assert CachingMasker(_CountingMasker()).thread_safe is True
+
+        class _NotSafe(_CountingMasker):
+            thread_safe = False
+
+        assert CachingMasker(_NotSafe()).thread_safe is False
+
+    def test_release_clears_cache_and_releases_inner(self):
+        from sinner2.pipeline.processors.occlusion import CachingMasker
+
+        inner = _CountingMasker()
+        cm = CachingMasker(inner)
+        cm.face_mask(_solid(100))
+        cm.release()
+        assert inner.released is True
+        assert len(cm._cache) == 0  # noqa: SLF001
+
+    def test_setup_delegates_to_inner(self):
+        from sinner2.pipeline.processors.occlusion import CachingMasker
+
+        seen = []
+
+        class _Inner(_CountingMasker):
+            def setup(self):
+                seen.append(1)
+
+        CachingMasker(_Inner()).setup()
+        assert seen == [1]

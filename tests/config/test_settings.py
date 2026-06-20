@@ -176,6 +176,11 @@ class TestExtendedFieldsRoundtrip:
         settings.save(settings.Settings(face_analyze_batch_recognition=value))
         assert settings.load().face_analyze_batch_recognition is value
 
+    @pytest.mark.parametrize("value", [True, False])
+    def test_swapper_occlusion_cache(self, value: bool):
+        settings.save(settings.Settings(swapper_occlusion_cache=value))
+        assert settings.load().swapper_occlusion_cache is value
+
     @pytest.mark.parametrize("mode", list(PlaybackMode))
     def test_playback_mode(self, mode: PlaybackMode):
         settings.save(settings.Settings(playback_mode=mode))

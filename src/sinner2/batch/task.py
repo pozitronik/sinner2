@@ -149,6 +149,7 @@ class BatchTask(SinnerBaseModel):
     swapper_occlusion_mode: str = "region"  # region | occluder | both
     swapper_occlusion_parser: str = "bisenet"  # a FaceParser value
     swapper_occluder_model: str = "xseg_1"  # an OccluderModel value
+    swapper_occlusion_cache: bool = False  # temporal mask reuse
     enhancer_enabled: bool = True
     enhancer_model: str = "gfpgan_onnx"  # an EnhancerModel value
     enhancer_upscale: int = 1

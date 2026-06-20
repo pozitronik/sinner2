@@ -145,6 +145,13 @@ class FaceSwapperParams(SinnerBaseModel):
         description="Occluder model: xseg_1/2/3 or xseg_many (all three, "
         "strictest)",
     )
+    occlusion_cache: bool = Field(
+        default=False,
+        description="Reuse a near-static face's occlusion mask across frames "
+        "(skip the parser/occluder forward when the aligned face barely "
+        "changed) — faster, but the mask can lag slightly on motion. "
+        "Output-affecting.",
+    )
 
 
 # SINNER2_GEOM_TRACE=1 prints a per-frame diagnostic when the geometry branch
@@ -444,6 +451,7 @@ class FaceSwapper:
                 self._params.occlusion_parser,
                 self._params.occluder_model,
                 providers=providers,
+                cache=self._params.occlusion_cache,
             )
             self._masker.setup()
 

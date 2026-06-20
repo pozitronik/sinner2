@@ -316,6 +316,15 @@ class QProcessorControls(QWidget):
         )
         self._occluder_model.currentIndexChanged.connect(self.configChanged)
         occlusion_form.addRow("Occluder", self._occluder_model)
+        self._occlusion_cache = QCheckBox()
+        self._occlusion_cache.setChecked(swapper_defaults.occlusion_cache)
+        self._occlusion_cache.setToolTip(
+            "Reuse a near-static face's occlusion mask across frames — skips the "
+            "mask model when the aligned face barely changed (faster), at the "
+            "cost of a slight boundary lag on motion. Output-affecting."
+        )
+        self._occlusion_cache.toggled.connect(self.configChanged)
+        occlusion_form.addRow("Cache mask", self._occlusion_cache)
 
         # ONNX execution providers for the swapper — its own one-line selector in
         # the swap group. Detection runs on a process-WIDE shared insightface
@@ -1120,6 +1129,7 @@ class QProcessorControls(QWidget):
             occlusion_mode=self._occlusion_mode.currentData(),
             occlusion_parser=self._occlusion_parser.currentData(),
             occluder_model=self._occluder_model.currentData(),
+            occlusion_cache=self._occlusion_cache.isChecked(),
         )
 
     def swapper_model(self) -> str:
@@ -1308,6 +1318,7 @@ class QProcessorControls(QWidget):
         self._occluder_model.setEnabled(
             on and mode != OcclusionMaskMode.REGION.value
         )
+        self._occlusion_cache.setEnabled(on)
 
     def _update_swapper_model_rows(self) -> None:
         """Gray the fast-paste knob for the 256px swappers — they ALWAYS blend
@@ -1498,6 +1509,7 @@ class QProcessorControls(QWidget):
         swapper_occlusion_mode: str | None = None,
         swapper_occlusion_parser: str | None,
         swapper_occluder_model: str | None = None,
+        swapper_occlusion_cache: bool | None = None,
         swapper_rotation_compensation: bool | None,
         swapper_rotation_threshold_deg: int | None,
         swapper_rotation_redetect: bool | None,
@@ -1551,6 +1563,7 @@ class QProcessorControls(QWidget):
             self._occlusion_mode,
             self._occlusion_parser,
             self._occluder_model,
+            self._occlusion_cache,
             self._rotation_enabled,
             self._rotation_threshold,
             self._rotation_redetect,
@@ -1611,6 +1624,8 @@ class QProcessorControls(QWidget):
                 _select_combo_by_data(self._occlusion_mode, swapper_occlusion_mode)
             if swapper_occluder_model is not None:
                 _select_combo_by_data(self._occluder_model, swapper_occluder_model)
+            if swapper_occlusion_cache is not None:
+                self._occlusion_cache.setChecked(swapper_occlusion_cache)
             if swapper_rotation_compensation is not None:
                 self._rotation_enabled.setChecked(swapper_rotation_compensation)
             if swapper_rotation_threshold_deg is not None:
