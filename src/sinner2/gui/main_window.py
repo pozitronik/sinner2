@@ -96,6 +96,7 @@ from sinner2.gui.widgets.processor_controls import QProcessorControls
 from sinner2.gui.widgets.settings_dialog import QSettingsDialog
 from sinner2.gui.widgets.side_panel import QSidePanel
 from sinner2.gui.widgets.source_target_panel import QSourceTargetPanel
+from sinner2.gui.widgets.memory_monitor import MemoryMonitor
 from sinner2.gui.widgets.status_action_bar import QStatusActionBar
 from sinner2.gui.widgets.transport_controls import QTransportControls
 from sinner2.types import Frame
@@ -451,6 +452,17 @@ class SinnerMainWindow(QMainWindow):
             key="providers",
             label="Execution providers",
         )
+        self._memory_panel = self._status_bar.add_panel(
+            "🧠",
+            "Live memory use. VRAM = the GPU device total used / capacity (ALL\n"
+            "processes — what 'how close to OOM' depends on); RAM = this process's\n"
+            "resident size. Needs nvidia-ml-py for VRAM / psutil for RAM; shows\n"
+            "only what's available.",
+            min_width=170,
+            key="memory",
+            label="Memory use",
+        )
+        self._memory_monitor = MemoryMonitor(self._memory_panel, parent=self)
         # Restore which panels the user hid via the right-click menu, then keep
         # the choice persisted on every toggle.
         for key in self._settings.status_panels_hidden or []:

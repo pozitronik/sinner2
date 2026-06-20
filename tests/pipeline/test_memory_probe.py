@@ -71,6 +71,24 @@ class TestProcessRam:
         assert mp.process_ram() is None
 
 
+_GB = 1024 ** 3
+
+
+class TestFormatMemory:
+    def test_vram_and_ram(self):
+        out = mp.format_memory((6 * _GB + _GB // 5, 24 * _GB), 3 * _GB + _GB // 10)
+        assert out == "VRAM 6.2 / 24 GB · RAM 3.1 GB"
+
+    def test_ram_only(self):
+        assert mp.format_memory(None, 2 * _GB) == "RAM 2.0 GB"
+
+    def test_vram_only(self):
+        assert mp.format_memory((_GB, 8 * _GB), None) == "VRAM 1.0 / 8 GB"
+
+    def test_neither_is_empty_string(self):
+        assert mp.format_memory(None, None) == ""
+
+
 class TestMeasureModelLoad:
     def test_records_vram_and_ram_delta(self, monkeypatch):
         vrams = iter([(1_000, 8_000), (1_300, 8_000)])  # before, after

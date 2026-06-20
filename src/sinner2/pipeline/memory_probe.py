@@ -81,6 +81,24 @@ def process_ram() -> "int | None":
         return None
 
 
+def _gb(n: int) -> float:
+    return n / (1024 ** 3)
+
+
+def format_memory(vram: "tuple[int, int] | None", ram: "int | None") -> str:
+    """A compact one-line readout from raw probe values — e.g.
+    ``"VRAM 6.2 / 24 GB · RAM 3.1 GB"``. Shows only what's available (RAM-only
+    off CUDA); empty string when neither probe is available (the status cell
+    then hides itself)."""
+    parts = []
+    if vram is not None:
+        used, total = vram
+        parts.append(f"VRAM {_gb(used):.1f} / {_gb(total):.0f} GB")
+    if ram is not None:
+        parts.append(f"RAM {_gb(ram):.1f} GB")
+    return " · ".join(parts)
+
+
 def model_footprints() -> "dict[str, ModelFootprint]":
     """A snapshot of every model footprint measured so far (label → footprint)."""
     with _lock:
