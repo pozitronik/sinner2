@@ -123,6 +123,30 @@ class TestGlobalOnnxProviders:
         assert captured["providers"] == ["CUDAExecutionProvider", "CPUExecutionProvider"]
 
 
+class TestMemoryFootprint:
+    def test_torch_load_records_footprint(self, monkeypatch):
+        # Regression: the torch upscaler load bypassed measure_model_load, so its
+        # Models-tab Memory cell stayed blank. It must register a footprint under
+        # the weights filename like the ONNX upscaler path already does.
+        from sinner2.pipeline import memory_probe as mp
+
+        mp.reset_footprints()
+        mp._measuring = False  # noqa: SLF001
+
+        net = SimpleNamespace(
+            load_state_dict=lambda *a, **k: None,
+            eval=lambda: None,
+            to=lambda _d: net,
+        )
+        spec = SimpleNamespace(filename="general-x4v3.pth", build=lambda: net)
+        monkeypatch.setattr(upscaler, "_load_state_dict", lambda *_a: {})
+        monkeypatch.setattr(upscaler, "get_model_path", lambda f: f)
+
+        upscaler._load_model(spec, SimpleNamespace(type="cpu"), fp16=False)
+
+        assert "general-x4v3.pth" in mp.model_footprints()
+
+
 class TestModelRegistry:
     def test_every_model_has_a_spec_and_filename(self):
         for model in UpscalerModel:

@@ -134,6 +134,33 @@ class TestScrfdSetup:
         assert isinstance(captured["name"], str)
         assert captured["name"].endswith(".onnx")
 
+    def test_setup_records_memory_footprint(self, monkeypatch):
+        # The Models-tab Memory column is fed by measure_model_load; the SCRFD
+        # load must register a footprint under its filename like the ONNX
+        # detectors do — otherwise its cell stays blank forever.
+        import sys
+        import types
+        from pathlib import Path
+
+        from sinner2.pipeline import detectors
+        from sinner2.pipeline import memory_probe as mp
+
+        mp.reset_footprints()
+        mp._measuring = False  # noqa: SLF001
+
+        mz = types.ModuleType("insightface.model_zoo")
+        mz.get_model = lambda name, **_kw: SimpleNamespace(  # type: ignore[attr-defined]
+            prepare=lambda **_k: None
+        )
+        monkeypatch.setitem(sys.modules, "insightface.model_zoo", mz)
+        monkeypatch.setattr(
+            detectors, "get_model_path", lambda f: Path("/models") / f
+        )
+
+        ScrfdDetector("scrfd_2.5g.onnx").setup()
+
+        assert "scrfd_2.5g.onnx" in mp.model_footprints()
+
 
 class TestFactory:
     def test_build_yoloface(self):

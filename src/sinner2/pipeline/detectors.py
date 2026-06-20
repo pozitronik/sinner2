@@ -188,11 +188,14 @@ class ScrfdDetector:
     def setup(self) -> None:
         from insightface.model_zoo import get_model
 
+        from sinner2.pipeline.memory_probe import measure_model_load
+
         # insightface's get_model does `name.endswith('.onnx')`, so it needs a
         # str — get_model_path returns a Path (would raise AttributeError).
-        self._det = get_model(
-            str(get_model_path(self._model_file)), providers=self._providers
-        )
+        with measure_model_load(self._model_file):  # filename → Models tab
+            self._det = get_model(
+                str(get_model_path(self._model_file)), providers=self._providers
+            )
         # SCRFD downsamples by strides 8/16/32, so its input must be a multiple
         # of 32 (mirrors the buffalo_l det_size alignment in face_analyser).
         aligned = max(32, (self._size // 32) * 32)

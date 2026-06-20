@@ -166,16 +166,19 @@ def _load_state_dict(path: Any, device: Any) -> dict:
 def _load_model(spec: _ModelSpec, device: Any, fp16: bool) -> Any:
     """Build the network, load weights, move to device. Indirected so tests can
     stub it cheaply (no basicsr / weights needed)."""
-    net = spec.build()
+    from sinner2.pipeline.memory_probe import measure_model_load
+
     # get_model_path raises if missing — the GUI ensures the model is present
     # (with a download confirmation) before enabling the upscaler.
-    net.load_state_dict(
-        _load_state_dict(get_model_path(spec.filename), device), strict=True
-    )
-    net.eval()
-    if fp16 and device.type == "cuda":
-        net = net.half()
-    return net.to(device)
+    with measure_model_load(spec.filename):  # filename → Models tab
+        net = spec.build()
+        net.load_state_dict(
+            _load_state_dict(get_model_path(spec.filename), device), strict=True
+        )
+        net.eval()
+        if fp16 and device.type == "cuda":
+            net = net.half()
+        return net.to(device)
 
 
 def _run_aligned(model: Any, patch: Any, scale: int, align: int) -> Any:
