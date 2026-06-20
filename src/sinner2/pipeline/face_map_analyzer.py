@@ -95,6 +95,9 @@ class _ClusterState:
         self.reps: dict[str, _Rep] = {}
         # identity id -> earliest frame it was seen at (drives navigation).
         self.firsts: dict[str, int] = {}
+        # identity id -> its box on that earliest frame, so navigating to a face
+        # can draw it without a live re-detect.
+        self.first_bboxes: dict[str, tuple[float, float, float, float]] = {}
         # Seed from an existing catalog so a RESUMED scan keeps its identities,
         # occurrence counts, and references instead of starting blank. The seed
         # carries the stored det_score so the best-ever occurrence (its thumbnail,
@@ -109,6 +112,8 @@ class _ClusterState:
                 )
             if ident.first_frame is not None:
                 self.firsts[ident.id] = ident.first_frame
+            if ident.first_bbox is not None:
+                self.first_bboxes[ident.id] = ident.first_bbox
 
     def ingest(self, frame_idx: int, faces: list) -> None:
         for face in faces:
@@ -116,10 +121,18 @@ class _ClusterState:
             if emb is None:
                 continue
             self.face_map, joined_id = self.face_map.observe_with_id(emb)
+            is_first = joined_id not in self.firsts
             self.firsts.setdefault(joined_id, int(frame_idx))
             bbox = getattr(face, "bbox", None)
             if bbox is None:
                 continue
+            box4 = (
+                float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])
+            )
+            if is_first:
+                # The box on this person's EARLIEST frame (same frame as
+                # first_frame), so navigating to them can draw it.
+                self.first_bboxes[joined_id] = box4
             score = float(getattr(face, "det_score", 0.0) or 0.0)
             prev = self.reps.get(joined_id)
             if prev is None or score > prev[0]:
@@ -128,7 +141,7 @@ class _ClusterState:
                 self.reps[joined_id] = (
                     score,
                     int(frame_idx),
-                    (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])),
+                    box4,
                     getattr(face, "sex", None),
                     int(age_raw) if age_raw is not None else None,
                     pitch, yaw, roll,
@@ -141,6 +154,7 @@ class _ClusterState:
             face_map = face_map.with_reference(
                 ident_id, frame_idx, bbox, sex=sex, age=age,
                 first_frame=self.firsts.get(ident_id),
+                first_bbox=self.first_bboxes.get(ident_id),
                 det_score=score, pitch=pitch, yaw=yaw, roll=roll,
             )
         return face_map

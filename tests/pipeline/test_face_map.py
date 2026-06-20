@@ -217,12 +217,13 @@ class TestMerge:
     def test_keeps_clearest_rep_and_earliest_first_frame(self):
         m = FaceMap(identities=(
             Identity("a", _unit(1, 0), occurrences=1, first_frame=10,
-                     det_score=0.6, sex="M", age=30),
+                     first_bbox=(1.0, 1.0, 2.0, 2.0), det_score=0.6, sex="M", age=30),
             Identity("b", _unit(0.9, 0.1), occurrences=1, first_frame=3,
-                     det_score=0.95, sex="M", age=31),
+                     first_bbox=(3.0, 3.0, 4.0, 4.0), det_score=0.95, sex="M", age=31),
         ))
         merged = m.merge(["a", "b"]).identities[0]
         assert merged.first_frame == 3        # earliest
+        assert merged.first_bbox == (3.0, 3.0, 4.0, 4.0)  # box from the earliest (b)
         assert merged.det_score == 0.95       # clearest occurrence
         assert merged.age == 31               # from the clearest
 
@@ -303,9 +304,13 @@ class TestReference:
 
     def test_first_frame_set_and_round_trip(self):
         m = FaceMap(identities=(Identity("a", _unit(1, 0)),))
-        m2 = m.with_reference("a", 5, (0.0, 1.0, 2.0, 3.0), first_frame=2)
+        m2 = m.with_reference("a", 5, (0.0, 1.0, 2.0, 3.0), first_frame=2,
+                              first_bbox=(4.0, 5.0, 6.0, 7.0))
         assert m2.identities[0].first_frame == 2
-        assert FaceMap.from_dict(m2.to_dict()).identities[0].first_frame == 2
+        assert m2.identities[0].first_bbox == (4.0, 5.0, 6.0, 7.0)
+        restored = FaceMap.from_dict(m2.to_dict()).identities[0]
+        assert restored.first_frame == 2
+        assert restored.first_bbox == (4.0, 5.0, 6.0, 7.0)
 
 
 class TestSerialization:

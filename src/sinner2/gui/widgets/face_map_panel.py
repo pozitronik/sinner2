@@ -631,10 +631,12 @@ class QFaceMapPanel(QWidget):
         ident = self._face_map_identity(ident_id)
         if ident is None:
             return
-        # Prefer the CLEAREST occurrence (ref_frame, which also drives the
-        # thumbnail) and carry its box, so the overlay can draw that exact box
-        # on arrival. Fall back to the earliest occurrence with no box.
-        if ident.ref_frame is not None and ident.ref_bbox is not None:
+        # Navigate to the EARLIEST occurrence (first_frame) and draw its box when
+        # the scan stored one. Fall back to the clearest occurrence (ref) for
+        # scans predating first_bbox, then to a box-less jump.
+        if ident.first_frame is not None and ident.first_bbox is not None:
+            self.navigateRequested.emit(ident.first_frame, ident.first_bbox)
+        elif ident.ref_frame is not None and ident.ref_bbox is not None:
             self.navigateRequested.emit(ident.ref_frame, ident.ref_bbox)
         elif ident.first_frame is not None:
             self.navigateRequested.emit(ident.first_frame, None)

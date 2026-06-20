@@ -122,9 +122,22 @@ class TestNavigate:
             panel._on_cell_clicked(panel._model.index(0, _C_FACE))  # noqa: SLF001
         assert blocker.args == [77, None]
 
-    def test_row_click_uses_ref_frame_and_box_when_available(self, panel, qtbot):
-        # A clearest-occurrence box exists → navigate THERE (matching the
-        # thumbnail) and carry the box so the overlay can draw it on arrival.
+    def test_row_click_uses_first_frame_and_box_when_available(self, panel, qtbot):
+        # The earliest occurrence (first_frame) with a stored box drives BOTH
+        # navigation and the drawn box — ref is only a fallback.
+        ident = Identity(
+            "a", normalize([1, 0, 1]), occurrences=1,
+            ref_frame=42, ref_bbox=(9.0, 9.0, 9.0, 9.0),
+            first_frame=10, first_bbox=(1.0, 2.0, 3.0, 4.0),
+        )
+        panel.set_face_map(FaceMap(identities=(ident,)))
+        with qtbot.waitSignal(panel.navigateRequested) as blocker:
+            panel._on_cell_clicked(panel._model.index(0, _C_FACE))  # noqa: SLF001
+        assert blocker.args == [10, (1.0, 2.0, 3.0, 4.0)]
+
+    def test_row_click_falls_back_to_ref_when_no_first_bbox(self, panel, qtbot):
+        # Scans predating first_bbox: navigate to the clearest occurrence (ref)
+        # with its box, so old maps still draw something.
         ident = Identity(
             "a", normalize([1, 0, 1]), occurrences=1,
             ref_frame=42, ref_bbox=(1.0, 2.0, 3.0, 4.0), first_frame=10,

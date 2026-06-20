@@ -86,6 +86,9 @@ class Identity:
     ref_frame: int | None = None  # clearest occurrence — drives the thumbnail
     ref_bbox: tuple[float, float, float, float] | None = None
     first_frame: int | None = None  # EARLIEST occurrence — drives navigation
+    # Box at first_frame (native frame coords), so navigating to a face can draw
+    # it without a live re-detect. None for scans predating it (fall back to ref).
+    first_bbox: tuple[float, float, float, float] | None = None
     # Demographic hints from the representative detection (only the full
     # buffalo_l pack provides them — None in fast det+rec-only mode). Display +
     # grouping only; they don't affect swap routing.
@@ -250,13 +253,20 @@ class FaceMap:
             (m.source_path for m in ordered if m.source_path), None
         )
         rep = max(ordered, key=lambda m: (m.det_score or 0.0))
-        firsts = [m.first_frame for m in ordered if m.first_frame is not None]
+        # The earliest occurrence drives first_frame; its box drives first_bbox,
+        # so they stay on the same frame.
+        with_first = [m for m in ordered if m.first_frame is not None]
+        earliest = (
+            min(with_first, key=lambda m: m.first_frame or 0) if with_first
+            else keeper
+        )
         merged = replace(
             keeper,
             centroid=merged_centroid,
             occurrences=total,
             source_path=source,
-            first_frame=min(firsts) if firsts else keeper.first_frame,
+            first_frame=earliest.first_frame,
+            first_bbox=earliest.first_bbox,
             ref_frame=rep.ref_frame, ref_bbox=rep.ref_bbox,
             sex=rep.sex, age=rep.age, det_score=rep.det_score,
             pitch=rep.pitch, yaw=rep.yaw, roll=rep.roll,
@@ -286,18 +296,21 @@ class FaceMap:
         sex: str | None = None,
         age: int | None = None,
         first_frame: int | None = None,
+        first_bbox: tuple[float, float, float, float] | None = None,
         det_score: float | None = None,
         pitch: float | None = None,
         yaw: float | None = None,
         roll: float | None = None,
     ) -> "FaceMap":
         """Record an identity's representative occurrence (set by the analysis
-        pass for thumbnail extraction), its first-seen frame (for navigation),
-        its demographic hints, and the table metadata (detection score + pose)."""
+        pass for thumbnail extraction), its first-seen frame + box (for
+        navigation), its demographic hints, and the table metadata (detection
+        score + pose)."""
         idents = [
             replace(
                 i, ref_frame=ref_frame, ref_bbox=ref_bbox, sex=sex, age=age,
                 first_frame=first_frame if first_frame is not None else i.first_frame,
+                first_bbox=first_bbox if first_bbox is not None else i.first_bbox,
                 det_score=det_score, pitch=pitch, yaw=yaw, roll=roll,
             )
             if i.id == identity_id else i
@@ -362,6 +375,9 @@ class FaceMap:
                     "ref_frame": i.ref_frame,
                     "ref_bbox": list(i.ref_bbox) if i.ref_bbox is not None else None,
                     "first_frame": i.first_frame,
+                    "first_bbox": (
+                        list(i.first_bbox) if i.first_bbox is not None else None
+                    ),
                     "sex": i.sex,
                     "age": i.age,
                     "det_score": i.det_score,
@@ -385,6 +401,7 @@ class FaceMap:
                 ref_frame=d.get("ref_frame"),
                 ref_bbox=_bbox4(d.get("ref_bbox")),
                 first_frame=d.get("first_frame"),
+                first_bbox=_bbox4(d.get("first_bbox")),
                 sex=d.get("sex"),
                 age=d.get("age"),
                 det_score=d.get("det_score"),

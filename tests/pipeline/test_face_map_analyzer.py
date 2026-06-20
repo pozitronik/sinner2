@@ -250,6 +250,20 @@ class TestPositionAndFirstFrame:
         a = next(i for i in fm.identities if i.ref_frame == 2)  # clearest = frame 2
         assert a.first_frame == 0  # but earliest = frame 0
 
+    def test_first_bbox_is_the_box_on_the_earliest_frame(self):
+        # first_bbox is the box on the EARLIEST frame (0), NOT the clearest (2),
+        # so navigating to first_frame draws the box that's actually there.
+        frames = [
+            [_Face(_emb(1, 0, 0), score=0.5, bbox=(0.0, 0.0, 4.0, 4.0))],   # f0 A
+            [_Face(_emb(0, 1, 0), score=0.9, bbox=(8.0, 8.0, 9.0, 9.0))],   # f1 B
+            [_Face(_emb(1, 0, 0), score=0.99, bbox=(5.0, 5.0, 9.0, 9.0))],  # f2 A
+        ]
+        fm = _catalog(_StubReader(frames), lambda f: f, stride=1)
+        a = next(i for i in fm.identities if i.ref_frame == 2)
+        assert a.first_frame == 0
+        assert a.first_bbox == (0.0, 0.0, 4.0, 4.0)  # frame 0's box
+        assert a.ref_bbox == (5.0, 5.0, 9.0, 9.0)    # frame 2's box (clearest)
+
 
 class TestRepMetadata:
     def test_captures_det_score_and_pose(self):
