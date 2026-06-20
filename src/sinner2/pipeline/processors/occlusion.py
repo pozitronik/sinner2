@@ -135,6 +135,11 @@ _FEATHER_SIGMA = 5.0
 # glasses(6), ears(7-9), neck(14-15), cloth(16), background(0) — keeps the
 # original, which is exactly the occlusion behaviour we want.
 _FACE_CLASSES: frozenset[int] = frozenset({1, 2, 3, 4, 5, 10, 11, 12, 13})
+# Boolean LUT over the 19 BiSeNet classes (CelebAMask-HQ) so building the mask
+# is an O(1)/pixel index (lut[classes]) instead of np.isin's general sort-based
+# membership test per face. Byte-identical result.
+_FACE_CLASS_LUT: np.ndarray = np.zeros(19, dtype=bool)
+_FACE_CLASS_LUT[list(_FACE_CLASSES)] = True
 
 # ArcFace 5-point template (112 space), used to align faces to _ALIGN_SIZE.
 _ARCFACE_DST = np.array(
@@ -216,7 +221,7 @@ class OcclusionMasker:
         with torch.no_grad():
             out = self._model(t)[0]
         classes = out.argmax(dim=1).squeeze().cpu().numpy()
-        return np.isin(classes, list(_FACE_CLASSES)).astype(np.float32)
+        return _FACE_CLASS_LUT[classes].astype(np.float32)
 
 
 class OnnxParserMasker:
@@ -264,7 +269,7 @@ class OnnxParserMasker:
         if out.ndim == 4:
             out = out[0]
         classes = out.argmax(0)
-        return np.isin(classes, list(_FACE_CLASSES)).astype(np.float32)
+        return _FACE_CLASS_LUT[classes].astype(np.float32)
 
     def release(self) -> None:
         from sinner2.pipeline.model_cache import release_onnx_session

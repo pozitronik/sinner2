@@ -243,7 +243,11 @@ def _upscale(
 
 
 def _onnx_run(session: Any, chw: np.ndarray, in_name: str, out_name: str) -> np.ndarray:
-    return session.run([out_name], {in_name: chw.astype(np.float32)})[0]
+    # Callers already build float32 chw; only cast (a full copy) on the rare
+    # off-dtype path instead of copying every tile/frame. Byte-identical.
+    if chw.dtype != np.float32:
+        chw = chw.astype(np.float32)
+    return session.run([out_name], {in_name: chw})[0]
 
 
 def _onnx_tiled(
