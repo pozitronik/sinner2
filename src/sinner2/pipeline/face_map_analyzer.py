@@ -23,6 +23,8 @@ from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Protocol
 
+import numpy as np
+
 from sinner2.io.target_reader import TargetReader
 from sinner2.pipeline.face_map import FaceMap
 from sinner2.pipeline.face_map_geometry import FrameGeometry, GeomFace
@@ -216,6 +218,75 @@ class _GeometryCollector:
         )
 
 
+# Crops per ArcFace call in a cross-frame batched scan. Big enough that the
+# per-call overhead amortises (measured ~5x on the recognition portion), small
+# enough that the buffered crops + deferred clustering stay flat in memory.
+_RECOGNITION_BATCH = 32
+# (crops) -> (N, D) embeddings, in input order.
+RecognizeFn = Callable[[list], Any]
+
+
+def _pop_crop(face: Any) -> Any:
+    """Pull (and clear) a face's stashed ArcFace crop. insightface's Face is a
+    dict (``attach_recognition_crops`` stores the crop as a key); test stubs use
+    a plain attribute — handle both."""
+    if isinstance(face, dict):
+        return face.pop("_batch_crop", None)
+    crop = getattr(face, "_batch_crop", None)
+    if crop is not None:
+        try:
+            face._batch_crop = None  # release the ~37KB crop promptly
+        except Exception:  # noqa: BLE001
+            pass
+    return crop
+
+
+class _BatchRecognizerSink:
+    """A scan sink that DEFERS recognition across frames. It buffers detected
+    faces (each carrying an aligned crop from ``attach_recognition_crops``) and,
+    once ~``batch_size`` crops accumulate, embeds them all in ONE ArcFace call,
+    assigns each face its embedding, then forwards the buffered frames to the
+    wrapped sink IN ARRIVAL ORDER — the online clustering is order-dependent, so
+    order must match the non-batched scan exactly. A face with no crop (no
+    keypoints) passes straight through embedding-less, as recognition would have
+    left it. ``ingest`` is called single-threaded (the scan's contract), so no
+    locking is needed; ``flush`` must run once at the end to drain the tail."""
+
+    def __init__(
+        self, inner: _ScanSink, recognize: RecognizeFn, batch_size: int
+    ) -> None:
+        self._inner = inner
+        self._recognize = recognize
+        self._batch = max(1, batch_size)
+        self._pending: list[tuple[int, list]] = []
+        self._crops: list = []
+        self._crop_faces: list = []
+
+    def ingest(self, frame_idx: int, faces: list) -> None:
+        self._pending.append((frame_idx, faces))
+        for face in faces:
+            crop = _pop_crop(face)
+            if crop is not None:
+                self._crops.append(crop)
+                self._crop_faces.append(face)
+        if len(self._crops) >= self._batch:
+            self.flush()
+
+    def flush(self) -> None:
+        """Embed the buffered crops (one ArcFace call), set each face's
+        embedding, then forward every buffered frame to the wrapped sink in
+        arrival order. A no-op when nothing is buffered."""
+        if self._crops:
+            embeddings = self._recognize(self._crops)
+            for face, emb in zip(self._crop_faces, embeddings):
+                face.embedding = np.asarray(emb).flatten()
+            self._crops = []
+            self._crop_faces = []
+        for frame_idx, faces in self._pending:
+            self._inner.ingest(frame_idx, faces)
+        self._pending = []
+
+
 def precompute_geometry(
     reader: TargetReader,
     detect: DetectFn,
@@ -224,6 +295,8 @@ def precompute_geometry(
     sections: SectionSet | None = None,
     workers: int = 1,
     refined: bool = False,
+    recognize_batch: RecognizeFn | None = None,
+    batch_size: int = _RECOGNITION_BATCH,
     cancel_event: threading.Event | None = None,
     on_progress: ProgressFn | None = None,
     on_position: PositionFn | None = None,
@@ -248,6 +321,11 @@ def precompute_geometry(
         indices = list(range(total_frames))
     total = len(indices)
     collector = _GeometryCollector(catalog)
+    # When recognising in cross-frame batches, ``detect`` returns crop-carrying
+    # faces and this sink embeds + clusters them in chunks (still in frame order).
+    sink: _ScanSink = collector
+    if recognize_batch is not None:
+        sink = _BatchRecognizerSink(collector, recognize_batch, batch_size)
     counter = _Counter(0)
 
     def cancelled() -> bool:
@@ -255,14 +333,16 @@ def precompute_geometry(
 
     if workers <= 1:
         _scan_serial(
-            reader, detect, indices, collector, counter, total, cancelled,
+            reader, detect, indices, sink, counter, total, cancelled,
             on_progress, None, on_position, 0.0,
         )
     else:
         _scan_parallel(
-            reader, detect, indices, collector, workers, counter, total,
+            reader, detect, indices, sink, workers, counter, total,
             cancelled, on_progress, None, on_position, 0.0,
         )
+    if isinstance(sink, _BatchRecognizerSink):
+        sink.flush()  # drain any partial final batch into the collector
     # Bake resolution = what the reader produces (the scan reads at native,
     # processing_scale=1.0); the runtime rescales geometry to its own frame size.
     bake_size = (int(reader.width), int(reader.height))
@@ -279,6 +359,8 @@ def analyze_target(
     workers: int = 1,
     start_index: int = 0,
     initial: FaceMap | None = None,
+    recognize_batch: RecognizeFn | None = None,
+    batch_size: int = _RECOGNITION_BATCH,
     cancel_event: threading.Event | None = None,
     on_progress: ProgressFn | None = None,
     on_preview: PreviewFn | None = None,
@@ -317,6 +399,11 @@ def analyze_target(
     start_index = max(0, min(start_index, total))
     base = (initial if initial is not None else FaceMap.empty()).with_threshold(threshold)
     state = _ClusterState(base)
+    # Cross-frame batched recognition: ``detect`` returns crop-carrying faces and
+    # this sink embeds + clusters them in chunks, preserving frame order.
+    sink: _ScanSink = state
+    if recognize_batch is not None:
+        sink = _BatchRecognizerSink(state, recognize_batch, batch_size)
     counter = _Counter(start_index)
 
     def cancelled() -> bool:
@@ -325,14 +412,16 @@ def analyze_target(
     to_scan = indices[start_index:]
     if workers <= 1:
         _scan_serial(
-            reader, detect, to_scan, state, counter, total, cancelled,
+            reader, detect, to_scan, sink, counter, total, cancelled,
             on_progress, on_preview, on_position, preview_interval,
         )
     else:
         _scan_parallel(
-            reader, detect, to_scan, state, workers, counter, total, cancelled,
+            reader, detect, to_scan, sink, workers, counter, total, cancelled,
             on_progress, on_preview, on_position, preview_interval,
         )
+    if isinstance(sink, _BatchRecognizerSink):
+        sink.flush()  # drain any partial final batch into the clusterer
     return state.finish(), counter.done, total
 
 

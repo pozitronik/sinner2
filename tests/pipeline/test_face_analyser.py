@@ -363,6 +363,45 @@ class TestBatchedRecognition:
         assert len(faces) == 1
 
 
+class TestCrossFrameRecognition:
+    """The pieces the face-map scan uses to defer + batch recognition across
+    frames: detect-only, crop-attach, and a crops->embeddings call."""
+
+    def test_detect_faces_runs_no_recognition(self, stub_insightface):
+        rec = stub_insightface.models.get.return_value
+        faces = FaceAnalyser().detect_faces(_blank_frame())
+        rec.get.assert_not_called()
+        rec.get_feat.assert_not_called()
+        assert len(faces) == 1  # the fixture's det_model returns one face
+
+    def test_detect_with_crops_attaches_a_crop_per_face(self, stub_insightface):
+        # norm_crop is stubbed to a dummy crop in the fixture; the Face is a
+        # dict, so the crop lands under the "_batch_crop" key.
+        faces = FaceAnalyser().detect_with_crops(_blank_frame())
+        assert faces and all("_batch_crop" in f for f in faces)
+
+    def test_recognize_crops_batches_in_one_call(self, stub_insightface):
+        rec = stub_insightface.models.get.return_value
+        rec.get_feat = MagicMock(return_value=np.zeros((3, 512), np.float32))
+        out = FaceAnalyser().recognize_crops([object(), object(), object()])
+        rec.get_feat.assert_called_once()
+        assert out.shape == (3, 512)
+
+    def test_recognize_crops_falls_back_for_fixed_batch(self, stub_insightface):
+        rec = stub_insightface.models.get.return_value
+        rec.input_shape = [1, 3, 112, 112]  # fixed → per-crop
+        rec.get_feat = MagicMock(
+            side_effect=lambda c: np.zeros((1, 512), np.float32)
+        )
+        out = FaceAnalyser().recognize_crops([object(), object()])
+        assert rec.get_feat.call_count == 2
+        assert out.shape == (2, 512)
+
+    def test_recognize_crops_empty_is_empty(self, stub_insightface):
+        out = FaceAnalyser().recognize_crops([])
+        assert out.shape == (0, 512)
+
+
 class TestDetectionSize:
     """The face-detector input size (det_size) is configurable: smaller =
     faster detection (may miss small/distant faces). It threads from the

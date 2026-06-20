@@ -23,6 +23,32 @@ class _Face:
         self.age = age
 
 
+class _BatchFace:
+    """A face for the cross-frame batched path: starts embedding-less, carries
+    its crop on ``_batch_crop`` (here the raw embedding values), and derives
+    normed_embedding once the sink sets ``embedding``."""
+
+    def __init__(self, crop_vals, score=0.9, bbox=(0.0, 0.0, 4.0, 4.0),
+                 sex=None, age=None):
+        self._batch_crop = crop_vals
+        self.embedding = None
+        self.det_score = score
+        self.bbox = bbox
+        self.sex = sex
+        self.age = age
+
+    @property
+    def normed_embedding(self):
+        return None if self.embedding is None else normalize(self.embedding)
+
+
+def _recognize_crops(crops):
+    """Stand-in recogniser: the crop IS the raw embedding (one row per crop)."""
+    import numpy as np
+
+    return np.array([list(c) for c in crops], dtype=np.float32)
+
+
 class _StubReader:
     """A reader whose frame i IS a list of faces; detect() just returns it."""
 
@@ -477,3 +503,87 @@ class TestPrecomputeGeometry:
             _StubReader(frames), lambda f: f, self._catalog2(), workers=3
         )
         assert geom.face_count() == 6 and scanned == 6 and total == 6
+
+
+class _RecordingSink:
+    """Inner sink that records forward order + the faces it received."""
+
+    def __init__(self):
+        self.frames: list[int] = []
+        self.faces: list = []
+
+    def ingest(self, frame_idx, faces):
+        self.frames.append(frame_idx)
+        self.faces.extend(faces)
+
+
+class TestBatchRecognizerSink:
+    def test_batches_and_preserves_frame_order(self):
+        from sinner2.pipeline.face_map_analyzer import _BatchRecognizerSink
+
+        inner = _RecordingSink()
+        sizes: list[int] = []
+
+        def recognize(crops):
+            sizes.append(len(crops))
+            return _recognize_crops(crops)
+
+        sink = _BatchRecognizerSink(inner, recognize, batch_size=2)
+        for i, vals in enumerate([(1, 0, 0), (0, 1, 0), (0, 0, 1)]):
+            sink.ingest(i, [_BatchFace(vals)])
+        sink.flush()
+        assert inner.frames == [0, 1, 2]      # forwarded in arrival order
+        assert sizes == [2, 1]                # a chunk of 2, then the tail of 1
+        # Recognition ran (embeddings set) BEFORE the faces reached the clusterer.
+        assert all(f.embedding is not None for f in inner.faces)
+
+    def test_face_without_crop_passes_through(self):
+        from sinner2.pipeline.face_map_analyzer import _BatchRecognizerSink
+
+        inner = _RecordingSink()
+        sink = _BatchRecognizerSink(inner, _recognize_crops, batch_size=8)
+        sink.ingest(0, [_Face(None)])  # no _batch_crop → never recognised
+        sink.flush()
+        assert inner.frames == [0] and len(inner.faces) == 1
+
+    def test_flush_drains_partial_tail(self):
+        from sinner2.pipeline.face_map_analyzer import _BatchRecognizerSink
+
+        inner = _RecordingSink()
+        sink = _BatchRecognizerSink(inner, _recognize_crops, batch_size=16)
+        sink.ingest(0, [_BatchFace((1, 0, 0))])  # below the batch size
+        assert inner.frames == []  # nothing forwarded yet — still buffered
+        sink.flush()
+        assert inner.frames == [0]  # the tail is drained on flush
+
+
+class TestBatchedRecognitionEquivalence:
+    """The cross-frame batched scan must cluster IDENTICALLY to the per-frame
+    path — same identities, same occurrence counts — across serial + parallel."""
+
+    _PEOPLE = [(1, 0, 0), (1, 0, 0), (0, 1, 0), (1, 0, 0), (0, 1, 0), (0, 1, 0)]
+
+    def _both(self, workers):
+        non = _catalog(
+            _StubReader([[_Face(_emb(*p))] for p in self._PEOPLE]),
+            lambda f: f, stride=1, threshold=0.5, workers=workers,
+        )
+        bat = _catalog(
+            _StubReader([[_BatchFace(p)] for p in self._PEOPLE]),
+            lambda f: f, stride=1, threshold=0.5, workers=workers,
+            recognize_batch=_recognize_crops, batch_size=2,
+        )
+        return non, bat
+
+    def _assert_same(self, non, bat):
+        assert len(bat.identities) == len(non.identities) == 2
+        assert (
+            sorted(i.occurrences for i in bat.identities)
+            == sorted(i.occurrences for i in non.identities)
+        )
+
+    def test_serial_matches(self):
+        self._assert_same(*self._both(workers=1))
+
+    def test_parallel_matches(self):
+        self._assert_same(*self._both(workers=3))

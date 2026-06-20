@@ -247,3 +247,47 @@ class TestSharedPackPin:
             job.run(AnalysisRequest("clip.mp4", stride=1, compute_geometry=False))
         assert seen and all(p >= 1 for p in seen)  # pinned during every detect
         assert face_analyser._shared_pins == 0  # noqa: SLF001  # released after
+
+
+class TestBatchWiring:
+    """_batch_wiring swaps the scan to detect-only-with-crops + a recogniser
+    only when batching is enabled AND the detect is a batchable det+rec one."""
+
+    def test_batchable_detect_swaps_to_crops_and_recognizer(self):
+        from unittest.mock import MagicMock
+
+        from sinner2.gui.face_map_job import _batch_wiring
+
+        analyser = MagicMock()
+        detect = MagicMock(analyser=analyser, det_rec=True)
+        scan_detect, recognize = _batch_wiring(detect, enabled=True)
+        assert recognize is analyser.recognize_crops
+        scan_detect("frame")
+        analyser.detect_with_crops.assert_called_once_with("frame")
+
+    def test_disabled_leaves_detect_unchanged(self):
+        from unittest.mock import MagicMock
+
+        from sinner2.gui.face_map_job import _batch_wiring
+
+        detect = MagicMock(analyser=MagicMock(), det_rec=True)
+        scan_detect, recognize = _batch_wiring(detect, enabled=False)
+        assert scan_detect is detect and recognize is None
+
+    def test_full_pack_detect_not_batched(self):
+        from unittest.mock import MagicMock
+
+        from sinner2.gui.face_map_job import _batch_wiring
+
+        detect = MagicMock(analyser=MagicMock(), det_rec=False)
+        scan_detect, recognize = _batch_wiring(detect, enabled=True)
+        assert scan_detect is detect and recognize is None
+
+    def test_plain_detect_without_analyser_not_batched(self):
+        from sinner2.gui.face_map_job import _batch_wiring
+
+        def detect(frame):
+            return frame
+
+        scan_detect, recognize = _batch_wiring(detect, enabled=True)
+        assert scan_detect is detect and recognize is None

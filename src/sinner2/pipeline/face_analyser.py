@@ -338,6 +338,35 @@ class FaceAnalyser:
             _get_shared_face_analysis(self._providers, self._detection_size).get(frame)
         )
 
+    def detect_faces(self, frame: Frame) -> list[Any]:
+        """Detection ONLY → insightface Face objects (bbox/kps/det_score), no
+        recognition. A standalone detector (yoloface / scrfd) finds the faces
+        when set; otherwise buffalo_l's det_model does. The cross-frame scan
+        detects with this and recognises crops in batches later; ``analyse_det_rec``
+        adds per-frame recognition on top."""
+        from insightface.app.common import Face
+
+        app = _get_shared_face_analysis(self._providers, self._detection_size)
+        if self._detector is not None:
+            faces: list[Any] = []
+            for d in self._detector.detect(frame):
+                kps = getattr(d, "kps", None)
+                faces.append(Face(
+                    bbox=np.asarray(d.bbox, np.float32),
+                    kps=None if kps is None else np.asarray(kps, np.float32),
+                    det_score=float(getattr(d, "det_score", 1.0)),
+                ))
+            return faces
+        bboxes, kpss = app.det_model.detect(frame, max_num=0, metric="default")
+        return [
+            Face(
+                bbox=bboxes[i][0:4],
+                kps=kpss[i] if kpss is not None else None,
+                det_score=bboxes[i][4],
+            )
+            for i in range(len(bboxes))
+        ]
+
     def analyse_det_rec(self, frame: Frame) -> list[Any]:
         """Detection + RECOGNITION only — skip the genderage + two landmark nets
         the full `.get()` runs per face. The ArcFace embedding is all the
@@ -351,34 +380,51 @@ class FaceAnalyser:
         and ArcFace (from the shared pack) adds the embedding per face — so a
         faster detection-only detector can still drive identity clustering. The
         detector's 5 keypoints align the ArcFace crop, same as buffalo_l's."""
-        from insightface.app.common import Face
-
         app = _get_shared_face_analysis(self._providers, self._detection_size)
         rec = app.models.get("recognition")
-        if self._detector is not None:
-            faces: list[Any] = []
-            for d in self._detector.detect(frame):
-                kps = getattr(d, "kps", None)
-                faces.append(Face(
-                    bbox=np.asarray(d.bbox, np.float32),
-                    kps=None if kps is None else np.asarray(kps, np.float32),
-                    det_score=float(getattr(d, "det_score", 1.0)),
-                ))
-        else:
-            bboxes, kpss = app.det_model.detect(frame, max_num=0, metric="default")
-            faces = [
-                Face(
-                    bbox=bboxes[i][0:4],
-                    kps=kpss[i] if kpss is not None else None,
-                    det_score=bboxes[i][4],
-                )
-                for i in range(len(bboxes))
-            ]
+        faces = self.detect_faces(frame)
         # Recognise every face in ONE ArcFace call (per-frame batch) rather than
         # one call per face — same embeddings (verified bit-identical), fewer
         # kernel launches. Falls back to per-face for a fixed-batch export.
         _batch_recognize(frame, rec, faces)
         return faces
+
+    def attach_recognition_crops(self, frame: Frame, faces: list[Any]) -> None:
+        """Align + stash each face's ArcFace crop on ``face._batch_crop`` (for
+        deferred, cross-frame batched recognition). Uses the face's CURRENT
+        keypoints, so call it AFTER any keypoint refinement. Faces without
+        keypoints are left without a crop (they get no embedding later)."""
+        app = _get_shared_face_analysis(self._providers, self._detection_size)
+        rec = app.models.get("recognition")
+        if rec is None:
+            return
+        from insightface.utils import face_align
+
+        size = rec.input_size[0]
+        for face in faces:
+            if getattr(face, "kps", None) is not None:
+                face._batch_crop = face_align.norm_crop(
+                    frame, landmark=face.kps, image_size=size
+                )
+
+    def detect_with_crops(self, frame: Frame) -> list[Any]:
+        """``detect_faces`` plus each face's aligned ArcFace crop stashed for
+        later batched recognition — the cross-frame scan's per-frame step."""
+        faces = self.detect_faces(frame)
+        self.attach_recognition_crops(frame, faces)
+        return faces
+
+    def recognize_crops(self, crops: list[Any]) -> np.ndarray:
+        """Embed N aligned ArcFace crops in ONE call (the cross-frame batch),
+        returning an (N, D) array in input order. Falls back to per-crop for a
+        fixed-batch export."""
+        app = _get_shared_face_analysis(self._providers, self._detection_size)
+        rec = app.models.get("recognition")
+        if rec is None or not crops:
+            return np.empty((0, 512), np.float32)
+        if _recognition_batch_capable(rec):
+            return np.asarray(rec.get_feat(crops))
+        return np.stack([np.asarray(rec.get_feat(c)).flatten() for c in crops])
 
     def provides_gender(self) -> bool:
         """Whether detected faces carry insightface's `.sex` (only the full
