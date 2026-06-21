@@ -29,14 +29,7 @@ from sinner2.pipeline.processors.face_enhancer import (
     EnhancerModel,
     FaceEnhancerParams,
 )
-from sinner2.pipeline.processors.occlusion import OcclusionMaskMode
-from sinner2.pipeline.processors.swapper_models import is_insightface_model
-from sinner2.pipeline.processors.upscaler import (
-    UpscalerModel,
-    UpscalerParams,
-    model_runtime,
-    model_supports_fp16,
-)
+from sinner2.pipeline.processors.upscaler import UpscalerParams
 from sinner2.pipeline.detectors import DetectorModel
 from sinner2.pipeline.processors.face_swapper import (
     FaceSwapperParams,
@@ -56,6 +49,13 @@ from sinner2.gui.widgets.model_choices import (
     UPSCALER_MODELS as _UPSCALER_MODELS,
 )
 from sinner2.gui.widgets.onnx_providers_row import OnnxProvidersRow
+from sinner2.gui.widgets.processor_gating import (
+    update_enhancer_rows,
+    update_occlusion_rows,
+    update_rotation_rows,
+    update_swapper_model_rows,
+    update_upscaler_rows,
+)
 from sinner2.pipeline.skip_strategy import (
     BestEffortStrategy,
     FrameSkipStrategy,
@@ -1165,19 +1165,12 @@ class QProcessorControls(QWidget):
             _set_combo_silently(self._rotation_source, RotationAngleSource.POSE.value)
 
     def _update_enhancer_model_rows(self) -> None:
-        """Enable only the knob that applies to the selected enhancer model —
-        Upscale for GFPGAN, Fidelity for CodeFormer; GPEN / RestoreFormer++
-        have neither."""
-        model = self._enhancer_model.currentData()
-        is_gfpgan = model == EnhancerModel.GFPGAN.value
-        self._upscale.setEnabled(is_gfpgan)
-        self._enhancer_fidelity.setEnabled(model == EnhancerModel.CODEFORMER.value)
-        # fp16 + CUDA device are GFPGAN-only (torch). The ONNX restorers
-        # (CodeFormer / GPEN / RestoreFormer++ / GFPGAN-ONNX) use the ONNX
-        # providers row instead — so the two are mutually exclusive by model.
-        self._enhancer_fp16.setEnabled(is_gfpgan)
-        self._enhancer_device.setEnabled(is_gfpgan)
-        self._enhancer_providers_row.setEnabled(not is_gfpgan)
+        # Gating rules shared with the batch form — see processor_gating.
+        update_enhancer_rows(
+            self._enhancer_model, self._upscale, self._enhancer_fidelity,
+            self._enhancer_fp16, self._enhancer_device,
+            self._enhancer_providers_row,
+        )
 
     def _update_only_swapped_enabled(self) -> None:
         """Grey out "Swapped faces only" when the swapper is off — it's the
@@ -1274,12 +1267,11 @@ class QProcessorControls(QWidget):
         self._use_face_map.setEnabled(bool(available))
 
     def _update_rotation_rows(self) -> None:
-        """Gray out the rotation knobs (threshold / re-detect / angle source)
-        when rotation compensation is off — they have no effect then."""
-        on = self._rotation_enabled.isChecked()
-        self._rotation_threshold.setEnabled(on)
-        self._rotation_redetect.setEnabled(on)
-        self._rotation_source.setEnabled(on)
+        # Gating rules shared with the batch form — see processor_gating.
+        update_rotation_rows(
+            self._rotation_enabled, self._rotation_threshold,
+            self._rotation_redetect, self._rotation_source,
+        )
 
     def set_face_map_routing_active(self, active: bool) -> None:
         """Gray what the per-identity map supersedes while routing is active — all
@@ -1306,37 +1298,22 @@ class QProcessorControls(QWidget):
         self._target_sex.setEnabled(full_pack and not self._face_map_routing)
 
     def _update_occlusion_rows(self) -> None:
-        """Link the occlusion sub-controls to the master checkbox and to each
-        other: everything grays out when the mask is off; the parser applies
-        only to region/both, the occluder model only to occluder/both."""
-        on = self._occlusion_mask.isChecked()
-        mode = self._occlusion_mode.currentData()
-        self._occlusion_mode.setEnabled(on)
-        self._occlusion_parser.setEnabled(
-            on and mode != OcclusionMaskMode.OCCLUDER.value
+        # Gating rules shared with the batch form — see processor_gating.
+        update_occlusion_rows(
+            self._occlusion_mask, self._occlusion_mode, self._occlusion_parser,
+            self._occluder_model, self._occlusion_cache,
         )
-        self._occluder_model.setEnabled(
-            on and mode != OcclusionMaskMode.REGION.value
-        )
-        self._occlusion_cache.setEnabled(on)
 
     def _update_swapper_model_rows(self) -> None:
-        """Gray the fast-paste knob for the 256px swappers — they ALWAYS blend
-        through the fast ROI paste; the toggle only applies to the insightface
-        models (inswapper / reswapper), whose original blend it replaces."""
-        model = SwapperModel(self._swapper_model.currentData())
-        self._fast_paste.setEnabled(is_insightface_model(model))
+        # Gating rules shared with the batch form — see processor_gating.
+        update_swapper_model_rows(self._swapper_model, self._fast_paste)
 
     def _update_upscaler_rows(self) -> None:
-        """Gray the fp16 knob for models it doesn't apply to — the ONNX
-        upscalers (no effect) and SwinIR (its attention can't run in half) —
-        and the torch device for the ONNX upscalers (they run on ORT EPs)."""
-        model = UpscalerModel(self._upscaler_model.currentData())
-        is_onnx = model_runtime(model) == "onnx"
-        self._upscaler_fp16.setEnabled(model_supports_fp16(model))
-        # Torch device for torch models; ONNX providers row for ONNX models.
-        self._upscaler_device.setEnabled(not is_onnx)
-        self._upscaler_providers_row.setEnabled(is_onnx)
+        # Gating rules shared with the batch form — see processor_gating.
+        update_upscaler_rows(
+            self._upscaler_model, self._upscaler_fp16, self._upscaler_device,
+            self._upscaler_providers_row,
+        )
 
     def _couple_comparison_to_overlay(self, on: bool) -> None:
         """The comparison thumbnails draw on the detection overlay, so enabling

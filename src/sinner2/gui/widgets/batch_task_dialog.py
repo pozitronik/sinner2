@@ -58,6 +58,13 @@ from sinner2.gui.widgets.model_choices import (
     UPSCALER_MODELS,
 )
 from sinner2.gui.widgets.onnx_providers_row import OnnxProvidersRow
+from sinner2.gui.widgets.processor_gating import (
+    update_enhancer_rows,
+    update_occlusion_rows,
+    update_rotation_rows,
+    update_swapper_model_rows,
+    update_upscaler_rows,
+)
 from sinner2.io.cv2_video_target_reader import CV2VideoTargetReader
 from sinner2.io.frame_resize import scaled_dims
 from sinner2.io.target_reader import ImageTargetReader
@@ -65,11 +72,6 @@ from sinner2.io.video_backend import VideoBackend
 from sinner2.pipeline.face_map_store import face_map_path, load_face_map
 from sinner2.pipeline.image_writer import ImageFormat
 from sinner2.pipeline.processors.face_swapper import TargetSex
-from sinner2.pipeline.processors.upscaler import (
-    UpscalerModel,
-    model_runtime,
-    model_supports_fp16,
-)
 
 
 _TARGET_SEX_OPTIONS = [
@@ -732,55 +734,37 @@ class QBatchTaskDialog(QDialog):
         self._target_sex.setEnabled(self._detector.currentData() == "buffalo_l")
 
     def _update_enhancer_rows(self) -> None:
-        """Enable only the knobs the selected enhancer model uses — Upscale /
-        fp16 / torch device for GFPGAN, Fidelity for CodeFormer; the ONNX
-        restorers use the ONNX providers row instead of a torch device, so the
-        two are mutually exclusive by model."""
-        model = self._enhancer_model.currentData()
-        is_gfpgan = model == "gfpgan"
-        self._upscale.setEnabled(is_gfpgan)
-        self._enhancer_fidelity.setEnabled(model == "codeformer")
-        self._enhancer_fp16.setEnabled(is_gfpgan)
-        self._enhancer_device.setEnabled(is_gfpgan)
-        self._enhancer_providers_row.setEnabled(not is_gfpgan)
-
-    def _update_upscaler_rows(self) -> None:
-        """Gray the fp16 knob for models it doesn't apply to, and split the
-        torch device vs ONNX providers by the selected model's runtime."""
-        model = UpscalerModel(self._upscaler_model.currentData())
-        is_onnx = model_runtime(model) == "onnx"
-        self._upscaler_fp16.setEnabled(model_supports_fp16(model))
-        self._upscaler_device.setEnabled(not is_onnx)
-        self._upscaler_providers_row.setEnabled(is_onnx)
-
-    def _update_occlusion_rows(self) -> None:
-        """Link the occlusion sub-controls to the master checkbox and to each
-        other: all gray when the mask is off; the parser applies to region/
-        both, the occluder model to occluder/both."""
-        on = self._occlusion_mask.isChecked()
-        mode = self._occlusion_mode.currentData()
-        self._occlusion_mode.setEnabled(on)
-        self._occlusion_parser.setEnabled(on and mode != "occluder")
-        self._occluder_model.setEnabled(on and mode != "region")
-        self._occlusion_cache.setEnabled(on)
-
-    def _update_rotation_rows(self) -> None:
-        """Gray the rotation knobs when rotation compensation is off."""
-        on = self._rotation_enabled.isChecked()
-        self._rotation_threshold.setEnabled(on)
-        self._rotation_redetect.setEnabled(on)
-        self._rotation_source.setEnabled(on)
-
-    def _update_swapper_model_rows(self) -> None:
-        """Gray fast-paste for the 256px swappers (always fast-pasted); the
-        toggle only applies to inswapper / reswapper."""
-        from sinner2.pipeline.processors.swapper_models import (
-            SwapperModel,
-            is_insightface_model,
+        # Gating rules shared with the live Settings panel — see processor_gating.
+        update_enhancer_rows(
+            self._enhancer_model, self._upscale, self._enhancer_fidelity,
+            self._enhancer_fp16, self._enhancer_device,
+            self._enhancer_providers_row,
         )
 
-        model = SwapperModel(self._swapper_model.currentData())
-        self._fast_paste.setEnabled(is_insightface_model(model))
+    def _update_upscaler_rows(self) -> None:
+        # Gating rules shared with the live Settings panel — see processor_gating.
+        update_upscaler_rows(
+            self._upscaler_model, self._upscaler_fp16, self._upscaler_device,
+            self._upscaler_providers_row,
+        )
+
+    def _update_occlusion_rows(self) -> None:
+        # Gating rules shared with the live Settings panel — see processor_gating.
+        update_occlusion_rows(
+            self._occlusion_mask, self._occlusion_mode, self._occlusion_parser,
+            self._occluder_model, self._occlusion_cache,
+        )
+
+    def _update_rotation_rows(self) -> None:
+        # Gating rules shared with the live Settings panel — see processor_gating.
+        update_rotation_rows(
+            self._rotation_enabled, self._rotation_threshold,
+            self._rotation_redetect, self._rotation_source,
+        )
+
+    def _update_swapper_model_rows(self) -> None:
+        # Gating rules shared with the live Settings panel — see processor_gating.
+        update_swapper_model_rows(self._swapper_model, self._fast_paste)
 
     @classmethod
     def from_task(
