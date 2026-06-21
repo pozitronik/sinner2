@@ -15,7 +15,7 @@ from __future__ import annotations
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Iterator
+from typing import Any, Iterator
 
 _lock = threading.Lock()
 # None = not yet tried; True/False = whether NVML init succeeded (cached so we
@@ -28,6 +28,10 @@ _measuring = False
 # Has any GPU-touching load been measured yet — the FIRST one also pays the
 # one-time CUDA context tax (cuDNN/cuBLAS), so its delta is inflated; flagged.
 _any_gpu_load = False
+# Cached psutil.Process for THIS process — the live RAM readout polls often, and
+# the handle is valid for the process lifetime, so build it once. Stays None
+# while psutil is absent (each call cheaply retries the import until it appears).
+_proc: "Any | None" = None
 
 
 @dataclass(frozen=True)
@@ -73,10 +77,13 @@ def device_vram(index: int = 0) -> "tuple[int, int] | None":
 
 def process_ram() -> "int | None":
     """Resident set size of THIS process in bytes, or None when psutil absent."""
+    global _proc
     try:
-        import psutil
+        if _proc is None:
+            import psutil
 
-        return int(psutil.Process().memory_info().rss)
+            _proc = psutil.Process()
+        return int(_proc.memory_info().rss)
     except Exception:  # noqa: BLE001
         return None
 

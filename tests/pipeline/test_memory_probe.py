@@ -15,10 +15,12 @@ def _reset_state():
     mp.reset_footprints()
     mp._nvml_ready = None  # noqa: SLF001 — force re-detection
     mp._measuring = False  # noqa: SLF001
+    mp._proc = None  # noqa: SLF001 — drop the cached psutil handle
     yield
     mp.reset_footprints()
     mp._nvml_ready = None  # noqa: SLF001
     mp._measuring = False  # noqa: SLF001
+    mp._proc = None  # noqa: SLF001
 
 
 def _fake_pynvml(used: int, total: int):
@@ -69,6 +71,25 @@ class TestProcessRam:
     def test_none_when_psutil_absent(self, monkeypatch):
         monkeypatch.setitem(sys.modules, "psutil", None)
         assert mp.process_ram() is None
+
+    def test_process_handle_is_cached(self, monkeypatch):
+        # The live readout polls process_ram() often; the psutil.Process handle
+        # is valid for the process lifetime, so it must be built once and reused
+        # rather than reconstructed on every call.
+        constructions: list[int] = []
+
+        def make_proc():
+            constructions.append(1)
+            return types.SimpleNamespace(
+                memory_info=lambda: types.SimpleNamespace(rss=4_096)
+            )
+
+        monkeypatch.setitem(
+            sys.modules, "psutil", types.SimpleNamespace(Process=make_proc)
+        )
+        assert mp.process_ram() == 4_096
+        assert mp.process_ram() == 4_096
+        assert constructions == [1]  # handle built once, reused
 
 
 _GB = 1024 ** 3
