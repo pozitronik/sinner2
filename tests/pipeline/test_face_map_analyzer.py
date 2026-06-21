@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import threading
 
+import pytest
+
 from sinner2.pipeline.face_map import normalize
 from sinner2.pipeline.face_map_analyzer import analyze_target
 
@@ -555,6 +557,20 @@ class TestBatchRecognizerSink:
         assert inner.frames == []  # nothing forwarded yet — still buffered
         sink.flush()
         assert inner.frames == [0]  # the tail is drained on flush
+
+    def test_recognizer_length_mismatch_raises(self):
+        # A recognizer that returns the wrong number of embeddings used to
+        # silently truncate via zip(), corrupting every later face↔embedding
+        # pairing. The flush now fails loud on the contract violation.
+        from sinner2.pipeline.face_map_analyzer import _BatchRecognizerSink
+
+        inner = _RecordingSink()
+        sink = _BatchRecognizerSink(
+            inner, lambda crops: _recognize_crops(crops)[:-1], batch_size=8
+        )
+        sink.ingest(0, [_BatchFace((1, 0, 0)), _BatchFace((0, 1, 0))])
+        with pytest.raises(ValueError, match="one per crop"):
+            sink.flush()
 
 
 class TestBatchedRecognitionEquivalence:

@@ -278,6 +278,15 @@ class _BatchRecognizerSink:
         arrival order. A no-op when nothing is buffered."""
         if self._crops:
             embeddings = self._recognize(self._crops)
+            # recognize() must yield exactly one embedding per crop. A bare zip
+            # would silently truncate on a mismatch — misaligning every later
+            # pairing (face[i] gets embedding[i+1]…) or dropping the tail with
+            # no error. Fail loud instead of corrupting the catalog.
+            if len(embeddings) != len(self._crop_faces):
+                raise ValueError(
+                    f"recognize() returned {len(embeddings)} embeddings for "
+                    f"{len(self._crop_faces)} crops — must be one per crop."
+                )
             for face, emb in zip(self._crop_faces, embeddings):
                 face.embedding = np.asarray(emb).flatten()
             self._crops = []
