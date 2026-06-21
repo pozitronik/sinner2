@@ -24,6 +24,7 @@ import uuid
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic import Field
 
@@ -31,6 +32,14 @@ from sinner2.config.base import SinnerBaseModel
 from sinner2.config.execution import HybridExecution, OnnxExecution
 from sinner2.io.video_backend import VideoBackend
 from sinner2.pipeline.image_writer import ImageFormat
+
+if TYPE_CHECKING:
+    # Annotation-only — the chain-param dataclasses are imported lazily inside
+    # to_*_params() so a BatchTask (loaded by the store, the GUI, tests) doesn't
+    # drag the whole pipeline (cv2 / onnx / torch) in just to exist.
+    from sinner2.pipeline.processors.face_enhancer import FaceEnhancerParams
+    from sinner2.pipeline.processors.face_swapper import FaceSwapperParams
+    from sinner2.pipeline.processors.upscaler import UpscalerParams
 
 # Per-processor batch worker defaults. The swapper shares one ORT session
 # across threads, so more workers ride the GPU harder for little extra VRAM;
@@ -220,6 +229,87 @@ class BatchTask(SinnerBaseModel):
     error_message: str | None = None
     started_at: float | None = None  # epoch seconds
     finished_at: float | None = None
+
+    # ---- Chain-param bridges (task fields → processor params) ----
+    # The task OWNS these fields, so it owns mapping them to each processor's
+    # params object (GRASP Information Expert) — the driver just asks. Imports
+    # are lazy so merely loading a task stays pipeline-free.
+
+    def to_swapper_params(self) -> "FaceSwapperParams":
+        """Build the face-swapper's chain params from this task's fields."""
+        from sinner2.pipeline.detectors import DetectorModel
+        from sinner2.pipeline.processors.face_swapper import (
+            FaceSwapperParams,
+            RotationAngleSource,
+            SwapperModel,
+            TargetSex,
+        )
+        from sinner2.pipeline.processors.occlusion import (
+            FaceParser,
+            OccluderModel,
+            OcclusionMaskMode,
+        )
+
+        return FaceSwapperParams(
+            model=SwapperModel(self.swapper_model),
+            detection_interval=self.swapper_detection_interval,
+            detection_size=self.swapper_detection_size,
+            detector=DetectorModel(self.swapper_detector),
+            many_faces=self.swapper_many_faces,
+            fast_paste=self.swapper_fast_paste,
+            target_sex=TargetSex(self.swapper_target_sex),
+            rotation_compensation=self.swapper_rotation_compensation,
+            rotation_threshold_deg=self.swapper_rotation_threshold_deg,
+            rotation_redetect=self.swapper_rotation_redetect,
+            rotation_angle_source=RotationAngleSource(
+                self.swapper_rotation_angle_source
+            ),
+            landmark_refine=self.swapper_landmark_refine,
+            occlusion_mask=self.swapper_occlusion_mask,
+            occlusion_mode=OcclusionMaskMode(self.swapper_occlusion_mode),
+            occlusion_parser=FaceParser(self.swapper_occlusion_parser),
+            occluder_model=OccluderModel(self.swapper_occluder_model),
+            occlusion_cache=self.swapper_occlusion_cache,
+        )
+
+    def to_enhancer_params(self) -> "FaceEnhancerParams":
+        """Build the face-enhancer's chain params. Rotation compensation is
+        SHARED config — it reads the same swapper_rotation_* fields the swapper
+        does (the enhancer needs the same rotation; GFPGAN has no knobs of its
+        own)."""
+        from sinner2.pipeline.processors.face_enhancer import (
+            EnhancerModel,
+            FaceEnhancerParams,
+        )
+        from sinner2.pipeline.processors.face_swapper import RotationAngleSource
+
+        return FaceEnhancerParams(
+            model=EnhancerModel(self.enhancer_model),
+            upscale=self.enhancer_upscale,
+            only_center_face=self.enhancer_only_center_face,
+            only_swapped=self.enhancer_only_swapped,
+            codeformer_fidelity=self.enhancer_codeformer_fidelity,
+            fp16=self.enhancer_fp16,
+            rotation_compensation=self.swapper_rotation_compensation,
+            rotation_threshold_deg=self.swapper_rotation_threshold_deg,
+            rotation_redetect=self.swapper_rotation_redetect,
+            rotation_angle_source=RotationAngleSource(
+                self.swapper_rotation_angle_source
+            ),
+        )
+
+    def to_upscaler_params(self) -> "UpscalerParams":
+        """Build the whole-frame upscaler's chain params from this task."""
+        from sinner2.pipeline.processors.upscaler import (
+            UpscalerModel,
+            UpscalerParams,
+        )
+
+        return UpscalerParams(
+            model=UpscalerModel(self.upscaler_model),
+            tile=self.upscaler_tile,
+            fp16=self.upscaler_fp16,
+        )
 
 
 def resolve_output_path(

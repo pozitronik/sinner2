@@ -55,7 +55,6 @@ from sinner2.config.target import Target, TargetKind
 from sinner2.io.target_reader import ImageTargetReader, TargetReader
 from sinner2.io.video_backend import VideoBackend, build_video_target_reader
 from sinner2.io.video_encoder import FfmpegMissingError, encode_frames_to_mp4
-from sinner2.pipeline.detectors import DetectorModel
 from sinner2.pipeline.face_map import FaceMap
 from sinner2.pipeline.face_map_geometry import (
     FrameGeometry,
@@ -69,28 +68,12 @@ from sinner2.pipeline.face_map_store import (
 from sinner2.pipeline.image_writer import build_image_writer
 from sinner2.pipeline.sections import SectionSet
 from sinner2.pipeline.processor import Processor
-from sinner2.pipeline.processors.face_enhancer import (
-    EnhancerModel,
-    FaceEnhancer,
-    FaceEnhancerParams,
-)
+from sinner2.pipeline.processors.face_enhancer import FaceEnhancer
 from sinner2.pipeline.processors.face_swapper import (
     FaceSwapper,
     FaceSwapperParams,
-    RotationAngleSource,
-    SwapperModel,
-    TargetSex,
 )
-from sinner2.pipeline.processors.occlusion import (
-    FaceParser,
-    OccluderModel,
-    OcclusionMaskMode,
-)
-from sinner2.pipeline.processors.upscaler import (
-    Upscaler,
-    UpscalerModel,
-    UpscalerParams,
-)
+from sinner2.pipeline.processors.upscaler import Upscaler
 from sinner2.types import Frame
 
 
@@ -434,27 +417,7 @@ class BatchDriver:
         passthrough)."""
         stages: list[StageSpec] = []
         if task.swapper_enabled:
-            swapper_params = FaceSwapperParams(
-                model=SwapperModel(task.swapper_model),
-                detection_interval=task.swapper_detection_interval,
-                detection_size=task.swapper_detection_size,
-                detector=DetectorModel(task.swapper_detector),
-                many_faces=task.swapper_many_faces,
-                fast_paste=task.swapper_fast_paste,
-                target_sex=TargetSex(task.swapper_target_sex),
-                rotation_compensation=task.swapper_rotation_compensation,
-                rotation_threshold_deg=task.swapper_rotation_threshold_deg,
-                rotation_redetect=task.swapper_rotation_redetect,
-                rotation_angle_source=RotationAngleSource(
-                    task.swapper_rotation_angle_source
-                ),
-                landmark_refine=task.swapper_landmark_refine,
-                occlusion_mask=task.swapper_occlusion_mask,
-                occlusion_mode=OcclusionMaskMode(task.swapper_occlusion_mode),
-                occlusion_parser=FaceParser(task.swapper_occlusion_parser),
-                occluder_model=OccluderModel(task.swapper_occluder_model),
-                occlusion_cache=task.swapper_occlusion_cache,
-            )
+            swapper_params = task.to_swapper_params()
             providers = list(task.swapper_execution.providers)
             # Load the target's face map + geometry live at render time.
             face_map, geometry = _resolve_face_map(task)
@@ -467,22 +430,7 @@ class BatchDriver:
                 workers=task.swapper_execution.workers,
             ))
         if task.enhancer_enabled:
-            enhancer_params = FaceEnhancerParams(
-                model=EnhancerModel(task.enhancer_model),
-                upscale=task.enhancer_upscale,
-                only_center_face=task.enhancer_only_center_face,
-                only_swapped=task.enhancer_only_swapped,
-                codeformer_fidelity=task.enhancer_codeformer_fidelity,
-                fp16=task.enhancer_fp16,
-                # Rotation compensation is shared config (same task fields as
-                # the swapper) — the enhancer needs it too, GFPGAN has none.
-                rotation_compensation=task.swapper_rotation_compensation,
-                rotation_threshold_deg=task.swapper_rotation_threshold_deg,
-                rotation_redetect=task.swapper_rotation_redetect,
-                rotation_angle_source=RotationAngleSource(
-                    task.swapper_rotation_angle_source
-                ),
-            )
+            enhancer_params = task.to_enhancer_params()
             device = task.enhancer_execution.device
             enh_providers = list(task.enhancer_execution.providers)
             stages.append(StageSpec(
@@ -494,11 +442,7 @@ class BatchDriver:
                 workers=task.enhancer_execution.workers,
             ))
         if task.upscaler_enabled:
-            upscaler_params = UpscalerParams(
-                model=UpscalerModel(task.upscaler_model),
-                tile=task.upscaler_tile,
-                fp16=task.upscaler_fp16,
-            )
+            upscaler_params = task.to_upscaler_params()
             up_device = task.upscaler_execution.device
             up_providers = list(task.upscaler_execution.providers)
             stages.append(StageSpec(

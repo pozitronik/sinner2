@@ -77,6 +77,98 @@ class TestBatchTaskDefaults:
         assert t.finished_at is None
 
 
+class TestToParams:
+    """task fields → processor params bridges. Each field is set to a NON-default
+    value so a mis-wiring (field swap, dropped field) is caught. Previously the
+    mapping lived inline in the driver and only stage NAMES were asserted, so the
+    field-level mapping was untested."""
+
+    def test_to_swapper_params_maps_every_field(self, tmp_path):
+        t = _task(
+            tmp_path,
+            swapper_model="reswapper_128",
+            swapper_detection_interval=5,
+            swapper_detection_size=320,
+            swapper_detector="yoloface",
+            swapper_many_faces=False,
+            swapper_fast_paste=False,
+            swapper_target_sex="M",
+            swapper_rotation_compensation=False,
+            swapper_rotation_threshold_deg=22,
+            swapper_rotation_redetect=False,
+            swapper_rotation_angle_source="keypoints",
+            swapper_landmark_refine=True,
+            swapper_occlusion_mask=True,
+            swapper_occlusion_mode="both",
+            swapper_occlusion_parser="parsenet",
+            swapper_occlusion_cache=True,
+        )
+        p = t.to_swapper_params()
+        assert p.model.value == "reswapper_128"
+        assert p.detection_interval == 5
+        assert p.detection_size == 320
+        assert p.detector.value == "yoloface"
+        assert p.many_faces is False
+        assert p.fast_paste is False
+        assert p.target_sex.value == "M"
+        assert p.rotation_compensation is False
+        assert p.rotation_threshold_deg == 22
+        assert p.rotation_redetect is False
+        assert p.rotation_angle_source.value == "keypoints"
+        assert p.landmark_refine is True
+        assert p.occlusion_mask is True
+        assert p.occlusion_mode.value == "both"
+        assert p.occlusion_parser.value == "parsenet"
+        assert p.occluder_model.value == t.swapper_occluder_model
+        assert p.occlusion_cache is True
+
+    def test_to_enhancer_params_maps_every_field(self, tmp_path):
+        t = _task(
+            tmp_path,
+            enhancer_model="codeformer",
+            enhancer_upscale=2,
+            enhancer_only_center_face=True,
+            enhancer_only_swapped=True,
+            enhancer_codeformer_fidelity=0.3,
+            enhancer_fp16=False,
+        )
+        p = t.to_enhancer_params()
+        assert p.model.value == "codeformer"
+        assert p.upscale == 2
+        assert p.only_center_face is True
+        assert p.only_swapped is True
+        assert p.codeformer_fidelity == 0.3
+        assert p.fp16 is False
+
+    def test_enhancer_rotation_is_shared_from_swapper_fields(self, tmp_path):
+        # The enhancer has no rotation fields of its own — it reads the
+        # swapper_rotation_* config so both stages rotate identically.
+        t = _task(
+            tmp_path,
+            swapper_rotation_compensation=False,
+            swapper_rotation_threshold_deg=33,
+            swapper_rotation_redetect=False,
+            swapper_rotation_angle_source="keypoints",
+        )
+        p = t.to_enhancer_params()
+        assert p.rotation_compensation is False
+        assert p.rotation_threshold_deg == 33
+        assert p.rotation_redetect is False
+        assert p.rotation_angle_source.value == "keypoints"
+
+    def test_to_upscaler_params_maps_every_field(self, tmp_path):
+        t = _task(
+            tmp_path,
+            upscaler_model="x4plus",
+            upscaler_tile=256,
+            upscaler_fp16=False,
+        )
+        p = t.to_upscaler_params()
+        assert p.model.value == "x4plus"
+        assert p.tile == 256
+        assert p.fp16 is False
+
+
 class TestBatchTaskRoundtrip:
     def test_json_roundtrip_preserves_fields(self, tmp_path):
         # Round-trip a fully-populated task; assert every persisted
