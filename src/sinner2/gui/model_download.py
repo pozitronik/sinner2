@@ -41,7 +41,8 @@ def _join_download_thread(
 
 
 class _DownloadWorker(QObject):
-    progress = Signal(str, int, int)  # name, bytes_done, bytes_total
+    progress = Signal(str, object, object)  # name, int bytes_done, int bytes_total
+    # (object, not int, to avoid C int overflow on a >2 GB model — see batch_view)
     finished = Signal(bool, str)  # ok, error ("" | "cancelled" | message)
 
     def __init__(self, names: list[str]) -> None:
@@ -81,7 +82,7 @@ class _DownloadController(QObject):
         self.ok = False
         self.error = ""
 
-    @Slot(str, int, int)
+    @Slot(str, object, object)
     def on_progress(self, name: str, done: int, total: int) -> None:
         mb = 1024 * 1024
         if total > 0:

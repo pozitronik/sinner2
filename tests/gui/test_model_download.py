@@ -91,6 +91,20 @@ class TestDownloadWorker:
             worker.run()
         assert blocker.args == [False, "cancelled"]
 
+    def test_progress_signal_carries_over_2gb_without_overflow(self, qtbot):
+        # Regression: progress was Signal(str, int, int) → shiboken packs a
+        # Python int into a C++ 32-bit signed int (max ~2.1 GB), so a model
+        # download past 2 GB raised OverflowError on emit and stalled the
+        # progress bar. The byte fields must carry full Python ints (object).
+        worker = _DownloadWorker(["big_model.pth"])
+        received: list = []
+        worker.progress.connect(
+            lambda name, done, total: received.append((name, done, total))
+        )
+        big = 3 * 1024 ** 3  # 3 GB — past the 2**31 C-int ceiling
+        worker.progress.emit("big_model.pth", big, big)
+        assert received == [("big_model.pth", big, big)]
+
 
 class TestDownloadController:
     """The controller lives on the GUI thread and is the only thing that
