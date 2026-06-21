@@ -196,7 +196,7 @@ class _SizeSignals(QObject):
     """Carrier so an off-thread size walk can hand results back on the GUI
     thread (queued delivery to the connected slot)."""
 
-    sized = Signal(str, int)  # task_id, bytes
+    sized = Signal(str, object)  # task_id, int bytes (object to avoid C int overflow at 2 GB+)
 
 
 class _SizeJob(QRunnable):

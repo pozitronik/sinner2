@@ -491,6 +491,22 @@ class TestTempColumn:
         view._on_size_computed(t.id, 5 * 1024 * 1024)  # noqa: SLF001
         assert view._model.item(0, _COL_TEMP).text() == "5.0 MB"  # noqa: SLF001
 
+    def test_sized_signal_carries_over_2gb_without_overflow(self, qtbot):
+        # Regression: `sized` was Signal(str, int) → shiboken maps a Python int
+        # to a C++ 32-bit signed int (max ~2.1 GB), so emitting a larger cache
+        # size raised OverflowError and the Temp cell silently stopped updating
+        # for any task >2 GB. The signal must carry a full Python int
+        # (Signal(str, object)). test_size_computed_updates_cell calls the slot
+        # directly and so bypassed the shiboken marshalling that overflowed.
+        from sinner2.gui.widgets.batch_view import _SizeSignals
+
+        sig = _SizeSignals()
+        received: list = []
+        sig.sized.connect(lambda tid, n: received.append((tid, n)))
+        big = 3 * 1024 ** 3  # 3 GB — well past the 2**31 C-int ceiling
+        sig.sized.emit("task-1", big)
+        assert received == [("task-1", big)]
+
     def test_progress_refreshes_temp_size_throttled(
         self, view, tmp_path, store, monkeypatch
     ):
