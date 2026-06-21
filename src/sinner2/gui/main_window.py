@@ -1,3 +1,4 @@
+import inspect
 import logging
 import os
 import threading
@@ -2035,57 +2036,20 @@ class SinnerMainWindow(QMainWindow):
         # _ensure_models_confirmed_before_build). Keeps the saved selection.
         self._restoring_settings = True
         try:
-            self._processors.apply_restored_settings(
-                realtime_workers=self._settings.realtime_workers,
-                strategy_name=self._settings.strategy_name,
-                enhancer_enabled=self._settings.enhancer_enabled,
-                swapper_enabled=self._settings.swapper_enabled,
-                swapper_model=self._settings.swapper_model,
-                swapper_detection_interval=self._settings.swapper_detection_interval,
-                swapper_detection_size=self._settings.swapper_detection_size,
-                swapper_detector=self._settings.swapper_detector,
-                swapper_many_faces=self._settings.swapper_many_faces,
-                swapper_fast_paste=self._settings.swapper_fast_paste,
-                swapper_landmark_refine=self._settings.swapper_landmark_refine,
-                swapper_target_sex=self._settings.swapper_target_sex,
-                swapper_rotation_compensation=self._settings.swapper_rotation_compensation,
-                swapper_rotation_threshold_deg=self._settings.swapper_rotation_threshold_deg,
-                swapper_rotation_redetect=self._settings.swapper_rotation_redetect,
-                swapper_rotation_angle_source=self._settings.swapper_rotation_angle_source,
-                swapper_occlusion_mask=self._settings.swapper_occlusion_mask,
-                swapper_occlusion_mode=self._settings.swapper_occlusion_mode,
-                swapper_occlusion_parser=self._settings.swapper_occlusion_parser,
-                swapper_occluder_model=self._settings.swapper_occluder_model,
-                swapper_occlusion_cache=self._settings.swapper_occlusion_cache,
-                enhancer_model=self._settings.enhancer_model,
-                enhancer_upscale=self._settings.enhancer_upscale,
-                enhancer_only_center_face=self._settings.enhancer_only_center_face,
-                enhancer_only_swapped=self._settings.enhancer_only_swapped,
-                enhancer_codeformer_fidelity=self._settings.enhancer_codeformer_fidelity,
-                enhancer_fp16=self._settings.enhancer_fp16,
-                playback_mode=self._settings.playback_mode,
-                cache_mode=self._settings.cache_mode,
-                image_format=self._settings.image_format,
-                image_quality=self._settings.image_quality,
-                memory_cache_mb=self._settings.memory_cache_mb,
-                write_workers=self._settings.write_workers,
-                write_queue_size=self._settings.write_queue_size,
-                video_backend=self._settings.video_backend,
-                reader_pool_size=self._settings.reader_pool_size,
-                processing_scale=self._settings.processing_scale,
-                synced_max_lag_frames=self._settings.synced_max_lag_frames,
-                predictive_max_lead_seconds=self._settings.predictive_max_lead_seconds,
-                preprocess_before_play=self._settings.preprocess_before_play,
-                swapper_providers=self._settings.swapper_providers,
-                enhancer_device=self._settings.enhancer_device,
-                enhancer_providers=self._settings.enhancer_providers,
-                upscaler_enabled=self._settings.upscaler_enabled,
-                upscaler_model=self._settings.upscaler_model,
-                upscaler_tile=self._settings.upscaler_tile,
-                upscaler_fp16=self._settings.upscaler_fp16,
-                upscaler_device=self._settings.upscaler_device,
-                upscaler_providers=self._settings.upscaler_providers,
-            )
+            # Every keyword was `name=self._settings.<name>`, so spread the
+            # persisted values straight from the canonical key set — the
+            # method's keyword-only params, the same surface to_settings_kwargs()
+            # persists. The explicit signature stays the contract; parity is
+            # pinned by test_restore_keys_all_exist_on_settings (every key must
+            # resolve on Settings) + the to_settings_kwargs keys-match test.
+            restore_params = inspect.signature(
+                self._processors.apply_restored_settings
+            ).parameters
+            self._processors.apply_restored_settings(**{
+                name: getattr(self._settings, name)
+                for name, p in restore_params.items()
+                if p.kind is p.KEYWORD_ONLY
+            })
         finally:
             self._restoring_settings = False
 

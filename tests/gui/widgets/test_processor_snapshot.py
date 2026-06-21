@@ -226,3 +226,21 @@ def test_to_settings_kwargs_keys_match_apply_restored_settings(widget):
         name for name, p in params.items() if p.kind is p.KEYWORD_ONLY
     }
     assert set(kw) == expected
+
+
+def test_restore_keys_all_exist_on_settings():
+    """main_window._restore_processor_settings spreads
+    {name: getattr(self._settings, name)} over apply_restored_settings's
+    keyword-only params, so every one of those names MUST be a Settings field —
+    otherwise the spread raises AttributeError at startup. This pins that parity
+    so a newly-added restored param can't silently break restore."""
+    from sinner2.config.settings import Settings
+
+    params = inspect.signature(QProcessorControls.apply_restored_settings).parameters
+    restore_keys = {
+        name for name, p in params.items() if p.kind is p.KEYWORD_ONLY
+    }
+    missing = restore_keys - set(Settings.model_fields)
+    assert not missing, (
+        f"apply_restored_settings params missing from Settings: {missing}"
+    )
