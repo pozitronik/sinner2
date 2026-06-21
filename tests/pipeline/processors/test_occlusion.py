@@ -9,6 +9,23 @@ import pytest
 from sinner2.pipeline.processors.occlusion import apply_occlusion
 
 
+class TestHardenOccluderMask:
+    """The boundary-hardening shared by the XSeg and depth occluders: feather
+    then remap [0.5, 1.0] → [0.0, 1.0]. On a uniform field GaussianBlur is the
+    identity, so the remap is exact and checkable pointwise."""
+
+    def test_remaps_band_to_unit_range(self):
+        from sinner2.pipeline.processors.occlusion import _harden_occluder_mask
+
+        def at(v):
+            return float(_harden_occluder_mask(np.full((8, 8), v, np.float32))[0, 0])
+
+        assert at(1.0) == pytest.approx(1.0)   # fully visible stays opaque
+        assert at(0.5) == pytest.approx(0.0)   # band floor → transparent
+        assert at(0.0) == pytest.approx(0.0)   # below floor clips to transparent
+        assert at(0.75) == pytest.approx(0.5)  # midpoint → 0.5
+
+
 def _face():
     return SimpleNamespace(
         kps=np.array(

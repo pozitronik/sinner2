@@ -159,6 +159,16 @@ def _align_matrix(kps: np.ndarray) -> np.ndarray:
     return m
 
 
+def _harden_occluder_mask(mask: np.ndarray) -> np.ndarray:
+    """facefusion's occluder boundary hardening: feather (σ5), then remap the
+    [0.5, 1.0] band to [0.0, 1.0] — anchors the boundary hard while keeping the
+    interior opaque. Shared by the XSeg and depth occluders so the two flavors
+    compose identically downstream."""
+    return (
+        cv2.GaussianBlur(mask.clip(0.0, 1.0), (0, 0), 5).clip(0.5, 1.0) - 0.5
+    ) * 2.0
+
+
 class OcclusionMasker:
     """facexlib face-parse → a facial-region mask. torch model (not thread-safe;
     the swapper serializes calls on a lock)."""
@@ -334,10 +344,7 @@ class XsegOccluderMasker:
             mask = np.clip(out, 0.0, 1.0).astype(np.float32)
             masks.append(cv2.resize(mask, (size, size)))
         combined = np.minimum.reduce(masks)
-        return (
-            cv2.GaussianBlur(combined.clip(0.0, 1.0), (0, 0), 5).clip(0.5, 1.0)
-            - 0.5
-        ) * 2.0
+        return _harden_occluder_mask(combined)
 
     def release(self) -> None:
         from sinner2.pipeline.model_cache import release_onnx_session
@@ -405,12 +412,7 @@ class DepthOccluderMasker:
             return np.ones((size, size), np.float32)  # flat scene → no occluders
         visible = (depth <= face_depth + self._MARGIN * spread).astype(np.float32)
         visible = cv2.resize(visible, (size, size))
-        # Same boundary treatment as the XSeg backend (facefusion's hardening
-        # blur) so the two occluder flavors compose identically downstream.
-        return (
-            cv2.GaussianBlur(visible.clip(0.0, 1.0), (0, 0), 5).clip(0.5, 1.0)
-            - 0.5
-        ) * 2.0
+        return _harden_occluder_mask(visible)
 
     def release(self) -> None:
         from sinner2.pipeline.model_cache import release_onnx_session
