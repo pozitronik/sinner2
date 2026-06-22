@@ -392,6 +392,9 @@ class TestExtendedFieldsRoundtrip:
             display_rotation=90,
             batch_store_path="/b",
             batch_global_output_path="/o",
+            swapper_temporal_stabilization=True,
+            swapper_temporal_window=11,
+            swapper_temporal_strength=0.8,
         )
         settings.save(original)
         assert settings.load() == original

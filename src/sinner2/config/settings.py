@@ -48,6 +48,9 @@ class Settings(SinnerBaseModel):
     swapper_many_faces: bool | None = None
     swapper_fast_paste: bool | None = None  # ROI feather paste vs insightface blend
     swapper_landmark_refine: bool | None = None  # refine kps with 2dfan4
+    swapper_temporal_stabilization: bool | None = None  # smooth face-map kps over time
+    swapper_temporal_window: int | None = None
+    swapper_temporal_strength: float | None = None
     swapper_target_sex: str | None = None  # "M"/"F"/"B"/"I"
     # Faces (face-mapping analysis) panel — scan settings, persisted across runs
     face_analyze_stride: int | None = None
