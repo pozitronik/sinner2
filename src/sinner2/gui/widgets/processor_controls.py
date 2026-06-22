@@ -197,6 +197,8 @@ class QProcessorControls(QWidget):
         self._occlusion_box = QGroupBox("Occlusion")
         occlusion_form = QFormLayout(self._occlusion_box)
         self._temporal_box = QGroupBox("Temporal stabilization")
+        # Needs a prebuilt face map's geometry — enabled by set_face_map_available.
+        self._temporal_box.setEnabled(False)
         temporal_form = QFormLayout(self._temporal_box)
 
         swapper_box = QGroupBox("Face swap")
@@ -1303,9 +1305,12 @@ class QProcessorControls(QWidget):
         self._use_face_map.blockSignals(False)
 
     def set_face_map_available(self, available: bool) -> None:
-        """Enable/disable the 'Use face map' switch. The owner (main_window) owns
-        the CHECKED state — it's the single source of truth for routing."""
+        """Enable/disable the 'Use face map' switch + the temporal-stabilization
+        sub-box (which needs a prebuilt map's geometry to do anything, mirroring
+        the batch dialog's gating). The owner (main_window) owns the CHECKED
+        state — it's the single source of truth for routing."""
         self._use_face_map.setEnabled(bool(available))
+        self._temporal_box.setEnabled(bool(available))
 
     def _update_rotation_rows(self) -> None:
         # Gating rules shared with the batch form — see processor_gating.

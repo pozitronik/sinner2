@@ -657,8 +657,17 @@ class TestTemporalStabilizationControls:
         assert sp.temporal_window == 13
         assert sp.temporal_strength == pytest.approx(0.4)
 
+    def test_box_disabled_until_face_map_available(self, widget):
+        # Mirrors the batch dialog: no map → the whole sub-box is disabled.
+        assert not widget._temporal_enabled.isEnabled()  # noqa: SLF001
+        widget.set_face_map_available(True)
+        assert widget._temporal_enabled.isEnabled()  # noqa: SLF001
+        widget.set_face_map_available(False)
+        assert not widget._temporal_enabled.isEnabled()  # noqa: SLF001
+
     def test_window_and_strength_gated_on_toggle(self, widget):
-        # Default off → subknobs disabled (set in __init__).
+        widget.set_face_map_available(True)  # box enabled; now exercise the toggle
+        # Toggle off → subknobs disabled.
         assert not widget._temporal_window.isEnabled()  # noqa: SLF001
         assert not widget._temporal_strength.isEnabled()  # noqa: SLF001
         widget._temporal_enabled.setChecked(True)  # noqa: SLF001
