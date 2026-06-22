@@ -315,6 +315,9 @@ _FULL_RESTORE_KWARGS = dict(
     swapper_rotation_threshold_deg=25,
     swapper_rotation_redetect=False,
     swapper_rotation_angle_source="pose",
+    swapper_temporal_stabilization=True,
+    swapper_temporal_window=11,
+    swapper_temporal_strength=0.8,
     enhancer_model="codeformer",
     enhancer_upscale=4,
     enhancer_only_center_face=True,
@@ -352,6 +355,9 @@ _NONE_RESTORE_KWARGS = dict(
     swapper_rotation_threshold_deg=None,
     swapper_rotation_redetect=None,
     swapper_rotation_angle_source=None,
+    swapper_temporal_stabilization=None,
+    swapper_temporal_window=None,
+    swapper_temporal_strength=None,
     enhancer_model=None,
     enhancer_upscale=None,
     enhancer_only_center_face=None,
@@ -641,6 +647,39 @@ class TestCacheManagementControls:
         assert "5 entries" in widget._cache_stats_label.text()  # noqa: SLF001
 
 
+class TestTemporalStabilizationControls:
+    def test_getter_captures_temporal_values(self, widget):
+        widget._temporal_enabled.setChecked(True)  # noqa: SLF001
+        widget._temporal_window.setValue(13)  # noqa: SLF001
+        widget._temporal_strength.setValue(0.4)  # noqa: SLF001
+        sp = widget.swapper_params()
+        assert sp.temporal_stabilization is True
+        assert sp.temporal_window == 13
+        assert sp.temporal_strength == pytest.approx(0.4)
+
+    def test_window_and_strength_gated_on_toggle(self, widget):
+        # Default off → subknobs disabled (set in __init__).
+        assert not widget._temporal_window.isEnabled()  # noqa: SLF001
+        assert not widget._temporal_strength.isEnabled()  # noqa: SLF001
+        widget._temporal_enabled.setChecked(True)  # noqa: SLF001
+        assert widget._temporal_window.isEnabled()  # noqa: SLF001
+        assert widget._temporal_strength.isEnabled()  # noqa: SLF001
+
+    def test_restore_applies_temporal(self, widget):
+        widget.apply_restored_settings(
+            **{
+                **_NONE_RESTORE_KWARGS,
+                "swapper_temporal_stabilization": True,
+                "swapper_temporal_window": 9,
+                "swapper_temporal_strength": 0.6,
+            }
+        )
+        sp = widget.swapper_params()
+        assert sp.temporal_stabilization is True
+        assert sp.temporal_window == 9
+        assert sp.temporal_strength == pytest.approx(0.6)
+
+
 class TestSettingsEndToEnd:
     """Mimics the full path main_window takes: live widget values → Settings
     dataclass → JSON on disk → Settings → fresh widget. Catches any field
@@ -678,6 +717,9 @@ class TestSettingsEndToEnd:
                 swapper_rotation_threshold_deg=swapper.rotation_threshold_deg,
                 swapper_rotation_redetect=swapper.rotation_redetect,
                 swapper_rotation_angle_source=swapper.rotation_angle_source.value,
+                swapper_temporal_stabilization=swapper.temporal_stabilization,
+                swapper_temporal_window=swapper.temporal_window,
+                swapper_temporal_strength=swapper.temporal_strength,
                 enhancer_model=enhancer.model.value,
                 enhancer_upscale=enhancer.upscale,
                 enhancer_only_center_face=enhancer.only_center_face,
@@ -718,6 +760,9 @@ class TestSettingsEndToEnd:
             swapper_rotation_threshold_deg=reloaded.swapper_rotation_threshold_deg,
             swapper_rotation_redetect=reloaded.swapper_rotation_redetect,
             swapper_rotation_angle_source=reloaded.swapper_rotation_angle_source,
+            swapper_temporal_stabilization=reloaded.swapper_temporal_stabilization,
+            swapper_temporal_window=reloaded.swapper_temporal_window,
+            swapper_temporal_strength=reloaded.swapper_temporal_strength,
             enhancer_model=reloaded.enhancer_model,
             enhancer_upscale=reloaded.enhancer_upscale,
             enhancer_only_center_face=reloaded.enhancer_only_center_face,

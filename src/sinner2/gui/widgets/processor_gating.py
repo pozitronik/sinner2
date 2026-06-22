@@ -59,6 +59,16 @@ def update_rotation_rows(
     source.setEnabled(on)
 
 
+def update_temporal_rows(
+    enabled: QCheckBox, window: QWidget, strength: QWidget
+) -> None:
+    """Gray the temporal-stabilization knobs (window / strength) when the
+    feature is off — they have no effect then."""
+    on = enabled.isChecked()
+    window.setEnabled(on)
+    strength.setEnabled(on)
+
+
 def update_occlusion_rows(
     mask: QCheckBox,
     mode_combo: QComboBox,

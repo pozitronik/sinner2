@@ -54,6 +54,7 @@ from sinner2.gui.widgets.processor_gating import (
     update_occlusion_rows,
     update_rotation_rows,
     update_swapper_model_rows,
+    update_temporal_rows,
     update_upscaler_rows,
 )
 from sinner2.pipeline.skip_strategy import (
@@ -195,6 +196,8 @@ class QProcessorControls(QWidget):
         rotation_form = QFormLayout(self._rotation_box)
         self._occlusion_box = QGroupBox("Occlusion")
         occlusion_form = QFormLayout(self._occlusion_box)
+        self._temporal_box = QGroupBox("Temporal stabilization")
+        temporal_form = QFormLayout(self._temporal_box)
 
         swapper_box = QGroupBox("Face swap")
         swapper_box.setCheckable(True)
@@ -608,9 +611,43 @@ class QProcessorControls(QWidget):
         )
         self._landmark_refine.toggled.connect(self.configChanged)
         swapper_form.addRow("Landmark refine", self._landmark_refine)
-        # The Rotation + Occlusion sub-boxes render inside the Face swap group.
+        self._temporal_enabled = QCheckBox()
+        self._temporal_enabled.setChecked(swapper_defaults.temporal_stabilization)
+        self._temporal_enabled.setToolTip(
+            "Experimental: smooth each face's keypoints over time so the swapped\n"
+            "face stops swimming/jittering. Needs a PREBUILT FACE MAP with\n"
+            "per-frame geometry — without one it is a no-op. Affects output."
+        )
+        self._temporal_enabled.toggled.connect(self.configChanged)
+        self._temporal_enabled.toggled.connect(self._update_temporal_rows)
+        temporal_form.addRow("Stabilize keypoints", self._temporal_enabled)
+
+        self._temporal_window = QSpinBox()
+        self._temporal_window.setRange(1, 199)
+        self._temporal_window.setSingleStep(2)
+        self._temporal_window.setValue(swapper_defaults.temporal_window)
+        self._temporal_window.setToolTip(
+            "Smoothing span in frames (odd; larger = steadier but follows fast\n"
+            "motion more slowly)."
+        )
+        self._temporal_window.valueChanged.connect(self.configChanged)
+        temporal_form.addRow("Window (frames)", self._temporal_window)
+
+        self._temporal_strength = QDoubleSpinBox()
+        self._temporal_strength.setRange(0.0, 1.0)
+        self._temporal_strength.setSingleStep(0.1)
+        self._temporal_strength.setValue(swapper_defaults.temporal_strength)
+        self._temporal_strength.setToolTip(
+            "Blend from raw (0) to fully smoothed (1) keypoints."
+        )
+        self._temporal_strength.valueChanged.connect(self.configChanged)
+        temporal_form.addRow("Strength", self._temporal_strength)
+
+        # The Rotation + Occlusion + Temporal sub-boxes render inside the Face
+        # swap group.
         swapper_form.addRow(self._rotation_box)
         swapper_form.addRow(self._occlusion_box)
+        swapper_form.addRow(self._temporal_box)
 
         # Detection overlay toggle (view-only → its own signal, never
         # configChanged). Boxes + sex/age/score/pose on the preview.
@@ -643,6 +680,7 @@ class QProcessorControls(QWidget):
         self._face_box = face_box
         self._update_rotation_rows()  # reflect the default rotation-on state
         self._update_occlusion_rows()  # occlusion subknobs follow the checkbox
+        self._update_temporal_rows()  # temporal subknobs follow the checkbox
         self._update_swapper_model_rows()  # fast-paste follows the swap model
         self._update_detector_rows()  # gray gender filter for detection-only
         self._update_upscaler_rows()  # gray fp16 for ONNX upscalers
@@ -1125,6 +1163,9 @@ class QProcessorControls(QWidget):
             rotation_redetect=self._rotation_redetect.isChecked(),
             rotation_angle_source=self._rotation_source.currentData(),
             landmark_refine=self._landmark_refine.isChecked(),
+            temporal_stabilization=self._temporal_enabled.isChecked(),
+            temporal_window=self._temporal_window.value(),
+            temporal_strength=self._temporal_strength.value(),
             occlusion_mask=self._occlusion_mask.isChecked(),
             occlusion_mode=self._occlusion_mode.currentData(),
             occlusion_parser=self._occlusion_parser.currentData(),
@@ -1271,6 +1312,13 @@ class QProcessorControls(QWidget):
         update_rotation_rows(
             self._rotation_enabled, self._rotation_threshold,
             self._rotation_redetect, self._rotation_source,
+        )
+
+    def _update_temporal_rows(self) -> None:
+        # Gating rules shared with the batch form — see processor_gating.
+        update_temporal_rows(
+            self._temporal_enabled, self._temporal_window,
+            self._temporal_strength,
         )
 
     def set_face_map_routing_active(self, active: bool) -> None:
@@ -1481,6 +1529,9 @@ class QProcessorControls(QWidget):
         swapper_many_faces: bool | None,
         swapper_fast_paste: bool | None = None,
         swapper_landmark_refine: bool | None = None,
+        swapper_temporal_stabilization: bool | None = None,
+        swapper_temporal_window: int | None = None,
+        swapper_temporal_strength: float | None = None,
         swapper_target_sex: str | None,
         swapper_occlusion_mask: bool | None,
         swapper_occlusion_mode: str | None = None,
@@ -1535,6 +1586,9 @@ class QProcessorControls(QWidget):
             self._many_faces,
             self._fast_paste,
             self._landmark_refine,
+            self._temporal_enabled,
+            self._temporal_window,
+            self._temporal_strength,
             self._target_sex,
             self._occlusion_mask,
             self._occlusion_mode,
@@ -1611,6 +1665,12 @@ class QProcessorControls(QWidget):
                 self._rotation_redetect.setChecked(swapper_rotation_redetect)
             if swapper_rotation_angle_source is not None:
                 _select_combo_by_data(self._rotation_source, swapper_rotation_angle_source)
+            if swapper_temporal_stabilization is not None:
+                self._temporal_enabled.setChecked(swapper_temporal_stabilization)
+            if swapper_temporal_window is not None:
+                self._temporal_window.setValue(swapper_temporal_window)
+            if swapper_temporal_strength is not None:
+                self._temporal_strength.setValue(swapper_temporal_strength)
             if swapper_enabled is not None:
                 self._swapper_box.setChecked(swapper_enabled)
             if swapper_model is not None:
@@ -1702,6 +1762,7 @@ class QProcessorControls(QWidget):
         self._update_scale_label()  # reflect a restored scale (set under blockSignals)
         self._update_enhancer_model_rows()  # reflect a restored enhancer model
         self._update_rotation_rows()  # reflect a restored rotation-compensation state
+        self._update_temporal_rows()  # reflect a restored temporal-stabilization state
         self._update_detector_rows()  # reflect a restored detector choice
         self._update_upscaler_rows()  # reflect a restored upscaler model
         self._update_occlusion_rows()  # reflect restored occlusion mask/mode
