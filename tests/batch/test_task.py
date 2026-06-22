@@ -98,6 +98,9 @@ class TestToParams:
             swapper_rotation_redetect=False,
             swapper_rotation_angle_source="keypoints",
             swapper_landmark_refine=True,
+            swapper_temporal_stabilization=True,
+            swapper_temporal_window=11,
+            swapper_temporal_strength=0.8,
             swapper_occlusion_mask=True,
             swapper_occlusion_mode="both",
             swapper_occlusion_parser="parsenet",
@@ -116,6 +119,9 @@ class TestToParams:
         assert p.rotation_redetect is False
         assert p.rotation_angle_source.value == "keypoints"
         assert p.landmark_refine is True
+        assert p.temporal_stabilization is True
+        assert p.temporal_window == 11
+        assert p.temporal_strength == 0.8
         assert p.occlusion_mask is True
         assert p.occlusion_mode.value == "both"
         assert p.occlusion_parser.value == "parsenet"

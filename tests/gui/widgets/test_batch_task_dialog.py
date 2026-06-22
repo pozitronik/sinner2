@@ -87,6 +87,60 @@ class TestDependentRows:
         assert not dlg._enhancer_device.isEnabled()  # noqa: SLF001
 
 
+class TestTemporalStabilization:
+    """The temporal-stabilization sub-box is gated on a prebuilt per-frame
+    geometry sidecar existing for the target; its values round-trip regardless."""
+
+    def test_disabled_without_geometry(self, qtbot, tmp_path):
+        dlg = QBatchTaskDialog.from_task(_task(tmp_path))
+        qtbot.addWidget(dlg)
+        assert not dlg._temporal_enabled.isEnabled()  # noqa: SLF001
+
+    def test_values_round_trip_even_when_disabled(self, qtbot, tmp_path):
+        dlg = QBatchTaskDialog.from_task(
+            _task(
+                tmp_path,
+                swapper_temporal_stabilization=True,
+                swapper_temporal_window=9,
+                swapper_temporal_strength=0.6,
+            )
+        )
+        qtbot.addWidget(dlg)
+        # The setting is preserved out even with no geometry (never dropped).
+        t = dlg.to_task()
+        assert t.swapper_temporal_stabilization is True
+        assert t.swapper_temporal_window == 9
+        assert t.swapper_temporal_strength == 0.6
+
+    def test_enabled_and_gated_with_geometry(self, qtbot, tmp_path):
+        from sinner2.pipeline.face_map_geometry import (
+            FrameGeometry,
+            GeomFace,
+            geometry_path,
+            save_geometry,
+        )
+
+        store = tmp_path / "fmstore"
+        target = tmp_path / "tgt.mp4"
+        kps = tuple((float(i), 0.0) for i in range(5))
+        save_geometry(
+            geometry_path(target, store),
+            FrameGeometry(
+                {0: (GeomFace("a", (0.0, 0.0, 4.0, 4.0), kps),)}, frame_count=1
+            ),
+        )
+        dlg = QBatchTaskDialog.from_task(
+            _task(tmp_path, face_map_store_dir=str(store))
+        )
+        qtbot.addWidget(dlg)
+        # Geometry exists → sub-box enabled; window/strength follow the toggle.
+        assert dlg._temporal_enabled.isEnabled()  # noqa: SLF001
+        assert not dlg._temporal_window.isEnabled()  # noqa: SLF001 — toggle off
+        dlg._temporal_enabled.setChecked(True)  # noqa: SLF001
+        assert dlg._temporal_window.isEnabled()  # noqa: SLF001
+        assert dlg._temporal_strength.isEnabled()  # noqa: SLF001
+
+
 class TestDebouncedTargetProbe:
     def test_keystrokes_do_not_probe_synchronously(self, qtbot, tmp_path):
         # The native-size probe opens the media file (VideoCapture) on the GUI

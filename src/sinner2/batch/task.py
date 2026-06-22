@@ -135,6 +135,9 @@ class BatchTask(SinnerBaseModel):
     swapper_many_faces: bool = True
     swapper_fast_paste: bool = True  # ROI feather paste vs insightface blend
     swapper_landmark_refine: bool = False  # refine kps with 2dfan4
+    swapper_temporal_stabilization: bool = False  # smooth face-map kps over time
+    swapper_temporal_window: int = 7
+    swapper_temporal_strength: float = 0.5
     swapper_target_sex: str = "B"  # M/F/B/I (matches FaceSwapperParams)
     # Face mapping: per-identity source routing. The GUI stamps the per-target
     # sidecar store dir below; the driver loads the CURRENT catalog + geometry +
@@ -265,6 +268,9 @@ class BatchTask(SinnerBaseModel):
                 self.swapper_rotation_angle_source
             ),
             landmark_refine=self.swapper_landmark_refine,
+            temporal_stabilization=self.swapper_temporal_stabilization,
+            temporal_window=self.swapper_temporal_window,
+            temporal_strength=self.swapper_temporal_strength,
             occlusion_mask=self.swapper_occlusion_mask,
             occlusion_mode=OcclusionMaskMode(self.swapper_occlusion_mode),
             occlusion_parser=FaceParser(self.swapper_occlusion_parser),

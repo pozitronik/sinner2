@@ -63,12 +63,14 @@ from sinner2.gui.widgets.processor_gating import (
     update_occlusion_rows,
     update_rotation_rows,
     update_swapper_model_rows,
+    update_temporal_rows,
     update_upscaler_rows,
 )
 from sinner2.io.cv2_video_target_reader import CV2VideoTargetReader
 from sinner2.io.frame_resize import scaled_dims
 from sinner2.io.target_reader import ImageTargetReader
 from sinner2.io.video_backend import VideoBackend
+from sinner2.pipeline.face_map_geometry import geometry_path
 from sinner2.pipeline.face_map_store import face_map_path, load_face_map
 from sinner2.pipeline.image_writer import ImageFormat
 from sinner2.pipeline.processors.face_swapper import TargetSex
@@ -386,6 +388,42 @@ class QBatchTaskDialog(QDialog):
         occlusion_form.addRow("Cache mask:", self._occlusion_cache)
         swap_form.addRow(occlusion_box)
 
+        # -- Temporal stabilization sub-box (needs per-frame face-map geometry) --
+        geom_available = self._probe_geometry_available(task)
+        temporal_box = QGroupBox("Temporal stabilization")
+        temporal_box.setEnabled(geom_available)
+        if not geom_available:
+            temporal_box.setToolTip(
+                "Requires a prebuilt face map with per-frame geometry for this "
+                "target."
+            )
+        temporal_form = QFormLayout(temporal_box)
+        self._temporal_enabled = QCheckBox()
+        self._temporal_enabled.setChecked(task.swapper_temporal_stabilization)
+        self._temporal_enabled.setToolTip(
+            "Smooth each face's keypoints over time to reduce swap jitter. Needs "
+            "a prebuilt face map with per-frame geometry; a no-op without one."
+        )
+        self._temporal_enabled.toggled.connect(self._update_temporal_rows)
+        temporal_form.addRow("Stabilize keypoints:", self._temporal_enabled)
+        self._temporal_window = QSpinBox()
+        self._temporal_window.setRange(1, 199)
+        self._temporal_window.setSingleStep(2)
+        self._temporal_window.setValue(task.swapper_temporal_window)
+        self._temporal_window.setToolTip(
+            "Smoothing span in frames (odd; larger = steadier)."
+        )
+        temporal_form.addRow("Window (frames):", self._temporal_window)
+        self._temporal_strength = QDoubleSpinBox()
+        self._temporal_strength.setRange(0.0, 1.0)
+        self._temporal_strength.setSingleStep(0.1)
+        self._temporal_strength.setValue(task.swapper_temporal_strength)
+        self._temporal_strength.setToolTip(
+            "Blend from raw (0) to fully smoothed (1) keypoints."
+        )
+        temporal_form.addRow("Strength:", self._temporal_strength)
+        swap_form.addRow(temporal_box)
+
         # ---- FaceEnhancer group (its own tab) ----
         # Order mirrors the live enhancer group: model → upscale → fidelity →
         # center face → half precision → execution (workers + device + providers).
@@ -694,6 +732,7 @@ class QBatchTaskDialog(QDialog):
         self._update_upscaler_rows()  # upscaler knobs follow the model runtime
         self._update_occlusion_rows()  # occlusion subknobs follow the checkbox
         self._update_rotation_rows()  # rotation knobs follow the toggle
+        self._update_temporal_rows()  # temporal knobs follow the toggle
         self._update_swapper_model_rows()  # fast-paste follows the swap model
 
     @staticmethod
@@ -711,6 +750,20 @@ class QBatchTaskDialog(QDialog):
         except Exception:
             return False
         return fm is not None and not fm.is_empty()
+
+    @staticmethod
+    def _probe_geometry_available(task: BatchTask) -> bool:
+        """Whether a per-frame geometry sidecar exists for this task's target —
+        the precondition for temporal stabilization (it smooths that timeline).
+        Cheap path check; False in defaults mode / without a face-map store."""
+        if not task.face_map_store_dir:
+            return False
+        try:
+            return geometry_path(
+                task.target_path, Path(task.face_map_store_dir)
+            ).is_file()
+        except Exception:
+            return False
 
     @staticmethod
     def _tab(*boxes: QWidget) -> QScrollArea:
@@ -755,6 +808,13 @@ class QBatchTaskDialog(QDialog):
             self._occluder_model, self._occlusion_cache,
         )
 
+    def _update_temporal_rows(self) -> None:
+        # Gating rules shared with the live Settings panel — see processor_gating.
+        update_temporal_rows(
+            self._temporal_enabled, self._temporal_window,
+            self._temporal_strength,
+        )
+
     def _update_rotation_rows(self) -> None:
         # Gating rules shared with the live Settings panel — see processor_gating.
         update_rotation_rows(
@@ -796,6 +856,9 @@ class QBatchTaskDialog(QDialog):
             "swapper_many_faces": self._many_faces.isChecked(),
             "swapper_fast_paste": self._fast_paste.isChecked(),
             "swapper_landmark_refine": self._landmark_refine.isChecked(),
+            "swapper_temporal_stabilization": self._temporal_enabled.isChecked(),
+            "swapper_temporal_window": self._temporal_window.value(),
+            "swapper_temporal_strength": self._temporal_strength.value(),
             "swapper_target_sex": self._target_sex.currentData(),
             "swapper_rotation_compensation": self._rotation_enabled.isChecked(),
             "swapper_rotation_threshold_deg": self._rotation_threshold.value(),
