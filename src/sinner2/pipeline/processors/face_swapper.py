@@ -1,3 +1,4 @@
+import logging
 import os
 import sys
 import threading
@@ -46,7 +47,10 @@ from sinner2.pipeline.processors.swapper_models import (
     SwapperModel,
     get_spec,
 )
+from sinner2.pipeline.temporal_smoothing import smooth_geometry
 from sinner2.types import Frame
+
+_log = logging.getLogger(__name__)
 
 __all__ = [
     "FaceSwapper",
@@ -388,6 +392,8 @@ class FaceSwapper:
         # index) — rebuilt in lock-step with _face_map; see _CatalogMatcher.
         self._matcher = _CatalogMatcher(face_map) if face_map is not None else None
         self._geometry: FrameGeometry | None = None
+        # Warn-once when temporal stabilization is on but no geometry is present.
+        self._warned_no_geometry = False
         self._mapped_sources: dict[str, Any] = {}
         self._supports_multi_source = False
         self._geom_trace_n = 0  # SINNER2_GEOM_TRACE throttle counter
@@ -545,7 +551,27 @@ class FaceSwapper:
         """Per-frame precomputed geometry for detection-free mapping (hot-applied
         like set_face_map). When set + mapping is active, ``process`` rebuilds
         each frame's faces from it instead of detecting; None reverts to live
-        detection. Single assignment — concurrent workers snapshot it."""
+        detection. Single assignment — concurrent workers snapshot it.
+
+        Temporal stabilization (opt-in) is applied here, once and off the
+        per-frame path: the precomputed keypoint timeline is smoothed before the
+        workers snapshot it, so they read steadier keypoints with no cross-frame
+        state. It needs geometry — without a prebuilt face map there is nothing
+        to smooth, so it warns once and is a no-op."""
+        if self._params.temporal_stabilization:
+            if geometry is not None:
+                geometry = smooth_geometry(
+                    geometry,
+                    window=self._params.temporal_window,
+                    strength=self._params.temporal_strength,
+                )
+            elif not self._warned_no_geometry:
+                self._warned_no_geometry = True
+                _log.warning(
+                    "temporal stabilization is on but no face-map geometry is "
+                    "present — skipping (it needs a prebuilt face map with "
+                    "per-frame geometry)"
+                )
         self._geometry = geometry
 
     def _geometry_faces(

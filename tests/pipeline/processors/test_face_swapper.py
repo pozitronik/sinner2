@@ -1126,6 +1126,52 @@ class TestCatalogMatcher:
         assert m.source_for(q) == fm.source_for(q) == "/x.png"
 
 
+class TestTemporalStabilizationSeam:
+    """set_geometry smooths the precomputed keypoint timeline once (off the
+    per-frame path) when temporal stabilization is on; a no-op that warns once
+    otherwise."""
+
+    def _fs(self, **param_overrides):
+        fs = object.__new__(FaceSwapper)
+        fs._params = _params(**param_overrides)  # noqa: SLF001
+        fs._warned_no_geometry = False  # noqa: SLF001
+        fs._geometry = None  # noqa: SLF001
+        return fs
+
+    def _jittery_geom(self):
+        from sinner2.pipeline.face_map_geometry import FrameGeometry, GeomFace
+
+        # One identity zig-zagging frame to frame — smoothing must move it.
+        faces = {}
+        for f in range(7):
+            cx = 10.0 if f % 2 else 0.0
+            kps = tuple((cx, float(k)) for k in range(5))
+            faces[f] = (GeomFace("a", (cx, 0.0, cx + 4, 4.0), kps),)
+        return FrameGeometry(faces, frame_count=7)
+
+    def test_smooths_geometry_when_enabled(self):
+        geom = self._jittery_geom()
+        fs = self._fs(
+            temporal_stabilization=True, temporal_window=5, temporal_strength=1.0
+        )
+        fs.set_geometry(geom)
+        stored = fs._geometry  # noqa: SLF001
+        assert stored is not None
+        assert stored.faces_at(3)[0].kps != geom.faces_at(3)[0].kps
+
+    def test_no_op_when_disabled(self):
+        geom = self._jittery_geom()
+        fs = self._fs(temporal_stabilization=False)
+        fs.set_geometry(geom)
+        assert fs._geometry is geom  # noqa: SLF001  # untouched, same object
+
+    def test_no_geometry_warns_once_and_stores_none(self):
+        fs = self._fs(temporal_stabilization=True)
+        fs.set_geometry(None)
+        assert fs._geometry is None  # noqa: SLF001
+        assert fs._warned_no_geometry is True  # noqa: SLF001
+
+
 class TestGeometryMappingPath:
     """Detection-free runtime: with precomputed geometry loaded, process()
     rebuilds the frame's faces from it (no detection) and routes each by its
