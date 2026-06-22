@@ -263,6 +263,22 @@ class TestFaceSwapperParams:
         assert FaceSwapperParams(target_sex="B").target_sex is TargetSex.BOTH
         assert FaceSwapperParams(target_sex="I").target_sex is TargetSex.AS_SOURCE
 
+    def test_temporal_defaults(self):
+        p = FaceSwapperParams()
+        assert p.temporal_stabilization is False  # experimental, opt-in
+        assert p.temporal_window == 7
+        assert p.temporal_strength == 0.5
+
+    def test_temporal_params_are_bounded(self):
+        with pytest.raises(Exception):
+            FaceSwapperParams(temporal_strength=1.5)
+        with pytest.raises(Exception):
+            FaceSwapperParams(temporal_window=0)
+
+    def test_temporal_params_ride_in_cache_key(self):
+        # Output-affecting → must appear in the model dump cache_identity() hashes.
+        assert "temporal_stabilization" in FaceSwapperParams().model_dump_json()
+
 
 class TestFaceSwapper:
     def test_name(self):

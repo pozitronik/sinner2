@@ -124,6 +124,24 @@ class FaceSwapperParams(SinnerBaseModel):
         default=0.5, ge=0.0, le=1.0,
         description="Skip refinement when 2dfan4's confidence is below this",
     )
+    # ---- Temporal stabilization (experimental; face-map geometry only) ----
+    # Smooth each identity's precomputed keypoint track over time so the swapped
+    # face stops swimming/jittering. Operates offline on the face-map geometry
+    # timeline (centered, gap-aware), so it needs a prebuilt face map with
+    # per-frame geometry — a no-op without one. Output-affecting.
+    temporal_stabilization: bool = Field(
+        default=False,
+        description="Smooth face-map keypoints over time to reduce swap jitter "
+        "(needs a prebuilt face map with per-frame geometry)",
+    )
+    temporal_window: int = Field(
+        default=7, ge=1, le=199,
+        description="Temporal smoothing span in frames (odd; larger = smoother)",
+    )
+    temporal_strength: float = Field(
+        default=0.5, ge=0.0, le=1.0,
+        description="Blend raw->smoothed keypoints (0 = off, 1 = fully smoothed)",
+    )
     # ---- Occlusion-aware masking ----
     # Mask the swap to the facial-skin region (parser) and/or the visible
     # (unoccluded) face surface (XSeg occluder). Output-affecting.
