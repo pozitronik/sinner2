@@ -226,6 +226,13 @@ class RealtimeExecutor:
         # skip even the observable's lock acquisition on the many no-change ticks
         # (the index only advances at the timeline frame rate).
         self._last_published_current: FrameIndex = -1
+        # The frame whose pixels are actually ON SCREEN (-1 = nothing shown yet).
+        # Distinct from current_frame, which is the wall-clock TARGET: when the
+        # pipeline can't keep up, the displayed frame trails the target, and that
+        # gap IS the A/V lag. Published from the playback tick so the sync tracer
+        # can measure real display latency (target vs shown) rather than comparing
+        # the wall clock to itself.
+        self.displayed_frame: ObservableValue[FrameIndex] = ObservableValue(-1)
         self.is_playing: ObservableValue[bool] = ObservableValue(False)
         self.processing_fps: ObservableValue[float] = ObservableValue(0.0)
         # Distinct frames actually shown per second (rate of on_frame calls).
@@ -1530,6 +1537,9 @@ class RealtimeExecutor:
                 # fallback path when the worker is behind.
                 self._on_frame(frame, shown_index)
                 self._last_shown_frame_index = shown_index
+                # Publish the on-screen frame so the sync tracer can compare it
+                # to the wall-clock target (their gap is the display lag).
+                self.displayed_frame.set(shown_index)
                 # A distinct frame reached the display — record it for the
                 # display_fps rate (playback thread only, so no lock needed).
                 self._telemetry.record_display()

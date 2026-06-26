@@ -833,11 +833,16 @@ class PlayerController(QObject):
             return None
         backend = self._audio.backend
         audio_s = backend.audio_position_seconds() if backend is not None else -1.0
-        frame = max(0, ex.current_frame.get())
+        target = max(0, ex.current_frame.get())
+        shown = ex.displayed_frame.get()
+        # displayed_frame is -1 until the first frame is painted; fall back to the
+        # target so the opening sample reads as in-sync, not catastrophically behind.
+        shown_frame = target if shown < 0 else shown
         fps = self._target_fps
         return SyncSample(
-            frame=frame,
-            video_seconds=frame / fps if fps > 0 else 0.0,
+            frame=target,
+            shown_frame=shown_frame,
+            video_seconds=shown_frame / fps if fps > 0 else 0.0,
             audio_seconds=audio_s,
             playing=ex.is_playing.get(),
             strategy_mode=ex.strategy_mode.get(),
