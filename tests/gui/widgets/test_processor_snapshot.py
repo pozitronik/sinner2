@@ -46,8 +46,8 @@ def widget(qtbot):
 # covered by the READ-fidelity test instead.
 _PERTURB_ATTRS = (
     "_swapper_box", "_swapper_model", "_detection_interval", "_detection_size",
-    "_detector", "_many_faces", "_target_sex", "_occlusion_mask",
-    "_occlusion_parser", "_occlusion_cache", "_rotation_enabled",
+    "_detector", "_many_faces", "_target_sex", "_occlusion_box",
+    "_occlusion_parser", "_occlusion_cache", "_rotation_box",
     "_rotation_threshold",
     "_rotation_redetect", "_rotation_source", "_enhancer_box", "_upscaler_box",
     "_upscaler_model", "_upscaler_tile", "_upscaler_fp16", "_upscaler_device",

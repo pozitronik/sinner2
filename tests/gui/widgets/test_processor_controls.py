@@ -664,7 +664,7 @@ class TestCacheManagementControls:
 
 class TestTemporalStabilizationControls:
     def test_getter_captures_temporal_values(self, widget):
-        widget._temporal_enabled.setChecked(True)  # noqa: SLF001
+        widget._temporal_box.setChecked(True)  # noqa: SLF001
         widget._temporal_window.setValue(13)  # noqa: SLF001
         widget._temporal_strength.setValue(0.4)  # noqa: SLF001
         sp = widget.swapper_params()
@@ -674,18 +674,18 @@ class TestTemporalStabilizationControls:
 
     def test_box_disabled_until_face_map_available(self, widget):
         # Mirrors the batch dialog: no map → the whole sub-box is disabled.
-        assert not widget._temporal_enabled.isEnabled()  # noqa: SLF001
+        assert not widget._temporal_box.isEnabled()  # noqa: SLF001
         widget.set_face_map_available(True)
-        assert widget._temporal_enabled.isEnabled()  # noqa: SLF001
+        assert widget._temporal_box.isEnabled()  # noqa: SLF001
         widget.set_face_map_available(False)
-        assert not widget._temporal_enabled.isEnabled()  # noqa: SLF001
+        assert not widget._temporal_box.isEnabled()  # noqa: SLF001
 
     def test_window_and_strength_gated_on_toggle(self, widget):
         widget.set_face_map_available(True)  # box enabled; now exercise the toggle
         # Toggle off → subknobs disabled.
         assert not widget._temporal_window.isEnabled()  # noqa: SLF001
         assert not widget._temporal_strength.isEnabled()  # noqa: SLF001
-        widget._temporal_enabled.setChecked(True)  # noqa: SLF001
+        widget._temporal_box.setChecked(True)  # noqa: SLF001
         assert widget._temporal_window.isEnabled()  # noqa: SLF001
         assert widget._temporal_strength.isEnabled()  # noqa: SLF001
 
@@ -835,7 +835,7 @@ class TestGroupOrganization:
         assert widget._face_box.title() == "Faces recognition"  # noqa: SLF001
         assert widget._which_to_swap_box.title() == "Which to swap"  # noqa: SLF001
         assert widget._swapper_box.title() == "Face swap"  # noqa: SLF001
-        assert widget._rotation_box.title() == "Rotation"  # noqa: SLF001
+        assert widget._rotation_box.title() == "Rotation compensation"  # noqa: SLF001
         assert widget._occlusion_box.title() == "Occlusion"  # noqa: SLF001
         assert widget._enhancer_box.title() == "Face enhancer"  # noqa: SLF001
 
@@ -1021,7 +1021,7 @@ class TestDetectionSizeControl:
 
 class TestFaceDetectorGroup:
     def test_rotation_fields_flow_to_swapper_params(self, widget):
-        widget._rotation_enabled.setChecked(True)  # noqa: SLF001
+        widget._rotation_box.setChecked(True)  # noqa: SLF001
         widget._rotation_threshold.setValue(30)  # noqa: SLF001
         widget._rotation_redetect.setChecked(False)  # noqa: SLF001
         p = widget.swapper_params()
@@ -1030,22 +1030,22 @@ class TestFaceDetectorGroup:
         assert p.rotation_redetect is False
 
     def test_rotation_subcontrols_disabled_when_off(self, widget):
-        widget._rotation_enabled.setChecked(True)  # noqa: SLF001
+        widget._rotation_box.setChecked(True)  # noqa: SLF001
         assert widget._rotation_threshold.isEnabled()  # noqa: SLF001
         assert widget._rotation_redetect.isEnabled()  # noqa: SLF001
         assert widget._rotation_source.isEnabled()  # noqa: SLF001
-        widget._rotation_enabled.setChecked(False)  # noqa: SLF001
+        widget._rotation_box.setChecked(False)  # noqa: SLF001
         assert not widget._rotation_threshold.isEnabled()  # noqa: SLF001
         assert not widget._rotation_redetect.isEnabled()  # noqa: SLF001
         assert not widget._rotation_source.isEnabled()  # noqa: SLF001
 
     def test_occlusion_subcontrols_follow_checkbox(self, widget):
-        widget._occlusion_mask.setChecked(False)  # noqa: SLF001
+        widget._occlusion_box.setChecked(False)  # noqa: SLF001
         assert not widget._occlusion_mode.isEnabled()  # noqa: SLF001
         assert not widget._occlusion_parser.isEnabled()  # noqa: SLF001
         assert not widget._occluder_model.isEnabled()  # noqa: SLF001
         assert not widget._occlusion_cache.isEnabled()  # noqa: SLF001
-        widget._occlusion_mask.setChecked(True)  # noqa: SLF001
+        widget._occlusion_box.setChecked(True)  # noqa: SLF001
         assert widget._occlusion_mode.isEnabled()  # noqa: SLF001
         # Default mode is region → parser relevant, occluder not.
         assert widget._occlusion_parser.isEnabled()  # noqa: SLF001
@@ -1055,7 +1055,7 @@ class TestFaceDetectorGroup:
     def test_occlusion_mode_links_parser_and_occluder(self, widget):
         from sinner2.pipeline.processors.occlusion import OcclusionMaskMode
 
-        widget._occlusion_mask.setChecked(True)  # noqa: SLF001
+        widget._occlusion_box.setChecked(True)  # noqa: SLF001
 
         def set_mode(value: str) -> None:
             combo = widget._occlusion_mode  # noqa: SLF001

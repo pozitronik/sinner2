@@ -48,7 +48,7 @@ class TestDependentRows:
         assert not dlg._occlusion_parser.isEnabled()  # noqa: SLF001
         assert not dlg._occluder_model.isEnabled()  # noqa: SLF001
         assert not dlg._occlusion_cache.isEnabled()  # noqa: SLF001
-        dlg._occlusion_mask.setChecked(True)  # noqa: SLF001
+        dlg._occlusion_box.setChecked(True)  # noqa: SLF001
         assert dlg._occlusion_parser.isEnabled()  # noqa: SLF001 — region default
         assert not dlg._occluder_model.isEnabled()  # noqa: SLF001
         assert dlg._occlusion_cache.isEnabled()  # noqa: SLF001 — cache follows mask
@@ -65,7 +65,7 @@ class TestDependentRows:
         assert not dlg._rotation_threshold.isEnabled()  # noqa: SLF001
         assert not dlg._rotation_redetect.isEnabled()  # noqa: SLF001
         assert not dlg._rotation_source.isEnabled()  # noqa: SLF001
-        dlg._rotation_enabled.setChecked(True)  # noqa: SLF001
+        dlg._rotation_box.setChecked(True)  # noqa: SLF001
         assert dlg._rotation_threshold.isEnabled()  # noqa: SLF001
 
     def test_fast_paste_follows_swap_model(self, qtbot, tmp_path):
@@ -94,7 +94,7 @@ class TestTemporalStabilization:
     def test_disabled_without_geometry(self, qtbot, tmp_path):
         dlg = QBatchTaskDialog.from_task(_task(tmp_path))
         qtbot.addWidget(dlg)
-        assert not dlg._temporal_enabled.isEnabled()  # noqa: SLF001
+        assert not dlg._temporal_box.isEnabled()  # noqa: SLF001
 
     def test_values_round_trip_even_when_disabled(self, qtbot, tmp_path):
         dlg = QBatchTaskDialog.from_task(
@@ -134,9 +134,9 @@ class TestTemporalStabilization:
         )
         qtbot.addWidget(dlg)
         # Geometry exists → sub-box enabled; window/strength follow the toggle.
-        assert dlg._temporal_enabled.isEnabled()  # noqa: SLF001
+        assert dlg._temporal_box.isEnabled()  # noqa: SLF001
         assert not dlg._temporal_window.isEnabled()  # noqa: SLF001 — toggle off
-        dlg._temporal_enabled.setChecked(True)  # noqa: SLF001
+        dlg._temporal_box.setChecked(True)  # noqa: SLF001
         assert dlg._temporal_window.isEnabled()  # noqa: SLF001
         assert dlg._temporal_strength.isEnabled()  # noqa: SLF001
 
@@ -451,7 +451,7 @@ class TestRotationCompensation:
         )
         dlg = QBatchTaskDialog.from_task(t)
         qtbot.addWidget(dlg)
-        assert dlg._rotation_enabled.isChecked() is True  # noqa: SLF001
+        assert dlg._rotation_box.isChecked() is True  # noqa: SLF001
         assert dlg._rotation_threshold.value() == 25  # noqa: SLF001
         assert dlg._rotation_redetect.isChecked() is False  # noqa: SLF001
         assert dlg._rotation_source.currentData() == "pose"  # noqa: SLF001
@@ -460,7 +460,7 @@ class TestRotationCompensation:
         t = _task(tmp_path)
         dlg = QBatchTaskDialog.from_task(t)
         qtbot.addWidget(dlg)
-        dlg._rotation_enabled.setChecked(True)  # noqa: SLF001
+        dlg._rotation_box.setChecked(True)  # noqa: SLF001
         dlg._rotation_threshold.setValue(40)  # noqa: SLF001
         edited = dlg.to_task()
         assert edited.swapper_rotation_compensation is True

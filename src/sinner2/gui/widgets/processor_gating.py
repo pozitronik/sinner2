@@ -14,7 +14,7 @@ form has no notion of — so it stays panel-local.
 """
 from __future__ import annotations
 
-from PySide6.QtWidgets import QCheckBox, QComboBox, QWidget
+from PySide6.QtWidgets import QComboBox, QGroupBox, QWidget
 
 from sinner2.pipeline.processors.face_enhancer import EnhancerModel
 from sinner2.pipeline.processors.face_swapper import SwapperModel
@@ -49,10 +49,11 @@ def update_enhancer_rows(
 
 
 def update_rotation_rows(
-    enabled: QCheckBox, threshold: QWidget, redetect: QWidget, source: QWidget
+    enabled: QGroupBox, threshold: QWidget, redetect: QWidget, source: QWidget
 ) -> None:
     """Gray the rotation knobs (threshold / re-detect / angle source) when
-    rotation compensation is off — they have no effect then."""
+    rotation compensation is off — they have no effect then. ``enabled`` is the
+    checkable 'Rotation compensation' group box (its title checkbox is the toggle)."""
     on = enabled.isChecked()
     threshold.setEnabled(on)
     redetect.setEnabled(on)
@@ -60,25 +61,27 @@ def update_rotation_rows(
 
 
 def update_temporal_rows(
-    enabled: QCheckBox, window: QWidget, strength: QWidget
+    enabled: QGroupBox, window: QWidget, strength: QWidget
 ) -> None:
     """Gray the temporal-stabilization knobs (window / strength) when the
-    feature is off — they have no effect then."""
+    feature is off — they have no effect then. ``enabled`` is the checkable
+    'Temporal stabilization' group box (its title checkbox is the toggle)."""
     on = enabled.isChecked()
     window.setEnabled(on)
     strength.setEnabled(on)
 
 
 def update_occlusion_rows(
-    mask: QCheckBox,
+    mask: QGroupBox,
     mode_combo: QComboBox,
     parser: QWidget,
     occluder_model: QWidget,
     cache: QWidget,
 ) -> None:
-    """Link the occlusion sub-controls to the master checkbox and to each other:
+    """Link the occlusion sub-controls to the master toggle and to each other:
     everything grays out when the mask is off; the parser applies only to
-    region/both, the occluder model only to occluder/both."""
+    region/both, the occluder model only to occluder/both. ``mask`` is the
+    checkable 'Occlusion' group box (its title checkbox is the master toggle)."""
     on = mask.isChecked()
     mode = mode_combo.currentData()
     mode_combo.setEnabled(on)

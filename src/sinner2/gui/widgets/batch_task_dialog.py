@@ -310,16 +310,15 @@ class QBatchTaskDialog(QDialog):
         swap_form.addRow("Landmark refine:", self._landmark_refine)
 
         # -- Rotation sub-box (experimental upright-then-composite) --
-        rotation_box = QGroupBox("Rotation")
-        rotation_form = QFormLayout(rotation_box)
-        self._rotation_enabled = QCheckBox()
-        self._rotation_enabled.setChecked(task.swapper_rotation_compensation)
-        self._rotation_enabled.toggled.connect(self._update_rotation_rows)
-        self._rotation_enabled.setToolTip(
+        self._rotation_box = QGroupBox("Rotation compensation")
+        self._rotation_box.setCheckable(True)
+        self._rotation_box.setChecked(task.swapper_rotation_compensation)
+        self._rotation_box.toggled.connect(self._update_rotation_rows)
+        self._rotation_box.setToolTip(
             "Experimental: upright faces tilted past the threshold before "
             "swapping, then composite back. Affects output."
         )
-        rotation_form.addRow("Rotation compensation:", self._rotation_enabled)
+        rotation_form = QFormLayout(self._rotation_box)
         self._rotation_threshold = QSpinBox()
         self._rotation_threshold.setRange(0, 90)
         self._rotation_threshold.setSuffix("°")
@@ -337,19 +336,18 @@ class QBatchTaskDialog(QDialog):
             if value == task.swapper_rotation_angle_source:
                 self._rotation_source.setCurrentIndex(self._rotation_source.count() - 1)
         rotation_form.addRow("Angle source:", self._rotation_source)
-        swap_form.addRow(rotation_box)
+        swap_form.addRow(self._rotation_box)
 
         # -- Occlusion sub-box --
-        occlusion_box = QGroupBox("Occlusion")
-        occlusion_form = QFormLayout(occlusion_box)
-        self._occlusion_mask = QCheckBox()
-        self._occlusion_mask.setChecked(task.swapper_occlusion_mask)
-        self._occlusion_mask.setToolTip(
+        self._occlusion_box = QGroupBox("Occlusion")
+        self._occlusion_box.setCheckable(True)
+        self._occlusion_box.setChecked(task.swapper_occlusion_mask)
+        self._occlusion_box.setToolTip(
             "Mask the swap to the real face region (hair/glasses/boundary keep "
             "the original). Parser model downloads on first batch run."
         )
-        self._occlusion_mask.toggled.connect(self._update_occlusion_rows)
-        occlusion_form.addRow("Occlusion mask:", self._occlusion_mask)
+        self._occlusion_box.toggled.connect(self._update_occlusion_rows)
+        occlusion_form = QFormLayout(self._occlusion_box)
         # The mode comes FIRST — it decides which of the two dependent rows
         # below it (parser / occluder) apply.
         self._occlusion_mode = QComboBox()
@@ -386,26 +384,23 @@ class QBatchTaskDialog(QDialog):
             "slight boundary lag on motion). Output-affecting."
         )
         occlusion_form.addRow("Cache mask:", self._occlusion_cache)
-        swap_form.addRow(occlusion_box)
+        swap_form.addRow(self._occlusion_box)
 
         # -- Temporal stabilization sub-box (needs per-frame face-map geometry) --
         geom_available = self._probe_geometry_available(task)
-        temporal_box = QGroupBox("Temporal stabilization")
-        temporal_box.setEnabled(geom_available)
-        if not geom_available:
-            temporal_box.setToolTip(
-                "Requires a prebuilt face map with per-frame geometry for this "
-                "target."
-            )
-        temporal_form = QFormLayout(temporal_box)
-        self._temporal_enabled = QCheckBox()
-        self._temporal_enabled.setChecked(task.swapper_temporal_stabilization)
-        self._temporal_enabled.setToolTip(
+        self._temporal_box = QGroupBox("Temporal stabilization")
+        self._temporal_box.setCheckable(True)
+        self._temporal_box.setChecked(task.swapper_temporal_stabilization)
+        self._temporal_box.setEnabled(geom_available)
+        self._temporal_box.setToolTip(
             "Smooth each face's keypoints over time to reduce swap jitter. Needs "
             "a prebuilt face map with per-frame geometry; a no-op without one."
+            if geom_available
+            else "Requires a prebuilt face map with per-frame geometry for this "
+            "target."
         )
-        self._temporal_enabled.toggled.connect(self._update_temporal_rows)
-        temporal_form.addRow("Stabilize keypoints:", self._temporal_enabled)
+        self._temporal_box.toggled.connect(self._update_temporal_rows)
+        temporal_form = QFormLayout(self._temporal_box)
         self._temporal_window = QSpinBox()
         self._temporal_window.setRange(1, 199)
         self._temporal_window.setSingleStep(2)
@@ -422,7 +417,7 @@ class QBatchTaskDialog(QDialog):
             "Blend from raw (0) to fully smoothed (1) keypoints."
         )
         temporal_form.addRow("Strength:", self._temporal_strength)
-        swap_form.addRow(temporal_box)
+        swap_form.addRow(self._temporal_box)
 
         # ---- FaceEnhancer group (its own tab) ----
         # Order mirrors the live enhancer group: model → upscale → fidelity →
@@ -804,21 +799,21 @@ class QBatchTaskDialog(QDialog):
     def _update_occlusion_rows(self) -> None:
         # Gating rules shared with the live Settings panel — see processor_gating.
         update_occlusion_rows(
-            self._occlusion_mask, self._occlusion_mode, self._occlusion_parser,
+            self._occlusion_box, self._occlusion_mode, self._occlusion_parser,
             self._occluder_model, self._occlusion_cache,
         )
 
     def _update_temporal_rows(self) -> None:
         # Gating rules shared with the live Settings panel — see processor_gating.
         update_temporal_rows(
-            self._temporal_enabled, self._temporal_window,
+            self._temporal_box, self._temporal_window,
             self._temporal_strength,
         )
 
     def _update_rotation_rows(self) -> None:
         # Gating rules shared with the live Settings panel — see processor_gating.
         update_rotation_rows(
-            self._rotation_enabled, self._rotation_threshold,
+            self._rotation_box, self._rotation_threshold,
             self._rotation_redetect, self._rotation_source,
         )
 
@@ -856,15 +851,15 @@ class QBatchTaskDialog(QDialog):
             "swapper_many_faces": self._many_faces.isChecked(),
             "swapper_fast_paste": self._fast_paste.isChecked(),
             "swapper_landmark_refine": self._landmark_refine.isChecked(),
-            "swapper_temporal_stabilization": self._temporal_enabled.isChecked(),
+            "swapper_temporal_stabilization": self._temporal_box.isChecked(),
             "swapper_temporal_window": self._temporal_window.value(),
             "swapper_temporal_strength": self._temporal_strength.value(),
             "swapper_target_sex": self._target_sex.currentData(),
-            "swapper_rotation_compensation": self._rotation_enabled.isChecked(),
+            "swapper_rotation_compensation": self._rotation_box.isChecked(),
             "swapper_rotation_threshold_deg": self._rotation_threshold.value(),
             "swapper_rotation_redetect": self._rotation_redetect.isChecked(),
             "swapper_rotation_angle_source": self._rotation_source.currentData(),
-            "swapper_occlusion_mask": self._occlusion_mask.isChecked(),
+            "swapper_occlusion_mask": self._occlusion_box.isChecked(),
             "swapper_occlusion_mode": self._occlusion_mode.currentData(),
             "swapper_occlusion_parser": self._occlusion_parser.currentData(),
             "swapper_occluder_model": self._occluder_model.currentData(),

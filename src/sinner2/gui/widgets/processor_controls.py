@@ -192,11 +192,16 @@ class QProcessorControls(QWidget):
         # can be added regardless of creation order.
         self._which_to_swap_box = QGroupBox("Which to swap")
         which_to_swap_form = QFormLayout(self._which_to_swap_box)
-        self._rotation_box = QGroupBox("Rotation")
+        # Each of these three sub-boxes carries its enable toggle in the title
+        # (checkable group box) rather than a separate checkbox row.
+        self._rotation_box = QGroupBox("Rotation compensation")
+        self._rotation_box.setCheckable(True)
         rotation_form = QFormLayout(self._rotation_box)
         self._occlusion_box = QGroupBox("Occlusion")
+        self._occlusion_box.setCheckable(True)
         occlusion_form = QFormLayout(self._occlusion_box)
         self._temporal_box = QGroupBox("Temporal stabilization")
+        self._temporal_box.setCheckable(True)
         # Needs a prebuilt face map's geometry — enabled by set_face_map_available.
         self._temporal_box.setEnabled(False)
         temporal_form = QFormLayout(self._temporal_box)
@@ -261,16 +266,14 @@ class QProcessorControls(QWidget):
         )
         self._target_sex.currentIndexChanged.connect(self.configChanged)
         which_to_swap_form.addRow("Gender", self._target_sex)
-        self._occlusion_mask = QCheckBox()
-        self._occlusion_mask.setChecked(swapper_defaults.occlusion_mask)
-        self._occlusion_mask.setToolTip(
+        self._occlusion_box.setChecked(swapper_defaults.occlusion_mask)
+        self._occlusion_box.setToolTip(
             "Mask the swap to the real facial region (BiSeNet parse) so hair,\n"
             "glasses, hats and the neck/boundary keep the original. Affects\n"
             "output; the parser model downloads on first enable."
         )
-        self._occlusion_mask.toggled.connect(self.configChanged)
-        self._occlusion_mask.toggled.connect(self._update_occlusion_rows)
-        occlusion_form.addRow("Occlusion mask", self._occlusion_mask)
+        self._occlusion_box.toggled.connect(self.configChanged)
+        self._occlusion_box.toggled.connect(self._update_occlusion_rows)
         # The mode comes FIRST in the form — it decides which of the two
         # dependent rows below it (parser / occluder) apply.
         self._occlusion_mode = QComboBox()
@@ -553,19 +556,18 @@ class QProcessorControls(QWidget):
         # "Which to swap" sub-box (many-faces + gender) sits under the detector
         # it depends on, inside the Faces group.
         face_form.addRow(self._which_to_swap_box)
-        self._rotation_enabled = QCheckBox()
-        self._rotation_enabled.setChecked(swapper_defaults.rotation_compensation)
-        self._rotation_enabled.setToolTip(
+        # Rotation knobs live in the swap group's "Rotation compensation" sub-box
+        # so the angle-source/threshold dependencies stay inside it; the box's
+        # title checkbox is the enable toggle.
+        self._rotation_box.setChecked(swapper_defaults.rotation_compensation)
+        self._rotation_box.setToolTip(
             "Experimental: for faces tilted past the threshold, upright a crop,\n"
             "re-detect clean keypoints, swap, then composite back. Helps when\n"
             "the detector's keypoints degrade at high in-plane roll; does\n"
             "nothing for out-of-plane (profile) turns. Affects output."
         )
-        self._rotation_enabled.toggled.connect(self.configChanged)
-        self._rotation_enabled.toggled.connect(self._update_rotation_rows)
-        # Rotation knobs live in the swap group's "Rotation" sub-box so the
-        # angle-source/threshold dependencies stay inside it.
-        rotation_form.addRow("Rotation compensation", self._rotation_enabled)
+        self._rotation_box.toggled.connect(self.configChanged)
+        self._rotation_box.toggled.connect(self._update_rotation_rows)
 
         self._rotation_threshold = QSpinBox()
         self._rotation_threshold.setRange(0, 90)
@@ -613,16 +615,14 @@ class QProcessorControls(QWidget):
         )
         self._landmark_refine.toggled.connect(self.configChanged)
         swapper_form.addRow("Landmark refine", self._landmark_refine)
-        self._temporal_enabled = QCheckBox()
-        self._temporal_enabled.setChecked(swapper_defaults.temporal_stabilization)
-        self._temporal_enabled.setToolTip(
+        self._temporal_box.setChecked(swapper_defaults.temporal_stabilization)
+        self._temporal_box.setToolTip(
             "Experimental: smooth each face's keypoints over time so the swapped\n"
             "face stops swimming/jittering. Needs a PREBUILT FACE MAP with\n"
             "per-frame geometry — without one it is a no-op. Affects output."
         )
-        self._temporal_enabled.toggled.connect(self.configChanged)
-        self._temporal_enabled.toggled.connect(self._update_temporal_rows)
-        temporal_form.addRow("Stabilize keypoints", self._temporal_enabled)
+        self._temporal_box.toggled.connect(self.configChanged)
+        self._temporal_box.toggled.connect(self._update_temporal_rows)
 
         self._temporal_window = QSpinBox()
         self._temporal_window.setRange(1, 199)
@@ -1164,15 +1164,15 @@ class QProcessorControls(QWidget):
             many_faces=self._many_faces.isChecked(),
             fast_paste=self._fast_paste.isChecked(),
             target_sex=self._target_sex.currentData(),
-            rotation_compensation=self._rotation_enabled.isChecked(),
+            rotation_compensation=self._rotation_box.isChecked(),
             rotation_threshold_deg=self._rotation_threshold.value(),
             rotation_redetect=self._rotation_redetect.isChecked(),
             rotation_angle_source=self._rotation_source.currentData(),
             landmark_refine=self._landmark_refine.isChecked(),
-            temporal_stabilization=self._temporal_enabled.isChecked(),
+            temporal_stabilization=self._temporal_box.isChecked(),
             temporal_window=self._temporal_window.value(),
             temporal_strength=self._temporal_strength.value(),
-            occlusion_mask=self._occlusion_mask.isChecked(),
+            occlusion_mask=self._occlusion_box.isChecked(),
             occlusion_mode=self._occlusion_mode.currentData(),
             occlusion_parser=self._occlusion_parser.currentData(),
             occluder_model=self._occluder_model.currentData(),
@@ -1196,9 +1196,9 @@ class QProcessorControls(QWidget):
     def set_occlusion_checked(self, on: bool) -> None:
         """Reflect occlusion-on without firing configChanged — used to revert
         the toggle when the user declines the parser-model download."""
-        self._occlusion_mask.blockSignals(True)
-        self._occlusion_mask.setChecked(bool(on))
-        self._occlusion_mask.blockSignals(False)
+        self._occlusion_box.blockSignals(True)
+        self._occlusion_box.setChecked(bool(on))
+        self._occlusion_box.blockSignals(False)
         self._update_occlusion_rows()  # blocked signal → refresh manually
 
     def disable_landmark_refine(self) -> None:
@@ -1244,7 +1244,7 @@ class QProcessorControls(QWidget):
             only_swapped=self._only_swapped.isChecked(),
             codeformer_fidelity=self._enhancer_fidelity.value(),
             fp16=self._enhancer_fp16.isChecked(),
-            rotation_compensation=self._rotation_enabled.isChecked(),
+            rotation_compensation=self._rotation_box.isChecked(),
             rotation_threshold_deg=self._rotation_threshold.value(),
             rotation_redetect=self._rotation_redetect.isChecked(),
             rotation_angle_source=self._rotation_source.currentData(),
@@ -1319,14 +1319,14 @@ class QProcessorControls(QWidget):
     def _update_rotation_rows(self) -> None:
         # Gating rules shared with the batch form — see processor_gating.
         update_rotation_rows(
-            self._rotation_enabled, self._rotation_threshold,
+            self._rotation_box, self._rotation_threshold,
             self._rotation_redetect, self._rotation_source,
         )
 
     def _update_temporal_rows(self) -> None:
         # Gating rules shared with the batch form — see processor_gating.
         update_temporal_rows(
-            self._temporal_enabled, self._temporal_window,
+            self._temporal_box, self._temporal_window,
             self._temporal_strength,
         )
 
@@ -1357,7 +1357,7 @@ class QProcessorControls(QWidget):
     def _update_occlusion_rows(self) -> None:
         # Gating rules shared with the batch form — see processor_gating.
         update_occlusion_rows(
-            self._occlusion_mask, self._occlusion_mode, self._occlusion_parser,
+            self._occlusion_box, self._occlusion_mode, self._occlusion_parser,
             self._occluder_model, self._occlusion_cache,
         )
 
@@ -1597,16 +1597,16 @@ class QProcessorControls(QWidget):
             self._many_faces,
             self._fast_paste,
             self._landmark_refine,
-            self._temporal_enabled,
+            self._temporal_box,
             self._temporal_window,
             self._temporal_strength,
             self._target_sex,
-            self._occlusion_mask,
+            self._occlusion_box,
             self._occlusion_mode,
             self._occlusion_parser,
             self._occluder_model,
             self._occlusion_cache,
-            self._rotation_enabled,
+            self._rotation_box,
             self._rotation_threshold,
             self._rotation_redetect,
             self._rotation_source,
@@ -1659,7 +1659,7 @@ class QProcessorControls(QWidget):
                 # combo's display text differs from the persisted value.
                 _select_combo_by_data(self._target_sex, swapper_target_sex)
             if swapper_occlusion_mask is not None:
-                self._occlusion_mask.setChecked(swapper_occlusion_mask)
+                self._occlusion_box.setChecked(swapper_occlusion_mask)
             if swapper_occlusion_parser is not None:
                 _select_combo_by_data(self._occlusion_parser, swapper_occlusion_parser)
             if swapper_occlusion_mode is not None:
@@ -1669,7 +1669,7 @@ class QProcessorControls(QWidget):
             if swapper_occlusion_cache is not None:
                 self._occlusion_cache.setChecked(swapper_occlusion_cache)
             if swapper_rotation_compensation is not None:
-                self._rotation_enabled.setChecked(swapper_rotation_compensation)
+                self._rotation_box.setChecked(swapper_rotation_compensation)
             if swapper_rotation_threshold_deg is not None:
                 self._rotation_threshold.setValue(swapper_rotation_threshold_deg)
             if swapper_rotation_redetect is not None:
@@ -1677,7 +1677,7 @@ class QProcessorControls(QWidget):
             if swapper_rotation_angle_source is not None:
                 _select_combo_by_data(self._rotation_source, swapper_rotation_angle_source)
             if swapper_temporal_stabilization is not None:
-                self._temporal_enabled.setChecked(swapper_temporal_stabilization)
+                self._temporal_box.setChecked(swapper_temporal_stabilization)
             if swapper_temporal_window is not None:
                 self._temporal_window.setValue(swapper_temporal_window)
             if swapper_temporal_strength is not None:
