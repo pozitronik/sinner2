@@ -255,10 +255,11 @@ class PredictiveStrategy:
 
        A frame submitted now then finishes just as the playhead reaches it →
        near-zero display lag, showing every Nth frame in real time instead of
-       every frame in slow-motion. ``lead`` is clamped to
-       ``[0, min(lookahead, max_lead_seconds * fps)]`` so a momentary throughput
-       dip can't fling the playhead far down the clip (a wasted random-access
-       read on a slow source); ``max_lead_seconds`` is the user-facing cap.
+       every frame in slow-motion. By default ``lead`` is clamped only to
+       ``[0, lookahead]`` — it compensates the FULL measured latency, so the
+       residual lag is ~0 at any worker count (the I/O-bound fallback handles
+       slow-seek sources, which never reach the lead). ``max_lead_seconds`` is an
+       optional TIGHTER user cap; ``None`` (the default) means auto.
 
     Inherits SyncedStrategy's safeguards: cold-start warm-up (submit sequentially
     until the first completion so the opening isn't skipped) and the I/O-bound →
@@ -266,9 +267,6 @@ class PredictiveStrategy:
     reads it can't sustain → fall back so reads stay sequential).
     """
 
-    # How far ahead (seconds of wall-clock) the lead may reach. Bounds the skip
-    # so a throughput dip can't aim at the end of the clip. User-tunable.
-    _DEFAULT_MAX_LEAD_SECONDS = 1.0
     # Outstanding work cap = this * worker_count. 2 = one frame computing + one
     # queued per worker: keeps workers fed (no refill stall) while staying
     # shallow enough that submit-to-show latency is ~2 frame-computes, which the
@@ -289,11 +287,10 @@ class PredictiveStrategy:
         lookahead_frames: int | None = None,
         io_bound_read_ms: float | None = None,
     ) -> None:
-        self._max_lead_seconds = (
-            max_lead_seconds
-            if max_lead_seconds is not None
-            else self._DEFAULT_MAX_LEAD_SECONDS
-        )
+        # None → auto: compensate the full measured in-flight latency (bounded by
+        # lookahead_frames) so the residual lag is ~0 at any worker count. A set
+        # value is an optional tighter cap on render-ahead for slow sources.
+        self._max_lead_seconds = max_lead_seconds
         self._outstanding_factor = (
             outstanding_factor
             if outstanding_factor is not None
@@ -326,7 +323,7 @@ class PredictiveStrategy:
         self._ever_completed = False
 
     @property
-    def max_lead_seconds(self) -> float:
+    def max_lead_seconds(self) -> float | None:
         return self._max_lead_seconds
 
     @property
@@ -391,13 +388,23 @@ class PredictiveStrategy:
         self, cap: int, fps: float, process_fps: float | None
     ) -> int:
         """Frames the wall-clock advances during one frame's time in the
-        pipeline. 0 until throughput is known (warm-up) → aim at the present
-        target (skip-to-now). Clamped by the user's max-lead cap + lookahead."""
+        pipeline — aim this far ahead so a submission lands ON the playhead
+        instead of one in-flight latency late. 0 until throughput is known
+        (warm-up) → aim at the present target (skip-to-now).
+
+        By default (``max_lead_seconds is None``) it compensates the FULL
+        measured latency, so the residual lag is ~0 at any worker count, bounded
+        only by ``lookahead_frames`` (a sustained-low throughput reading then
+        can't aim at the end of the clip; the I/O-bound fallback already protects
+        slow-seek sources, which never reach this code). A set ``max_lead_seconds``
+        is an optional tighter cap on render-ahead."""
         if not process_fps or process_fps <= 0:
             return 0
         lead = math.ceil(cap * fps / process_fps)
-        max_lead = int(self._max_lead_seconds * fps)
-        return max(0, min(lead, max_lead, self._lookahead_frames))
+        bound = self._lookahead_frames
+        if self._max_lead_seconds is not None:
+            bound = min(bound, int(self._max_lead_seconds * fps))
+        return max(0, min(lead, bound))
 
     def current_mode(self) -> str:
         return "predictive (lagging)" if self._in_fallback else "predictive"

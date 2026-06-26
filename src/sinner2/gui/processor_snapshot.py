@@ -64,7 +64,7 @@ class ProcessorParamsSnapshot:
     reader_pool_size: int
     processing_scale: float
     synced_max_lag_frames: int
-    predictive_max_lead_seconds: float
+    predictive_max_lead_seconds: float | None  # None = auto (full lead compensation)
     preprocess_before_play: bool
     # Cache / output
     cache_mode: CacheMode

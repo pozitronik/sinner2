@@ -716,15 +716,19 @@ class QProcessorControls(QWidget):
         self._predictive_max_lead_seconds = QDoubleSpinBox()
         self._predictive_max_lead_seconds.setRange(0.0, 10.0)
         self._predictive_max_lead_seconds.setSingleStep(0.1)
-        self._predictive_max_lead_seconds.setValue(1.0)
+        self._predictive_max_lead_seconds.setValue(0.0)
         self._predictive_max_lead_seconds.setSuffix(" s")
+        # 0.0 shows as "Auto" (the default): the strategy compensates the full
+        # measured pipeline latency, so sync holds at any worker count.
+        self._predictive_max_lead_seconds.setSpecialValueText("Auto")
         self._predictive_max_lead_seconds.setToolTip(
             "Predictive strategy only. The strategy aims each frame at where the\n"
             "playhead will be when it finishes processing, so a slow pipeline\n"
             "plays in real time (showing every Nth frame) instead of slow-motion.\n"
-            "This caps how far ahead (seconds) that aim may reach: higher =\n"
-            "tighter sync on very slow pipelines, but more aggressive skipping\n"
-            "and random reads. Default 1.0 s."
+            "Auto (default) compensates the full measured latency — sync holds at\n"
+            "any worker count. Set a value to cap how far ahead (seconds) that aim\n"
+            "may reach: tighter render-ahead on a slow source, at the cost of some\n"
+            "residual lag."
         )
         self._predictive_max_lead_seconds.valueChanged.connect(self.configChanged)
         execution_form.addRow(
@@ -1386,14 +1390,16 @@ class QProcessorControls(QWidget):
         if cls is SyncedStrategy:
             return cls(max_lag_frames=self._synced_max_lag_frames.value())
         if cls is PredictiveStrategy:
-            return cls(max_lead_seconds=self._predictive_max_lead_seconds.value())
+            return cls(max_lead_seconds=self.predictive_max_lead_seconds())
         return cls()
 
     def synced_max_lag_frames(self) -> int:
         return self._synced_max_lag_frames.value()
 
-    def predictive_max_lead_seconds(self) -> float:
-        return self._predictive_max_lead_seconds.value()
+    def predictive_max_lead_seconds(self) -> float | None:
+        value = self._predictive_max_lead_seconds.value()
+        # 0.0 is the "Auto" special value → None (full lead compensation).
+        return None if value <= 0.0 else value
 
     def preprocess_before_play(self) -> bool:
         return self._preprocess_before_play.isChecked()

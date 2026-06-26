@@ -276,6 +276,21 @@ class TestQProcessorControls:
         assert isinstance(s, PredictiveStrategy)
         assert s.max_lead_seconds == 2.5
 
+    def test_predictive_max_lead_auto_default(self, widget):
+        from sinner2.pipeline.skip_strategy import PredictiveStrategy
+
+        # Default spinbox value 0.0 reads as "Auto" → None → strategy
+        # auto-compensates the full pipeline latency (no residual lag at any
+        # worker count).
+        assert widget._predictive_max_lead_seconds.value() == 0.0  # noqa: SLF001
+        assert widget.predictive_max_lead_seconds() is None
+        widget._strategy_combo.setCurrentText(  # noqa: SLF001
+            "Predictive (real-time, skip ahead)"
+        )
+        s = widget.skip_strategy()
+        assert isinstance(s, PredictiveStrategy)
+        assert s.max_lead_seconds is None
+
     def test_strategy_param_rows_enable_with_active_strategy(self, widget):
         # The predictive lead row is enabled only for Predictive; the synced
         # threshold row only for Synced — they toggle as the combo changes.

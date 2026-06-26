@@ -550,6 +550,28 @@ class TestPredictiveStrategy:
                      process_fps=10.0, worker_count=1, outstanding=0)
         assert d.next_frame == 103  # target 100 + clamped lead 3
 
+    def test_auto_default_compensates_full_latency(self):
+        # Auto (default max_lead_seconds=None): the lead is the FULL in-flight
+        # latency, not clamped at the old 1.0s cap. fps 60, throughput 12, 8
+        # workers, factor 2 → cap 16 → lead=ceil(16*60/12)=80 (the old 1.0s cap
+        # would have held it to 60, leaving ~20 frames of residual lag).
+        s = PredictiveStrategy()
+        d = s.decide(last_submitted=900, last_completed=900,
+                     timeline=self._timeline(1000, fps=60.0),
+                     metrics=_zero_metrics(),
+                     process_fps=12.0, worker_count=8, outstanding=0)
+        assert d.next_frame == 1080  # target 1000 + full lead 80
+
+    def test_auto_lead_still_bounded_by_lookahead(self):
+        # Even on auto, the lead can't exceed lookahead_frames (default 120), so a
+        # crawling throughput can't fling the aim at the end of the clip.
+        s = PredictiveStrategy()
+        d = s.decide(last_submitted=999, last_completed=995,
+                     timeline=self._timeline(1000, fps=60.0),
+                     metrics=_zero_metrics(),
+                     process_fps=1.0, worker_count=8, outstanding=0)
+        assert d.next_frame == 1120  # target 1000 + lead clamped to lookahead 120
+
     def test_no_throughput_yet_aims_at_present_target(self):
         # process_fps unknown → lead 0 → skip-to-now (like Synced, but shallow).
         s = PredictiveStrategy()
@@ -599,7 +621,7 @@ class TestPredictiveStrategy:
 
     def test_max_lead_seconds_property(self):
         assert PredictiveStrategy(max_lead_seconds=2.5).max_lead_seconds == 2.5
-        assert PredictiveStrategy().max_lead_seconds == 1.0
+        assert PredictiveStrategy().max_lead_seconds is None  # auto by default
 
     def test_max_lag_frames_property(self):
         assert PredictiveStrategy(max_lag_frames=120).max_lag_frames == 120
