@@ -100,9 +100,14 @@ class SyncedStrategy:
     timeline, but progress is made.
 
     Recovery is implicit: once `last_completed` catches up to within
-    `max_lag_frames` of `target`, the next call returns the target again.
-    For permanently-slow workloads it stays in sequential mode, which is
-    the right behaviour.
+    `recover_lag_frames` of `target`, the next call returns the target again.
+
+    Self-correcting: if sequential ISN'T catching up — the lag keeps climbing past
+    where it was when we fell back — the bottleneck is throughput (heavy compute
+    or decode), not seek-thrash, so playing every frame in order is just slow-
+    motion that drifts further behind. We then abandon the fallback and resume
+    skipping (drop frames, stay synced with wall-clock), staying disarmed until
+    skipping pulls the lag back under `recover_lag_frames` so the mode can't flap.
     """
 
     # 60 frames ≈ 2 seconds at 30 fps. Tuned to absorb brief slow-downs
@@ -160,6 +165,12 @@ class SyncedStrategy:
         # whether we're keeping up or in fallback. The dispatcher reads
         # current_mode() right after decide(), so the value is fresh.
         self._in_fallback = False
+        # Self-correcting fallback state: the lowest lag reached since entering
+        # (if sequential is helping, lag falls toward recover_lag), and a latch
+        # that keeps us OUT of the fallback once we've abandoned it as unhelpful
+        # — until skipping pulls the lag back under recover_lag.
+        self._fallback_best_lag = 0
+        self._fallback_disarmed = False
         # Whether ANY frame has completed this session. Warm-up (cold start,
         # first frame loading models) is keyed on this, NOT on last_completed<0
         # alone — a mid-session seek to frame 0 also drives last_completed to -1
@@ -213,10 +224,25 @@ class SyncedStrategy:
             read_latency_ms is not None and read_latency_ms > self._io_bound_read_ms
         )
         if self._in_fallback:
+            # If sequential is working, lag falls toward recover_lag; track the
+            # best (lowest) reached so we can tell progress from a death spiral.
+            self._fallback_best_lag = min(self._fallback_best_lag, lag)
             if lag <= self._recover_lag_frames:
                 self._in_fallback = False
+            elif lag > self._fallback_best_lag + self._max_lag_frames:
+                # Sequential isn't catching up — the bottleneck is throughput
+                # (heavy compute/decode), not seek-thrash, so playing every frame
+                # in order is just slow-motion that falls further behind. Abandon
+                # to skip-ahead (drop frames, stay synced); stay disarmed until
+                # skipping pulls the lag back under recover_lag so we don't flap.
+                self._in_fallback = False
+                self._fallback_disarmed = True
+        elif self._fallback_disarmed:
+            if lag <= self._recover_lag_frames:
+                self._fallback_disarmed = False
         elif lag > self._max_lag_frames and io_bound:
             self._in_fallback = True
+            self._fallback_best_lag = lag
         if self._in_fallback:
             return SkipDecision(next_frame=last_submitted + 1)
         nxt = max(last_submitted + 1, target)
@@ -320,6 +346,8 @@ class PredictiveStrategy:
         # See SyncedStrategy: report keeping-up vs the sequential fallback, and
         # distinguish a cold start from a mid-session seek-to-0.
         self._in_fallback = False
+        self._fallback_best_lag = 0
+        self._fallback_disarmed = False
         self._ever_completed = False
 
     @property
@@ -368,10 +396,25 @@ class PredictiveStrategy:
             read_latency_ms is not None and read_latency_ms > self._io_bound_read_ms
         )
         if self._in_fallback:
+            # If sequential is working, lag falls toward recover_lag; track the
+            # best (lowest) reached so we can tell progress from a death spiral.
+            self._fallback_best_lag = min(self._fallback_best_lag, lag)
             if lag <= self._recover_lag_frames:
                 self._in_fallback = False
+            elif lag > self._fallback_best_lag + self._max_lag_frames:
+                # Sequential isn't catching up — the bottleneck is throughput
+                # (heavy compute/decode), not seek-thrash, so playing every frame
+                # in order is just slow-motion that falls further behind. Abandon
+                # to skip-ahead (drop frames, stay synced); stay disarmed until
+                # skipping pulls the lag back under recover_lag so we don't flap.
+                self._in_fallback = False
+                self._fallback_disarmed = True
+        elif self._fallback_disarmed:
+            if lag <= self._recover_lag_frames:
+                self._fallback_disarmed = False
         elif lag > self._max_lag_frames and io_bound:
             self._in_fallback = True
+            self._fallback_best_lag = lag
         if self._in_fallback:
             return SkipDecision(next_frame=last_submitted + 1)
         # (2) Predict-ahead: aim where the playhead will be when this frame

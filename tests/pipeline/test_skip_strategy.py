@@ -361,6 +361,47 @@ class TestSyncedStrategyBottleneckAware:
         assert d.next_frame == 200
 
 
+class TestSyncedStrategyFallbackGiveup:
+    """The sequential fallback is self-correcting: if it doesn't reduce the lag
+    (throughput-bound source, not seek-thrash — e.g. a 4K clip whose reads are
+    slow to DECODE, not to seek), abandon it and resume skipping so the picture
+    stays synced instead of spiraling into ever-deeper slow-motion."""
+
+    def _decide(self, s, target, last_completed, last_submitted=0):
+        tl = MagicMock()
+        tl.current_frame.return_value = target
+        return s.decide(last_submitted=last_submitted, last_completed=last_completed,
+                        timeline=tl, metrics=_zero_metrics(), read_latency_ms=120.0)
+
+    def test_abandons_fallback_when_lag_keeps_growing(self):
+        s = SyncedStrategy(max_lag_frames=60, recover_lag_frames=30)
+        assert self._decide(s, target=200, last_completed=100).next_frame == 1
+        assert s.current_mode() == "synced (lagging)"
+        # Sequential isn't helping: lag climbs to 170 > entry(100)+max_lag(60).
+        d = self._decide(s, target=400, last_completed=230)
+        assert d.next_frame == 400  # gave up → skip to target, NOT sequential
+        assert s.current_mode() == "synced"
+
+    def test_stays_disarmed_while_still_far_behind(self):
+        s = SyncedStrategy(max_lag_frames=60, recover_lag_frames=30)
+        self._decide(s, target=200, last_completed=100)  # enter
+        self._decide(s, target=400, last_completed=230)  # give up (lag 170)
+        # Still far behind + slow reads, but disarmed → keep skipping, not seq.
+        d = self._decide(s, target=600, last_completed=400)  # lag 200, io-bound
+        assert d.next_frame == 600
+        assert s.current_mode() == "synced"
+
+    def test_rearms_after_lag_recovers(self):
+        s = SyncedStrategy(max_lag_frames=60, recover_lag_frames=30)
+        self._decide(s, target=200, last_completed=100)  # enter
+        self._decide(s, target=400, last_completed=230)  # give up
+        self._decide(s, target=400, last_completed=390)  # lag 10 (<recover) → re-arm
+        # Re-armed: a fresh catastrophic lag + slow reads falls back again.
+        d = self._decide(s, target=600, last_completed=400)  # lag 200
+        assert d.next_frame == 1  # sequential again (last_submitted 0 + 1)
+        assert s.current_mode() == "synced (lagging)"
+
+
 class TestSyncedStrategyLookaheadCap:
     """A faster-than-target pipeline must not pre-render the whole rest of the
     clip ahead of the playhead — render-ahead is bounded to lookahead_frames."""
@@ -608,6 +649,26 @@ class TestPredictiveStrategy:
                      outstanding=0)
         assert d.next_frame == 106  # fast reads → predict ahead, not slow-motion
         assert s.current_mode() == "predictive"
+
+    def test_abandons_fallback_when_sequential_isnt_helping(self):
+        # Self-correcting like Synced: a 4K source reads slow enough to look
+        # I/O-bound, but sequential can't catch up (it's compute-bound) — so the
+        # strategy abandons the fallback and resumes predict-ahead, not slow-mo.
+        s = PredictiveStrategy(max_lag_frames=60, recover_lag_frames=30,
+                               io_bound_read_ms=50)
+        d = s.decide(last_submitted=10, last_completed=100,
+                     timeline=self._timeline(200), metrics=_zero_metrics(),
+                     read_latency_ms=120.0, process_fps=10.0, worker_count=1,
+                     outstanding=0)
+        assert d.next_frame == 11  # sequential
+        assert s.current_mode() == "predictive (lagging)"
+        # Lag climbs to 170 > entry(100)+max_lag(60) → give up → predict ahead.
+        d = s.decide(last_submitted=10, last_completed=230,
+                     timeline=self._timeline(400), metrics=_zero_metrics(),
+                     read_latency_ms=120.0, process_fps=10.0, worker_count=1,
+                     outstanding=0)
+        assert s.current_mode() == "predictive"
+        assert d.next_frame == 406  # target 400 + lead 6, NOT sequential
 
     # ---- lookahead backstop + public properties ----
 
