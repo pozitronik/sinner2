@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QHBoxLayout,
     QHeaderView,
+    QLabel,
     QMenu,
     QMessageBox,
     QTableView,
@@ -34,7 +35,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from sinner2.batch.queue import BatchQueue
+from sinner2.batch.queue import BatchQueue, QueueState
 from sinner2.gui.confirm import confirm
 from sinner2.batch.task import (
     BatchOutputFormat,
@@ -242,7 +243,11 @@ class QBatchView(QWidget):
         # Toolbar: queue-level actions.
         self._start_btn = QToolButton()
         self._start_btn.setText("Start")
-        self._start_btn.setToolTip("Start processing the queue.")
+        self._start_btn.setToolTip(
+            "Start processing the queue — or resume it after a Pause/Stop.\n"
+            "Runs pending tasks in order. To resume a single paused/failed task,\n"
+            "right-click it → Resume."
+        )
         self._start_btn.clicked.connect(self._queue.start)
         self._pause_btn = QToolButton()
         self._pause_btn.setText("Pause")
@@ -254,7 +259,9 @@ class QBatchView(QWidget):
         self._stop_btn = QToolButton()
         self._stop_btn.setText("Stop")
         self._stop_btn.setToolTip(
-            "Cancel the running task and stop the queue."
+            "Stop the queue, keeping each task's progress. The running task is\n"
+            "PAUSED (its rendered frames are kept and it resumes next run), not\n"
+            "discarded — use right-click → Cancel to discard a task's work."
         )
         self._stop_btn.clicked.connect(self._queue.stop)
         self._refresh_btn = QToolButton()
@@ -273,11 +280,18 @@ class QBatchView(QWidget):
         )
         self._settings_btn.clicked.connect(self.settingsRequested.emit)
 
+        # Live queue state ("Idle / Running / Paused") so the run controls aren't
+        # the only (silent) indication of what the queue is doing.
+        self._status_label = QLabel()
+        self._status_label.setToolTip("Current queue state.")
+
         toolbar = QHBoxLayout()
         toolbar.addWidget(self._start_btn)
         toolbar.addWidget(self._pause_btn)
         toolbar.addWidget(self._stop_btn)
         toolbar.addWidget(self._refresh_btn)
+        toolbar.addSpacing(12)
+        toolbar.addWidget(self._status_label)
         toolbar.addStretch(1)
         toolbar.addWidget(self._settings_btn)
 
@@ -334,6 +348,10 @@ class QBatchView(QWidget):
         self._queue.taskProgress.connect(self._on_task_progress)
         self._queue.taskCompleted.connect(self._on_task_completed)
         self._queue.taskFailed.connect(self._on_task_failed)
+        # Run controls reflect the queue state (idle/running/paused) instead of
+        # always being clickable.
+        self._queue.queueStateChanged.connect(self._on_queue_state_changed)
+        self._on_queue_state_changed(self._queue.state.value)  # initial paint
 
         self.reload_from_store()
 
@@ -458,9 +476,42 @@ class QBatchView(QWidget):
 
     # ---- Queue signal handlers ----
 
+    def _on_queue_state_changed(self, state_value: str) -> None:
+        """Enable only the run controls that apply, and show the state.
+
+        Start: available unless a task is actively running (idle/paused → it
+        (re)starts scheduling). Pause: only while running. Stop: whenever a task
+        is actually in flight to tear down — queried live, since a PAUSED queue
+        may be either draining a task (stoppable) or already stopped (not)."""
+        state = QueueState(state_value)
+        running = state is QueueState.RUNNING
+        self._start_btn.setEnabled(not running)
+        self._pause_btn.setEnabled(running)
+        self._stop_btn.setEnabled(self._queue.is_running)
+        labels = {
+            QueueState.IDLE: "Idle",
+            QueueState.RUNNING: "Running",
+            QueueState.PAUSED: "Paused",
+        }
+        text = f"Queue: {labels[state]}"
+        # Name the task in flight so "Running" isn't anonymous in a long queue.
+        if self._queue.is_running:
+            tid = self._queue.current_task_id
+            task = (
+                self._store.load(tid)
+                if tid is not None and self._store.exists(tid)
+                else None
+            )
+            if task is not None:
+                text += f" — {task.source_path.name} → {task.target_path.name}"
+        self._status_label.setText(text)
+
     def _on_task_started(self, task_id: str) -> None:
         self._throughput[task_id] = _StepTracker()
         self._refresh_row(task_id)
+        # The state stays RUNNING from one task to the next, so queueStateChanged
+        # dedups and won't re-fire — refresh the status label's task name here.
+        self._on_queue_state_changed(self._queue.state.value)
 
     def _on_task_progress(self, task_id: str, progress) -> None:
         row = self._row_for_task_id(task_id)

@@ -23,6 +23,7 @@ import shutil
 import threading
 import time
 import uuid
+from enum import Enum
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QThread, Qt, Signal
@@ -34,6 +35,21 @@ from sinner2.batch.task import (
     BatchTaskStatus,
 )
 from sinner2.batch.task_store import BatchTaskStore
+
+
+class QueueState(str, Enum):
+    """The queue's scheduling state, broadcast via ``queueStateChanged`` so the
+    toolbar can enable only the controls that apply right now.
+
+    - IDLE: nothing running, not paused — Start is the only meaningful action.
+    - RUNNING: a task is being driven — Pause / Stop apply, Start does not.
+    - PAUSED: scheduling suspended (a task may still be draining) — Start
+      resumes, Stop tears down; Pause is already in effect.
+    """
+
+    IDLE = "idle"
+    RUNNING = "running"
+    PAUSED = "paused"
 
 
 class _DriverWorker(QObject):
@@ -103,6 +119,7 @@ class BatchQueue(QObject):
     taskCompleted = Signal(str)            # task_id (terminal: completed/cancelled/failed/paused)
     taskFailed = Signal(str, str)          # task_id, error_message
     queueIdle = Signal()
+    queueStateChanged = Signal(str)        # QueueState value (idle/running/paused)
 
     def __init__(
         self,
@@ -125,6 +142,9 @@ class BatchQueue(QObject):
         # state even if a teardown raced the queued completion signal.
         self._current_task: BatchTask | None = None
         self._paused = False  # queue-level pause
+        # Last state broadcast via queueStateChanged, so we emit only on a real
+        # transition (toolbar slots are cheap, but dedup keeps the signal honest).
+        self._last_state: QueueState | None = None
         # Throttle progress persistence: _on_progress fires per-frame, but the
         # full task JSON only needs to hit disk occasionally (resume reads the
         # frame cache, not this counter). Saving every tick churns the file and
@@ -137,6 +157,24 @@ class BatchQueue(QObject):
     @property
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.isRunning()
+
+    @property
+    def state(self) -> QueueState:
+        """Current scheduling state. PAUSED takes precedence over a still-
+        draining task: once the user pauses, the queue won't schedule more even
+        if the current task is finishing, so the controls should read 'paused'."""
+        if self._paused:
+            return QueueState.PAUSED
+        if self.is_running:
+            return QueueState.RUNNING
+        return QueueState.IDLE
+
+    def _emit_state(self) -> None:
+        """Broadcast the current state if it changed since the last emission."""
+        state = self.state
+        if state != self._last_state:
+            self._last_state = state
+            self.queueStateChanged.emit(state.value)
 
     @property
     def current_task_id(self) -> str | None:
@@ -157,11 +195,13 @@ class BatchQueue(QObject):
         explicitly via refresh_task() / pause_task()."""
         self._paused = False
         self._schedule_next()
+        self._emit_state()
 
     def pause(self) -> None:
         """Stop scheduling new tasks. Does NOT interrupt the running
         task — use pause_task(id) for that."""
         self._paused = True
+        self._emit_state()
 
     def stop(self) -> None:
         """Stop the queue at app shutdown WITHOUT losing work. PAUSES the running
@@ -181,6 +221,7 @@ class BatchQueue(QObject):
         self._worker = None
         self._current_task_id = None
         self._current_task = None
+        self._emit_state()
 
     # ---- Per-task controls ----
 
@@ -274,6 +315,7 @@ class BatchQueue(QObject):
         next_task = self._pop_pending()
         if next_task is None:
             self.queueIdle.emit()
+            self._emit_state()
             return
         self._spawn_runner(next_task)
 
@@ -313,6 +355,7 @@ class BatchQueue(QObject):
         self._worker = worker
         self.taskStarted.emit(task.id)
         thread.start()
+        self._emit_state()
 
     # ---- Worker callbacks (GUI thread) ----
 
@@ -374,6 +417,7 @@ class BatchQueue(QObject):
             self._schedule_next()
         else:
             self.queueIdle.emit()
+            self._emit_state()
 
     def _teardown_runner(self) -> None:
         if self._thread is not None:

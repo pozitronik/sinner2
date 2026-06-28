@@ -8,7 +8,7 @@ import pytest
 from PIL import Image
 
 from sinner2.batch.driver import BatchDriver, StageSpec
-from sinner2.batch.queue import BatchQueue
+from sinner2.batch.queue import BatchQueue, QueueState
 from sinner2.batch.task import (
     BatchOutputFormat,
     BatchTask,
@@ -163,6 +163,47 @@ class TestRefreshTask:
 
     def test_refresh_on_unknown_id_is_noop(self, queue):
         queue.refresh_task("does-not-exist")  # must not raise
+
+
+class TestQueueStateSignal:
+    """queueStateChanged broadcasts idle/running/paused so the toolbar can
+    enable only the controls that apply."""
+
+    def test_initial_state_is_idle(self, queue):
+        assert queue.state is QueueState.IDLE
+
+    def test_pause_emits_paused(self, queue):
+        states: list[str] = []
+        queue.queueStateChanged.connect(states.append)
+        queue.pause()
+        assert queue.state is QueueState.PAUSED
+        assert states == ["paused"]
+
+    def test_start_with_empty_queue_returns_to_idle(self, queue):
+        queue.pause()  # → PAUSED
+        states: list[str] = []
+        queue.queueStateChanged.connect(states.append)
+        queue.start()  # nothing pending → schedules nothing → idle
+        assert queue.state is QueueState.IDLE
+        assert states == ["idle"]
+
+    def test_run_transitions_running_then_idle(
+        self, qtbot, queue, store, stub_chain, tmp_path
+    ):
+        store.save(_make_task(tmp_path, "a"))
+        states: list[str] = []
+        queue.queueStateChanged.connect(states.append)
+        with qtbot.waitSignal(queue.queueIdle, timeout=5000):
+            queue.start()
+        assert "running" in states  # saw the task in flight
+        assert states[-1] == "idle"  # settled idle when the queue emptied
+
+    def test_no_duplicate_emissions_on_repeated_pause(self, queue):
+        states: list[str] = []
+        queue.queueStateChanged.connect(states.append)
+        queue.pause()
+        queue.pause()  # already paused → no second emission
+        assert states == ["paused"]
 
 
 class TestQueuePause:

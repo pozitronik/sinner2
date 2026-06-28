@@ -51,6 +51,42 @@ def _task(tmp_path: Path, **overrides) -> BatchTask:
     return BatchTask(**kwargs)
 
 
+class TestQueueStateControls:
+    """The run controls enable/disable + the status label follow the queue
+    state (idle/running/paused) instead of being always clickable."""
+
+    def test_initial_idle_enables_only_start(self, view):
+        assert view._start_btn.isEnabled()  # noqa: SLF001
+        assert not view._pause_btn.isEnabled()  # noqa: SLF001
+        assert not view._stop_btn.isEnabled()  # noqa: SLF001
+        assert "Idle" in view._status_label.text()  # noqa: SLF001
+
+    def test_running_enables_pause_and_stop(self, view, monkeypatch):
+        # Stop reflects an actually-in-flight task → force is_running True.
+        monkeypatch.setattr(
+            BatchQueue, "is_running", property(lambda _self: True)
+        )
+        view._on_queue_state_changed("running")  # noqa: SLF001
+        assert not view._start_btn.isEnabled()  # noqa: SLF001
+        assert view._pause_btn.isEnabled()  # noqa: SLF001
+        assert view._stop_btn.isEnabled()  # noqa: SLF001
+        assert "Running" in view._status_label.text()  # noqa: SLF001
+
+    def test_paused_enables_start_not_pause(self, view):
+        # No task in flight (is_running False) → Stop also disabled.
+        view._on_queue_state_changed("paused")  # noqa: SLF001
+        assert view._start_btn.isEnabled()  # noqa: SLF001
+        assert not view._pause_btn.isEnabled()  # noqa: SLF001
+        assert not view._stop_btn.isEnabled()  # noqa: SLF001
+        assert "Paused" in view._status_label.text()  # noqa: SLF001
+
+    def test_queue_signal_updates_controls(self, view, queue):
+        queue.pause()  # emits queueStateChanged("paused")
+        assert "Paused" in view._status_label.text()  # noqa: SLF001
+        assert view._start_btn.isEnabled()  # noqa: SLF001
+        assert not view._pause_btn.isEnabled()  # noqa: SLF001
+
+
 class TestSettingsButton:
     def test_settings_button_emits_request(self, view, qtbot):
         with qtbot.waitSignal(view.settingsRequested, timeout=1000):
