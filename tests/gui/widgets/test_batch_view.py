@@ -94,6 +94,12 @@ class TestSettingsButton:
             view._settings_btn.click()  # noqa: SLF001
 
 
+class TestAddCurrentButton:
+    def test_add_button_emits_request(self, view, qtbot):
+        with qtbot.waitSignal(view.addCurrentRequested, timeout=1000):
+            view._add_btn.click()  # noqa: SLF001
+
+
 class TestInitialPopulate:
     def test_empty_store_renders_empty_table(self, view):
         assert view._model.rowCount() == 0  # noqa: SLF001

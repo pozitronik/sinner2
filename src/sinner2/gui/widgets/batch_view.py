@@ -230,6 +230,7 @@ class QBatchView(QWidget):
 
     editRequested = Signal(str)  # task_id
     settingsRequested = Signal()  # open the Batch settings (defaults) dialog
+    addCurrentRequested = Signal()  # add a task for the loaded source + target
 
     def __init__(
         self,
@@ -245,6 +246,16 @@ class QBatchView(QWidget):
         self._resolve_global_output_dir = global_output_dir_resolver
 
         # Toolbar: queue-level actions.
+        # Add lives on the Batch tab too (not only the transport row) so a task
+        # can be queued without going back to the player. It mints a task from
+        # the currently-loaded source + target via the owner (main_window).
+        self._add_btn = QToolButton()
+        self._add_btn.setText("Add current…")
+        self._add_btn.setToolTip(
+            "Add a task for the source + target currently loaded in the player,\n"
+            "using the Batch defaults. Load a source and target first."
+        )
+        self._add_btn.clicked.connect(self.addCurrentRequested.emit)
         self._start_btn = QToolButton()
         self._start_btn.setText("Start")
         self._start_btn.setToolTip(
@@ -290,6 +301,8 @@ class QBatchView(QWidget):
         self._status_label.setToolTip("Current queue state.")
 
         toolbar = QHBoxLayout()
+        toolbar.addWidget(self._add_btn)
+        toolbar.addSpacing(12)
         toolbar.addWidget(self._start_btn)
         toolbar.addWidget(self._pause_btn)
         toolbar.addWidget(self._stop_btn)

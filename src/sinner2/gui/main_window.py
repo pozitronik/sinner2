@@ -235,6 +235,7 @@ class SinnerMainWindow(QMainWindow):
             global_output_dir_resolver=self._global_output_dir,
         )
         self._batch_view.settingsRequested.connect(self._on_batch_settings)
+        self._batch_view.addCurrentRequested.connect(self._on_add_to_batch)
         self._models_view = QModelsView()
         self._face_map_panel = QFaceMapPanel()
         # Seed the scan settings from disk (None fields keep the panel defaults).
@@ -2213,6 +2214,12 @@ class SinnerMainWindow(QMainWindow):
         source = self._pickers.source_path()
         target = self._pickers.target_path()
         if source is None or target is None:
+            # Reachable from the Batch tab's "Add current…" button (and the
+            # keyboard shortcut) when nothing is loaded — say so rather than
+            # no-op silently. The transport button is disabled in this state.
+            self._status_bar.show_message(
+                "Load a source and target first to add a batch task.", 3000
+            )
             return
         task = batch_defaults.mint_task(self._batch_defaults, source, target)
         # Point the task at the per-target face-map sidecar store so the driver
