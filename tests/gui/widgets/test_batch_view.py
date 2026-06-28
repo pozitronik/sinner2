@@ -328,6 +328,23 @@ class TestResetToPending:
         assert called == []
 
 
+class TestRunTaskNext:
+    def test_run_this_task_next_jumps_to_front_and_starts(
+        self, view, tmp_path, store, queue, monkeypatch
+    ):
+        t1 = _task(tmp_path, status=BatchTaskStatus.PENDING)
+        t2 = _task(tmp_path, status=BatchTaskStatus.PENDING)
+        store.save(t1)
+        store.save(t2)
+        view.reload_from_store()
+        started: list[bool] = []
+        monkeypatch.setattr(queue, "start", lambda: started.append(True))
+        view._run_task_next(t2.id)  # noqa: SLF001
+        order = [tk.id for tk in store.list()]
+        assert order[0] == t2.id  # the chosen task jumped to the front
+        assert started == [True]  # and scheduling was kicked off
+
+
 class TestFailureSurfacing:
     def test_failed_task_status_tooltip_shows_error(
         self, view, tmp_path, store

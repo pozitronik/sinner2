@@ -2,9 +2,13 @@
 
 Composes:
   - QTableView populated from BatchTaskStore.
-  - Toolbar above the table: Start / Pause / Stop queue, Open output folder.
-  - Right-click context menu per row: Edit, Run now, Pause, Cancel,
-    Refresh, Delete.
+  - Toolbar above the table: Start / Pause / Stop queue + a live queue-state
+    label, Reload, and Settings… (defaults). The run controls enable only when
+    they apply (see _on_queue_state_changed).
+  - Right-click context menu per row, scoped to the task's status: Move
+    up/down, Edit, Run this task next, Pause/Cancel (running), Resume + Re-run
+    from scratch (paused/failed), Re-run from scratch (done/cancelled), Delete
+    cache, Delete.
   - Live updates: subscribes to BatchQueue signals to flip status /
     update progress per row.
 
@@ -601,23 +605,35 @@ class QBatchView(QWidget):
                 menu, "Edit…", lambda: self.editRequested.emit(task_id)
             )
         if is_running:
+            # Pause keeps this task's rendered frames (resumable); Cancel throws
+            # them away. Parallel wording so the keep-vs-discard choice is clear.
             self._add_action(
-                menu, "Pause this task",
+                menu, "Pause (keep progress)",
                 lambda: self._queue.pause_task(task_id),
             )
             self._add_action(
-                menu, "Cancel this task (discard cache)",
+                menu, "Cancel (discard progress)",
                 lambda: self._queue.cancel_task(task_id),
             )
         elif task.status is BatchTaskStatus.PENDING:
-            self._add_action(menu, "Run", self._queue.start)
+            # Run THIS task next (jump it to the front of the queue, then start)
+            # — the old "Run" just called queue.start(), which runs whatever
+            # task is first, not necessarily this one.
+            self._add_action(
+                menu, "Run this task next",
+                lambda: self._run_task_next(task_id),
+            )
         elif task.status in (
             BatchTaskStatus.PAUSED,
             BatchTaskStatus.FAILED,
         ):
-            self._add_action(menu, "Resume", lambda: self._resume_task(task_id))
+            # Resume continues from the cache; Re-run discards it and starts over.
             self._add_action(
-                menu, "Reset to Pending (discard cache)",
+                menu, "Resume (keep progress)",
+                lambda: self._resume_task(task_id),
+            )
+            self._add_action(
+                menu, "Re-run from scratch (discard progress)",
                 lambda: self._reset_task_to_pending(task_id),
             )
         elif task.status in (
@@ -625,12 +641,15 @@ class QBatchView(QWidget):
             BatchTaskStatus.CANCELLED,
         ):
             self._add_action(
-                menu, "Reset to Pending (discard cache)",
+                menu, "Re-run from scratch (discard progress)",
                 lambda: self._reset_task_to_pending(task_id),
             )
         if not is_running:
+            # Frees the intermediate frames but keeps the task + its output; a
+            # later re-run just re-renders. Distinct from Cancel/Re-run, which
+            # also change the task's status.
             self._add_action(
-                menu, "Delete cache (free temp space)",
+                menu, "Delete cache (free disk, keep task)",
                 lambda: self._delete_task_cache(task_id),
             )
         menu.addSeparator()
@@ -647,6 +666,28 @@ class QBatchView(QWidget):
         action.triggered.connect(lambda _checked=False: slot())
         menu.addAction(action)
 
+    def _run_task_next(self, task_id: str) -> None:
+        """Jump a pending task to the front of the queue, then start scheduling.
+
+        'Run this task next' must run THIS task, not whatever happens to be first
+        — so reorder it ahead of the others, then start(). If a task is already
+        running this just reorders (start() is a no-op mid-run); it then runs as
+        soon as the current task finishes — i.e. genuinely 'next'."""
+        ids = [
+            tid
+            for r in range(self._model.rowCount())
+            if (tid := self._task_id_at_row(r))
+        ]
+        if task_id in ids:
+            ids.remove(task_id)
+            ids.insert(0, task_id)
+            self._store.set_order(ids)
+            self.reload_from_store()
+            moved = self._row_for_task_id(task_id)
+            if moved is not None:
+                self._table.selectRow(moved)
+        self._queue.start()
+
     def _resume_task(self, task_id: str) -> None:
         """Re-queue a paused/failed task keeping its cache, then refresh."""
         self._queue.resume_task(task_id)
@@ -658,8 +699,8 @@ class QBatchView(QWidget):
         if not confirm(
             self,
             "reset_task",
-            "Reset to Pending",
-            "Reset this task to Pending and re-run it from scratch?\n\n"
+            "Re-run from scratch",
+            "Re-run this task from scratch?\n\n"
             "Frames already processed for this task will be discarded.",
         ):
             return
