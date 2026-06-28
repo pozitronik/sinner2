@@ -220,6 +220,29 @@ class TestQueuePause:
             pass
 
 
+class TestStartResumesPaused:
+    """Start runs Pending AND resumes Paused tasks (their cache is kept), so a
+    Stop→Start continues the paused task instead of skipping to the next one."""
+
+    def test_start_resumes_a_paused_task(
+        self, qtbot, queue, store, stub_chain, tmp_path
+    ):
+        task = _make_task(tmp_path, "a")
+        task.status = BatchTaskStatus.PAUSED
+        store.save(task)
+        with qtbot.waitSignal(queue.queueIdle, timeout=5000):
+            queue.start()
+        assert store.load(task.id).status is BatchTaskStatus.COMPLETED
+
+    def test_start_does_not_resume_a_failed_task(self, queue, store, tmp_path):
+        task = _make_task(tmp_path, "a")
+        task.status = BatchTaskStatus.FAILED
+        store.save(task)
+        queue.start()  # nothing runnable (failed halts for inspection)
+        assert not queue.is_running
+        assert store.load(task.id).status is BatchTaskStatus.FAILED
+
+
 class TestStopShutsDown:
     def test_stop_with_no_running_task_is_noop(self, queue):
         queue.stop()

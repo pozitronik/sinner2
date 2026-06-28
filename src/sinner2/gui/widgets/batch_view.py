@@ -260,8 +260,9 @@ class QBatchView(QWidget):
         self._start_btn.setText("Start")
         self._start_btn.setToolTip(
             "Start processing the queue — or resume it after a Pause/Stop.\n"
-            "Runs pending tasks in order. To resume a single paused/failed task,\n"
-            "right-click it → Resume."
+            "Runs pending tasks AND resumes paused ones (from their kept cache)\n"
+            "in order. Failed tasks are left for inspection — right-click →\n"
+            "Resume / Re-run to retry one."
         )
         self._start_btn.clicked.connect(self._queue.start)
         self._pause_btn = QToolButton()

@@ -190,9 +190,10 @@ class BatchQueue(QObject):
     # ---- Queue controls ----
 
     def start(self) -> None:
-        """Begin (or resume) scheduling. If a task is currently
-        paused, this is a no-op — the user should resume that task
-        explicitly via refresh_task() / pause_task()."""
+        """Begin — or resume — processing the queue. Runs Pending tasks AND
+        resumes Paused ones (from their kept cache) in queue order, so a
+        Stop→Start, or a per-task Pause then Start, continues from where it left
+        off. FAILED tasks are left alone (Resume/Re-run them explicitly)."""
         self._paused = False
         self._schedule_next()
         self._emit_state()
@@ -320,9 +321,19 @@ class BatchQueue(QObject):
         self._spawn_runner(next_task)
 
     def _pop_pending(self) -> BatchTask | None:
-        """Return the next Pending task in the store, or None."""
+        """Return the next runnable task in queue order, or None.
+
+        Runnable = Pending OR Paused. A Paused task is resumed from its kept
+        cache (its frames weren't discarded), so Start — and auto-advance —
+        continue past a Stop or a per-task Pause instead of SKIPPING the paused
+        task to the next never-run one (which read as 'Start runs the second
+        task'). FAILED tasks are deliberately NOT picked up: they halt for
+        inspection — the user resumes/re-runs them explicitly."""
         for task in self._store.list():
-            if task.status is BatchTaskStatus.PENDING:
+            if task.status in (
+                BatchTaskStatus.PENDING,
+                BatchTaskStatus.PAUSED,
+            ):
                 return task
         return None
 
