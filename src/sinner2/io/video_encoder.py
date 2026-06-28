@@ -9,8 +9,9 @@ Two operations:
   - encode_frames_to_mp4(frame_dir, output, fps, audio_source) — runs
     ffmpeg, raising FfmpegMissingError if the binary isn't on PATH so
     the driver can fall back to frames mode.
-  - probe_has_audio(media_path) — runs ffprobe to detect whether the
-    source has an audio stream we can copy through.
+  - probe_audio_codec(media_path) — runs ffprobe to read the source's
+    audio codec, so we can stream-copy it when MP4 supports it and
+    re-encode to AAC when it doesn't (e.g. WMA from a .wmv).
 
 Why not python-ffmpeg / imageio? Subprocess is one dependency we
 already implicitly require (FFmpegVideoTargetReader uses it), and the
@@ -51,23 +52,25 @@ def _require_ffprobe() -> str:
     return path
 
 
-def probe_has_audio(media_path: Path) -> bool:
-    """Returns True when the file has at least one audio stream.
+def probe_audio_codec(media_path: Path) -> str | None:
+    """The codec name of the source's first audio stream, or None when there's
+    no audio stream (or ffprobe is unavailable).
 
-    Used to decide whether to wire the audio-copy arguments. Probing
-    avoids ffmpeg failing on a -map 1:a flag when the source is video-
-    only.
+    Drives two decisions: whether to wire the audio-mux arguments at all (None →
+    skip them, avoiding an ffmpeg failure on a -map 1:a flag for a video-only
+    source), and whether the codec can be stream-copied into MP4 or must be
+    re-encoded (see _MP4_COPYABLE_AUDIO).
     """
     try:
         ffprobe = _require_ffprobe()
     except FfmpegMissingError:
-        return False
-    # ffprobe streams query — print only the codec_type, one stream per line.
+        return None
+    # First audio stream's codec name (e.g. "aac", "wmav2"), nothing else.
     cmd = [
         ffprobe,
         "-v", "error",
-        "-select_streams", "a",
-        "-show_entries", "stream=codec_type",
+        "-select_streams", "a:0",
+        "-show_entries", "stream=codec_name",
         "-of", "csv=p=0",
         str(media_path),
     ]
@@ -76,8 +79,15 @@ def probe_has_audio(media_path: Path) -> bool:
             cmd, capture_output=True, text=True, timeout=15
         )
     except (subprocess.TimeoutExpired, OSError):
-        return False
-    return "audio" in result.stdout
+        return None
+    codec = result.stdout.strip()
+    return codec or None
+
+
+def probe_has_audio(media_path: Path) -> bool:
+    """True when the file has at least one audio stream. Thin wrapper over
+    probe_audio_codec for callers that only need presence, not the codec."""
+    return probe_audio_codec(media_path) is not None
 
 
 # libx264/yuv420p requires even width AND height. Force-truncate to even so an
@@ -90,10 +100,18 @@ _VIDEO_CODEC = [
     "-crf", "18",                  # visually-lossless default
     "-preset", "medium",
 ]
+# Audio codecs MP4 can hold via stream copy. Anything else (WMA, Vorbis, Opus,
+# FLAC, PCM, ...) is re-encoded to AAC: `-c:a copy` of an unsupported codec into
+# MP4 fails at mux time with EINVAL (e.g. WMA from a .wmv source — the failure
+# that prompted this). Conservative on purpose — copy only the codecs that mux
+# AND play back broadly; re-encode the rest rather than risk an unplayable file.
+_MP4_COPYABLE_AUDIO = frozenset({"aac", "mp3", "ac3", "eac3", "alac", "mp2"})
 
 
 def _av_args(
-    use_audio: bool, audio_segments: list[tuple[float, float]] | None
+    use_audio: bool,
+    audio_segments: list[tuple[float, float]] | None,
+    audio_copy: bool = True,
 ) -> list[str]:
     """The codec / mapping args after the inputs.
 
@@ -102,7 +120,8 @@ def _av_args(
         match the selected frames, re-encoded to AAC (atrim can't stream-copy).
         The even-scale lives in the SAME filter graph because -vf can't coexist
         with -filter_complex.
-      - whole audio: stream-copy the source audio, even-scale via -vf.
+      - whole audio: stream-copy the source audio when MP4 supports its codec
+        (``audio_copy``), else re-encode to AAC; even-scale via -vf.
       - no audio: -an.
     """
     if use_audio and audio_segments:
@@ -124,11 +143,14 @@ def _av_args(
         ]
     args = ["-vf", _EVEN_SCALE, *_VIDEO_CODEC]
     if use_audio:
+        # Copy when MP4 supports the source codec; otherwise re-encode to AAC so
+        # an incompatible codec (WMA/Vorbis/...) doesn't fail the mux.
+        args += ["-c:a", "copy" if audio_copy else "aac"]
         # No -shortest: the video stream (our rendered frame sequence) must
         # define the duration. -shortest would end output at the shorter stream,
         # so for VFR / fps-rounding sources where the video runs slightly longer
         # than the copied audio it silently dropped trailing processed frames.
-        args += ["-c:a", "copy", "-map", "0:v:0", "-map", "1:a:0"]
+        args += ["-map", "0:v:0", "-map", "1:a:0"]
     else:
         args += ["-an"]
     return args
@@ -146,9 +168,10 @@ def encode_frames_to_mp4(
 ) -> None:
     """Encode the per-frame files at <frame_dir>/00000000.<ext>, ...
     into an H.264/yuv420p mp4 at `output`. Re-muxes audio from
-    `audio_source` via stream copy when given AND the source actually
-    has an audio stream (silently dropped otherwise — having no audio
-    is a valid result, not an error).
+    `audio_source` when given AND the source actually has an audio stream
+    (silently dropped otherwise — having no audio is a valid result, not
+    an error): stream-copied when MP4 supports the source codec, else
+    re-encoded to AAC (e.g. WMA from a .wmv, which MP4 can't stream-copy).
 
     `audio_segments`, when given (a section trim), are ``(start_s, end_s)``
     time ranges of `audio_source` to cut out and concatenate so the audio lines
@@ -185,10 +208,14 @@ def encode_frames_to_mp4(
         "-start_number", "0",
         "-i", str(frame_dir / f"%08d.{frame_ext}"),
     ]
-    use_audio = audio_source is not None and probe_has_audio(audio_source)
+    audio_codec = (
+        probe_audio_codec(audio_source) if audio_source is not None else None
+    )
+    use_audio = audio_codec is not None
+    audio_copy = audio_codec in _MP4_COPYABLE_AUDIO
     if use_audio:
         cmd += ["-i", str(audio_source)]
-    cmd += _av_args(use_audio, audio_segments)
+    cmd += _av_args(use_audio, audio_segments, audio_copy)
     # Power-user overrides go last among the output options so ffmpeg's
     # last-value-wins resolves them over the defaults above.
     cmd += extra_args

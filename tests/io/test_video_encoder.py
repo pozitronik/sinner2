@@ -16,6 +16,7 @@ from PIL import Image
 from sinner2.io.video_encoder import (
     FfmpegMissingError,
     encode_frames_to_mp4,
+    probe_audio_codec,
     probe_has_audio,
 )
 
@@ -53,9 +54,10 @@ class TestMissingFfmpeg:
     def test_probe_returns_false_when_ffprobe_missing(
         self, tmp_path, monkeypatch
     ):
-        # Defensive: probe_has_audio shouldn't raise; just say "no
-        # audio" so the encoder skips the audio-mux arguments cleanly.
+        # Defensive: the probes shouldn't raise; just report "no audio" so the
+        # encoder skips the audio-mux arguments cleanly.
         monkeypatch.setattr(shutil, "which", lambda _name: None)
+        assert probe_audio_codec(tmp_path / "any.mp4") is None
         assert probe_has_audio(tmp_path / "any.mp4") is False
 
 
@@ -314,7 +316,7 @@ class TestCutAudioCommand:
             return _R()
 
         monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/" + name)
-        monkeypatch.setattr(video_encoder, "probe_has_audio", lambda _p: True)
+        monkeypatch.setattr(video_encoder, "probe_audio_codec", lambda _p: "aac")
         monkeypatch.setattr(subprocess, "run", fake_run)
         encode_frames_to_mp4(
             tmp_path / "frames", tmp_path / "out.mp4", fps=10.0,
@@ -347,7 +349,7 @@ class TestCutAudioCommand:
             return _R()
 
         monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/" + name)
-        monkeypatch.setattr(video_encoder, "probe_has_audio", lambda _p: True)
+        monkeypatch.setattr(video_encoder, "probe_audio_codec", lambda _p: "aac")
         monkeypatch.setattr(subprocess, "run", fake_run)
         encode_frames_to_mp4(
             tmp_path / "frames", tmp_path / "out.mp4", fps=10.0,
@@ -356,6 +358,35 @@ class TestCutAudioCommand:
         cmd = captured["cmd"]
         assert "copy" in cmd
         assert "-filter_complex" not in cmd
+
+    def test_incompatible_codec_reencodes_to_aac(self, tmp_path, monkeypatch):
+        # WMA (from a .wmv) can't be stream-copied into MP4 — `-c:a copy` fails
+        # the mux with EINVAL. The encoder must re-encode it to AAC instead.
+        import subprocess
+        from sinner2.io import video_encoder
+
+        captured: dict = {}
+
+        class _R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        def fake_run(cmd, **_kw):
+            captured["cmd"] = cmd
+            return _R()
+
+        monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/" + name)
+        monkeypatch.setattr(video_encoder, "probe_audio_codec", lambda _p: "wmav2")
+        monkeypatch.setattr(subprocess, "run", fake_run)
+        encode_frames_to_mp4(
+            tmp_path / "frames", tmp_path / "out.mp4", fps=10.0,
+            audio_source=tmp_path / "a.wmv",
+        )
+        cmd = captured["cmd"]
+        assert "aac" in cmd          # re-encoded, not copied
+        assert "copy" not in cmd
+        assert "1:a:0" in cmd        # audio still mapped through
 
 
 @pytest.mark.skipif(not _HAS_FFMPEG, reason="ffmpeg/ffprobe not on PATH")
@@ -449,7 +480,7 @@ class TestAudioMuxCommand:
             return _R()
 
         monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/" + name)
-        monkeypatch.setattr(video_encoder, "probe_has_audio", lambda _p: True)
+        monkeypatch.setattr(video_encoder, "probe_audio_codec", lambda _p: "aac")
         monkeypatch.setattr(subprocess, "run", fake_run)
         encode_frames_to_mp4(
             tmp_path / "frames",
