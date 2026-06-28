@@ -307,8 +307,10 @@ class QBatchView(QWidget):
         self._table.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows
         )
+        # Extended (Ctrl/Shift) multi-select so bulk actions can target several
+        # tasks at once; the context menu switches to bulk items when >1 is set.
         self._table.setSelectionMode(
-            QAbstractItemView.SelectionMode.SingleSelection
+            QAbstractItemView.SelectionMode.ExtendedSelection
         )
         self._table.setEditTriggers(
             QAbstractItemView.EditTrigger.NoEditTriggers
@@ -584,8 +586,27 @@ class QBatchView(QWidget):
         task_id = self._task_id_at_row(idx.row())
         if task_id is None or not self._store.exists(task_id):
             return
+        # Right-clicking a row OUTSIDE the current multi-selection acts on that
+        # one row (and selects it) — matches every file manager. Clicking inside
+        # a multi-selection keeps it and shows the bulk menu.
+        selected = self._selected_task_ids()
+        if task_id not in selected:
+            self._table.selectRow(idx.row())
+            selected = [task_id]
+        if len(selected) > 1:
+            self._show_bulk_menu(selected, pos)
+        else:
+            self._show_single_menu(task_id, idx.row(), pos)
+
+    def _selected_task_ids(self) -> list[str]:
+        """Task ids of the currently-selected rows, in row order."""
+        rows = sorted(
+            idx.row() for idx in self._table.selectionModel().selectedRows()
+        )
+        return [tid for r in rows if (tid := self._task_id_at_row(r))]
+
+    def _show_single_menu(self, task_id: str, row: int, pos: QPoint) -> None:
         task = self._store.load(task_id)
-        row = idx.row()
         menu = QMenu(self._table)
         # Queue position: shift this task earlier/later (only when it can move).
         if row > 0:
@@ -658,7 +679,48 @@ class QBatchView(QWidget):
             lambda _checked=False, tid=task_id: self._delete_task(tid)
         )
         menu.addAction(delete_action)
+        self._append_remove_completed(menu)
         menu.exec(self._table.viewport().mapToGlobal(pos))
+
+    def _show_bulk_menu(self, task_ids: list[str], pos: QPoint) -> None:
+        """Menu for a multi-row selection: act on all selected tasks at once.
+        The running task is skipped by each handler (it can't be mutated mid-
+        run), so a selection that includes it still works for the rest."""
+        menu = QMenu(self._table)
+        n = len(task_ids)
+        self._add_action(
+            menu, f"Re-run {n} tasks from scratch (discard progress)",
+            lambda: self._bulk_reset(task_ids),
+        )
+        self._add_action(
+            menu, f"Delete cache for {n} tasks (free disk, keep tasks)",
+            lambda: self._bulk_delete_cache(task_ids),
+        )
+        menu.addSeparator()
+        self._add_action(
+            menu, f"Delete {n} tasks",
+            lambda: self._bulk_delete(task_ids),
+        )
+        self._append_remove_completed(menu)
+        menu.exec(self._table.viewport().mapToGlobal(pos))
+
+    def _append_remove_completed(self, menu: QMenu) -> None:
+        """Add a queue-wide 'Remove all completed tasks' item when any exist —
+        a one-click cleanup independent of the current selection."""
+        completed = [
+            tid
+            for r in range(self._model.rowCount())
+            if (tid := self._task_id_at_row(r))
+            and self._store.exists(tid)
+            and self._store.load(tid).status is BatchTaskStatus.COMPLETED
+        ]
+        if not completed:
+            return
+        menu.addSeparator()
+        self._add_action(
+            menu, f"Remove all completed tasks ({len(completed)})",
+            lambda: self._remove_completed(completed),
+        )
 
     @staticmethod
     def _add_action(menu: QMenu, label: str, slot) -> None:
@@ -766,6 +828,66 @@ class QBatchView(QWidget):
             row = self._row_for_task_id(task_id)
             if row is not None:
                 self._model.removeRow(row)
+
+    # ---- Bulk actions (multi-selection) ----
+
+    def _runnable_targets(self, task_ids: list[str], verb: str) -> list[str]:
+        """Drop the running task from a bulk target list (it can't be mutated
+        mid-run); warn if that leaves nothing to do. Returns the actionable ids."""
+        targets = [t for t in task_ids if t != self._queue.current_task_id]
+        if not targets:
+            QMessageBox.warning(
+                self, verb, f"Cannot {verb.lower()} the running task. Cancel it first."
+            )
+        return targets
+
+    def _bulk_reset(self, task_ids: list[str]) -> None:
+        targets = self._runnable_targets(task_ids, "Re-run")
+        if not targets or not confirm(
+            self, "reset_task", "Re-run from scratch",
+            f"Re-run {len(targets)} task(s) from scratch?\n\n"
+            "Frames already processed for these tasks will be discarded.",
+        ):
+            return
+        for tid in targets:
+            self._queue.refresh_task(tid)
+        self.reload_from_store()
+
+    def _bulk_delete_cache(self, task_ids: list[str]) -> None:
+        targets = self._runnable_targets(task_ids, "Delete cache")
+        if not targets or not confirm(
+            self, "delete_task_cache", "Delete cache",
+            f"Delete cached intermediate frames for {len(targets)} task(s)?\n\n"
+            "Final outputs (if any) are kept; a re-run re-renders from scratch.",
+        ):
+            return
+        for tid in targets:
+            self._queue.delete_task_cache(tid)
+        self.reload_from_store()
+        self._recompute_sizes(targets)
+
+    def _bulk_delete(self, task_ids: list[str]) -> None:
+        targets = self._runnable_targets(task_ids, "Delete")
+        if not targets or not confirm(
+            self, "delete_task", "Delete tasks",
+            f"Remove {len(targets)} task(s) from the batch?",
+        ):
+            return
+        for tid in targets:
+            self._store.delete(tid)
+        self.reload_from_store()
+
+    def _remove_completed(self, task_ids: list[str]) -> None:
+        """Delete every completed task (queue-wide cleanup). ``task_ids`` is the
+        completed set captured when the menu was built."""
+        if not task_ids or not confirm(
+            self, "delete_task", "Remove completed",
+            f"Remove {len(task_ids)} completed task(s) from the batch?",
+        ):
+            return
+        for tid in task_ids:
+            self._store.delete(tid)
+        self.reload_from_store()
 
     def _emit_edit_for_row(self, row: int) -> None:
         task_id = self._task_id_at_row(row)

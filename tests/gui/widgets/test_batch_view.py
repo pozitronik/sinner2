@@ -4,6 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from PySide6.QtCore import QItemSelectionModel
 
 from sinner2.batch.queue import BatchQueue
 from sinner2.batch.task import (
@@ -343,6 +344,110 @@ class TestRunTaskNext:
         order = [tk.id for tk in store.list()]
         assert order[0] == t2.id  # the chosen task jumped to the front
         assert started == [True]  # and scheduling was kicked off
+
+
+class TestBulkActions:
+    """Multi-select + bulk Delete / Re-run / cache / Remove completed; the
+    running task is always skipped."""
+
+    def _save_pending(self, store, tmp_path, n):
+        ts = [_task(tmp_path, status=BatchTaskStatus.PENDING) for _ in range(n)]
+        for t in ts:
+            store.save(t)
+        return ts
+
+    def _select_rows(self, view, rows):
+        sm = view._table.selectionModel()  # noqa: SLF001
+        sm.clearSelection()
+        for r in rows:
+            sm.select(
+                view._model.index(r, 0),  # noqa: SLF001
+                QItemSelectionModel.SelectionFlag.Select
+                | QItemSelectionModel.SelectionFlag.Rows,
+            )
+
+    def test_selected_task_ids_reflects_multi_selection(
+        self, view, tmp_path, store
+    ):
+        self._save_pending(store, tmp_path, 3)
+        view.reload_from_store()
+        # Derive expected ids from the model rows — the store's row order isn't
+        # the save order, so map rows → ids rather than assume it.
+        row_ids = [
+            view._task_id_at_row(r)  # noqa: SLF001
+            for r in range(view._model.rowCount())  # noqa: SLF001
+        ]
+        self._select_rows(view, [0, 2])
+        assert set(view._selected_task_ids()) == {row_ids[0], row_ids[2]}  # noqa: SLF001
+
+    def test_bulk_delete_removes_all(self, view, tmp_path, store, monkeypatch):
+        ts = self._save_pending(store, tmp_path, 3)
+        view.reload_from_store()
+        monkeypatch.setattr(
+            "sinner2.gui.widgets.batch_view.confirm", lambda *a, **k: True
+        )
+        view._bulk_delete([t.id for t in ts])  # noqa: SLF001
+        assert store.list() == []
+
+    def test_bulk_delete_skips_running_task(
+        self, view, tmp_path, store, monkeypatch
+    ):
+        ts = self._save_pending(store, tmp_path, 3)
+        view.reload_from_store()
+        monkeypatch.setattr(
+            BatchQueue, "current_task_id", property(lambda _self: ts[0].id)
+        )
+        monkeypatch.setattr(
+            "sinner2.gui.widgets.batch_view.confirm", lambda *a, **k: True
+        )
+        view._bulk_delete([t.id for t in ts])  # noqa: SLF001
+        assert [t.id for t in store.list()] == [ts[0].id]  # running one kept
+
+    def test_bulk_reset_refreshes_each_non_running(
+        self, view, tmp_path, store, queue, monkeypatch
+    ):
+        ts = self._save_pending(store, tmp_path, 3)
+        view.reload_from_store()
+        called: list[str] = []
+        monkeypatch.setattr(queue, "refresh_task", lambda tid: called.append(tid))
+        monkeypatch.setattr(
+            "sinner2.gui.widgets.batch_view.confirm", lambda *a, **k: True
+        )
+        view._bulk_reset([t.id for t in ts])  # noqa: SLF001
+        assert set(called) == {t.id for t in ts}
+
+    def test_remove_completed_deletes_only_completed(
+        self, view, tmp_path, store, monkeypatch
+    ):
+        pend = _task(tmp_path, status=BatchTaskStatus.PENDING)
+        done1 = _task(tmp_path, status=BatchTaskStatus.COMPLETED)
+        done2 = _task(tmp_path, status=BatchTaskStatus.COMPLETED)
+        for t in (pend, done1, done2):
+            store.save(t)
+        view.reload_from_store()
+        monkeypatch.setattr(
+            "sinner2.gui.widgets.batch_view.confirm", lambda *a, **k: True
+        )
+        view._remove_completed([done1.id, done2.id])  # noqa: SLF001
+        assert [t.id for t in store.list()] == [pend.id]
+
+    def test_bulk_delete_only_running_warns_and_keeps(
+        self, view, tmp_path, store, monkeypatch
+    ):
+        t = _task(tmp_path, status=BatchTaskStatus.PENDING)
+        store.save(t)
+        view.reload_from_store()
+        monkeypatch.setattr(
+            BatchQueue, "current_task_id", property(lambda _self: t.id)
+        )
+        warned: list[bool] = []
+        monkeypatch.setattr(
+            "sinner2.gui.widgets.batch_view.QMessageBox.warning",
+            lambda *a, **k: warned.append(True),
+        )
+        view._bulk_delete([t.id])  # noqa: SLF001
+        assert warned == [True]
+        assert [t.id for t in store.list()] == [t.id]  # nothing deleted
 
 
 class TestFailureSurfacing:
