@@ -5,6 +5,7 @@ import pytest
 from sinner2.pipeline.buffer.metrics import BufferMetrics
 from sinner2.pipeline.skip_strategy import (
     BestEffortStrategy,
+    BufferingStrategy,
     FrameSkipStrategy,
     PredictiveStrategy,
     SkipDecision,
@@ -687,3 +688,106 @@ class TestPredictiveStrategy:
     def test_max_lag_frames_property(self):
         assert PredictiveStrategy(max_lag_frames=120).max_lag_frames == 120
         assert PredictiveStrategy().max_lag_frames == 60
+
+
+class TestBufferingStrategy:
+    """Sparse warm-start fill: lay the time-aligned ladder (stride ceil(F/R))
+    ahead of the FROZEN buffering playhead, bounded by an outstanding cap and a
+    lookahead backstop. On release the executor swaps to the real skip strategy."""
+
+    @staticmethod
+    def _timeline(current: int, fps: float = 30.0):
+        tl = MagicMock()
+        tl.current_frame.return_value = current
+        tl.fps = fps
+        return tl
+
+    def test_compliant_with_protocol(self):
+        assert isinstance(BufferingStrategy(), FrameSkipStrategy)
+
+    def test_strides_by_ceil_fps_over_throughput(self):
+        # F=30, R=10 → k=3: advance the ladder 3 frames per rung.
+        s = BufferingStrategy()
+        d = s.decide(
+            last_submitted=9, last_completed=6,
+            timeline=self._timeline(0), metrics=_zero_metrics(),
+            process_fps=10.0, worker_count=4, outstanding=0,
+        )
+        assert d.next_frame == 12
+
+    def test_stride_rounds_up_so_shown_rate_stays_within_throughput(self):
+        # F=30, R=12 → F/R=2.5 → k=ceil=3 (NOT 2). Shown rate 30/3=10 <= 12, so
+        # the cushion holds; k=2 would show 15 > 12 and drain it.
+        s = BufferingStrategy()
+        d = s.decide(
+            last_submitted=0, last_completed=0,
+            timeline=self._timeline(0), metrics=_zero_metrics(),
+            process_fps=12.0, worker_count=1, outstanding=0,
+        )
+        assert d.next_frame == 3
+
+    def test_dense_warmup_when_throughput_unknown(self):
+        # No throughput estimate yet → stride 1 (dense) so the opening — which is
+        # shown anyway — is fully rendered; widens once R is measured.
+        s = BufferingStrategy()
+        for rate in (None, 0.0):
+            d = s.decide(
+                last_submitted=5, last_completed=2,
+                timeline=self._timeline(0), metrics=_zero_metrics(),
+                process_fps=rate, worker_count=2, outstanding=0,
+            )
+            assert d.next_frame == 6
+
+    def test_dense_when_pipeline_keeps_up(self):
+        # R >= F → k=ceil(30/60)=1: nothing to skip.
+        s = BufferingStrategy()
+        d = s.decide(
+            last_submitted=5, last_completed=5,
+            timeline=self._timeline(0), metrics=_zero_metrics(),
+            process_fps=60.0, worker_count=2, outstanding=0,
+        )
+        assert d.next_frame == 6
+
+    def test_idles_when_outstanding_cap_reached(self):
+        # outstanding(8) >= worker_count(4) * factor(2) → idle (completion-paced
+        # so queued source frames can't pile up in RAM).
+        s = BufferingStrategy(outstanding_factor=2)
+        d = s.decide(
+            last_submitted=9, last_completed=1,
+            timeline=self._timeline(0), metrics=_zero_metrics(),
+            process_fps=10.0, worker_count=4, outstanding=8,
+        )
+        assert d.next_frame is None
+
+    def test_fills_below_the_outstanding_cap(self):
+        s = BufferingStrategy(outstanding_factor=2)
+        d = s.decide(
+            last_submitted=9, last_completed=1,
+            timeline=self._timeline(0), metrics=_zero_metrics(),
+            process_fps=10.0, worker_count=4, outstanding=7,  # < cap (8)
+        )
+        assert d.next_frame == 12
+
+    def test_idles_past_the_lookahead_backstop(self):
+        # At the lookahead edge → idle rather than render the whole clip while
+        # waiting for the controller to release.
+        s = BufferingStrategy(lookahead_frames=100)
+        d = s.decide(
+            last_submitted=100, last_completed=50,
+            timeline=self._timeline(0), metrics=_zero_metrics(),
+            process_fps=10.0, worker_count=4, outstanding=0,
+        )
+        assert d.next_frame is None  # nxt=103 > target(0)+100
+
+    def test_lookahead_is_relative_to_the_frozen_playhead(self):
+        # Buffering from frame 500: the window is [500, 600), not [0, 100).
+        s = BufferingStrategy(lookahead_frames=100)
+        d = s.decide(
+            last_submitted=509, last_completed=505,
+            timeline=self._timeline(500), metrics=_zero_metrics(),
+            process_fps=10.0, worker_count=4, outstanding=0,
+        )
+        assert d.next_frame == 512
+
+    def test_current_mode(self):
+        assert BufferingStrategy().current_mode() == "buffering"

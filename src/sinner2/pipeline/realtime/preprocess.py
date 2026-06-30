@@ -38,3 +38,30 @@ def required_prefill(frame_count: int, process_fps: float, target_fps: float) ->
     # conservative (never-under-buffer) head-start.
     rendered_during_playback = math.floor(frame_count * process_fps / target_fps)
     return max(0, min(frame_count, frame_count - rendered_during_playback))
+
+
+def sparse_prefill(
+    target_fps: float, process_fps: float, cushion_seconds: float
+) -> int:
+    """Head-start (frames of SPAN ahead of the playhead) for the sparse warm-start
+    path used with a skip strategy.
+
+    Unlike :func:`required_prefill` — which pre-renders a fraction of the WHOLE
+    clip so EVERY frame plays at native rate — the sparse path only needs a fixed
+    cushion: a few seconds of the time-aligned ladder, after which the skip
+    strategy sustains itself (at stride ``ceil(F/R)`` the shown rate ``F/k <= R``,
+    so production keeps pace and the cushion never drains). So the head-start is a
+    constant ``F·C`` frames, independent of how slow the pipeline is — seconds, not
+    a fraction of the clip.
+
+    Measured as a SPAN (F·C frames ahead of the playhead, not a frame COUNT)
+    because ``preprocess_progress()`` reports completion as a high-water span and a
+    sparse ladder covering C seconds of playback spans F·C source frames.
+
+    0 when the pipeline keeps up (R >= F): no cushion is needed — release at once.
+    """
+    if target_fps <= 0 or cushion_seconds <= 0:
+        return 0
+    if process_fps > 0 and process_fps >= target_fps:
+        return 0
+    return math.ceil(cushion_seconds * target_fps)

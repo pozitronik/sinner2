@@ -451,3 +451,97 @@ class PredictiveStrategy:
 
     def current_mode(self) -> str:
         return "predictive (lagging)" if self._in_fallback else "predictive"
+
+
+class BufferingStrategy:
+    """Pre-fill the buffer with the SPARSE, time-aligned ladder a skip strategy
+    will actually show — the warm-start half of "buffer ahead before playback".
+
+    The skip strategies (Synced / Predictive) keep playback smooth under a slow
+    pipeline by showing a SPARSE set of frames — every ~k-th, where ``k = F/R``
+    (F = display fps, R = pipeline throughput) — and holding each on screen until
+    the next is ready. So "buffer ahead" should pre-render THAT sparse set, not
+    every frame. Pre-rendering the dense set (what BestEffort does) wastes most of
+    the work — the in-between frames are never shown — and forces a head-start of
+    ``B = N·(1 − R/F)`` frames before playback can even start: a fraction of the
+    WHOLE clip (minutes on a long clip at a slow pipeline).
+
+    Laying down the sparse ladder instead reaches buffer EQUILIBRIUM: at stride
+    ``k = ceil(F/R)`` the shown rate ``F/k`` is ``<= R``, so production keeps pace
+    with consumption and the cushion never drains. The head-start shrinks from
+    "a fraction of the clip" to "a couple of seconds", playback starts almost at
+    once, and it stays smooth because each shown frame is already buffered.
+
+    Used ONLY during the buffering pass, where the timeline is FROZEN — so
+    ``target`` is a constant (the start frame) and this strategy does NOT chase a
+    moving wall-clock the way the skip strategies do. It just lays the ladder
+    ahead of the frozen playhead, bounded by an outstanding-work cap (keep workers
+    fed without piling source frames up in RAM) and a lookahead backstop (don't
+    render the whole clip if the release is delayed). On release the executor
+    swaps back to the user's chosen Synced/Predictive strategy, which consumes the
+    pre-rendered ladder and extends it from there.
+    """
+
+    # ~this many frames per worker in flight while filling: enough to keep every
+    # worker busy, shallow enough that queued source frames don't pile up in RAM.
+    # The fill is then completion-paced — a new rung submits as a worker frees up.
+    _DEFAULT_OUTSTANDING_FACTOR = 2
+    # Safety backstop: stop laying ladder once this far past the frozen playhead
+    # even if release hasn't fired (so a stuck release can't render the whole
+    # clip). The controller's cushion normally triggers release well before this;
+    # the controller sizes a per-run value from the cushion so it always exceeds
+    # it. Pure frame count — no fps needed.
+    _DEFAULT_LOOKAHEAD_FRAMES = 600
+
+    def __init__(
+        self,
+        lookahead_frames: int | None = None,
+        outstanding_factor: int | None = None,
+    ) -> None:
+        self._lookahead_frames = (
+            lookahead_frames
+            if lookahead_frames is not None
+            else self._DEFAULT_LOOKAHEAD_FRAMES
+        )
+        self._outstanding_factor = (
+            outstanding_factor
+            if outstanding_factor is not None
+            else self._DEFAULT_OUTSTANDING_FACTOR
+        )
+
+    def decide(
+        self,
+        last_submitted: FrameIndex,
+        last_completed: FrameIndex,
+        timeline: Timeline,
+        metrics: BufferMetrics,
+        read_latency_ms: float | None = None,
+        process_fps: float | None = None,
+        worker_count: int = 1,
+        outstanding: int = 0,
+    ) -> SkipDecision:
+        # Keep the pipeline fed but bounded: idle once enough frames are in
+        # flight so queued source frames can't pile up in RAM. Completion-paced.
+        cap = max(1, worker_count) * self._outstanding_factor
+        if outstanding >= cap:
+            return SkipDecision(next_frame=None)
+        target = timeline.current_frame()  # frozen during buffering = start frame
+        stride = self._stride(timeline.fps, process_fps)
+        nxt = last_submitted + stride
+        if nxt > target + self._lookahead_frames:
+            # Filled the whole backstop window without a release — idle.
+            return SkipDecision(next_frame=None)
+        return SkipDecision(next_frame=nxt)
+
+    def _stride(self, fps: float, process_fps: float | None) -> int:
+        """Frames to advance per rung: show every ~k-th frame where ``k =
+        ceil(F/R)``. ceil (not round) so the shown rate ``F/k`` is ``<= R`` — the
+        cushion holds/fills rather than draining. 1 until throughput is known
+        (warm-up) → dense fill of the opening (shown anyway), widening as R is
+        measured."""
+        if not process_fps or process_fps <= 0 or fps <= 0:
+            return 1
+        return max(1, math.ceil(fps / process_fps))
+
+    def current_mode(self) -> str:
+        return "buffering"
