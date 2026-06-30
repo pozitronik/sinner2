@@ -372,3 +372,12 @@ class TestProcessingVisualiser:
         with qtbot.waitSignal(widget.seekRequested, timeout=1000) as blocker:
             qtbot.mouseClick(bar, Qt.MouseButton.LeftButton, pos=QPoint(50, 8))
         assert blocker.args[0] == 100  # halfway → frame 100 of 200
+
+    def test_bar_cache_actions_forward(self, widget, qtbot):
+        # The bar's right-click cache requests bubble up through the transport so
+        # the main window can wire them to cache management.
+        bar = widget._frame_state_bar  # noqa: SLF001
+        with qtbot.waitSignal(widget.clearSessionCacheRequested, timeout=1000):
+            bar.clearSessionCacheRequested.emit()
+        with qtbot.waitSignal(widget.clearAllCachesRequested, timeout=1000):
+            bar.clearAllCachesRequested.emit()

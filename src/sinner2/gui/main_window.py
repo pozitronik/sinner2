@@ -688,6 +688,14 @@ class SinnerMainWindow(QMainWindow):
         )
         self._processors.clearAllRequested.connect(self._cache_mgmt.on_clear_all)
         self._processors.sizeCapChanged.connect(self._cache_mgmt.on_size_cap_changed)
+        # Same cache actions, surfaced from the processing-visualiser right-click
+        # menu (the bar shows the session's cached frames).
+        self._transport.clearSessionCacheRequested.connect(
+            self._cache_mgmt.on_invalidate_session
+        )
+        self._transport.clearAllCachesRequested.connect(
+            self._cache_mgmt.on_clear_all
+        )
         # Audio: transport emits, main_window persists. The controller's
         # own slots already update the backend; we only need to write
         # settings back here.

@@ -137,6 +137,56 @@ class TestProblemMarkers:
         bar.grab()
 
 
+class TestContextMenu:
+    """Right-click cache actions surfaced from the visualiser bar."""
+
+    @staticmethod
+    def _actions(bar):
+        return {a.text(): a for a in bar._build_context_menu().actions()}  # noqa: SLF001
+
+    def test_menu_offers_both_clear_actions(self, qtbot):
+        bar = QFrameStateBar()
+        qtbot.addWidget(bar)
+        bar.set_data(_states(*([FrameState.READY_DISK] * 10)), 10)
+        actions = self._actions(bar)
+        assert "Clear session cache" in actions
+        assert "Clear all caches…" in actions
+
+    def test_clear_session_action_emits(self, qtbot):
+        bar = QFrameStateBar()
+        qtbot.addWidget(bar)
+        bar.set_data(_states(*([FrameState.READY_DISK] * 10)), 10)
+        act = self._actions(bar)["Clear session cache"]
+        with qtbot.waitSignal(bar.clearSessionCacheRequested, timeout=1000):
+            act.trigger()
+
+    def test_clear_all_action_emits(self, qtbot):
+        bar = QFrameStateBar()
+        qtbot.addWidget(bar)
+        bar.set_data(_states(*([FrameState.READY_DISK] * 10)), 10)
+        act = self._actions(bar)["Clear all caches…"]
+        with qtbot.waitSignal(bar.clearAllCachesRequested, timeout=1000):
+            act.trigger()
+
+    def test_no_menu_without_a_session(self, qtbot):
+        from PySide6.QtGui import QContextMenuEvent
+
+        bar = QFrameStateBar()
+        qtbot.addWidget(bar)
+        # frame_count == 0 (no data): the menu must NOT pop (it would otherwise
+        # block on exec()) and no cache action fires.
+        fired: list[int] = []
+        bar.clearSessionCacheRequested.connect(lambda: fired.append(1))
+        bar.clearAllCachesRequested.connect(lambda: fired.append(1))
+        ev = QContextMenuEvent(
+            QContextMenuEvent.Reason.Mouse,
+            QPoint(5, 5),
+            bar.mapToGlobal(QPoint(5, 5)),
+        )
+        bar.contextMenuEvent(ev)  # frame_count == 0 → super(), no exec, no emit
+        assert fired == []
+
+
 class TestRenderCache:
     def test_playhead_move_reuses_cached_stack(self, qtbot):
         # A playhead move must NOT rebuild the per-column state stack — that was

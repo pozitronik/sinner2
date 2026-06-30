@@ -17,13 +17,14 @@ import numpy as np
 from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import (
     QColor,
+    QContextMenuEvent,
     QMouseEvent,
     QPaintEvent,
     QPainter,
     QPixmap,
     QResizeEvent,
 )
-from PySide6.QtWidgets import QWidget
+from PySide6.QtWidgets import QMenu, QWidget
 
 from sinner2.pipeline.realtime.frame_state import FaceMark, FrameState
 
@@ -58,9 +59,14 @@ _STACK_ORDER: tuple[int, ...] = (
 
 class QFrameStateBar(QWidget):
     """Per-frame pipeline-state heatmap. Feed it snapshots via set_data(); it
-    emits seekRequested(frame) on a left-click."""
+    emits seekRequested(frame) on a left-click, and cache-action requests from a
+    right-click menu (the bar IS the view of the session's cached frames)."""
 
     seekRequested = Signal(int)
+    # Cache actions surfaced from the right-click menu; the main window wires
+    # these to the existing cache-management handlers.
+    clearSessionCacheRequested = Signal()
+    clearAllCachesRequested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -130,6 +136,25 @@ class QFrameStateBar(QWidget):
             self.seekRequested.emit(self._frame_at(int(event.position().x())))
         else:
             super().mousePressEvent(event)
+
+    def _build_context_menu(self) -> QMenu:
+        """Right-click menu of cache actions on the frames this bar shows. Built
+        apart from contextMenuEvent so a test can drive it without exec()."""
+        menu = QMenu(self)
+        act_session = menu.addAction("Clear session cache")
+        act_session.setToolTip("Drop this session's cached frames and reprocess.")
+        act_session.triggered.connect(self.clearSessionCacheRequested)
+        act_all = menu.addAction("Clear all caches…")
+        act_all.setToolTip("Delete every cached session except the active one.")
+        act_all.triggered.connect(self.clearAllCachesRequested)
+        return menu
+
+    def contextMenuEvent(self, event: QContextMenuEvent) -> None:
+        # No session loaded → no cached frames to act on; let the event pass.
+        if self._frame_count <= 0:
+            super().contextMenuEvent(event)
+            return
+        self._build_context_menu().exec(event.globalPos())
 
     def paintEvent(self, event: QPaintEvent) -> None:
         w = self.rect().width()

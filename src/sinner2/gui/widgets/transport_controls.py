@@ -156,6 +156,10 @@ class QTransportControls(QWidget):
     volumeChanged = Signal(int)  # 0-100
     addToBatchRequested = Signal()
     sectionsChanged = Signal(object)  # emits the new SectionSet
+    # Cache actions from the visualiser's right-click menu (forwarded from the
+    # frame-state bar; the main window wires them to cache management).
+    clearSessionCacheRequested = Signal()
+    clearAllCachesRequested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -238,6 +242,12 @@ class QTransportControls(QWidget):
         self._frame_state_bar = QFrameStateBar()
         self._frame_state_bar.setVisible(False)
         self._frame_state_bar.seekRequested.connect(self.seekRequested)
+        self._frame_state_bar.clearSessionCacheRequested.connect(
+            self.clearSessionCacheRequested
+        )
+        self._frame_state_bar.clearAllCachesRequested.connect(
+            self.clearAllCachesRequested
+        )
 
         layout = QHBoxLayout(self)
         # Zero horizontal margins so the controls line up with the display
