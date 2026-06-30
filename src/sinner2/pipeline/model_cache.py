@@ -1,4 +1,5 @@
 import ctypes
+import logging
 import os
 import sys
 import threading
@@ -10,6 +11,8 @@ from sinner2.pipeline.memory_probe import measure_model_load
 
 if TYPE_CHECKING:
     import onnxruntime as ort
+
+logger = logging.getLogger(__name__)
 
 ProgressCallback = Callable[[int, int], None]
 """bytes_done, bytes_total — invoked during lazy model download."""
@@ -272,6 +275,51 @@ def set_tensorrt_fp16(enabled: bool) -> None:
     inswapper model."""
     global _tensorrt_fp16
     _tensorrt_fp16 = bool(enabled)
+
+
+# Whether the face DETECTOR may use TensorRT. Off by default: detector packs are
+# small / multi-sub-model (buffalo_l = 5 fixed-shape models), and a per-model TRT
+# engine compile is slow for little gain — so detectors run on CUDA(+CPU) even
+# when the swapper uses TRT. SINNER2_TENSORRT_DETECTOR=1 opts in (reasonable for a
+# single-model detector like scrfd / yoloface). Mirrors the _tensorrt_fp16 knob.
+_tensorrt_detector = os.environ.get("SINNER2_TENSORRT_DETECTOR", "").lower() in (
+    "1", "true", "yes", "on",
+)
+
+
+def set_tensorrt_detector(enabled: bool) -> None:
+    """Programmatic override for whether detectors may use TensorRT (tests /
+    advanced callers). Default off — see detector_providers()."""
+    global _tensorrt_detector
+    _tensorrt_detector = bool(enabled)
+
+
+def tensorrt_detector_enabled() -> bool:
+    return _tensorrt_detector
+
+
+def detector_providers(providers: list[str]) -> list[str]:
+    """The provider list a face DETECTOR should use, honoring the detector-TRT
+    toggle.
+
+    By default TensorRT is stripped (the detector runs on CUDA(+CPU) even when the
+    swapper uses TRT — a per-detector engine compile is slow for little gain);
+    SINNER2_TENSORRT_DETECTOR=1 / set_tensorrt_detector(True) keeps it. NOT silent:
+    logs when it strips. If stripping would empty an otherwise non-empty list, it
+    falls back to the GPU default rather than nothing."""
+    if _tensorrt_detector or not providers:
+        return list(providers)
+    stripped = [p for p in providers if p != "TensorrtExecutionProvider"]
+    if stripped == list(providers):
+        return stripped  # nothing to strip
+    if not stripped:
+        stripped = list(_DEFAULT_PROVIDERS)  # TRT-only request → GPU default
+    logger.info(
+        "detector: TensorRT not used (running on %s); set "
+        "SINNER2_TENSORRT_DETECTOR=1 to enable a per-detector TRT engine",
+        ", ".join(stripped),
+    )
+    return stripped
 
 
 def get_trt_cache_dir() -> Path:

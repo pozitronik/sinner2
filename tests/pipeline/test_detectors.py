@@ -182,6 +182,31 @@ class TestFactory:
         assert build_detector(DetectorModel.YOLOFACE, size=320)._size == 320  # noqa: SLF001
         assert build_detector(DetectorModel.SCRFD_2_5G, size=512)._size == 512  # noqa: SLF001
 
+    def test_strips_tensorrt_from_detector_by_default(self, monkeypatch):
+        # The factory routes providers through detector_providers(): a TRT entry
+        # is dropped (detector runs on CUDA) unless the toggle is on.
+        from sinner2.pipeline import model_cache
+
+        monkeypatch.setattr(model_cache, "_tensorrt_detector", False)
+        d = build_detector(
+            DetectorModel.SCRFD_2_5G,
+            providers=["TensorrtExecutionProvider", "CUDAExecutionProvider",
+                       "CPUExecutionProvider"],
+        )
+        assert d._providers == [  # noqa: SLF001
+            "CUDAExecutionProvider", "CPUExecutionProvider",
+        ]
+
+    def test_keeps_tensorrt_when_detector_trt_enabled(self, monkeypatch):
+        from sinner2.pipeline import model_cache
+
+        monkeypatch.setattr(model_cache, "_tensorrt_detector", True)
+        d = build_detector(
+            DetectorModel.YOLOFACE,
+            providers=["TensorrtExecutionProvider", "CUDAExecutionProvider"],
+        )
+        assert "TensorrtExecutionProvider" in d._providers  # noqa: SLF001
+
 
 class TestYoloStaticInput:
     def test_setup_pins_size_to_static_model_input(self, monkeypatch):

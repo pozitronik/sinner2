@@ -19,6 +19,47 @@ from sinner2.pipeline.model_cache import (
 )
 
 
+class TestDetectorProviders:
+    """Detectors strip TensorRT by default (run on CUDA); opt in via the toggle.
+    NOT silent — it logs — and a TRT-only list falls back to the GPU default."""
+
+    def test_strips_tensorrt_by_default(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(model_cache, "_tensorrt_detector", False)
+        assert model_cache.detector_providers(
+            ["TensorrtExecutionProvider", "CUDAExecutionProvider",
+             "CPUExecutionProvider"]
+        ) == ["CUDAExecutionProvider", "CPUExecutionProvider"]
+
+    def test_keeps_tensorrt_when_enabled(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(model_cache, "_tensorrt_detector", True)
+        eps = ["TensorrtExecutionProvider", "CUDAExecutionProvider"]
+        assert model_cache.detector_providers(eps) == eps
+
+    def test_tensorrt_only_falls_back_to_gpu_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setattr(model_cache, "_tensorrt_detector", False)
+        assert model_cache.detector_providers(["TensorrtExecutionProvider"]) == [
+            "CUDAExecutionProvider", "CPUExecutionProvider",
+        ]
+
+    def test_non_tensorrt_list_unchanged(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(model_cache, "_tensorrt_detector", False)
+        eps = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        assert model_cache.detector_providers(eps) == eps
+
+    def test_empty_stays_empty(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(model_cache, "_tensorrt_detector", False)
+        assert model_cache.detector_providers([]) == []
+
+    def test_setter_round_trips(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setattr(model_cache, "_tensorrt_detector", False)
+        model_cache.set_tensorrt_detector(True)
+        assert model_cache.tensorrt_detector_enabled() is True
+        model_cache.set_tensorrt_detector(False)
+        assert model_cache.tensorrt_detector_enabled() is False
+
+
 class TestGetModelsDir:
     def test_env_override(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         monkeypatch.setenv("SINNER2_MODELS_DIR", str(tmp_path))

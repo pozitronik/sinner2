@@ -89,26 +89,20 @@ def _get_shared_face_analysis(
             from sinner2.pipeline.memory_probe import measure_model_load
             from sinner2.pipeline.model_cache import (
                 build_provider_options,
+                detector_providers,
                 get_models_dir,
             )
 
             # None → platform default; an explicit [] stays empty (the user chose
             # no providers → ORT runs on CPU). Only unspecified falls back.
             eps = list(DEFAULT_ONNX_PROVIDERS) if providers is None else list(providers)
-            # The detector pack (buffalo_l = 5 small fixed-shape models) does NOT
-            # go through TensorRT: each sub-model would compile its OWN engine
-            # (minutes of first-run build) for little gain, and some hit the same
-            # fp16 issues as the swapper. Strip TRT here so the detector runs on
-            # CUDA(+CPU) even when the swapper uses TRT — only the (single, heavy)
-            # inswapper model is worth a TRT engine. FaceAnalysis still forwards
-            # provider_options, so the detector keeps the CUDA cuDNN/arena tuning.
-            stripped = [p for p in eps if p != "TensorrtExecutionProvider"]
-            if eps and not stripped:
-                # User picked ONLY TensorRT — the detector can't use it; fall back
-                # to the GPU default rather than nothing. An already-empty list
-                # (no providers selected) stays empty.
-                stripped = list(DEFAULT_ONNX_PROVIDERS)
-            eps = stripped
+            # Detectors run on CUDA, not TensorRT, by default — the buffalo_l pack
+            # is 5 small fixed-shape models, each of which would compile its OWN
+            # engine (minutes of first-run build) for little gain. Configurable via
+            # SINNER2_TENSORRT_DETECTOR; detector_providers() logs the downgrade so
+            # it isn't silent. FaceAnalysis still forwards provider_options, so the
+            # detector keeps the CUDA cuDNN/arena tuning.
+            eps = detector_providers(eps)
             # insightface ALWAYS stores the pack at <root>/models/<name> (the
             # "models" segment is hardcoded). The models dir is normally named
             # "models", so passing its PARENT as root lands the pack cleanly at

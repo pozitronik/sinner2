@@ -27,6 +27,7 @@ import numpy as np
 
 from sinner2.config.execution import DEFAULT_ONNX_PROVIDERS
 from sinner2.pipeline.model_cache import (
+    detector_providers,
     get_model_path,
     get_onnx_session_io,
     release_onnx_session,
@@ -228,6 +229,10 @@ def build_detector(
 ) -> YoloFaceDetector | ScrfdDetector | None:
     """The standalone detector for a model, or None for buffalo_l (which the
     FaceAnalyser drives through the full insightface pack itself)."""
+    # Detectors default to CUDA, not TensorRT (configurable) — see
+    # detector_providers(). None keeps the constructor's own GPU default.
+    if providers is not None:
+        providers = detector_providers(providers)
     if model is DetectorModel.YOLOFACE:
         return YoloFaceDetector(
             DETECTOR_MODEL_FILES[model], providers=providers, size=size
