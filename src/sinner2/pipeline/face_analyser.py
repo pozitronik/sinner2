@@ -88,6 +88,7 @@ def _get_shared_face_analysis(
             from sinner2.config.execution import DEFAULT_ONNX_PROVIDERS
             from sinner2.pipeline.memory_probe import measure_model_load
             from sinner2.pipeline.model_cache import (
+                assert_providers_loaded,
                 build_provider_options,
                 detector_providers,
                 get_models_dir,
@@ -132,6 +133,13 @@ def _get_shared_face_analysis(
             finally:
                 if not pack_present:
                     _notify_load("")
+            # No silent fallback: each sub-model must have loaded a requested EP.
+            # (Only bites a TRT-only list with detector-TRT enabled; the default
+            # strip keeps CPU in eps, which always loads.)
+            for _m in getattr(app, "models", {}).values():
+                _sess = getattr(_m, "session", None)
+                if _sess is not None:
+                    assert_providers_loaded(_sess, eps, "buffalo_l")
             _shared_app = app
         return _shared_app
 

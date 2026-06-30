@@ -27,6 +27,8 @@ import numpy as np
 
 from sinner2.config.execution import DEFAULT_ONNX_PROVIDERS
 from sinner2.pipeline.model_cache import (
+    assert_providers_loaded,
+    build_provider_options,
     detector_providers,
     get_model_path,
     get_onnx_session_io,
@@ -194,13 +196,22 @@ class ScrfdDetector:
         # insightface's get_model does `name.endswith('.onnx')`, so it needs a
         # str — get_model_path returns a Path (would raise AttributeError).
         with measure_model_load(self._model_file):  # filename → Models tab
+            # provider_options runs the TensorRT DLL preload (so the EP can load
+            # at all instead of failing on a missing nvinfer) AND gives scrfd the
+            # CUDA cuDNN/arena tuning — the other builders already do this.
             self._det = get_model(
-                str(get_model_path(self._model_file)), providers=self._providers
+                str(get_model_path(self._model_file)),
+                providers=self._providers,
+                provider_options=build_provider_options(self._providers),
             )
         # SCRFD downsamples by strides 8/16/32, so its input must be a multiple
         # of 32 (mirrors the buffalo_l det_size alignment in face_analyser).
         aligned = max(32, (self._size // 32) * 32)
         self._det.prepare(ctx_id=0, input_size=(aligned, aligned))
+        # No silent fallback: if the requested EP didn't load, raise.
+        sess = getattr(self._det, "session", None)
+        if sess is not None:
+            assert_providers_loaded(sess, self._providers, self._model_file)
 
     def detect(self, frame: Frame) -> list[FaceLite]:
         if self._det is None:

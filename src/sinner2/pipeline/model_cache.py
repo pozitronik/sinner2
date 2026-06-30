@@ -451,6 +451,41 @@ def build_provider_options(providers: list[str]) -> list[dict[str, str]]:
     return out
 
 
+class ProviderUnavailableError(RuntimeError):
+    """None of a model's REQUESTED ONNX execution providers loaded, so ORT would
+    silently run it on a provider the caller never asked for (its always-appended
+    CPU). Raised instead of running on that fallback — the user opted out of
+    silent provider downgrades."""
+
+
+def assert_providers_loaded(
+    session: Any, requested: list[str], model_name: str
+) -> None:
+    """Raise ProviderUnavailableError if NONE of ``requested`` actually loaded.
+
+    ORT drops an EP it can't construct (TensorRT with a missing DLL, CUDA on a CPU
+    box, …) and silently falls back to CPU. We treat 'ran only on a provider the
+    caller never requested' as an error. A list that explicitly includes
+    CPUExecutionProvider still accepts CPU — it was requested. An empty request
+    (caller asked for nothing specific) is left alone. Defensive: if the session
+    doesn't expose a real provider list (e.g. a test stub), the check is skipped."""
+    if not requested:
+        return
+    getter = getattr(session, "get_providers", None)
+    if not callable(getter):
+        return
+    actual = getter()
+    if not isinstance(actual, (list, tuple)):
+        return  # stub / unexpected shape — nothing to assert against
+    if any(p in actual for p in requested):
+        return
+    raise ProviderUnavailableError(
+        f"{model_name}: none of the requested execution providers {requested} "
+        f"loaded — running on {list(actual) or ['CPUExecutionProvider']}. Check "
+        f"the CUDA / TensorRT install or change the provider selection."
+    )
+
+
 def build_session_options() -> "ort.SessionOptions":
     """Tuned SessionOptions for a direct InferenceSession (codeformer / generic
     swappers / converters).
@@ -783,6 +818,9 @@ def get_onnx_session(
                 providers=names,
                 provider_options=build_provider_options(names),
             )
+        # No silent fallback: if the requested EP didn't load (e.g. TensorRT with a
+        # missing DLL) ORT would run this on CPU — raise instead so it's visible.
+        assert_providers_loaded(session, names, path.name)
         _session_cache[key] = session
         _session_refcount[key] = 1
         return session
@@ -872,6 +910,11 @@ def get_insightface_swap_model(
                 providers=list(eps),
                 provider_options=build_provider_options(list(eps)),
             )
+        # No silent fallback (the swapper is the one model most likely set to a
+        # TRT-only list) — raise if its requested EP didn't actually load.
+        sess = getattr(model, "session", None)
+        if sess is not None:
+            assert_providers_loaded(sess, list(eps), path.name)
         _insightface_cache[key] = model
         return model
 

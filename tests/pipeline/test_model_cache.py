@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -58,6 +59,69 @@ class TestDetectorProviders:
         assert model_cache.tensorrt_detector_enabled() is True
         model_cache.set_tensorrt_detector(False)
         assert model_cache.tensorrt_detector_enabled() is False
+
+
+class TestAssertProvidersLoaded:
+    """No silent fallback: raise when NONE of the requested EPs actually loaded,
+    but accept a provider the caller explicitly listed (incl. CPU)."""
+
+    @staticmethod
+    def _sess(providers):
+        return SimpleNamespace(get_providers=lambda: list(providers))
+
+    def test_passes_when_requested_provider_active(self):
+        model_cache.assert_providers_loaded(
+            self._sess(["TensorrtExecutionProvider", "CPUExecutionProvider"]),
+            ["TensorrtExecutionProvider"], "swapper",
+        )  # no raise
+
+    def test_raises_when_fell_back_to_unrequested_cpu(self):
+        with pytest.raises(model_cache.ProviderUnavailableError):
+            model_cache.assert_providers_loaded(
+                self._sess(["CPUExecutionProvider"]),
+                ["TensorrtExecutionProvider"], "swapper",
+            )
+
+    def test_explicitly_listed_cpu_is_accepted(self):
+        # ['CUDA','CPU'] that ended up on CPU only: CPU WAS requested → no raise.
+        model_cache.assert_providers_loaded(
+            self._sess(["CPUExecutionProvider"]),
+            ["CUDAExecutionProvider", "CPUExecutionProvider"], "upscaler",
+        )
+
+    def test_empty_request_is_noop(self):
+        model_cache.assert_providers_loaded(
+            self._sess(["CPUExecutionProvider"]), [], "m"
+        )
+
+    def test_skips_non_list_provider_stub(self):
+        # A bare MagicMock session (get_providers → MagicMock, not a list) is
+        # skipped, so the many MagicMock-stubbed unit tests don't trip the check.
+        model_cache.assert_providers_loaded(MagicMock(), ["CUDAExecutionProvider"], "m")
+
+    def test_get_onnx_session_raises_on_silent_fallback(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        import onnxruntime
+
+        monkeypatch.setenv("SINNER2_MODELS_DIR", str(tmp_path))
+        (tmp_path / "m.onnx").write_bytes(b"x")
+        model_cache.clear_session_cache()
+        monkeypatch.setattr(model_cache, "_preload_bundled_cuda_libs", lambda: None)
+        monkeypatch.setattr(
+            model_cache, "build_provider_options", lambda names: [{} for _ in names]
+        )
+        monkeypatch.setattr(
+            onnxruntime, "InferenceSession",
+            lambda *a, **k: SimpleNamespace(
+                get_providers=lambda: ["CPUExecutionProvider"]
+            ),
+        )
+        with pytest.raises(model_cache.ProviderUnavailableError):
+            model_cache.get_onnx_session(
+                "m.onnx", providers=["TensorrtExecutionProvider"]
+            )
+        model_cache.clear_session_cache()
 
 
 class TestGetModelsDir:
