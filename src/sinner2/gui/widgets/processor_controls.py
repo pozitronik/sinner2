@@ -807,12 +807,16 @@ class QProcessorControls(QWidget):
 
         self._preprocess_before_play = QCheckBox()
         self._preprocess_before_play.setToolTip(
-            "Before playing, render a head-start from the current position so a\n"
-            "slow pipeline plays back smoothly at the source framerate instead of\n"
-            "lagging. The display holds while the buffer fills (watch the\n"
-            "processing visualiser), then playback starts automatically. Press\n"
-            "play/Space to start sooner, or pause to cancel. Sized from the speed\n"
-            "of frames that actually contain faces."
+            "Before playing, render a head-start from the current position so\n"
+            "playback starts smooth instead of lagging. Adapts to the skip\n"
+            "strategy:\n"
+            "• Synced / Predictive: pre-render just the frames that strategy will\n"
+            "  show (a few seconds' worth), then hand back to it — starts almost\n"
+            "  at once and stays smooth as it skips ahead.\n"
+            "• Best effort: render every frame up front so it plays at the full\n"
+            "  source framerate (a longer wait on a slow pipeline).\n"
+            "The display holds while the buffer fills (watch the processing\n"
+            "visualiser). Press play/Space to start sooner, or pause to cancel."
         )
         self._preprocess_before_play.toggled.connect(self.configChanged)
         execution_form.addRow("Buffer ahead before playback", self._preprocess_before_play)
