@@ -1636,7 +1636,9 @@ class SinnerMainWindow(QMainWindow):
         if self._preprocess.is_active():
             self._preprocess.play_now()
         elif self._preprocess_on_play_eligible():
-            self._preprocess.start(self._controller.target_fps())
+            self._preprocess.start(
+                self._controller.target_fps(), self._processors.skip_strategy()
+            )
         else:
             _pp_trace("→ normal play (option off or not a file session)")
             self._session.play()
@@ -1657,7 +1659,9 @@ class SinnerMainWindow(QMainWindow):
         executor = self._controller.executor()
         paused = executor is not None and not executor.is_playing.get()
         if paused and self._preprocess_on_play_eligible():
-            self._preprocess.start(self._controller.target_fps())
+            self._preprocess.start(
+                self._controller.target_fps(), self._processors.skip_strategy()
+            )
         else:
             self._session.toggle_playback()
 

@@ -294,6 +294,7 @@ class TestStatusActionButtons:
     def test_play_with_option_on_starts_preprocess(self, window, monkeypatch):
         # Option on + a (faked) active file session → Play buffers a head-start.
         from sinner2.gui.session_capabilities import SessionKind
+        from sinner2.pipeline.skip_strategy import FrameSkipStrategy
 
         monkeypatch.setattr(
             window._processors, "preprocess_before_play", lambda: True  # noqa: SLF001
@@ -304,12 +305,17 @@ class TestStatusActionButtons:
         monkeypatch.setattr(
             window._session, "active_kind", lambda: SessionKind.FILE  # noqa: SLF001
         )
-        started: list[int] = []
+        started: list[object] = []
         monkeypatch.setattr(
-            window._preprocess, "start", lambda _fps: started.append(1)  # noqa: SLF001
+            window._preprocess, "start",  # noqa: SLF001
+            lambda _fps, strat=None: started.append(strat),
         )
         window._on_play_requested()  # noqa: SLF001
-        assert started == [1]
+        # The session's skip strategy is forwarded so buffering can pick the
+        # sparse warm-start (and restore it on release) instead of forcing
+        # BestEffort.
+        assert len(started) == 1
+        assert isinstance(started[0], FrameSkipStrategy)
 
     def test_pause_while_buffering_cancels(self, window, monkeypatch):
         monkeypatch.setattr(window._preprocess, "is_active", lambda: True)  # noqa: SLF001

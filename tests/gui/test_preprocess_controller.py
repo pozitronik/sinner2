@@ -5,6 +5,11 @@ from types import SimpleNamespace
 
 from sinner2.gui.preprocess_controller import PreprocessController
 from sinner2.pipeline.cache_mode import CacheMode
+from sinner2.pipeline.skip_strategy import (
+    BestEffortStrategy,
+    PredictiveStrategy,
+    SyncedStrategy,
+)
 
 
 class _FakeExecutor:
@@ -217,3 +222,87 @@ class TestUserActions:
         ctrl = _controller(ex, qtbot)
         ctrl.play_now()  # not active → nothing happens
         assert ex.calls == []
+
+
+class TestSparseWarmStart:
+    """With a skip strategy active, buffering lays the SPARSE ladder (small fixed
+    cushion) and restores that strategy on release — no longer locking the session
+    on BestEffort, no minutes-long dense prebuffer."""
+
+    def test_installs_buffering_strategy_for_skip_strategy(self, qtbot):
+        ex = _FakeExecutor(frame_count=3000)
+        ctrl = _controller(ex, qtbot)
+        ctrl.start(target_fps=30.0, runtime_strategy=PredictiveStrategy())
+        ctrl._timer.stop()  # noqa: SLF001
+        assert ("strategy", "BufferingStrategy") in ex.calls
+        assert ("strategy", "BestEffortStrategy") not in ex.calls
+        assert ("cache", CacheMode.WRITE_READ) in ex.calls
+        assert ("start_buffering",) in ex.calls
+
+    def test_cushion_is_small_and_independent_of_clip_length(self, qtbot):
+        # 2.5 s @ 30 fps = 75-frame cushion, regardless of the 3000-frame clip
+        # (dense would demand B = 3000·(1−10/30) = 2000 frames up front).
+        ex = _FakeExecutor(frame_count=3000, face_fps=10.0)
+        ctrl = _controller(ex, qtbot)
+        ctrl.start(target_fps=30.0, runtime_strategy=PredictiveStrategy())
+        ctrl._timer.stop()  # noqa: SLF001
+        ex.completed = 40  # done_ahead=41 < 75 → keep buffering
+        with qtbot.waitSignal(ctrl.progressChanged, timeout=1000) as blocker:
+            ctrl._tick()  # noqa: SLF001
+        assert blocker.args == [41, 75]
+        assert ctrl.is_active()
+
+    def test_restores_skip_strategy_before_release(self, qtbot):
+        ex = _FakeExecutor(frame_count=3000, face_fps=10.0)
+        ctrl = _controller(ex, qtbot)
+        ctrl.start(target_fps=30.0, runtime_strategy=PredictiveStrategy())
+        ctrl._timer.stop()  # noqa: SLF001
+        ex.completed = 74  # done_ahead=75 >= 75 → release
+        with qtbot.waitSignal(ctrl.finished, timeout=1000):
+            ctrl._tick()  # noqa: SLF001
+        assert ("strategy", "PredictiveStrategy") in ex.calls
+        # Restore is ordered BEFORE release so playback resumes the ladder.
+        strat_idx = ex.calls.index(("strategy", "PredictiveStrategy"))
+        rel_idx = ex.calls.index(("release", True))
+        assert strat_idx < rel_idx
+
+    def test_cancel_also_restores_the_skip_strategy(self, qtbot):
+        ex = _FakeExecutor(frame_count=3000, fps=10.0)
+        ctrl = _controller(ex, qtbot)
+        ctrl.start(target_fps=30.0, runtime_strategy=SyncedStrategy())
+        ctrl._timer.stop()  # noqa: SLF001
+        with qtbot.waitSignal(ctrl.finished, timeout=1000):
+            ctrl.cancel()
+        assert ("strategy", "SyncedStrategy") in ex.calls
+        assert ("release", False) in ex.calls
+
+    def test_best_effort_keeps_the_dense_path(self, qtbot):
+        # Explicit BestEffort → dense full-rate render-ahead, no sparse ladder.
+        ex = _FakeExecutor(frame_count=300, face_fps=10.0)
+        ctrl = _controller(ex, qtbot)
+        ctrl.start(target_fps=30.0, runtime_strategy=BestEffortStrategy())
+        ctrl._timer.stop()  # noqa: SLF001
+        assert ("strategy", "BestEffortStrategy") in ex.calls
+        assert ("strategy", "BufferingStrategy") not in ex.calls
+        ex.completed = 100  # dense B = 300−floor(300·10/30) = 200
+        with qtbot.waitSignal(ctrl.progressChanged, timeout=1000) as blocker:
+            ctrl._tick()  # noqa: SLF001
+        assert blocker.args == [101, 200]
+
+    def test_no_strategy_keeps_the_dense_path(self, qtbot):
+        # Legacy call without a strategy → unchanged dense behavior.
+        ex = _FakeExecutor(frame_count=300)
+        ctrl = _controller(ex, qtbot)
+        ctrl.start(target_fps=30.0)
+        ctrl._timer.stop()  # noqa: SLF001
+        assert ("strategy", "BestEffortStrategy") in ex.calls
+        assert ("strategy", "BufferingStrategy") not in ex.calls
+
+    def test_unknown_fps_falls_back_to_dense(self, qtbot):
+        # target_fps<=0 → no cushion can be sized → dense even with a skip strat.
+        ex = _FakeExecutor(frame_count=300)
+        ctrl = _controller(ex, qtbot)
+        ctrl.start(target_fps=0.0, runtime_strategy=PredictiveStrategy())
+        ctrl._timer.stop()  # noqa: SLF001
+        assert ("strategy", "BestEffortStrategy") in ex.calls
+        assert ("strategy", "BufferingStrategy") not in ex.calls
