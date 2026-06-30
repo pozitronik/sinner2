@@ -151,9 +151,9 @@ class PreprocessController(QObject):
             f"frame_count={self._frame_count}, target_fps={self._target_fps}, "
             f"sparse={self._sparse}"
         )
-        # Disk-backed fill (not RAM-bound). No seek — the dispatcher already fills
-        # ahead of the playhead (last_submitted >= current), reusing any frames
-        # already buffered there.
+        # Disk-backed fill (not RAM-bound). No seek — start_buffering re-anchors
+        # the fill to the current playhead and the buffer.has() fast-path reuses
+        # any frames already buffered ahead.
         executor.set_skip_strategy(buffering)
         executor.set_cache_mode(CacheMode.WRITE_READ)
         executor.start_buffering()

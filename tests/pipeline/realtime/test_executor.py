@@ -2388,6 +2388,8 @@ class TestBuffering:
         ex._state = _State.IDLE  # noqa: SLF001
         ex.is_playing = ObservableValue(False)
         ex._playback_wake = threading.Event()  # noqa: SLF001
+        ex._last_submitted = -1  # noqa: SLF001
+        ex._last_completed = -1  # noqa: SLF001
         return ex
 
     def test_start_buffering_is_playing_state_but_not_playing(self):
@@ -2399,6 +2401,34 @@ class TestBuffering:
         assert ex.is_playing.get() is False  # but it's buffering, not playing
         assert not ex._timeline.is_playing  # noqa: SLF001 — display frozen
         assert ex._playback_wake.is_set()  # noqa: SLF001
+
+    def test_start_buffering_anchors_marks_to_the_playhead(self):
+        # Regression: prior playback leaves last_submitted AHEAD of the playhead
+        # (skip strategies render a lookahead in front) and pause doesn't reset
+        # it. Buffering must re-anchor to the frozen playhead, else the sparse
+        # BufferingStrategy aims past its lookahead and idles — nothing fills, the
+        # visualiser stays empty at the playhead, playback only starts much later.
+        ex = self._bare()
+        ex._timeline.seek(10)  # noqa: SLF001 — playhead at 10 (frozen)
+        ex._last_submitted = 130  # noqa: SLF001 — left far ahead by playback
+        ex._last_completed = 5    # noqa: SLF001
+        ex._handle_start_buffering()  # noqa: SLF001
+        # Submit mark reset to just-before the playhead so the ladder is laid
+        # FROM frame 10, not continued from 130.
+        assert ex._last_submitted == 9  # noqa: SLF001
+        # Completion clamped down so progress is measured fresh from the playhead.
+        assert ex._last_completed == 5  # noqa: SLF001  # min(5, 9)
+
+    def test_start_buffering_clamps_high_completion_down(self):
+        # last_completed ahead of the playhead would otherwise make the controller
+        # read the cushion as already full and release at once (no real buffer).
+        ex = self._bare()
+        ex._timeline.seek(20)  # noqa: SLF001
+        ex._last_submitted = 200  # noqa: SLF001
+        ex._last_completed = 180  # noqa: SLF001
+        ex._handle_start_buffering()  # noqa: SLF001
+        assert ex._last_submitted == 19  # noqa: SLF001
+        assert ex._last_completed == 19  # noqa: SLF001  # min(180, 19)
 
     def test_release_buffering_play_starts_the_timeline(self):
         from sinner2.pipeline.realtime.executor import _State

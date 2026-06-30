@@ -794,6 +794,21 @@ class RealtimeExecutor:
             # the buffer pre-fills ahead. is_playing stays False: it's buffering,
             # not playing (the transport button reflects that).
             self._state = _State.PLAYING
+            # Anchor the fill to the CURRENT playhead. Prior playback leaves
+            # last_submitted AHEAD of the playhead (the skip strategies render ~a
+            # lookahead in front) and pause doesn't reset it. Against the FROZEN
+            # buffering clock the sparse BufferingStrategy would then aim past its
+            # lookahead (nxt = last_submitted + stride > target + lookahead) and
+            # idle — nothing submitted, the cushion built far from where playback
+            # will start, the visualiser empty at the playhead. Reset so the
+            # ladder is laid FROM the playhead; cached frames ahead re-complete
+            # instantly via the buffer.has() fast-path, so anything already
+            # buffered is still reused. Clamp last_completed down too (mirrors
+            # _handle_seek / _handle_rerender) so progress is measured fresh from
+            # here, not from stale completions ahead that may have been evicted.
+            current = self._timeline.current_frame()
+            self._last_submitted = current - 1
+            self._last_completed = min(self._last_completed, current - 1)
         self.is_playing.set(False)
         self._playback_wake.set()
 
